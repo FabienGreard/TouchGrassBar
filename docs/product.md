@@ -34,7 +34,7 @@ Equal Token Scores share the same rank. TouchGrass ID provides deterministic dis
 
 API-equivalent cost may appear beside token totals as supporting context but never affects rank. It is always marked as approximate and labeled “API equivalent,” for example: `10.2M tokens · ≈ $31.40 API equivalent`. It must never be presented as money spent or billed. Neither number represents productivity or work quality.
 
-An estimate uses the model's published price applicable on the usage date and retains that historical basis. If no valid price is known for a model, TouchGrassBar shows its tokens without a monetary estimate and never substitutes another model's rate.
+An estimate uses an immutable, effective-dated pricing-catalog version applicable on the usage date and records that basis. A semantic catalog change recomputes only affected model-days still retained locally and records the new basis; it never changes Observed Tokens or rank. If any required model or token-category price is unknown, TouchGrassBar shows the tokens without a monetary estimate and never guesses, substitutes another rate, or presents a misleading partial total.
 
 Doomerboard periods use UTC boundaries. “Today” is the current UTC day; 7-day and 30-day rankings include the current Ranking Day and the preceding 6 or 29 complete Ranking Days. Every Tokenmaxxer is therefore measured over the same interval. Provider quota reset times remain provider-defined and are displayed in the Mac's local time.
 
@@ -43,6 +43,18 @@ Doomerboard periods use UTC boundaries. “Today” is the current UTC day; 7-da
 TouchGrassBar mirrors every active limit reported by Codex or Claude using that provider's own lanes, labels, units, remaining values, and reset times. It does not collapse multiple windows, normalize limits across providers, or derive a combined quota.
 
 Provider limits, historical Token Scores, and API-equivalent cost are independent displays. No value is converted into another.
+
+A full provider observation is required to initialize a Quota Snapshot. A sparse provider notification may update an existing snapshot but cannot create one. A successfully observed Quota Lane is current for five minutes, then remains visible as stale until its reset; once the reset passes without a refresh, its previous allowance and remaining value become unavailable. A failed refresh or Mac wake preserves the last valid stale value rather than turning it into zero.
+
+## Usage evidence and corrections
+
+Observed Usage records three independent facts: its evidence basis is provider-reported or locally derived; its coverage is complete or partial; and current-day availability is current, stale, or unavailable. Complete means the selected source proves its declared provider scope and supported token categories through the observation time. Any known gap makes it partial. Partial Observed Tokens still contribute their known value to Token Score, with no imputation. Missing usage is unavailable, never zero or estimated. Completed historical days remain available with their recorded coverage rather than becoming stale with age.
+
+Exactly one source owns each provider and Ranking Day. A provider-account daily total wins when available. Local parsing is fallback or model/category detail and is never summed with that total. Codex account daily tokens are used directly; local Codex fallback uses cumulative deltas without adding cached-input or reasoning breakdowns again. Claude sums input, cache-creation input, cache-read input, and output, with thinking already included in output. Unknown schemas fail closed as partial or unavailable.
+
+A Usage Snapshot may replace an earlier provider/day value only with a higher revision. Decreases require explicit stronger evidence from a provider replacement or parser correction; disappearing local logs never reduce a synchronized total. An accepted correction updates the daily total and its derived ranking state together. The revision and reason remain auditable, but “corrected” is not a lasting status or permanent public badge.
+
+Only the provider/day aggregate, evidence basis, coverage, observation time, revision, and complete API-equivalent cost with its pricing basis may synchronize. Raw logs, provider message or session identifiers, credentials, and file paths remain on the Mac.
 
 ## Offline behavior
 
@@ -62,9 +74,9 @@ TouchGrassBar creates an identity without asking for an email address, social lo
 
 Doomerboard rows show the Display Name and TouchGrass ID together, for example `Fabien #TG-7K4P9D`. Adding a Tokenmaxxer and identity recovery use the permanent TouchGrass ID, never the Display Name.
 
-The Recovery Key is stored in macOS Keychain and can restore the identity on another Mac when paired with the TouchGrass ID. TouchGrassBar provides no alternative account-recovery channel; losing the Recovery Key makes the identity unrecoverable.
+The Recovery Key is stored in macOS Keychain and can restore the identity on another Mac when paired with the TouchGrass ID. Successful recovery requires online confirmation, rotates the Recovery Key, and transfers Active Mac authority. An authenticated Active Mac may securely reveal or rotate its stored key; if the Tokenmaxxer loses both Active Mac access and the current Recovery Key, the identity is permanently unrecoverable. TouchGrassBar provides no alternative account-recovery channel.
 
-Only one Mac may synchronize an identity at a time. Restoring on a new Mac transfers synchronization authority and invalidates the previous Mac's session. Multi-device merging and device-management UI are outside the MVP.
+Only one Active Mac may synchronize an identity at a time. Authority belongs to an opaque TouchGrassBar installation rather than a hardware fingerprint, so an update or reinstall that preserves Keychain remains the same Active Mac. Restoring elsewhere transfers synchronization authority and invalidates every previous session. Multi-device merging and device-management UI are outside the MVP.
 
 ## Explicit non-goals
 

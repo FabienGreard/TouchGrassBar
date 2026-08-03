@@ -12,9 +12,13 @@ The deployed flow is:
 
 ## Snapshot invariant
 
-One Usage Bucket represents one Active Mac, Coding Provider, and UTC Ranking Day. Rust sends a cumulative total with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one.
+One Usage Bucket represents one Active Mac, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. Disappearance of a local record is never valid downward evidence.
 
-The current Active Mac's accepted snapshot replaces the corresponding User Daily Usage value. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
+The current Active Mac's accepted snapshot replaces the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
+
+## Usage-contract verification
+
+Automated fixtures must cover Quota Lane freshness and reset transitions; provider/day source precedence; Codex and Claude token-category counting without overlap; complete, partial, stale, unavailable, and missing-not-zero behavior; revision idempotency and authorized downward corrections; effective-dated pricing and catalog-triggered cost recomputation; unknown-price omission; and the sanitized synchronization payload. These fixtures define the acceptance contract but do not replace final release QA.
 
 ## Score materialization
 
