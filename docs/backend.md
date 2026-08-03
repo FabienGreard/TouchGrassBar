@@ -16,7 +16,9 @@ Rust is the only desktop Convex client. It exchanges its Keychain-held Better Au
 
 One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. Disappearance of a local record is never valid downward evidence.
 
-The current Active Mac's accepted snapshot replaces the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
+Each request contains at most 62 snapshots and commits atomically. An acknowledgement names only revisions committed by that mutation. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. The current Active Mac's accepted snapshot updates the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
+
+On same-day Active Mac transfer, the old generation's accepted contribution is frozen and the new generation contributes only its post-transfer segment. Later writes from the old generation fail, earlier Ranking Days are not rewritten, and a known unsynchronized old segment makes the transferred day partial.
 
 ## Usage-contract verification
 
@@ -32,20 +34,49 @@ The Aggregate component has one installation named `doomerboard`. It partitions 
 - `tokens-v1:claude:7d`
 - `tokens-v1:combined:1d`
 
-Global Doomerboards page the Aggregate in descending order. My Tokenmaxxers reads at most 500 unilateral edges and at most 2,000 materialized rows for one board, then filters and sorts in memory. It does not use Aggregate.
+Global Doomerboards page the Aggregate in descending order. `publicScores` and the Aggregate have one write path: every insert, replacement, or deletion changes both within the same mutation. A read-only invariant check proves a one-to-one match of document ID, Board Key, and Token Score, while an idempotent migration can repair divergence. Production dashboard edits to either side are prohibited.
+
+My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most those 100 indexed edges, performs indexed score lookups, and sorts only that bounded set in memory. It never scans the global score table.
 
 ## Maintenance
 
-A built-in daily cron runs at 00:05 UTC. It selects at most 200 Tokenmaxxers active in the previous 45 days and schedules an isolated score recomputation for each one so expired Ranking Days leave rolling windows.
+A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer whose rolling score can change has been processed, so expired Ranking Days leave all windows. The drain is idempotent, retries safely, alerts if progress stalls, and has no correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain within the approved backend performance budget.
 
-The migrations component owns repair/backfill work. The first migration can restore missing Aggregate entries from `publicScores` without duplicating existing entries.
+The migrations component owns repair/backfill work. Migrations are forward-only, resumable, idempotent, and bounded. A required-field or Board Key change adds new storage, backfills it, verifies counts and invariants, switches reads and writes, then removes legacy state only in a later release. Readiness includes an interruption/resume rehearsal on production-shaped data and Aggregate-repair coverage.
 
 ## Authentication boundary
 
-Every identity or synchronization mutation requires `ctx.auth`. The subject resolves the Tokenmaxxer; the client never chooses that relationship. The first successful sync binds an installation as the Active Mac, and another installation is rejected until an explicit recovery transfer revokes or replaces that authority.
+Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from `tokenIdentifier`, and never accepts a client-supplied identity as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
 
 Better Auth is pinned but its generated Recovery Key adapter and device-transfer flow remain an implementation gate. Until that is wired, the authenticated mutations are deliberately inaccessible to the desktop scaffold.
 
+## Abuse policy
+
+Rate limits and query caps live in one typed policy table whose boundary tests are generated from the same values. A policy change invalidates Backend Readiness Evidence.
+
+- Synchronization accepts at most 62 snapshots per request. Its token bucket has capacity 180 and refills 60 snapshots per minute, keyed by Tokenmaxxer, Active Mac generation, and installation.
+- Failed generated-credential or recovery attempts are limited to five per 15 minutes independently by IP and TouchGrass ID, with non-enumerating responses.
+- Successful recovery or transfer is limited to three per hour per Tokenmaxxer.
+
+An automated hostile-input suite rejects oversized payloads, invalid or future Ranking Days, unsafe numbers, unauthorized decreases, malformed installation credentials, and any raw identifier or path. Rejection never partially writes or reveals whether a Tokenmaxxer exists.
+
+## Production readiness contract
+
+Backend readiness is binary and automated. Local or development results do not qualify. Every mandatory check must pass; failed, skipped, or stale evidence blocks launch. Auth, privacy, authorization, data-integrity, migration, and canary failures cannot be waived.
+
+The automated evidence set contains:
+
+- generated-credential tests for one-time signup-proof expiry and replay rejection, Recovery Key hashing, session and JWT claims, immediate revocation, and secret exclusion from Convex data, logs, React, and artifacts;
+- authorization tests for absent, expired, revoked, and mismatched sessions; wrong installations; stale Active Mac generations; and transfer/sync races;
+- atomic synchronization tests for retries, duplicate and concurrent delivery, valid corrections, rollback, same-day transfer segmentation, and abandoned old-generation work;
+- fake-clock UTC rollover tests across month, year, leap-day, and daylight-saving boundaries, plus a complete paginated-drain test;
+- an independent reference oracle that applies randomized synchronization, correction, transfer, and rollover sequences and compares User Daily Usage, User Scores, Public Scores, and Aggregate ranks;
+- bounded-query and rate-limit boundary tests, hostile-input tests, and an interrupted migration rehearsal;
+- a disposable authenticated canary against the exact production deployment before public visibility. It proves generated credentials, session/JWT exchange, Active Mac claim, synchronization and identical retry, public and private reads, transfer, old-Mac rejection, new-Mac synchronization, and complete internal cleanup without logging secrets; and
+- a production health check for the exact deployment, presence-only required environment variables, installed schema and components, the canary's sanitized correlation window, zero unhandled backend errors, and the Public Score/Aggregate invariant.
+
+The resulting Backend Readiness Evidence is one machine-readable CI artifact containing the exact Git commit, dependency-lock hash, schema and Board Key versions, policy version, deployment identity, suite results, migration rehearsal, production-canary result, and production-health result. Relevant code, configuration, schema, dependency, or policy changes make it stale. Before real traffic exists, production evidence is explicitly labeled `canary-only`; post-launch monitoring is a separate operational gate.
+
 ## Validation
 
-The backend has been generated and pushed successfully to an anonymous local Convex deployment. Production deployment, Better Auth environment configuration, and a realistic authenticated sync invocation remain release gates.
+This document defines the target contract; it does not claim launch readiness. The current backend has been generated and pushed successfully only to an anonymous local Convex deployment. Better Auth is not wired into Convex, protected functions still trust the raw JWT subject, Active Mac generations and correction provenance are absent from the schema, rollover stops after a fixed batch, and My Tokenmaxxers scans broad capped sets. Production deployment, implementation of this contract, regenerated Backend Readiness Evidence, and explicit launch approval remain separate gates.

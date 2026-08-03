@@ -68,6 +68,10 @@ _Avoid_: Upload event, transferable history, token increment
 A versioned identifier for one provider scope and rolling window, such as `tokens-v1:combined:30d`. It namespaces global Aggregate data.
 _Avoid_: Leaderboard ID, arbitrary cache key
 
+**Backend Readiness Evidence**:
+A machine-generated, pass/fail artifact bound to one Git commit and one production Convex deployment. It records the exact schema, Board Key, dependency, policy, migration-rehearsal, automated-test, authenticated-canary, and production-health evidence used to decide whether the backend may launch. A relevant change makes the evidence stale; local or development success alone is never Backend Readiness Evidence.
+_Avoid_: Readiness score, QA opinion, local green build
+
 ## Native Boundary
 
 **Sanitized Desktop State**:
