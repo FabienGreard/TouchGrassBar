@@ -75,7 +75,7 @@ _Avoid_: Readiness score, QA opinion, local green build
 ## Native Boundary
 
 **Sanitized Desktop State**:
-The versioned projection of native-owned product state that may enter the React interface. It contains display-safe provider, identity, synchronization, and social data but no credentials or provider source material.
+The versioned, revisioned, bounded projection of native-owned product state that may enter the React interface. It contains display-safe provider, identity, synchronization, and social data but no credentials or provider source material. React replaces it from a complete cached snapshot; revision notices never carry partial state.
 _Avoid_: App state, native state, raw snapshot
 
 ## Social Comparison

@@ -65,7 +65,11 @@ Shared strict TypeScript and Oxlint configuration.
 
 The top-level Sanitized Desktop State carries a breaking-change contract version, generation time, and monotonic state revision. TypeScript types and strict runtime validators are generated from the canonical Rust DTOs. An unknown contract version fails closed instead of being interpreted approximately.
 
-React fetches the current cached snapshot on mount. After a committed native-state change, Rust emits only a revision notification; React coalesces notifications and refetches. Missed, duplicated, or reordered notifications cannot replace newer state. Large Doomerboards use separate typed, bounded commands rather than inflating the main snapshot.
+The main panel uses a snapshot-oriented native interface: React fetches the current cached snapshot, may request a refresh without waiting for provider I/O, and receives revision notices as invalidation hints. It subscribes before the initial read, coalesces notices, refetches the complete snapshot, and accepts only a higher revision. Missed, duplicated, delayed, or reordered notices cannot replace newer state, and partial state patches never cross Tauri IPC.
+
+Expected provider, parsing, network, and persistence failures appear as sanitized unavailable, stale, retry, or synchronization state. Only closed caller, lifecycle, serialization, contract, and internal-invariant failures reject a command. Large Doomerboards use separate typed, bounded commands rather than inflating the main snapshot; settings, identity, recovery, updates, and future focused surfaces likewise receive narrow interfaces instead of a generic dispatcher.
+
+The accepted interface and ordering contract are recorded in [ADR 0013](adr/0013-use-snapshot-refresh-and-revision-notices-for-native-state.md).
 
 Production WebViews deny arbitrary HTTP and WebSocket egress through CSP and receive no filesystem, shell, HTTP, or Keychain plugin capability. Window-specific command allowlists are backed by Rust caller-window checks. Development builds may permit only localhost traffic required by Vite and HMR.
 
