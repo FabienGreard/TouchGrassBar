@@ -12,7 +12,6 @@ TouchGrassBar is an open, playful consumer project. It is not an employee-monito
 - `packages/contracts` — shared sanitized data contracts
 - `packages/ui` — shared UI primitives and theme
 - `packages/tooling` — strict TypeScript and Oxlint configuration
-- `spikes/tauri-menubar` — disposable native viability evidence
 
 ## Commands
 

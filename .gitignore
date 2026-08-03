@@ -17,9 +17,3 @@ apps/desktop/src-tauri/gen/
 
 # Convex local state
 .convex/
-
-# Viability-spike build products
-spikes/tauri-menubar/node_modules/
-spikes/tauri-menubar/dist/
-spikes/tauri-menubar/src-tauri/target/
-spikes/tauri-menubar/src-tauri/gen/

@@ -4,7 +4,7 @@
 
 The architecture is viable with a native AppKit adjustment, subject to physical multi-monitor/fullscreen testing and notarizing a real TouchGrassBar artifact.
 
-The disposable implementation lives in `spikes/tauri-menubar`. Proven native behavior has been transferred into `apps/desktop`; the spike itself is not product code.
+The disposable implementation was retired after its proven native behavior and tests were transferred into `apps/desktop`. This report remains as the viability record; the production app is now the only executable source of truth.
 
 ## Evidence
 
