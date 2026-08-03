@@ -60,9 +60,19 @@ _Avoid_: Raw usage, usage log
 A cumulative Daily Usage Aggregate sent by the Active Mac with a monotonically increasing revision. Equal or older revisions are ignored. A higher revision may correct a synchronized Ranking Day, but a decrease requires an explicit provider replacement or parser correction; a missing local record never subtracts usage. “Corrected” describes the audited change, not a lasting public status.
 _Avoid_: Token increment, usage event, raw observation
 
+**Pending Usage Snapshot**:
+The latest Usage Snapshot awaiting acceptance for one Active Mac generation, Coding Provider, and Ranking Day. It may retry only under that generation and is abandoned after Active Mac transfer.
+_Avoid_: Upload event, transferable history, token increment
+
 **Board Key**:
 A versioned identifier for one provider scope and rolling window, such as `tokens-v1:combined:30d`. It namespaces global Aggregate data.
 _Avoid_: Leaderboard ID, arbitrary cache key
+
+## Native Boundary
+
+**Sanitized Desktop State**:
+The versioned projection of native-owned product state that may enter the React interface. It contains display-safe provider, identity, synchronization, and social data but no credentials or provider source material.
+_Avoid_: App state, native state, raw snapshot
 
 ## Social Comparison
 
@@ -85,6 +95,10 @@ _Avoid_: Private ID, password, recovery code
 **Active Mac**:
 The single TouchGrassBar installation currently authorized to synchronize a Tokenmaxxer's usage. Restoring the identity elsewhere transfers that authority; an Active Mac is not identified by a hardware fingerprint.
 _Avoid_: Primary device, linked device
+
+**Active Mac Generation**:
+The current epoch of an Active Mac's synchronization authority. Recovery advances it, and authority or Pending Usage Snapshots from an earlier generation cannot be reused.
+_Avoid_: Device version, session version
 
 **My Tokenmaxxers**:
 The Tokenmaxxers that the current Tokenmaxxer has unilaterally added using their TouchGrass IDs. Adding requires no request, acceptance, or reciprocal relationship.

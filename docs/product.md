@@ -62,6 +62,8 @@ Provider detection, Quota Snapshots, local usage history, and API-Equivalent Cos
 
 Offline operation is temporary local-first behavior, not a private identity mode. Pending Daily Usage Aggregates synchronize after connectivity returns and only while the Mac remains the identity's Active Mac.
 
+TouchGrassBar retains 60 UTC Ranking Days of local aggregate history for corrections and pricing updates. Creating an identity queues only the approved 30-day backfill. Pending Usage Snapshots are bound to the current Active Mac generation; transfer abandons the previous generation's queue without deleting its device-private history.
+
 ## Public by design
 
 Every Tokenmaxxer appears in public Doomerboards; there is no private-account or ranking-opt-out mode. Adding someone to My Tokenmaxxers does not grant access to otherwise private usage—it only filters already-public ranking data into a personal audience.

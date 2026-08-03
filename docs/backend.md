@@ -10,15 +10,17 @@ The deployed flow is:
 
 `packages/contracts` is not the sync contract. It is reserved for the sanitized Rust-to-React Tauri IPC boundary. Convex generates its own TypeScript API and data-model types in `convex/_generated`.
 
+Rust is the only desktop Convex client. It exchanges its Keychain-held Better Auth session for a short-lived memory-only Convex JWT, then uses the official Convex Rust client through typed native operations. React receives sanitized results and has no Convex client, JWT, session material, or generic backend forwarding command.
+
 ## Snapshot invariant
 
-One Usage Bucket represents one Active Mac, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. Disappearance of a local record is never valid downward evidence.
+One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. Disappearance of a local record is never valid downward evidence.
 
 The current Active Mac's accepted snapshot replaces the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
 
 ## Usage-contract verification
 
-Automated fixtures must cover Quota Lane freshness and reset transitions; provider/day source precedence; Codex and Claude token-category counting without overlap; complete, partial, stale, unavailable, and missing-not-zero behavior; revision idempotency and authorized downward corrections; effective-dated pricing and catalog-triggered cost recomputation; unknown-price omission; and the sanitized synchronization payload. These fixtures define the acceptance contract but do not replace final release QA.
+Automated fixtures must cover Quota Lane freshness and reset transitions; provider/day source precedence; Codex and Claude token-category counting without overlap; complete, partial, stale, unavailable, and missing-not-zero behavior; revision idempotency and authorized downward corrections; effective-dated pricing and catalog-triggered cost recomputation; unknown-price omission; and the sanitized synchronization payload. Native-boundary gates additionally cover generated-contract drift and unknown-version rejection; sentinel secret, path, identifier, and raw-content exclusion from IPC and sync payloads; SQLite migration and atomic-outbox crash recovery; refresh timing with a fake clock; Active Mac revocation; and release CSP/capability restrictions. These fixtures define the acceptance contract but do not replace final release QA.
 
 ## Score materialization
 
