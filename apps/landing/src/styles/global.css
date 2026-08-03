@@ -1,0 +1,13 @@
+@import "tailwindcss";
+@import "@touchgrass/ui/theme.css";
+@source "../../../../packages/ui/src";
+
+html {
+  background:
+    radial-gradient(circle at 50% -15%, rgb(49 201 87 / 20%), transparent 35rem),
+    var(--color-ash-950);
+}
+
+a {
+  color: inherit;
+}

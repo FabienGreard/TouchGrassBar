@@ -1,0 +1,37 @@
+{
+  "productName": "TouchGrassBar Smoke",
+  "identifier": "com.touchgrassbar.viability.smoke",
+  "app": {
+    "windows": [
+      {
+        "label": "panel",
+        "title": "TouchGrassBar",
+        "visible": true,
+        "width": 360,
+        "height": 520,
+        "center": true,
+        "decorations": false,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "closable": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "focus": true,
+        "shadow": true
+      },
+      {
+        "label": "settings",
+        "title": "TouchGrassBar Settings",
+        "visible": false,
+        "width": 560,
+        "height": 420,
+        "center": true,
+        "decorations": true,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true
+      }
+    ]
+  }
+}

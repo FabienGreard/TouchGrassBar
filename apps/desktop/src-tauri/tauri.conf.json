@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TouchGrassBar",
+  "version": "0.0.0",
+  "identifier": "app.touchgrass.bar",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": false,
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
+    },
+    "windows": [
+      {
+        "label": "panel",
+        "title": "TouchGrassBar",
+        "width": 372,
+        "height": 640,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false
+      },
+      {
+        "label": "settings",
+        "title": "TouchGrassBar Settings",
+        "width": 760,
+        "height": 580,
+        "minWidth": 620,
+        "minHeight": 480,
+        "visible": false
+      },
+      {
+        "label": "onboarding",
+        "title": "Welcome to TouchGrassBar",
+        "width": 720,
+        "height": 580,
+        "resizable": false,
+        "visible": false
+      }
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "TOUCHGRASSBAR_UPDATER_PUBLIC_KEY_NOT_CONFIGURED"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "copyright": "Copyright © 2026 TouchGrassBar contributors",
+    "icon": ["icons/icon.svg.png"],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "targets": ["app", "dmg"]
+  }
+}

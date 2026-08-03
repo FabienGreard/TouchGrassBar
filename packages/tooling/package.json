@@ -1,0 +1,16 @@
+{
+  "name": "@touchgrass/tooling",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./typescript": "./tsconfig.base.json",
+    "./oxlint": "./oxlint.json"
+  },
+  "scripts": {
+    "build": "bun -e \"process.exit(0)\"",
+    "lint": "bun -e \"process.exit(0)\"",
+    "test": "bun -e \"process.exit(0)\"",
+    "typecheck": "bun -e \"process.exit(0)\""
+  }
+}

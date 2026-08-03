@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Narrow desktop capability for sanitized TouchGrassBar windows",
+  "windows": ["panel", "settings", "onboarding"],
+  "permissions": ["core:default"]
+}

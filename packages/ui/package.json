@@ -1,0 +1,27 @@
+{
+  "name": "@touchgrass/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./theme.css": "./src/theme.css"
+  },
+  "scripts": {
+    "build": "bun run typecheck",
+    "lint": "bunx --bun oxlint -c ../tooling/oxlint.json src",
+    "test": "bun -e \"process.exit(0)\"",
+    "typecheck": "bunx --bun tsc --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=19",
+    "react-dom": ">=19"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typescript": "6.0.3"
+  }
+}

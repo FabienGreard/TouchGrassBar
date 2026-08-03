@@ -1,0 +1,36 @@
+@theme {
+  --color-grass-50: #effff3;
+  --color-grass-300: #8cf09d;
+  --color-grass-400: #5ce576;
+  --color-grass-500: #31c957;
+  --color-grass-950: #07170c;
+  --color-ash-100: #f2f0ea;
+  --color-ash-400: #9e9b92;
+  --color-ash-700: #34332f;
+  --color-ash-900: #191917;
+  --color-ash-950: #0d0d0c;
+  --font-sans: "Inter", "SF Pro Text", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", "SF Mono", ui-monospace, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  background: var(--color-ash-950);
+  color: var(--color-ash-100);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input {
+  font: inherit;
+}

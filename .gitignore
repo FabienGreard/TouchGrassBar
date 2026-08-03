@@ -1,0 +1,25 @@
+node_modules/
+.turbo/
+dist/
+coverage/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Rust and Tauri
+target/
+apps/desktop/src-tauri/gen/
+
+# Astro
+.astro/
+
+# Convex local state
+.convex/
+
+# Viability-spike build products
+spikes/tauri-menubar/node_modules/
+spikes/tauri-menubar/dist/
+spikes/tauri-menubar/src-tauri/target/
+spikes/tauri-menubar/src-tauri/gen/

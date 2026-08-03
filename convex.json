@@ -1,0 +1,8 @@
+{
+  "functions": "packages/backend/convex/",
+  "aiFiles": {
+    "skills": {
+      "agents": ["codex"]
+    }
+  }
+}

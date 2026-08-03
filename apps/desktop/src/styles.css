@@ -1,0 +1,14 @@
+@import "tailwindcss";
+@import "@touchgrass/ui/theme.css";
+@source "../../../packages/ui/src";
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  background: transparent;
+  user-select: none;
+}

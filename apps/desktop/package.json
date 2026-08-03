@@ -1,0 +1,31 @@
+{
+  "name": "@touchgrass/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bunx --bun vite build",
+    "dev": "bunx --bun vite",
+    "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src vite.config.ts",
+    "tauri": "bunx --bun tauri",
+    "test": "bun -e \"process.exit(0)\"",
+    "typecheck": "bunx --bun tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "@touchgrass/contracts": "workspace:*",
+    "@touchgrass/ui": "workspace:*",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.5",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3",
+    "vite": "8.2.0"
+  }
+}

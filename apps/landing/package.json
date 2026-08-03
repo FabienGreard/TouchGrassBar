@@ -1,0 +1,23 @@
+{
+  "name": "@touchgrass/landing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bunx --bun astro build",
+    "dev": "bunx --bun astro dev",
+    "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src astro.config.ts",
+    "test": "bun -e \"process.exit(0)\"",
+    "typecheck": "bunx --bun astro check"
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@touchgrass/ui": "workspace:*",
+    "astro": "7.1.6",
+    "tailwindcss": "4.3.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.6",
+    "typescript": "6.0.3"
+  }
+}

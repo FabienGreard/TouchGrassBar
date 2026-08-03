@@ -1,0 +1,19 @@
+{
+  "name": "@touchgrassbar/tauri-menubar-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run typecheck && bun --bun vite build",
+    "dev": "bun --bun vite --host 127.0.0.1 --port 1420",
+    "tauri": "bunx --bun tauri",
+    "typecheck": "bun --bun tsc --noEmit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4",
+    "typescript": "7.0.2",
+    "vite": "8.2.0"
+  }
+}

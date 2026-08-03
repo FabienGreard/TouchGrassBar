@@ -1,0 +1,26 @@
+{
+  "name": "@touchgrass/backend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run typecheck",
+    "dev": "bun run --cwd ../.. convex:dev",
+    "codegen": "bun run --cwd ../.. convex:codegen",
+    "lint": "bunx --bun oxlint -c ../tooling/oxlint.json convex",
+    "test": "bunx vitest run",
+    "typecheck": "bunx --bun tsc --noEmit"
+  },
+  "dependencies": {
+    "@convex-dev/aggregate": "0.2.2",
+    "@convex-dev/better-auth": "0.12.5",
+    "@convex-dev/migrations": "0.3.6",
+    "@convex-dev/rate-limiter": "0.3.2",
+    "@touchgrass/contracts": "workspace:*",
+    "better-auth": "1.6.25",
+    "convex": "1.43.0"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}
