@@ -25,7 +25,7 @@
     "oxlint": "1.76.0",
     "react-doctor": "0.9.3",
     "turbo": "2.10.8",
-    "typescript": "6.0.3",
+    "typescript": "7.0.2",
     "vitest": "4.1.10"
   }
 }
