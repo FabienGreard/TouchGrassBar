@@ -3,6 +3,7 @@ name = "touchgrassbar"
 version = "0.0.0"
 description = "The native core for TouchGrassBar"
 authors = ["TouchGrassBar contributors"]
+default-run = "touchgrassbar"
 edition = "2024"
 rust-version = "1.85"
 
@@ -14,12 +15,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
+schemars = "=1.2.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "=2.11.5", features = ["tray-icon"] }
+tauri = { version = "=2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+time = { version = "=0.3.45", features = ["formatting"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "=0.3.2", features = ["NSWindow"] }

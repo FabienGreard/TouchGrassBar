@@ -8,7 +8,7 @@
     "dev": "bunx --bun vite",
     "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src vite.config.ts",
     "tauri": "bunx --bun tauri",
-    "test": "bun -e \"process.exit(0)\"",
+    "test": "bunx vitest run",
     "typecheck": "bunx --bun tsc --noEmit"
   },
   "dependencies": {

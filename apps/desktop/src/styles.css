@@ -1,6 +1,6 @@
-@import "tailwindcss";
 @import "@touchgrass/ui/theme.css";
-@source "../../../packages/ui/src";
+
+@source ".";
 
 html,
 body,
@@ -11,4 +11,14 @@ body,
 body {
   background: transparent;
   user-select: none;
+}
+
+html[data-desktop-preview="true"] body {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+html[data-desktop-preview="true"] #root {
+  display: flex;
+  justify-content: center;
 }

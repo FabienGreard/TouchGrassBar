@@ -14,12 +14,16 @@
     "lint": "bunx --bun turbo run lint",
     "test": "bunx --bun turbo run test",
     "typecheck": "bunx --bun turbo run typecheck",
-    "quality": "bun run lint && bun run typecheck && bun run test && bun run build && bun run doctor",
+    "quality": "bun run contracts:check && bun run lint && bun run typecheck && bun run test && bun run build && bun run doctor",
     "convex:dev": "bunx --bun convex dev",
     "convex:codegen": "bunx --bun convex codegen",
     "convex:ai:status": "bunx --bun convex ai-files status",
+    "contracts:generate": "bun scripts/generate-native-contract.ts",
+    "contracts:check": "bun scripts/generate-native-contract.ts --check",
     "desktop": "bun run --cwd apps/desktop tauri dev",
-    "landing": "bun run --cwd apps/landing dev"
+    "landing": "bun run --cwd apps/landing dev",
+    "storybook:ui": "bun run --cwd packages/ui storybook",
+    "storybook:ui:build": "bun run --cwd packages/ui build-storybook"
   },
   "devDependencies": {
     "oxlint": "1.76.0",

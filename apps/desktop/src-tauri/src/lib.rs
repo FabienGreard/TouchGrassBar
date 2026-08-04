@@ -1,11 +1,11 @@
-mod sanitized;
+pub mod sanitized;
 
 use std::time::Instant;
 
-use sanitized::SanitizedDesktopState;
+use sanitized::{NativeCore, REVISION_NOTICE_EVENT, RevisionNotice, SanitizedDesktopStateV1};
 use tauri::{
-    ActivationPolicy, AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Rect, Size,
-    WebviewWindow,
+    ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    Position, Rect, Size, State, WebviewWindow,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -13,6 +13,11 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 
 const PANEL_LABEL: &str = "panel";
+const PANEL_WIDTH: f64 = 402.0;
+const MIN_PANEL_HEIGHT: f64 = 320.0;
+const MAX_PANEL_HEIGHT: f64 = 720.0;
+const MENU_BAR_ICON: &[u8] =
+    include_bytes!("../../../../packages/ui/src/assets/brand/lily-glyph-split-decay.png");
 
 #[cfg(target_os = "macos")]
 fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
@@ -130,15 +135,15 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn hide_panel(app: AppHandle) -> tauri::Result<()> {
+fn hide_panel(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    require_panel(&window)?;
     if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
-        panel.hide()?;
+        panel.hide().map_err(|_| "panel unavailable".to_owned())?;
     }
     Ok(())
 }
 
-#[tauri::command]
-fn open_settings(app: AppHandle) -> tauri::Result<()> {
+fn show_settings(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("settings") {
         window.show()?;
         window.set_focus()?;
@@ -147,19 +152,86 @@ fn open_settings(app: AppHandle) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-fn get_sanitized_state() -> SanitizedDesktopState {
-    sanitized::unavailable_state()
+fn open_settings(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    require_panel(&window)?;
+    show_settings(&app).map_err(|_| "settings unavailable".to_owned())
+}
+
+fn require_panel(window: &WebviewWindow) -> Result<(), String> {
+    (window.label() == PANEL_LABEL)
+        .then_some(())
+        .ok_or_else(|| "command unavailable for this window".to_owned())
+}
+
+fn bounded_panel_height(height: f64) -> Result<f64, &'static str> {
+    if !height.is_finite() || height <= 0.0 {
+        return Err("invalid panel height");
+    }
+
+    Ok(height.ceil().clamp(MIN_PANEL_HEIGHT, MAX_PANEL_HEIGHT))
 }
 
 #[tauri::command]
-fn launch_at_login_enabled(app: AppHandle) -> Result<bool, String> {
+fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
+    require_panel(&window)?;
+    let bounded_height = bounded_panel_height(height).map_err(str::to_owned)?;
+    window
+        .set_size(LogicalSize::new(PANEL_WIDTH, bounded_height))
+        .map_err(|_| "panel unavailable".to_owned())
+}
+
+#[tauri::command]
+fn get_sanitized_state(
+    window: WebviewWindow,
+    core: State<'_, NativeCore>,
+) -> Result<SanitizedDesktopStateV1, String> {
+    require_panel(&window)?;
+    core.panel_state().map_err(str::to_owned)
+}
+
+#[tauri::command]
+fn request_refresh(
+    window: WebviewWindow,
+    core: State<'_, NativeCore>,
+) -> Result<RevisionNotice, String> {
+    require_panel(&window)?;
+    let notice = core.request_refresh().map_err(str::to_owned)?;
+    window
+        .emit(REVISION_NOTICE_EVENT, notice.clone())
+        .map_err(|_| "state notice unavailable".to_owned())?;
+    Ok(notice)
+}
+
+fn refresh_and_notify(app: &AppHandle) -> Result<(), String> {
+    let notice = app
+        .state::<NativeCore>()
+        .request_refresh()
+        .map_err(str::to_owned)?;
+    if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
+        panel
+            .emit(REVISION_NOTICE_EVENT, notice)
+            .map_err(|_| "state notice unavailable".to_owned())?;
+    }
+    Ok(())
+}
+
+fn require_settings(window: &WebviewWindow) -> Result<(), String> {
+    (window.label() == "settings")
+        .then_some(())
+        .ok_or_else(|| "command unavailable for this window".to_owned())
+}
+
+#[tauri::command]
+fn launch_at_login_enabled(window: WebviewWindow, app: AppHandle) -> Result<bool, String> {
+    require_settings(&window)?;
     app.autolaunch()
         .is_enabled()
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+fn set_launch_at_login(window: WebviewWindow, app: AppHandle, enabled: bool) -> Result<(), String> {
+    require_settings(&window)?;
     if enabled {
         app.autolaunch().enable()
     } else {
@@ -172,6 +244,7 @@ fn set_launch_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
 pub fn run() {
     let process_started_at = Instant::now();
     tauri::Builder::default()
+        .manage(NativeCore::unavailable())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -183,6 +256,8 @@ pub fn run() {
             hide_panel,
             launch_at_login_enabled,
             open_settings,
+            request_refresh,
+            resize_panel,
             set_launch_at_login
         ])
         .setup(move |app| {
@@ -207,17 +282,19 @@ pub fn run() {
                 .items(&[&refresh, &settings, &separator, &quit])
                 .build()?;
 
+            let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
             TrayIconBuilder::with_id("touchgrassbar")
-                .title("TG")
                 .tooltip("TouchGrassBar")
+                .icon(tray_icon)
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "refresh" => {
-                        // The background refresh coordinator will own this signal.
+                        let _ = refresh_and_notify(app);
                     }
                     "settings" => {
-                        let _ = open_settings(app.clone());
+                        let _ = show_settings(app);
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -272,7 +349,7 @@ mod tests {
                 width: 24.0,
                 height: 24.0,
             },
-            PhysicalSize::new(372, 640),
+            PhysicalSize::new(402, 640),
             Frame {
                 x: 0.0,
                 y: 0.0,
@@ -280,7 +357,7 @@ mod tests {
                 height: 1117.0,
             },
         );
-        assert_eq!(origin, PhysicalPosition::new(726, 30));
+        assert_eq!(origin, PhysicalPosition::new(711, 30));
     }
 
     #[test]
@@ -292,7 +369,7 @@ mod tests {
                 width: 24.0,
                 height: 24.0,
             },
-            PhysicalSize::new(372, 640),
+            PhysicalSize::new(402, 640),
             Frame {
                 x: -1728.0,
                 y: -900.0,
@@ -300,7 +377,7 @@ mod tests {
                 height: 1117.0,
             },
         );
-        assert_eq!(origin, PhysicalPosition::new(-1474, -870));
+        assert_eq!(origin, PhysicalPosition::new(-1489, -870));
     }
 
     #[test]
@@ -312,7 +389,7 @@ mod tests {
                 width: 24.0,
                 height: 24.0,
             },
-            PhysicalSize::new(372, 640),
+            PhysicalSize::new(402, 640),
             Frame {
                 x: 0.0,
                 y: 0.0,
@@ -320,6 +397,15 @@ mod tests {
                 height: 1117.0,
             },
         );
-        assert_eq!(origin, PhysicalPosition::new(1348, 30));
+        assert_eq!(origin, PhysicalPosition::new(1318, 30));
+    }
+
+    #[test]
+    fn clamps_rendered_panel_height_to_safe_native_bounds() {
+        assert_eq!(bounded_panel_height(689.2), Ok(690.0));
+        assert_eq!(bounded_panel_height(200.0), Ok(MIN_PANEL_HEIGHT));
+        assert_eq!(bounded_panel_height(900.0), Ok(MAX_PANEL_HEIGHT));
+        assert_eq!(bounded_panel_height(f64::NAN), Err("invalid panel height"));
+        assert_eq!(bounded_panel_height(0.0), Err("invalid panel height"));
     }
 }

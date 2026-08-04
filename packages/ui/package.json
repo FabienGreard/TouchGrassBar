@@ -3,14 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "imports": {
+    "#components/*": "./src/components/*.tsx",
+    "#lib/*": "./src/lib/*.ts"
+  },
   "exports": {
     ".": "./src/index.ts",
+    "./assets/brand/*": "./src/assets/brand/*",
+    "./assets/providers/*": "./src/assets/providers/*",
+    "./lib/*": "./src/lib/*.ts",
     "./theme.css": "./src/theme.css"
   },
   "scripts": {
     "build": "bun run typecheck",
+    "build-storybook": "storybook build",
     "lint": "bunx --bun oxlint -c ../tooling/oxlint.json src",
-    "test": "bun -e \"process.exit(0)\"",
+    "storybook": "storybook dev -p 6006 --no-open",
     "typecheck": "bunx --bun tsc --noEmit"
   },
   "peerDependencies": {
@@ -18,10 +26,24 @@
     "react-dom": ">=19"
   },
   "devDependencies": {
+    "@storybook/addon-docs": "10.5.6",
+    "@storybook/react-vite": "10.5.6",
+    "@tailwindcss/vite": "4.3.3",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "typescript": "7.0.2"
+    "storybook": "10.5.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.0"
+  },
+  "dependencies": {
+    "@hugeicons/core-free-icons": "^4.2.3",
+    "@hugeicons/react": "^1.1.9",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "radix-ui": "^1.6.7",
+    "tailwind-merge": "^3.6.0"
   }
 }
