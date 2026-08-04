@@ -5,14 +5,37 @@ on:
     tags: ["v*"]
 
 permissions:
+  actions: read
   contents: write
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-15
     environment: macos-release
     steps:
       - uses: actions/checkout@v4
+      - name: Verify tag commit passed main CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_commit="$(git rev-parse HEAD)"
+          passed_commit="$(
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow .github/workflows/ci.yml \
+              --branch main \
+              --event push \
+              --commit "$tag_commit" \
+              --status success \
+              --limit 1 \
+              --json headSha \
+              --jq '.[0].headSha // ""'
+          )"
+
+          if [[ "$passed_commit" != "$tag_commit" ]]; then
+            echo "::error::Release tag commit $tag_commit does not have a successful main CI run."
+            exit 1
+          fi
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
@@ -54,6 +77,13 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: TouchGrassBar ${{ github.ref_name }}
-          releaseBody: Signed and notarized macOS build.
+          releaseBody: |
+            Signed and notarized macOS build.
+
+            Manual release check:
+            - [ ] Install and launch the app on macOS 15.
+            - [ ] Review the panel, onboarding, and Settings windows at their default sizes.
+            - [ ] Confirm that content is not clipped and that footer spacing is correct.
+            - [ ] Publish this draft only after these checks pass.
           releaseDraft: true
           prerelease: false
