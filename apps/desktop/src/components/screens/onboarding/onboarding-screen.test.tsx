@@ -10,7 +10,10 @@ describe("onboarding screen", () => {
       <OnboardingScreen initialStep="profile" />,
     );
     const finishMarkup = renderToStaticMarkup(
-      <OnboardingScreen initialStep="recovery" />,
+      <OnboardingScreen initialStep="finish" setupState="required" />,
+    );
+    const unavailableFinishMarkup = renderToStaticMarkup(
+      <OnboardingScreen initialStep="finish" />,
     );
 
     expect(markup).toContain('data-slot="native-window"');
@@ -38,12 +41,24 @@ describe("onboarding screen", () => {
     expect(markup).not.toContain(">Not installed<");
     expect(profileMarkup).toContain('aria-label="Display name"');
     expect(profileMarkup).not.toContain("Fabien");
-    expect(finishMarkup).toContain('data-setup-state="unavailable"');
-    expect(finishMarkup).toContain("Setup is not connected yet");
-    expect(finishMarkup).not.toContain("Local setup ready");
-    expect(finishMarkup).toContain(
-      "Profile creation and recovery are not connected in this build.",
+    expect(profileMarkup).toContain(
+      "Your name, ID, and daily scores are public.",
     );
+    expect(profileMarkup).toContain("A Profile is required to");
+    expect(profileMarkup).toContain("continue.");
+    expect(profileMarkup).toContain("current UTC day");
+    expect(profileMarkup).toContain("previous 29");
+    expect(profileMarkup).toContain(
+      "Prompts, conversations, credentials, raw logs, and file paths stay on this Mac.",
+    );
+    expect(profileMarkup).not.toContain('type="checkbox"');
+    expect(unavailableFinishMarkup).toContain('data-setup-state="unavailable"');
+    expect(unavailableFinishMarkup).toContain("Setup is not connected yet");
+    expect(finishMarkup).not.toContain("Local setup ready");
+    expect(finishMarkup).toContain("Identity Pending");
+    expect(finishMarkup).not.toContain(">—<");
+    expect(finishMarkup).toContain("retries automatically");
+    expect(finishMarkup).toContain("local provider utility stays available");
     expect(finishMarkup).not.toContain("Recovery Key");
     expect(finishMarkup).not.toContain("Reveal key");
     expect(finishMarkup).not.toContain("Restore it");
@@ -58,7 +73,7 @@ describe("onboarding screen", () => {
       <OnboardingScreen initialDisplayName="Fabien" initialStep="profile" />,
     );
     const finishMarkup = renderToStaticMarkup(
-      <OnboardingScreen initialStep="recovery" setupReady />,
+      <OnboardingScreen initialStep="finish" setupReady />,
     );
 
     expect(profileMarkup).toContain('value="Fabien"');

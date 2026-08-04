@@ -12,6 +12,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+use crate::lifecycle::{
+    LIFECYCLE_CONTRACT_VERSION, SETTINGS_NAVIGATION_EVENT, bootstrap_state_schema,
+    settings_navigation_schema, settings_state_schema,
+};
+
 pub const CONTRACT_VERSION: u8 = 1;
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
 
@@ -345,10 +350,16 @@ pub fn native_contract_schema() -> Schema {
 
 pub fn native_contract_export() -> Value {
     json!({
+        "bootstrapContractVersion": LIFECYCLE_CONTRACT_VERSION,
+        "bootstrapStateSchema": bootstrap_state_schema(),
         "contractVersion": CONTRACT_VERSION,
         "refreshReceiptSchema": schema_for!(RefreshReceipt),
         "revisionNoticeEvent": REVISION_NOTICE_EVENT,
         "revisionNoticeSchema": schema_for!(RevisionNotice),
+        "settingsContractVersion": LIFECYCLE_CONTRACT_VERSION,
+        "settingsNavigationEvent": SETTINGS_NAVIGATION_EVENT,
+        "settingsNavigationSchema": settings_navigation_schema(),
+        "settingsStateSchema": settings_state_schema(),
         "stateSchema": native_contract_schema(),
     })
 }

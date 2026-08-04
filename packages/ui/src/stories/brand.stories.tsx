@@ -1,11 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
-import {
-  Brand,
-  BrandMark,
-  BrandWordmark,
-  DesktopAppIcon,
-} from "../index";
+import { Brand, BrandMark, BrandWordmark, DesktopAppIcon } from "../index";
 
 const meta = {
   component: Brand,
@@ -13,7 +8,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "The complete TouchGrassBar brand: desktop app icon, compact lily mark, and joined wordmark. Lime remains the identifying signal through the wordmark underline, selected controls, actions, and focus states.",
+          "The complete TouchGrassBar brand: desktop app icon, compact grass mark, and joined wordmark. Lime remains the identifying signal through the wordmark underline, selected controls, actions, and focus states.",
       },
     },
   },

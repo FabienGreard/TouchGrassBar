@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Narrow desktop capability for sanitized TouchGrassBar windows",
   "windows": ["panel", "settings", "onboarding"],
-  "permissions": ["core:default"]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react";
 
-import desktopAppIcon from "../assets/brand/glass-lily-frosted-pearl.png";
+import desktopAppIcon from "../assets/brand/glass-grass-hand-frosted-pearl.png";
 import { cn } from "#lib/utils";
 
 type DesktopAppIconProps = Omit<ComponentProps<"img">, "src"> & {

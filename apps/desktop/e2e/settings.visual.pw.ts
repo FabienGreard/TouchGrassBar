@@ -6,28 +6,32 @@ import {
 } from "./native-window-visual";
 
 const providerStates = [
+  { key: "detected", label: "Detected" },
   { key: "ready", label: "Ready" },
   { key: "needs-access", label: "Needs access" },
   { key: "not-installed", label: "Not installed" },
 ] as const;
 
 type SettingsSection = "general" | "profile" | "providers";
+type SettingsProfileState = "identity-pending" | "saved";
 
 function settingsUrl(
   section: SettingsSection,
   providerState: (typeof providerStates)[number]["key"] = "not-installed",
+  profileState: SettingsProfileState = "saved",
 ) {
-  return `/?window=settings&fixture=current&providerState=${providerState}#settings-${section}`;
+  return `/?window=settings&fixture=current&providerState=${providerState}&profileState=${profileState}#settings-${section}`;
 }
 
 async function openSettings(
   page: Page,
   section: SettingsSection,
   providerState?: (typeof providerStates)[number]["key"],
+  profileState?: SettingsProfileState,
 ) {
   await openNativeWindowPreview(
     page,
-    settingsUrl(section, providerState),
+    settingsUrl(section, providerState, profileState),
     "Settings sections",
   );
   await expect(
@@ -45,7 +49,9 @@ test.describe("settings visual states", () => {
     await expect(
       page.getByText("Start quietly in the menu bar.", { exact: true }),
     ).toBeVisible();
-    await expect(page.getByRole("switch", { name: "Open at login" })).not.toBeChecked();
+    await expect(
+      page.getByRole("switch", { name: "Open at login" }),
+    ).not.toBeChecked();
     await expect(
       page.getByRole("switch", { name: "Check automatically" }),
     ).toBeChecked();
@@ -97,9 +103,7 @@ test.describe("settings visual states", () => {
     await openSettings(page, "profile");
 
     await expect(page.locator('[data-slot="profile-settings"]')).toBeVisible();
-    await expect(
-      page.locator('[data-profile-state="saved"]'),
-    ).toBeVisible();
+    await expect(page.locator('[data-profile-state="saved"]')).toBeVisible();
     await expect(
       page.getByText("Profile security", { exact: true }),
     ).toBeVisible();
@@ -115,25 +119,39 @@ test.describe("settings visual states", () => {
       page.getByRole("button", { name: /Reveal recovery key/ }),
     ).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: /Enter Recovery Key/ }),
-    ).toHaveCount(0);
+      page.getByRole("button", { name: "Enter Recovery Key…" }),
+    ).toBeDisabled();
     await expect(page.getByText(/TG-RK-/)).toHaveCount(0);
 
     await captureNativeWindow(page, "profile-saved-settings.png");
+  });
+
+  test("profile Identity Pending keeps the Profile card", async ({ page }) => {
+    await openSettings(page, "profile", undefined, "identity-pending");
+
+    const profile = page.locator('[data-profile-state="identity-pending"]');
+    await expect(profile).toBeVisible();
+    await expect(profile.getByText("Fabien", { exact: true })).toBeVisible();
+    await expect(
+      profile.getByText("Identity Pending", { exact: true }),
+    ).toBeVisible();
+    await expect(profile).not.toContainText("#TG-");
+    await expect(
+      page.getByRole("button", { name: "Enter Recovery Key…" }),
+    ).toBeDisabled();
+
+    await captureNativeWindow(page, "profile-identity-pending-settings.png");
   });
 
   test("profile display name editing", async ({ page }) => {
     await openSettings(page, "profile");
 
     await page.getByRole("button", { name: "Edit", exact: true }).click();
-    await expect(
-      page.locator('[data-profile-state="editing"]'),
-    ).toBeVisible();
+    await expect(page.locator('[data-profile-state="editing"]')).toBeVisible();
     await expect(page.getByLabel("Display name")).toHaveValue("Fabien");
 
     await captureNativeWindow(page, "profile-editing-settings.png");
   });
-
 });
 
 test("settings controls never use the browser focus outline", async ({
@@ -157,24 +175,9 @@ test("settings controls never use the browser focus outline", async ({
     )
     .not.toBe("none");
 
-  const installationSteps = page.getByRole("button", {
-    name: "View installation steps",
-    exact: true,
-  });
-  await installationSteps.focus();
-  await expect(installationSteps).toHaveCSS("outline-style", "none");
-  await expect(installationSteps).toHaveCSS(
-    "text-decoration-line",
-    "underline",
-  );
-  await expect(installationSteps).toHaveCSS(
-    "text-decoration-thickness",
-    "1px",
-  );
-  await expect(installationSteps).toHaveCSS(
-    "text-decoration-color",
-    "rgb(139, 234, 75)",
-  );
+  await expect(
+    page.getByRole("button", { name: "View installation steps" }),
+  ).toHaveCount(0);
 });
 
 test("settings navigation shares the panel menu selection model", async ({

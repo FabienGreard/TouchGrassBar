@@ -1,4 +1,4 @@
-type OnboardingStep = "profile" | "providers" | "recovery";
+type OnboardingStep = "finish" | "profile" | "providers";
 
 const onboardingSteps = [
   {
@@ -18,7 +18,7 @@ const onboardingSteps = [
   {
     actionLabel: "Finish setup",
     description: "You’re ready to use TouchGrassBar.",
-    key: "recovery",
+    key: "finish",
     label: "Finish",
     title: "Finish setup",
   },

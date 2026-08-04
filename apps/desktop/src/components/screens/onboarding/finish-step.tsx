@@ -1,25 +1,57 @@
 import { CheckIcon, MacMenuBarPreview } from "@touchgrass/ui";
 
-function FinishStep({ setupReady = false }: { setupReady?: boolean }) {
+type OnboardingSetupState =
+  "identity-pending" | "ready" | "required" | "unavailable";
+
+function setupCopy(state: OnboardingSetupState) {
+  if (state === "ready") {
+    return {
+      detail: "Your public Profile and local setup are ready.",
+      title: "Local setup ready",
+    };
+  }
+  if (state === "identity-pending") {
+    return {
+      detail:
+        "Creation retries automatically while local provider utility stays available.",
+      title: "Identity Pending",
+    };
+  }
+  if (state === "required") {
+    return {
+      detail:
+        "If Profile services are unavailable, setup completes as Identity Pending, retries automatically, and local provider utility stays available.",
+      title: "Ready to finish setup",
+    };
+  }
+  return {
+    detail:
+      "Local setup storage is unavailable. Identity Pending cannot be recorded safely yet; local provider utility stays available.",
+    title: "Setup is not connected yet",
+  };
+}
+
+function FinishStep({ setupState }: { setupState: OnboardingSetupState }) {
+  const copy = setupCopy(setupState);
+  const locallyComplete = setupState !== "unavailable";
   return (
     <div className="grid gap-3">
       <div
         className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-[12px] border border-sheet-line bg-white/38 p-4 shadow-surface"
-        data-setup-state={setupReady ? "ready" : "unavailable"}
+        aria-live="polite"
+        data-setup-state={setupState}
       >
         <span className="grid size-8 shrink-0 place-items-center rounded-full bg-action text-accent-foreground">
-          {setupReady ? (
+          {locallyComplete ? (
             <CheckIcon size={15} />
           ) : (
             <span aria-hidden="true">—</span>
           )}
         </span>
         <span className="min-w-0">
-          <strong className="block text-[12px]">
-            {setupReady ? "Local setup ready" : "Setup is not connected yet"}
-          </strong>
+          <strong className="block text-[12px]">{copy.title}</strong>
           <small className="mt-1 block text-[9px] leading-4 text-sheet-muted">
-            Profile creation and recovery are not connected in this build.
+            {copy.detail}
           </small>
         </span>
       </div>
@@ -40,3 +72,4 @@ function FinishStep({ setupReady = false }: { setupReady?: boolean }) {
 }
 
 export { FinishStep };
+export type { OnboardingSetupState };

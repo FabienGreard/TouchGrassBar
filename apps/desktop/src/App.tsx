@@ -6,10 +6,12 @@ import {
   OnboardingScreen,
   type OnboardingScreenProps,
 } from "@/components/screens/onboarding/onboarding-screen";
+import { OnboardingCoordinator } from "@/components/screens/onboarding/onboarding-coordinator";
 import {
   SettingsScreen,
   type SettingsScreenProps,
 } from "@/components/screens/settings/settings-screen";
+import { SettingsCoordinator } from "@/components/screens/settings/settings-coordinator";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
 type DesktopSurface = "onboarding" | "panel" | "settings";
@@ -35,9 +37,17 @@ type AppProps =
 function App(props: AppProps) {
   switch (props.surface) {
     case "settings":
-      return <SettingsScreen {...props.settings} />;
+      return props.hasNativeRuntime && props.settings === undefined ? (
+        <SettingsCoordinator />
+      ) : (
+        <SettingsScreen {...props.settings} />
+      );
     case "onboarding":
-      return <OnboardingScreen {...props.onboarding} />;
+      return props.hasNativeRuntime && props.onboarding === undefined ? (
+        <OnboardingCoordinator />
+      ) : (
+        <OnboardingScreen {...props.onboarding} />
+      );
     case "panel":
       return (
         <PanelScreen

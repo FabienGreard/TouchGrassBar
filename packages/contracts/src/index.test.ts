@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  bootstrapStateSchema,
   refreshReceiptSchema,
   sanitizedDesktopStateSchema,
+  settingsStateSchema,
   tokenmaxxerSchema,
 } from "./index";
 
@@ -50,11 +52,44 @@ describe("public contracts", () => {
     expect(refreshReceiptSchema.parse({ accepted: true })).toEqual({
       accepted: true,
     });
+    expect(refreshReceiptSchema.safeParse({ accepted: "yes" }).success).toBe(
+      false,
+    );
     expect(
-      refreshReceiptSchema.safeParse({ accepted: "yes" }).success,
+      refreshReceiptSchema.safeParse({ accepted: true, revision: "2" }).success,
+    ).toBe(false);
+  });
+
+  test("strictly validates the Rust-owned bootstrap and Settings views", () => {
+    const providers = [
+      { provider: "codex", status: "detected" },
+      { provider: "claude", status: "not-detected" },
+    ] as const;
+    const bootstrap = {
+      bootstrap: "completed",
+      contractVersion: 1,
+      displayName: "Fabien",
+      persistence: "available",
+      profileProvisioning: "identity-pending",
+      providers,
+    } as const;
+    const settings = {
+      contractVersion: 1,
+      displayName: "Fabien",
+      launchAtLogin: { availability: "available", enabled: true },
+      profileProvisioning: "identity-pending",
+      providers,
+      section: "profile",
+    } as const;
+
+    expect(bootstrapStateSchema.parse(bootstrap)).toEqual(bootstrap);
+    expect(settingsStateSchema.parse(settings)).toEqual(settings);
+    expect(
+      bootstrapStateSchema.safeParse({ ...bootstrap, localPath: "/private" })
+        .success,
     ).toBe(false);
     expect(
-      refreshReceiptSchema.safeParse({ accepted: true, revision: "2" })
+      settingsStateSchema.safeParse({ ...settings, contractVersion: 2 })
         .success,
     ).toBe(false);
   });

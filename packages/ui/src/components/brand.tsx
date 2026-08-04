@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react";
 
-import lilyGlyph from "../assets/brand/lily-glyph-split-decay.png";
+import grassGlyph from "../assets/brand/grass-glyph-white.png";
 import { cn } from "#lib/utils";
 
 type BrandMarkProps = ComponentProps<"img"> & {
@@ -11,7 +11,7 @@ type BrandMarkProps = ComponentProps<"img"> & {
 function BrandMark({
   className,
   size = "panel",
-  tone = "color",
+  tone = "ink",
   ...props
 }: BrandMarkProps) {
   return (
@@ -27,7 +27,7 @@ function BrandMark({
       data-size={size}
       data-slot="brand-mark"
       data-tone={tone}
-      src={lilyGlyph}
+      src={grassGlyph}
       {...props}
     />
   );

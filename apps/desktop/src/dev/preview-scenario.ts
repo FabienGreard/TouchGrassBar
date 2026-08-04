@@ -11,13 +11,19 @@ import {
 type BrowserFixtureName =
   "current" | "loading" | "stale" | "update" | "unavailable";
 
+type OnboardingSetupPreviewState =
+  "identity-pending" | "ready" | "required" | "unavailable";
+type SettingsProfilePreviewState = "identity-pending" | "saved";
+
 type DevPreviewScenario = {
   fixture: BrowserFixtureName;
   onboarding: {
     codexState: CodingProviderAccessState;
     initialStep: OnboardingStep;
     providerState: CodingProviderAccessState;
+    setupState: OnboardingSetupPreviewState;
   };
+  settingsProfileState: SettingsProfilePreviewState;
   settingsProviderState: CodingProviderAccessState;
   surface: DesktopSurface;
 };
@@ -52,11 +58,30 @@ function resolveOnboardingStep(params: URLSearchParams): OnboardingStep {
     : "providers";
 }
 
+function resolveOnboardingSetupState(
+  params: URLSearchParams,
+): OnboardingSetupPreviewState {
+  const candidate = params.get("setupState");
+  return candidate === "identity-pending" ||
+    candidate === "required" ||
+    candidate === "unavailable"
+    ? candidate
+    : "ready";
+}
+
 function resolveSurface(params: URLSearchParams): DesktopSurface {
   const candidate = params.get("window");
   return candidate === "settings" || candidate === "onboarding"
     ? candidate
     : "panel";
+}
+
+function resolveSettingsProfileState(
+  params: URLSearchParams,
+): SettingsProfilePreviewState {
+  return params.get("profileState") === "identity-pending"
+    ? "identity-pending"
+    : "saved";
 }
 
 function resolveBrowserFixtureName(search: string): BrowserFixtureName {
@@ -77,11 +102,18 @@ function resolveDevPreviewScenario(search: string): DevPreviewScenario {
       codexState: resolveProviderState(params, "codexState", "ready"),
       initialStep: resolveOnboardingStep(params),
       providerState,
+      setupState: resolveOnboardingSetupState(params),
     },
+    settingsProfileState: resolveSettingsProfileState(params),
     settingsProviderState: providerState,
     surface: resolveSurface(params),
   };
 }
 
 export { resolveBrowserFixtureName, resolveDevPreviewScenario };
-export type { BrowserFixtureName, DevPreviewScenario };
+export type {
+  BrowserFixtureName,
+  DevPreviewScenario,
+  OnboardingSetupPreviewState,
+  SettingsProfilePreviewState,
+};

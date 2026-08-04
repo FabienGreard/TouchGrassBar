@@ -58,13 +58,12 @@ describe("approved panel presentation contract", () => {
     expect(markup).not.toContain(">0<");
     expect(markup).toContain('aria-label="Open panel menu"');
     expect(markup).toContain('data-slot="brand-mark"');
-    expect(markup).toContain('data-tone="color"');
-    expect(markup).not.toMatch(
-      /<img[^>]*brightness-0[^>]*data-slot="brand-mark"/,
-    );
+    expect(markup).toContain('data-tone="ink"');
+    expect(markup).toMatch(/<img[^>]*brightness-0[^>]*data-slot="brand-mark"/);
     expect(markup.match(/aria-label="Open panel menu"/g)).toHaveLength(1);
     expect(markup).toContain('data-icon-provider="hugeicons"');
     expect(markup).toContain("Doomerboard unavailable");
+    expect(markup).not.toContain("Add by ID");
     expect(markup).toContain('aria-label="Current user profile unavailable"');
     expect(markup).not.toContain("— users");
     expect(markup).toContain('data-slot="doomerboard-viewport"');
@@ -96,7 +95,7 @@ describe("approved panel presentation contract", () => {
     expect(markup).toContain('data-icon-provider="hugeicons"');
     expect(markup).toContain('data-icon-tone="default"');
     expect(markup.match(/min-w-\[82px\]/g)).toHaveLength(2);
-    expect(markup.match(/px-\[13px\]/g)).toHaveLength(3);
+    expect(markup.match(/px-\[13px\]/g)).toHaveLength(2);
     expect(markup).toContain("w-[402px]");
   });
 

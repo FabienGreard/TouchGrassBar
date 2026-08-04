@@ -6,6 +6,7 @@ import {
   NativeWindowNavItem,
   NativeWindowSidebar,
 } from "@touchgrass/ui";
+import type { ProfileProvisioningStatus } from "@touchgrass/contracts";
 import { useState } from "react";
 
 import { CodingProviderAccessCard } from "@/components/coding-provider-access";
@@ -39,37 +40,55 @@ const settingsSectionDetails: Record<
 };
 type SettingsScreenProps = {
   autoUpdates?: boolean | null | undefined;
+  busyProviders?: boolean | undefined;
   codexState?: CodingProviderAccessState | undefined;
   launchAtLogin?: boolean | null | undefined;
+  launchAtLoginSaving?: boolean | undefined;
   onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
+  onCheckProviders?: (() => void) | undefined;
   onCheckForUpdates?: (() => void) | undefined;
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
   onOpenSource?: (() => void) | undefined;
   onProfileDisplayNameChange?: ((displayName: string) => void) | undefined;
+  onSectionChange?: ((section: SettingsSection) => void) | undefined;
+  pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
+  profileProvisioning?: ProfileProvisioningStatus | undefined;
   providerState?: CodingProviderAccessState | undefined;
+  section?: SettingsSection | undefined;
 };
 
 function SettingsScreen({
   autoUpdates = null,
+  busyProviders = false,
   codexState = "unavailable",
   launchAtLogin = null,
+  launchAtLoginSaving = false,
   onAutoUpdatesChange,
+  onCheckProviders,
   onCheckForUpdates,
   onLaunchAtLoginChange,
   onOpenSource,
   onProfileDisplayNameChange,
+  onSectionChange,
+  pendingDisplayName = null,
   profile = null,
+  profileProvisioning = "not-authorized",
   providerState = "unavailable",
+  section: controlledSection,
 }: SettingsScreenProps) {
-  const [section, setSection] = useState<SettingsSection>(() =>
+  const [localSection, setLocalSection] = useState<SettingsSection>(() =>
     typeof window === "undefined"
       ? "general"
       : resolveSettingsSectionHash(window.location.hash),
   );
+  const section = controlledSection ?? localSection;
   const selectSection = (nextSection: SettingsSection) => {
-    setSection(nextSection);
-    window.history.replaceState(null, "", `#settings-${nextSection}`);
+    if (controlledSection === undefined) setLocalSection(nextSection);
+    onSectionChange?.(nextSection);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", `#settings-${nextSection}`);
+    }
   };
 
   const detail = settingsSectionDetails[section];
@@ -115,7 +134,9 @@ function SettingsScreen({
                     : "Start quietly in the menu bar."
                 }
                 disabled={
-                  launchAtLogin === null || onLaunchAtLoginChange === undefined
+                  launchAtLogin === null ||
+                  launchAtLoginSaving ||
+                  onLaunchAtLoginChange === undefined
                 }
                 label="Open at login"
                 onCheckedChange={onLaunchAtLoginChange}
@@ -136,8 +157,15 @@ function SettingsScreen({
           ) : null}
           {section === "providers" ? (
             <div className="grid gap-3">
-              <CodingProviderAccessCard provider="codex" state={codexState} />
               <CodingProviderAccessCard
+                busy={busyProviders}
+                onCheck={onCheckProviders}
+                provider="codex"
+                state={codexState}
+              />
+              <CodingProviderAccessCard
+                busy={busyProviders}
+                onCheck={onCheckProviders}
                 provider="claude"
                 state={providerState}
               />
@@ -146,7 +174,9 @@ function SettingsScreen({
           {section === "profile" ? (
             <ProfileSettings
               onDisplayNameChange={onProfileDisplayNameChange}
+              pendingDisplayName={pendingDisplayName}
               profile={profile}
+              profileProvisioning={profileProvisioning}
             />
           ) : null}
         </div>

@@ -218,10 +218,8 @@ function DoomerboardToolbar({
 }
 
 function DoomerboardUnavailable({
-  onAddTokenmaxxer,
   selectionUnavailable = false,
 }: {
-  onAddTokenmaxxer: () => void;
   selectionUnavailable?: boolean;
 }) {
   return (
@@ -236,11 +234,6 @@ function DoomerboardUnavailable({
           ? "Scores are unavailable for this selection."
           : "Profile and synchronized scores are not ready."}
       </small>
-      <div className="mt-2">
-        <Button onClick={onAddTokenmaxxer} type="button">
-          Add by ID
-        </Button>
-      </div>
     </div>
   );
 }
@@ -412,10 +405,7 @@ function Doomerboard({
         ) : globalRowsMatchSelection ? (
           <DoomerboardPodium rows={rows} />
         ) : (
-          <DoomerboardUnavailable
-            onAddTokenmaxxer={onAddTokenmaxxer}
-            selectionUnavailable={rows !== undefined}
-          />
+          <DoomerboardUnavailable selectionUnavailable={rows !== undefined} />
         )}
       </div>
     </section>

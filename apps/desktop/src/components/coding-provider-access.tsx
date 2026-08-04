@@ -6,23 +6,33 @@ import {
 } from "@/components/coding-provider-access-state";
 
 function CodingProviderAccessCard({
+  busy = false,
+  onCheck,
+  onViewInstallationSteps,
   provider,
   state,
 }: {
+  busy?: boolean;
+  onCheck?: (() => void) | undefined;
+  onViewInstallationSteps?: (() => void) | undefined;
   provider: "claude" | "codex";
   state: CodingProviderAccessState;
 }) {
   const label = provider === "codex" ? "Codex" : "Claude";
-  const copy =
-    state === "unavailable"
-      ? "Provider detection is not connected in this build."
-      : state === "ready"
-        ? "Detected locally and reporting provider limits."
-        : state === "needs-access"
-          ? `${label} is installed, but TouchGrassBar cannot read its local state yet.`
-          : `${label} was not found in Applications or your command-line tools.`;
+  let copy: string;
+  if (state === "unavailable") {
+    copy = "Provider detection is not connected in this build.";
+  } else if (state === "detected") {
+    copy = `${label} was detected on this Mac. No credentials or private provider data were read.`;
+  } else if (state === "ready") {
+    copy = "Detected locally and reporting provider limits.";
+  } else if (state === "needs-access") {
+    copy = `${label} is installed, but TouchGrassBar cannot read its local state yet.`;
+  } else {
+    copy = `${label} was not found in Applications or your command-line tools.`;
+  }
   const statusTone: "attention" | "neutral" | "ready" =
-    state === "ready"
+    state === "ready" || state === "detected"
       ? "ready"
       : state === "needs-access"
         ? "attention"
@@ -31,9 +41,26 @@ function CodingProviderAccessCard({
   return (
     <ProviderConnectionCard
       action={
-        state === "unavailable" ? undefined : (
-          <Button size="quiet" type="button" variant="ghost">
-            {state === "ready" ? "Check now" : "Check again"}
+        state === "unavailable" || onCheck === undefined ? undefined : (
+          <Button
+            aria-label={
+              busy
+                ? `Checking ${label}`
+                : state === "ready"
+                  ? `Check ${label} now`
+                  : `Check ${label} again`
+            }
+            disabled={busy}
+            onClick={onCheck}
+            size="quiet"
+            type="button"
+            variant="ghost"
+          >
+            {busy
+              ? "Checking…"
+              : state === "ready"
+                ? "Check now"
+                : "Check again"}
           </Button>
         )
       }
@@ -54,9 +81,17 @@ function CodingProviderAccessCard({
               Install {label}, open it once, then return here so TouchGrassBar
               can detect it.
             </small>
-            <Button className="mt-2" size="link" type="button" variant="link">
-              View installation steps
-            </Button>
+            {onViewInstallationSteps ? (
+              <Button
+                className="mt-2"
+                onClick={onViewInstallationSteps}
+                size="link"
+                type="button"
+                variant="link"
+              >
+                View installation steps
+              </Button>
+            ) : null}
           </div>
         ) : undefined
       }

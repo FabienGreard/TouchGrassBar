@@ -6,8 +6,9 @@ import {
   Title,
   Typeset,
 } from "@storybook/addon-docs/blocks";
-import appBarGlyph from "../assets/brand/lily-glyph-split-decay.png";
-import desktopAppIcon from "../assets/brand/glass-lily-frosted-pearl.png";
+import appBarGlyph from "../assets/brand/grass-glyph-white.png";
+import desktopAppIcon from "../assets/brand/glass-grass-hand-frosted-pearl.png";
+import transparentBrandMark from "../assets/brand/glass-grass-hand.png";
 
 <Meta title="Foundation/Tokens" />
 
@@ -50,19 +51,42 @@ Storybook theme.
       }}
     >
       <img
-        alt="TouchGrassBar app-bar lily glyph"
+        alt="TouchGrassBar app-bar grass glyph"
         src={appBarGlyph}
         style={{ display: "block", height: 128, width: 128 }}
       />
     </div>
     <figcaption style={{ marginTop: 8 }}>App-bar glyph</figcaption>
   </figure>
+  <figure style={{ margin: 0 }}>
+    <div
+      style={{
+        alignItems: "center",
+        background: "#f7f7fc",
+        border: "1px solid #e4e2ee",
+        borderRadius: 24,
+        display: "flex",
+        height: 160,
+        justifyContent: "center",
+        width: 160,
+      }}
+    >
+      <img
+        alt="TouchGrassBar transparent grass and hand mark"
+        src={transparentBrandMark}
+        style={{ display: "block", height: 144, width: 144 }}
+      />
+    </div>
+    <figcaption style={{ marginTop: 8 }}>Transparent brand mark</figcaption>
+  </figure>
 </div>
 
 The desktop bundle icons in `apps/desktop/src-tauri/icons` are generated from
-`packages/ui/src/assets/brand/glass-lily-frosted-pearl.png`.
-`packages/ui/src/assets/brand/lily-glyph-split-decay.png` is reserved for the
+`packages/ui/src/assets/brand/glass-grass-hand-frosted-pearl.png`.
+`packages/ui/src/assets/brand/grass-glyph-white.png` is reserved for the
 compact app-bar brand mark.
+`packages/ui/src/assets/brand/glass-grass-hand.png` is the transparent detailed
+brand mark for larger surfaces.
 
 ## Brand colors
 

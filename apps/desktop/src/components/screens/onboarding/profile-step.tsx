@@ -1,12 +1,12 @@
 import { Input, ProfileCard } from "@touchgrass/ui";
-import { useState } from "react";
 
 function ProfileStep({
-  initialDisplayName = "",
+  displayName,
+  onDisplayNameChange,
 }: {
-  initialDisplayName?: string;
+  displayName: string;
+  onDisplayNameChange: (displayName: string) => void;
 }) {
-  const [displayName, setDisplayName] = useState(initialDisplayName);
   const initialLetter = displayName.trim().slice(0, 1).toUpperCase() || "?";
 
   return (
@@ -18,7 +18,8 @@ function ProfileStep({
           <Input
             aria-label="Display name"
             className="mt-1 h-8"
-            onChange={(event) => setDisplayName(event.target.value)}
+            maxLength={40}
+            onChange={(event) => onDisplayNameChange(event.target.value)}
             value={displayName}
           />
         }
@@ -29,9 +30,17 @@ function ProfileStep({
         }
         touchGrassIdDescription="Your permanent public ID."
       />
-      <small className="px-1 text-[8px] leading-3.5 text-sheet-muted">
-        Your name, ID, and daily scores are public.
-      </small>
+      <div className="grid gap-1 px-1 text-[8px] leading-3.5 text-sheet-muted">
+        <small>
+          Your name, ID, and daily scores are public. A Profile is required to
+          continue.
+        </small>
+        <small>
+          First sync may publish available totals for the current UTC day and
+          previous 29; missing stays missing. Prompts, conversations,
+          credentials, raw logs, and file paths stay on this Mac.
+        </small>
+      </div>
     </div>
   );
 }

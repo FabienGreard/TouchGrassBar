@@ -1,7 +1,12 @@
+pub mod lifecycle;
 pub mod sanitized;
 
-use std::time::Instant;
+use std::{env, time::Instant};
 
+use lifecycle::{
+    BootstrapStateV1, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
+    SettingsNavigationRequest, SettingsSection, SettingsStateV1,
+};
 use sanitized::{
     NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RevisionNotice, SanitizedDesktopStateV1,
 };
@@ -15,11 +20,13 @@ use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 
 const PANEL_LABEL: &str = "panel";
+const SETTINGS_LABEL: &str = "settings";
+const ONBOARDING_LABEL: &str = "onboarding";
 const PANEL_WIDTH: f64 = 402.0;
 const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
-    include_bytes!("../../../../packages/ui/src/assets/brand/lily-glyph-split-decay.png");
+    include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
 
 #[cfg(target_os = "macos")]
 fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
@@ -32,6 +39,19 @@ fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
             | NSWindowCollectionBehavior::FullScreenAuxiliary
             | NSWindowCollectionBehavior::Transient
             | NSWindowCollectionBehavior::IgnoresCycle;
+        window.setCollectionBehavior(behavior);
+    })?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_window_for_current_space(window: &WebviewWindow) -> tauri::Result<()> {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    window.with_webview(|webview| unsafe {
+        let window: &NSWindow = &*webview.ns_window().cast();
+        let behavior = window.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
         window.setCollectionBehavior(behavior);
     })?;
 
@@ -117,6 +137,13 @@ fn monitor_for_tray(window: &WebviewWindow, tray: Frame) -> tauri::Result<Frame>
 }
 
 fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
+    if app
+        .try_state::<DesktopLifecycle>()
+        .is_some_and(|lifecycle| lifecycle.should_show_bootstrap())
+    {
+        return show_onboarding(app);
+    }
+
     let Some(panel) = app.get_webview_window(PANEL_LABEL) else {
         return Ok(());
     };
@@ -145,10 +172,25 @@ fn hide_panel(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn show_settings(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window("settings") {
+fn show_onboarding(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(ONBOARDING_LABEL) {
         window.show()?;
         window.set_focus()?;
+    }
+    Ok(())
+}
+
+fn show_settings(app: &AppHandle, section: SettingsSection) -> tauri::Result<()> {
+    if let Some(lifecycle) = app.try_state::<DesktopLifecycle>() {
+        lifecycle.request_settings_section(section);
+    }
+    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        window.show()?;
+        window.set_focus()?;
+        window.emit(
+            SETTINGS_NAVIGATION_EVENT,
+            SettingsNavigationRequest { section },
+        )?;
     }
     Ok(())
 }
@@ -156,7 +198,7 @@ fn show_settings(app: &AppHandle) -> tauri::Result<()> {
 #[tauri::command]
 fn open_settings(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
     require_panel(&window)?;
-    show_settings(&app).map_err(|_| "settings unavailable".to_owned())
+    show_settings(&app, SettingsSection::General).map_err(|_| "settings unavailable".to_owned())
 }
 
 fn require_panel(window: &WebviewWindow) -> Result<(), String> {
@@ -171,6 +213,10 @@ fn bounded_panel_height(height: f64) -> Result<f64, &'static str> {
     }
 
     Ok(height.ceil().clamp(MIN_PANEL_HEIGHT, MAX_PANEL_HEIGHT))
+}
+
+fn should_show_bootstrap_on_start(bootstrap_required: bool, launched_in_background: bool) -> bool {
+    bootstrap_required && !launched_in_background
 }
 
 #[tauri::command]
@@ -208,34 +254,110 @@ fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
 }
 
 fn require_settings(window: &WebviewWindow) -> Result<(), String> {
-    (window.label() == "settings")
+    (window.label() == SETTINGS_LABEL)
+        .then_some(())
+        .ok_or_else(|| "command unavailable for this window".to_owned())
+}
+
+fn require_onboarding(window: &WebviewWindow) -> Result<(), String> {
+    (window.label() == ONBOARDING_LABEL)
+        .then_some(())
+        .ok_or_else(|| "command unavailable for this window".to_owned())
+}
+
+fn require_settings_or_onboarding(window: &WebviewWindow) -> Result<(), String> {
+    matches!(window.label(), SETTINGS_LABEL | ONBOARDING_LABEL)
         .then_some(())
         .ok_or_else(|| "command unavailable for this window".to_owned())
 }
 
 #[tauri::command]
-fn launch_at_login_enabled(window: WebviewWindow, app: AppHandle) -> Result<bool, String> {
-    require_settings(&window)?;
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|error| error.to_string())
+fn get_bootstrap_state(
+    window: WebviewWindow,
+    lifecycle: State<'_, DesktopLifecycle>,
+) -> Result<BootstrapStateV1, String> {
+    require_onboarding(&window)?;
+    Ok(lifecycle.bootstrap_state())
 }
 
 #[tauri::command]
-fn set_launch_at_login(window: WebviewWindow, app: AppHandle, enabled: bool) -> Result<(), String> {
+fn complete_bootstrap(
+    window: WebviewWindow,
+    lifecycle: State<'_, DesktopLifecycle>,
+    display_name: String,
+) -> Result<BootstrapStateV1, String> {
+    require_onboarding(&window)?;
+    let state = lifecycle
+        .complete_bootstrap(&display_name)
+        .map_err(str::to_owned)?;
+    window
+        .hide()
+        .map_err(|_| "bootstrap window unavailable".to_owned())?;
+    Ok(state)
+}
+
+fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
+    app.autolaunch()
+        .is_enabled()
+        .map(|enabled| LaunchAtLoginState::Available { enabled })
+        .unwrap_or(LaunchAtLoginState::Unavailable)
+}
+
+#[tauri::command]
+fn get_settings_state(
+    window: WebviewWindow,
+    app: AppHandle,
+    lifecycle: State<'_, DesktopLifecycle>,
+) -> Result<SettingsStateV1, String> {
     require_settings(&window)?;
-    if enabled {
+    Ok(lifecycle.settings_state(launch_at_login_state(&app)))
+}
+
+#[tauri::command]
+fn set_launch_at_login(
+    window: WebviewWindow,
+    app: AppHandle,
+    lifecycle: State<'_, DesktopLifecycle>,
+    enabled: bool,
+) -> Result<SettingsStateV1, String> {
+    require_settings(&window)?;
+    let result = if enabled {
         app.autolaunch().enable()
     } else {
         app.autolaunch().disable()
-    }
-    .map_err(|error| error.to_string())
+    };
+    let launch_at_login = if result.is_ok() {
+        launch_at_login_state(&app)
+    } else {
+        LaunchAtLoginState::Unavailable
+    };
+    Ok(lifecycle.settings_state(launch_at_login))
+}
+
+#[tauri::command]
+fn hide_surface(window: WebviewWindow) -> Result<(), String> {
+    require_settings_or_onboarding(&window)?;
+    window.hide().map_err(|_| "window unavailable".to_owned())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let process_started_at = Instant::now();
+    let launched_in_background = env::args_os().any(|argument| argument == "--background");
     let mut app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(
+            |app, arguments, _working_directory| {
+                let background_request =
+                    arguments.iter().any(|argument| argument == "--background");
+                if !background_request
+                    && app
+                        .try_state::<DesktopLifecycle>()
+                        .is_some_and(|lifecycle| lifecycle.should_show_bootstrap())
+                {
+                    let _ = show_onboarding(app);
+                }
+            },
+        ))
         .manage(NativeCore::unavailable())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -244,20 +366,43 @@ pub fn run() {
             Some(vec!["--background"]),
         ))
         .invoke_handler(tauri::generate_handler![
+            complete_bootstrap,
+            get_bootstrap_state,
             get_sanitized_state,
+            get_settings_state,
+            hide_surface,
             hide_panel,
-            launch_at_login_enabled,
             open_settings,
             request_refresh,
             resize_panel,
             set_launch_at_login
         ])
         .setup(move |app| {
+            let lifecycle = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .and_then(|directory| {
+                    DesktopLifecycle::open(&directory.join("touchgrassbar.sqlite3")).ok()
+                })
+                .unwrap_or_else(DesktopLifecycle::unavailable);
+            let show_bootstrap = should_show_bootstrap_on_start(
+                lifecycle.should_show_bootstrap(),
+                launched_in_background,
+            );
+            app.manage(lifecycle);
+
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
                 panel.set_always_on_top(true)?;
                 #[cfg(target_os = "macos")]
                 configure_macos_panel(&panel)?;
+            }
+            #[cfg(target_os = "macos")]
+            for label in [SETTINGS_LABEL, ONBOARDING_LABEL] {
+                if let Some(window) = app.get_webview_window(label) {
+                    configure_macos_window_for_current_space(&window)?;
+                }
             }
 
             let revision_notices = app
@@ -276,10 +421,11 @@ pub fn run() {
 
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
+            let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit TouchGrassBar").build(app)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&refresh, &settings, &separator, &quit])
+                .items(&[&refresh, &settings, &profile, &separator, &quit])
                 .build()?;
 
             let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
@@ -294,7 +440,10 @@ pub fn run() {
                         let _ = request_native_refresh(app);
                     }
                     "settings" => {
-                        let _ = show_settings(app);
+                        let _ = show_settings(app, SettingsSection::General);
+                    }
+                    "profile" => {
+                        let _ = show_settings(app, SettingsSection::Profile);
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -318,6 +467,10 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            if show_bootstrap {
+                show_onboarding(app.handle())?;
+            }
+
             eprintln!(
                 "touchgrassbar_metric native_setup_ms={}",
                 process_started_at.elapsed().as_millis()
@@ -325,12 +478,17 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if window.label() == PANEL_LABEL {
-                if let tauri::WindowEvent::Focused(false) = event {
-                    let _ = window.hide();
-                }
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {
+                let _ = window.hide();
             }
+            tauri::WindowEvent::CloseRequested { api, .. }
+                if matches!(window.label(), SETTINGS_LABEL | ONBOARDING_LABEL) =>
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect("failed to build TouchGrassBar");
@@ -412,6 +570,70 @@ mod tests {
         assert!(info_plist.contains("<key>LSUIElement</key>"));
         assert!(info_plist.contains("<true/>"));
         assert!(!info_plist.contains("LSBackgroundOnly"));
+    }
+
+    #[test]
+    fn production_webviews_disable_local_file_drop() {
+        let config = native_config();
+        let windows = config
+            .pointer("/app/windows")
+            .and_then(serde_json::Value::as_array)
+            .expect("native windows should be configured");
+
+        assert!(windows.iter().all(|window| {
+            window
+                .get("dragDropEnabled")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        }));
+    }
+
+    #[test]
+    fn webview_capability_excludes_broad_core_and_path_permissions() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json"))
+                .expect("desktop capability should be valid JSON");
+        let permissions = capability
+            .get("permissions")
+            .and_then(serde_json::Value::as_array)
+            .expect("desktop permissions should be configured");
+        let permission_names = permissions
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+
+        assert!(!permission_names.contains(&"core:default"));
+        assert!(permission_names.contains(&"core:event:allow-listen"));
+        assert!(permission_names.contains(&"core:event:allow-unlisten"));
+        assert!(permission_names.iter().all(|name| !name.contains("path")));
+        assert!(permission_names.iter().all(|name| !name.contains("image")));
+    }
+
+    #[test]
+    fn bootstrap_opens_only_for_an_incomplete_manual_launch() {
+        assert!(should_show_bootstrap_on_start(true, false));
+        assert!(!should_show_bootstrap_on_start(true, true));
+        assert!(!should_show_bootstrap_on_start(false, false));
+        assert!(!should_show_bootstrap_on_start(false, true));
+    }
+
+    #[test]
+    fn single_instance_plugin_is_registered_before_other_plugins() {
+        let source = include_str!("lib.rs");
+        let single_instance = source
+            .find(".plugin(tauri_plugin_single_instance::init")
+            .expect("single-instance plugin should be registered");
+
+        for plugin in [
+            ".plugin(tauri_plugin_process::init())",
+            ".plugin(tauri_plugin_updater::Builder::new().build())",
+            ".plugin(tauri_plugin_autostart::init",
+        ] {
+            assert!(
+                single_instance < source.find(plugin).expect("plugin should be registered"),
+                "single-instance must be the first plugin"
+            );
+        }
     }
 
     #[test]

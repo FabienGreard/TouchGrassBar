@@ -24,6 +24,7 @@
         "resizable": false,
         "decorations": false,
         "transparent": true,
+        "dragDropEnabled": false,
         "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
@@ -34,6 +35,7 @@
         "title": "TouchGrassBar Settings",
         "width": 760,
         "height": 580,
+        "dragDropEnabled": false,
         "resizable": false,
         "visible": false
       },
@@ -42,6 +44,7 @@
         "title": "Welcome to TouchGrassBar",
         "width": 760,
         "height": 580,
+        "dragDropEnabled": false,
         "resizable": false,
         "visible": false
       }

@@ -51,8 +51,9 @@ function DevPreviewApp() {
           onboarding={{
             ...scenario.onboarding,
             initialDisplayName: "Fabien",
+            onCheckProvider: () => undefined,
             onFinish: () => undefined,
-            setupReady: true,
+            setupState: scenario.onboarding.setupState,
           }}
           surface="onboarding"
         />
@@ -67,12 +68,21 @@ function DevPreviewApp() {
             codexState: "ready",
             launchAtLogin,
             onAutoUpdatesChange: setAutoUpdates,
+            onCheckProviders: () => undefined,
             onCheckForUpdates: () => undefined,
             onLaunchAtLoginChange: setLaunchAtLogin,
             onOpenSource: () => undefined,
             onProfileDisplayNameChange: (displayName) =>
               setProfile((current) => ({ ...current, displayName })),
-            profile,
+            pendingDisplayName: profile.displayName,
+            profile:
+              scenario.settingsProfileState === "identity-pending"
+                ? null
+                : profile,
+            profileProvisioning:
+              scenario.settingsProfileState === "identity-pending"
+                ? "identity-pending"
+                : "ready",
             providerState: scenario.settingsProviderState,
           }}
           surface="settings"

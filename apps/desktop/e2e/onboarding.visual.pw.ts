@@ -6,20 +6,24 @@ import {
 } from "./native-window-visual";
 
 const providerStates = [
+  { key: "detected", label: "Detected" },
   { key: "ready", label: "Ready" },
   { key: "needs-access", label: "Needs access" },
   { key: "not-installed", label: "Not installed" },
 ] as const;
 
-type OnboardingStep = "profile" | "providers" | "recovery";
+type OnboardingSetupState =
+  "identity-pending" | "ready" | "required" | "unavailable";
+type OnboardingStep = "finish" | "profile" | "providers";
 type ProviderState = (typeof providerStates)[number]["key"];
 
 function onboardingUrl(
   step: OnboardingStep,
   codexState: ProviderState = "ready",
   claudeState: ProviderState = "not-installed",
+  setupState: OnboardingSetupState = "ready",
 ) {
-  return `/?window=onboarding&fixture=current&onboardingStep=${step}&codexState=${codexState}&providerState=${claudeState}`;
+  return `/?window=onboarding&fixture=current&onboardingStep=${step}&codexState=${codexState}&providerState=${claudeState}&setupState=${setupState}`;
 }
 
 async function openOnboarding(
@@ -27,10 +31,11 @@ async function openOnboarding(
   step: OnboardingStep,
   codexState?: ProviderState,
   claudeState?: ProviderState,
+  setupState?: OnboardingSetupState,
 ) {
   await openNativeWindowPreview(
     page,
-    onboardingUrl(step, codexState, claudeState),
+    onboardingUrl(step, codexState, claudeState, setupState),
     "Onboarding steps",
   );
 }
@@ -96,14 +101,22 @@ test.describe("onboarding visual states", () => {
   }
 
   test("providers both not installed scrolled to the end", async ({ page }) => {
-    await openOnboarding(
-      page,
-      "providers",
-      "not-installed",
-      "not-installed",
-    );
+    await openOnboarding(page, "providers", "not-installed", "not-installed");
 
     const viewport = page.locator('[data-slot="scroll-area-viewport"]');
+    const nativeWindow = page.locator('[data-slot="native-window"]');
+    const scrollArea = page.locator('[data-slot="scroll-area-root"]');
+    const [nativeWindowBox, scrollAreaBox] = await Promise.all([
+      nativeWindow.boundingBox(),
+      scrollArea.boundingBox(),
+    ]);
+    expect(nativeWindowBox).not.toBeNull();
+    expect(scrollAreaBox).not.toBeNull();
+    expect(
+      Math.round((scrollAreaBox?.x ?? 0) + (scrollAreaBox?.width ?? 0)),
+    ).toBe(
+      Math.round((nativeWindowBox?.x ?? 0) + (nativeWindowBox?.width ?? 0)),
+    );
     await viewport.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
     });
@@ -114,8 +127,11 @@ test.describe("onboarding visual states", () => {
       page
         .locator('[data-slot="provider-connection-card"]')
         .filter({ hasText: "Claude" })
-        .getByRole("button", { name: "View installation steps" }),
+        .getByText("Connect Claude", { exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "View installation steps" }),
+    ).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "Continue", exact: true }),
     ).toBeVisible();
@@ -133,27 +149,34 @@ test.describe("onboarding visual states", () => {
       page.getByRole("heading", { level: 1, name: "Set up your Profile" }),
     ).toBeVisible();
     await expect(page.getByText("Step 2 of 3", { exact: true })).toBeVisible();
-    await expect(
-      page.locator('[data-profile-state="draft"]'),
-    ).toBeVisible();
+    await expect(page.locator('[data-profile-state="draft"]')).toBeVisible();
     await expect(page.getByLabel("Display name")).toHaveValue("Fabien");
 
     await captureNativeWindow(page, "profile-draft-onboarding.png");
   });
 
-  test("recovery", async ({ page }) => {
-    await openOnboarding(page, "recovery");
+  test("finish with Identity Pending", async ({ page }) => {
+    await openOnboarding(
+      page,
+      "finish",
+      undefined,
+      undefined,
+      "identity-pending",
+    );
 
     await expect(
       page.getByRole("heading", { level: 1, name: "Finish setup" }),
     ).toBeVisible();
     await expect(page.getByText("Step 3 of 3", { exact: true })).toBeVisible();
     await expect(
-      page.getByText("Local setup ready", { exact: true }),
+      page.getByText("Identity Pending", { exact: true }),
     ).toBeVisible();
     await expect(
+      page.locator('[data-setup-state="identity-pending"] svg'),
+    ).toHaveCount(1);
+    await expect(
       page.getByText(
-        "Profile creation and recovery are not connected in this build.",
+        "Creation retries automatically while local provider utility stays available.",
         { exact: true },
       ),
     ).toBeVisible();
@@ -169,9 +192,40 @@ test.describe("onboarding visual states", () => {
       page.getByRole("button", { name: "Finish setup", exact: true }),
     ).toBeVisible();
 
-    await captureNativeWindow(page, "recovery-onboarding.png");
+    await captureNativeWindow(page, "finish-identity-pending-onboarding.png");
   });
+});
 
+test("onboarding does not allow mandatory disclosure to be skipped", async ({
+  page,
+}) => {
+  await openOnboarding(page, "providers");
+  await page
+    .locator('[data-slot="dev-preview-switcher"]')
+    .evaluate((element) => {
+      element.remove();
+    });
+
+  const navigation = page.getByRole("navigation", {
+    name: "Onboarding steps",
+  });
+  const profileStep = navigation.getByRole("button", { name: /Profile/ });
+  const finishStep = navigation.getByRole("button", { name: /Finish/ });
+  await expect(profileStep).toBeDisabled();
+  await expect(finishStep).toBeDisabled();
+
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(profileStep).toBeEnabled();
+  await expect(finishStep).toBeDisabled();
+  await expect(
+    page.getByText(/Your name, ID, and daily scores are public/),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(finishStep).toBeEnabled();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Finish setup" }),
+  ).toBeVisible();
 });
 
 test("onboarding steps use the shared navigation step variant", async ({
