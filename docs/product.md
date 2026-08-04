@@ -18,13 +18,13 @@ A Tokenmaxxer should be able to glance at the menu bar to understand current ava
 
 Each Tokenmaxxer has a unique public TouchGrass ID. Another Tokenmaxxer can use that ID to add them to My Tokenmaxxers without a request or approval. Adding is unilateral: the added Tokenmaxxer does not automatically add the other Tokenmaxxer back.
 
-My Tokenmaxxers is synchronized with the owner's identity so it follows an identity recovery. Removing someone only changes the owner's set and requires no notification or approval.
+My Tokenmaxxers is synchronized with the owner's Profile so it follows a Profile recovery. Removing someone only changes the owner's set and requires no notification or approval.
 
 ## Product surfaces
 
-The macOS app owns all interactive product behavior: onboarding, provider status, usage history, Doomerboards, identity recovery, My Tokenmaxxers management, and settings.
+The macOS app owns all interactive product behavior: onboarding, provider status, usage history, Doomerboards, Profile recovery, My Tokenmaxxers management, and settings.
 
-The landing site is a static marketing and distribution surface containing product explanation, screenshots, supported providers, the privacy boundary, installation links, and a GitHub link. It exposes no live Doomerboard, Tokenmaxxer profile, identity recovery, My Tokenmaxxers management, or authentication.
+The landing site is a static marketing and distribution surface containing product explanation, screenshots, supported providers, the privacy boundary, installation links, and a GitHub link. It exposes no live Doomerboard, Tokenmaxxer Profile, Profile recovery, My Tokenmaxxers management, or authentication.
 
 ## Ranking score
 
@@ -58,27 +58,27 @@ Only the provider/day aggregate, evidence basis, coverage, observation time, rev
 
 ## Offline behavior
 
-Provider detection, Quota Snapshots, local usage history, and API-Equivalent Cost remain usable without Convex. Identity creation, synchronization, My Tokenmaxxers, and Doomerboards report an honest unavailable or stale state until connectivity returns.
+Provider detection, Quota Snapshots, local usage history, and API-Equivalent Cost remain usable without Convex. Profile creation, synchronization, My Tokenmaxxers, and Doomerboards report an honest unavailable or stale state until connectivity returns.
 
-Offline operation is temporary local-first behavior, not a private identity mode. Pending Daily Usage Aggregates synchronize after connectivity returns and only while the Mac remains the identity's Active Mac.
+Offline operation is temporary local-first behavior, not a private Profile mode. Pending Daily Usage Aggregates synchronize after connectivity returns and only while the Mac remains the Profile's Active Mac.
 
-TouchGrassBar retains 60 UTC Ranking Days of local aggregate history for corrections and pricing updates. Creating an identity queues only the approved 30-day backfill. Pending Usage Snapshots are bound to the current Active Mac generation; transfer abandons the previous generation's queue without deleting its device-private history.
+TouchGrassBar retains 60 UTC Ranking Days of local aggregate history for corrections and pricing updates. Creating a Profile queues only the approved 30-day backfill. Pending Usage Snapshots are bound to the current Active Mac generation; transfer abandons the previous generation's queue without deleting its device-private history.
 
 ## Public by design
 
 Every Tokenmaxxer appears in public Doomerboards; there is no private-account or ranking-opt-out mode. Adding someone to My Tokenmaxxers does not grant access to otherwise private usage—it only filters already-public ranking data into a personal audience.
 
-Public-by-design applies only to Tokenmaxxer identity and Daily Usage Aggregates. Prompts, conversations, credentials, cookies, raw logs, and local file paths remain device-private and prohibited from synchronization.
+Public-by-design applies only to the Tokenmaxxer Profile and Daily Usage Aggregates. Prompts, conversations, credentials, cookies, raw logs, and local file paths remain device-private and prohibited from synchronization.
 
-## Identity and recovery
+## Profile and recovery
 
-TouchGrassBar creates an identity without asking for an email address, social login, or user-selected password. The Tokenmaxxer receives a permanent public TouchGrass ID and a generated private Recovery Key. They may choose and later edit a non-unique public Display Name.
+TouchGrassBar creates a Profile without asking for an email address, social login, or user-selected password. The Tokenmaxxer receives a permanent public TouchGrass ID and a generated private Recovery Key. They may choose and later edit a non-unique public Display Name.
 
-Doomerboard rows show the Display Name and TouchGrass ID together, for example `Fabien #TG-7K4P9D`. Adding a Tokenmaxxer and identity recovery use the permanent TouchGrass ID, never the Display Name.
+Doomerboard rows show the Display Name and TouchGrass ID together, for example `Fabien #TG-7K4P9D`. Adding a Tokenmaxxer and Profile recovery use the permanent TouchGrass ID, never the Display Name.
 
-The Recovery Key is stored in macOS Keychain and can restore the identity on another Mac when paired with the TouchGrass ID. Successful recovery requires online confirmation, rotates the Recovery Key, and transfers Active Mac authority. An authenticated Active Mac may securely reveal or rotate its stored key; if the Tokenmaxxer loses both Active Mac access and the current Recovery Key, the identity is permanently unrecoverable. TouchGrassBar provides no alternative account-recovery channel.
+The Recovery Key is stored in macOS Keychain and can restore the Profile on another Mac when paired with the TouchGrass ID. Successful recovery requires online confirmation, rotates the Recovery Key, and transfers Active Mac authority. An authenticated Active Mac may securely reveal or rotate its stored key; if the Tokenmaxxer loses both Active Mac access and the current Recovery Key, the Profile is permanently unrecoverable. TouchGrassBar provides no alternative account-recovery channel.
 
-Only one Active Mac may synchronize an identity at a time. Authority belongs to an opaque TouchGrassBar installation rather than a hardware fingerprint, so an update or reinstall that preserves Keychain remains the same Active Mac. Restoring elsewhere transfers synchronization authority and invalidates every previous session. Multi-device merging and device-management UI are outside the MVP.
+Only one Active Mac may synchronize a Profile at a time. Authority belongs to an opaque TouchGrassBar installation rather than a hardware fingerprint, so an update or reinstall that preserves Keychain remains the same Active Mac. Restoring elsewhere transfers synchronization authority and invalidates every previous session. Multi-device merging and device-management UI are outside the MVP.
 
 ## Explicit non-goals
 

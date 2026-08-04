@@ -17,7 +17,7 @@ Rust owns:
 - Keychain credentials and session material
 - Local caching and offline reconciliation
 - Background refresh
-- Identity creation and restoration
+- Profile creation and restoration
 - Convex reads and synchronization
 - Launch at login and update orchestration
 
@@ -51,7 +51,7 @@ An Astro and Tailwind CSS static marketing and distribution site. It has no auth
 
 ### `packages/backend`
 
-Convex owns public Tokenmaxxer identities, Active Mac authority, revisioned Usage Buckets, server-derived daily usage, materialized scores, My Tokenmaxxers, and Doomerboard projections. Better Auth owns generated-credential hashing and sessions.
+Convex owns public Tokenmaxxer Profiles, Active Mac authority, revisioned Usage Buckets, server-derived daily usage, materialized scores, My Tokenmaxxers, and Doomerboard projections. Better Auth owns generated-credential hashing and sessions.
 
 The backend rejects raw provider material and accepts only validated cumulative daily snapshots from the current Active Mac. Convex calculates all daily totals, combined scores, ranks, and public projections. Global Doomerboards use one namespaced Aggregate component; My Tokenmaxxers uses bounded indexed reads and in-memory sorting. A rate limiter protects synchronization, migrations own repairs, and a daily UTC cron expires rolling windows.
 
@@ -77,7 +77,7 @@ Shared strict TypeScript and Oxlint configuration.
 2. Only DTOs in the sanitized contract may serialize across Tauri IPC. Privileged provider and authentication types are separate and non-serializable through commands.
 3. React sends narrow typed intents and receives Sanitized Desktop State or bounded sanitized views; it has no generic transport command or direct provider, filesystem, Keychain, or network access.
 4. Rust synchronizes only validated cumulative Usage Snapshots through the official Convex Rust client.
-5. Convex validates the live identity and Active Mac generation, then updates Daily Usage, scores, and Aggregate projections transactionally.
+5. Convex validates the live Profile and Active Mac generation, then updates Daily Usage, scores, and Aggregate projections transactionally.
 6. Rust sanitizes Convex results before React receives them.
 
 ## Native contract and state delivery
@@ -86,7 +86,7 @@ The top-level Sanitized Desktop State carries a breaking-change contract version
 
 The main panel uses a snapshot-oriented native interface: React fetches the current cached snapshot, may request a refresh without waiting for provider I/O, and receives revision notices as invalidation hints. It subscribes before the initial read, coalesces notices, refetches the complete snapshot, and accepts only a higher revision. Missed, duplicated, delayed, or reordered notices cannot replace newer state, and partial state patches never cross Tauri IPC.
 
-Expected provider, parsing, network, and persistence failures appear as sanitized unavailable, stale, retry, or synchronization state. Only closed caller, lifecycle, serialization, contract, and internal-invariant failures reject a command. Large Doomerboards use separate typed, bounded commands rather than inflating the main snapshot; settings, identity, recovery, updates, and future focused surfaces likewise receive narrow interfaces instead of a generic dispatcher.
+Expected provider, parsing, network, and persistence failures appear as sanitized unavailable, stale, retry, or synchronization state. Only closed caller, lifecycle, serialization, contract, and internal-invariant failures reject a command. Large Doomerboards use separate typed, bounded commands rather than inflating the main snapshot; settings, Profile, recovery, updates, and future focused surfaces likewise receive narrow interfaces instead of a generic dispatcher.
 
 The accepted interface and ordering contract are recorded in [ADR 0013](adr/0013-use-snapshot-refresh-and-revision-notices-for-native-state.md).
 
@@ -94,9 +94,9 @@ Production WebViews deny arbitrary HTTP and WebSocket egress through CSP and rec
 
 ## Local persistence
 
-Rust owns one transactional SQLite database in Application Support. It separates private parser checkpoints and deduplication metadata, sanitized provider/read-model state, effective-dated pricing versions, and a synchronization outbox. Raw provider content is never copied into the database. The Recovery Key, Better Auth session, and opaque installation credential are separate non-synchronizing Keychain items. Provider credentials remain in provider-owned storage and exist in TouchGrassBar memory only while needed. Identity creation, recovery, and key reveal use native secure sheets that return only sanitized outcomes to React.
+Rust owns one transactional SQLite database in Application Support. It separates private parser checkpoints and deduplication metadata, sanitized provider/read-model state, effective-dated pricing versions, and a synchronization outbox. Raw provider content is never copied into the database. The Recovery Key, Better Auth session, and opaque installation credential are separate non-synchronizing Keychain items. Provider credentials remain in provider-owned storage and exist in TouchGrassBar memory only while needed. Profile creation, recovery, and key reveal use native secure sheets that return only sanitized outcomes to React.
 
-The native core retains 60 UTC Ranking Days of local aggregates and deduplication metadata. Pricing versions remain while referenced. A Quota Lane may be cached as stale only until its reset, after which its allowance and remaining value are unavailable. Identity creation queues at most the approved 30-day aggregate backfill.
+The native core retains 60 UTC Ranking Days of local aggregates and deduplication metadata. Pricing versions remain while referenced. A Quota Lane may be cached as stale only until its reset, after which its allowance and remaining value are unavailable. Profile creation queues at most the approved 30-day aggregate backfill.
 
 Each aggregate update and Pending Usage Snapshot upsert commits in one SQLite transaction. The outbox contains one latest cumulative revision per Active Mac generation, provider, and Ranking Day; uploads are bounded and idempotent, and acknowledged revisions alone leave the queue. Active Mac transfer permanently abandons the previous generation's pending rows without deleting local history.
 
@@ -112,7 +112,7 @@ Rust holds the Keychain-backed Better Auth session, exchanges it for a short-liv
 
 The trusted native core remains useful when the network or Convex is unavailable. It caches sanitized provider state and Pending Usage Snapshots locally, labels freshness explicitly, and resumes synchronization when connectivity returns and the same Active Mac generation remains authoritative.
 
-Identity and social features may be unavailable offline, but provider limits and locally observed history must not be blocked by backend readiness.
+Profile and social features may be unavailable offline, but provider limits and locally observed history must not be blocked by backend readiness.
 
 ## Process model
 

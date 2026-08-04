@@ -14,4 +14,4 @@ Rust sends one cumulative snapshot per Active Mac, Coding Provider, and UTC Rank
 
 ## Consequences
 
-Synchronization is idempotent and stale writes cannot roll a bucket backward. Rust must persist revisions with its local cache. Identity recovery during the current UTC day still needs an explicit authority-transfer rule.
+Synchronization is idempotent and stale writes cannot roll a bucket backward. Rust must persist revisions with its local cache. Profile recovery during the current UTC day still needs an explicit authority-transfer rule.

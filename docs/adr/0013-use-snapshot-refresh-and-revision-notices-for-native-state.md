@@ -39,7 +39,7 @@ The implementation keeps provider source selection, full-versus-sparse quota han
 
 Codex and Claude are separate true-external internal seams with production and fixture adapters because their observation semantics differ. The clock has system and deterministic-test adapters. SQLite is local-substitutable and remains an internal seam exercised through temporary or in-memory SQLite rather than a generic repository port. Convex and Keychain use production and test adapters when their integrations are introduced.
 
-Large Doomerboards use a separate typed, bounded query interface. Settings, identity, recovery, updates, and future focused surfaces receive their own narrow interfaces instead of inflating Sanitized Desktop State or introducing a generic dispatcher.
+Large Doomerboards use a separate typed, bounded query interface. Settings, Profile, recovery, updates, and future focused surfaces receive their own narrow interfaces instead of inflating Sanitized Desktop State or introducing a generic dispatcher.
 
 ## Consequences
 

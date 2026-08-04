@@ -75,7 +75,7 @@ _Avoid_: Readiness score, QA opinion, local green build
 ## Native Boundary
 
 **Sanitized Desktop State**:
-The versioned, revisioned, bounded projection of native-owned product state that may enter the React interface. It contains display-safe provider, identity, synchronization, and social data but no credentials or provider source material. React replaces it from a complete cached snapshot; revision notices never carry partial state.
+The versioned, revisioned, bounded projection of native-owned product state that may enter the React interface. It contains display-safe provider, Profile, synchronization, and social data but no credentials or provider source material. React replaces it from a complete cached snapshot; revision notices never carry partial state.
 _Avoid_: App state, native state, raw snapshot
 
 ## Social Comparison
@@ -84,8 +84,12 @@ _Avoid_: App state, native state, raw snapshot
 A person whose AI coding activity is tracked by TouchGrassBar and whose Daily Usage Aggregates appear in public Doomerboards.
 _Avoid_: Participant, friend, employee, developer, user
 
+**Profile**:
+A Tokenmaxxer's public representation: their editable Display Name paired with their permanent TouchGrass ID. Recovery and Mac transfer preserve the same Profile.
+_Avoid_: Identity, account
+
 **TouchGrass ID**:
-A Tokenmaxxer's permanent, server-generated public identifier, used by another Tokenmaxxer to add them or by its owner to restore their identity.
+A Tokenmaxxer's permanent, server-generated public identifier, used by another Tokenmaxxer to add them or by its owner to restore their Profile.
 _Avoid_: Account ID, friend code, secret code
 
 **Display Name**:
@@ -93,11 +97,11 @@ A Tokenmaxxer's editable, non-unique public label. It is shown with the TouchGra
 _Avoid_: Username, handle, account name
 
 **Recovery Key**:
-A Tokenmaxxer's generated private credential used with their TouchGrass ID to restore their identity on another Mac. Successful recovery replaces it with a new key; without both access to the Active Mac and the current key, the identity is unrecoverable.
+A Tokenmaxxer's generated private credential used with their TouchGrass ID to restore their Profile on another Mac. Successful recovery replaces it with a new key; without both access to the Active Mac and the current key, the Profile is unrecoverable.
 _Avoid_: Private ID, password, recovery code
 
 **Active Mac**:
-The single TouchGrassBar installation currently authorized to synchronize a Tokenmaxxer's usage. Restoring the identity elsewhere transfers that authority; an Active Mac is not identified by a hardware fingerprint.
+The single TouchGrassBar installation currently authorized to synchronize a Tokenmaxxer's usage. Restoring the Profile elsewhere transfers that authority; an Active Mac is not identified by a hardware fingerprint.
 _Avoid_: Primary device, linked device
 
 **Active Mac Generation**:
