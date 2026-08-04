@@ -1,13 +1,23 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { DevFixtureSwitcher } from "./components/dev-fixture-switcher";
-import { PanelScreen } from "./components/panel/panel-screen";
-import { OnboardingScreen } from "./components/screens/onboarding-screen";
-import { SettingsScreen } from "./components/screens/settings-screen";
-import { resolveBrowserFixtureName } from "./nativeState";
+import type { BrowserFixtureName } from "@/browserSanitizedDesktopStateAdapter";
+import { DevFixtureSwitcher } from "@/components/dev-fixture-switcher";
+import { PanelScreen } from "@/components/panel/panel-screen";
+import { OnboardingScreen } from "@/components/screens/onboarding-screen";
+import { SettingsScreen } from "@/components/screens/settings-screen";
+import type { SanitizedDesktopStateDelivery } from "@/sanitizedDesktopStateDelivery";
 
-export function App() {
-  const hasNativeRuntime = "__TAURI_INTERNALS__" in window;
+type AppProps = {
+  hasNativeRuntime: boolean;
+  previewFixtureName: BrowserFixtureName;
+  stateDelivery: SanitizedDesktopStateDelivery;
+};
+
+export function App({
+  hasNativeRuntime,
+  previewFixtureName,
+  stateDelivery,
+}: AppProps) {
   const hasBrowserPreview = import.meta.env.DEV && !hasNativeRuntime;
   const previewLabel = hasBrowserPreview
     ? new URLSearchParams(window.location.search).get("window")
@@ -24,11 +34,13 @@ export function App() {
     default:
       return (
         <>
-          <PanelScreen />
+          <PanelScreen
+            hasNativeRuntime={hasNativeRuntime}
+            previewFixtureName={previewFixtureName}
+            stateDelivery={stateDelivery}
+          />
           {hasBrowserPreview ? (
-            <DevFixtureSwitcher
-              activeFixture={resolveBrowserFixtureName(window.location.search)}
-            />
+            <DevFixtureSwitcher activeFixture={previewFixtureName} />
           ) : null}
         </>
       );

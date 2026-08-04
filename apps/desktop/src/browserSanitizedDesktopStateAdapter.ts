@@ -1,13 +1,9 @@
-import type { SanitizedDesktopState } from "@touchgrass/contracts";
+import type { SanitizedDesktopStatePort } from "@/sanitizedDesktopStateDelivery";
 
 export type BrowserFixtureName =
-  | "current"
-  | "loading"
-  | "stale"
-  | "update"
-  | "unavailable";
+  "current" | "loading" | "stale" | "update" | "unavailable";
 
-export function unavailableBrowserFixture(now = new Date()): unknown {
+function unavailableFixture(now: Date): unknown {
   return {
     contractVersion: 1,
     generatedAt: now.toISOString(),
@@ -48,9 +44,9 @@ function observedUsage(
   };
 }
 
-function populatedBrowserFixture(
+function populatedFixture(
   availability: "current" | "stale",
-  now = new Date(),
+  now: Date,
 ): unknown {
   const observedAt = now.toISOString();
 
@@ -126,70 +122,37 @@ function populatedBrowserFixture(
   };
 }
 
-export function browserFixture(
-  name: BrowserFixtureName,
-  now = new Date(),
-): unknown {
+function fixture(name: BrowserFixtureName, now: Date): unknown {
   if (name === "current" || name === "update")
-    return populatedBrowserFixture("current", now);
-  if (name === "stale") return populatedBrowserFixture("stale", now);
-  return unavailableBrowserFixture(now);
+    return populatedFixture("current", now);
+  if (name === "stale") return populatedFixture("stale", now);
+  return unavailableFixture(now);
 }
 
-export function resolveBrowserFixtureName(search: string): BrowserFixtureName {
-  const fixture = new URLSearchParams(search).get("fixture");
-  return fixture === "current" ||
-    fixture === "loading" ||
-    fixture === "stale" ||
-    fixture === "update"
-    ? fixture
-    : "unavailable";
-}
-
-export function acceptNewerSnapshot(
-  current: SanitizedDesktopState | null,
-  candidate: SanitizedDesktopState,
-) {
-  if (
-    current !== null &&
-    BigInt(candidate.revision) <= BigInt(current.revision)
-  ) {
-    return current;
-  }
-  return candidate;
-}
-
-type SnapshotRead = () => Promise<void>;
-
-export function createCoalescedSnapshotReader() {
-  let activeRead: Promise<void> | null = null;
-  let pendingRead: SnapshotRead | null = null;
+export function createBrowserSanitizedDesktopStateAdapter(
+  name: BrowserFixtureName,
+  now = () => new Date(),
+): SanitizedDesktopStatePort {
+  const snapshot = fixture(name, now());
 
   return {
-    run(read: SnapshotRead) {
-      if (activeRead !== null) {
-        pendingRead = read;
-        return activeRead;
-      }
-
-      activeRead = (async () => {
-        let nextRead: SnapshotRead | null = read;
-        while (nextRead !== null) {
-          pendingRead = null;
-          await nextRead();
-          nextRead = pendingRead;
-        }
-      })().finally(() => {
-        activeRead = null;
-      });
-
-      return activeRead;
-    },
+    readSnapshot: () =>
+      name === "loading"
+        ? new Promise<never>(() => undefined)
+        : Promise.resolve({ ok: true, value: snapshot } as const),
+    requestRefresh: () =>
+      Promise.resolve({ ok: true, value: { accepted: true } } as const),
+    subscribeToInvalidations: () =>
+      Promise.resolve({ ok: true, value: () => undefined } as const),
   };
 }
 
-export function shouldHidePanel(event: Pick<KeyboardEvent, "key" | "metaKey">) {
-  return (
-    event.key === "Escape" || (event.metaKey && event.key.toLowerCase() === "w")
-  );
+export function resolveBrowserFixtureName(search: string): BrowserFixtureName {
+  const fixtureName = new URLSearchParams(search).get("fixture");
+  return fixtureName === "current" ||
+    fixtureName === "loading" ||
+    fixtureName === "stale" ||
+    fixtureName === "update"
+    ? fixtureName
+    : "unavailable";
 }

@@ -1,4 +1,11 @@
-use std::sync::Mutex;
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
+    thread,
+};
 
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
@@ -147,27 +154,147 @@ pub struct RefreshReceipt {
     pub accepted: bool,
 }
 
-#[derive(Debug)]
-pub struct NativeCore {
+trait RefreshSource: Send + Sync {
+    fn refresh(
+        &self,
+        cached: SanitizedDesktopStateV1,
+    ) -> Result<SanitizedDesktopStateV1, &'static str>;
+}
+
+struct CachedProjectionRefreshSource;
+
+impl RefreshSource for CachedProjectionRefreshSource {
+    fn refresh(
+        &self,
+        cached: SanitizedDesktopStateV1,
+    ) -> Result<SanitizedDesktopStateV1, &'static str> {
+        // Provider observation is not wired yet. Recommitting the cached sanitized
+        // projection keeps the unavailable state truthful while exercising the same
+        // asynchronous coordinator that future provider sources will use.
+        Ok(cached)
+    }
+}
+
+struct NativeCoreInner {
     state: Mutex<SanitizedDesktopStateV1>,
+    revision_subscribers: Mutex<Vec<Sender<RevisionNotice>>>,
+    refresh_in_flight: Mutex<bool>,
+    refresh_source: Arc<dyn RefreshSource>,
+}
+
+impl NativeCoreInner {
+    fn run_refresh(&self) {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let cached = self
+                .state
+                .lock()
+                .map_err(|_| "native state unavailable")?
+                .clone();
+            let refreshed = self.refresh_source.refresh(cached)?;
+            self.commit_refreshed_snapshot(refreshed)
+        }));
+
+        if let Ok(mut in_flight) = self.refresh_in_flight.lock() {
+            *in_flight = false;
+        }
+    }
+
+    fn commit_refreshed_snapshot(
+        &self,
+        mut refreshed: SanitizedDesktopStateV1,
+    ) -> Result<(), &'static str> {
+        let notice = {
+            let mut state = self.state.lock().map_err(|_| "native state unavailable")?;
+            let revision = state
+                .revision
+                .parse::<u64>()
+                .ok()
+                .and_then(|revision| revision.checked_add(1))
+                .ok_or("native revision unavailable")?;
+
+            refreshed.contract_version = CONTRACT_VERSION;
+            refreshed.generated_at = now();
+            refreshed.revision = revision.to_string();
+            *state = refreshed;
+
+            RevisionNotice {
+                revision: revision.to_string(),
+            }
+        };
+
+        let mut subscribers = self
+            .revision_subscribers
+            .lock()
+            .map_err(|_| "revision notices unavailable")?;
+        subscribers.retain(|subscriber| subscriber.send(notice.clone()).is_ok());
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct NativeCore {
+    inner: Arc<NativeCoreInner>,
 }
 
 impl NativeCore {
     pub fn unavailable() -> Self {
+        Self::with_refresh_source(Arc::new(CachedProjectionRefreshSource))
+    }
+
+    fn with_refresh_source(refresh_source: Arc<dyn RefreshSource>) -> Self {
         Self {
-            state: Mutex::new(unavailable_state(1)),
+            inner: Arc::new(NativeCoreInner {
+                state: Mutex::new(unavailable_state(1)),
+                revision_subscribers: Mutex::new(Vec::new()),
+                refresh_in_flight: Mutex::new(false),
+                refresh_source,
+            }),
         }
     }
 
     pub fn panel_state(&self) -> Result<SanitizedDesktopStateV1, &'static str> {
-        self.state
+        self.inner
+            .state
             .lock()
             .map(|state| state.clone())
             .map_err(|_| "native state unavailable")
     }
 
+    pub fn revision_notices(&self) -> Result<Receiver<RevisionNotice>, &'static str> {
+        let (sender, receiver) = mpsc::channel();
+        self.inner
+            .revision_subscribers
+            .lock()
+            .map_err(|_| "revision notices unavailable")?
+            .push(sender);
+        Ok(receiver)
+    }
+
     pub fn request_refresh(&self) -> Result<RefreshReceipt, &'static str> {
-        let _state = self.state.lock().map_err(|_| "native state unavailable")?;
+        {
+            let mut in_flight = self
+                .inner
+                .refresh_in_flight
+                .lock()
+                .map_err(|_| "refresh coordinator unavailable")?;
+            if *in_flight {
+                return Ok(RefreshReceipt { accepted: true });
+            }
+            *in_flight = true;
+        }
+
+        let inner = Arc::clone(&self.inner);
+        if thread::Builder::new()
+            .name("sanitized-state-refresh".to_owned())
+            .spawn(move || inner.run_refresh())
+            .is_err()
+        {
+            if let Ok(mut in_flight) = self.inner.refresh_in_flight.lock() {
+                *in_flight = false;
+            }
+            return Err("refresh coordinator unavailable");
+        }
+
         Ok(RefreshReceipt { accepted: true })
     }
 }
@@ -228,6 +355,14 @@ pub fn native_contract_export() -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
     use serde_json::{Value, json};
 
     use super::*;
@@ -245,15 +380,79 @@ mod tests {
     }
 
     #[test]
-    fn refresh_acknowledgement_preserves_the_cached_snapshot() {
+    fn refresh_commit_is_monotonic_and_notified_after_commit() {
         let core = NativeCore::unavailable();
-        let before = serde_json::to_value(core.panel_state().unwrap()).unwrap();
+        let notices = core.revision_notices().unwrap();
 
         let receipt = core.request_refresh().unwrap();
-        let after = serde_json::to_value(core.panel_state().unwrap()).unwrap();
+        let notice = notices.recv_timeout(Duration::from_secs(1)).unwrap();
+        let after = core.panel_state().unwrap();
 
         assert!(receipt.accepted);
-        assert_eq!(after, before);
+        assert_eq!(notice.revision, "2");
+        assert_eq!(after.revision, notice.revision);
+        assert!(matches!(after.usage.codex.today, UsageTotal::Unavailable));
+    }
+
+    #[test]
+    fn refresh_drops_closed_notice_receivers_without_rejecting_work() {
+        let core = NativeCore::unavailable();
+        drop(core.revision_notices().unwrap());
+        let live_notices = core.revision_notices().unwrap();
+
+        assert!(core.request_refresh().unwrap().accepted);
+        live_notices.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(core.panel_state().unwrap().revision, "2");
+    }
+
+    struct BlockingRefreshSource {
+        started: Barrier,
+        release: Barrier,
+        runs: AtomicUsize,
+    }
+
+    impl BlockingRefreshSource {
+        fn new() -> Self {
+            Self {
+                started: Barrier::new(2),
+                release: Barrier::new(2),
+                runs: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl RefreshSource for BlockingRefreshSource {
+        fn refresh(
+            &self,
+            cached: SanitizedDesktopStateV1,
+        ) -> Result<SanitizedDesktopStateV1, &'static str> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            self.started.wait();
+            self.release.wait();
+            Ok(cached)
+        }
+    }
+
+    #[test]
+    fn concurrent_refresh_requests_join_one_in_flight_commit() {
+        let source = Arc::new(BlockingRefreshSource::new());
+        let core = NativeCore::with_refresh_source(source.clone());
+        let notices = core.revision_notices().unwrap();
+
+        assert!(core.request_refresh().unwrap().accepted);
+        source.started.wait();
+
+        assert_eq!(core.panel_state().unwrap().revision, "1");
+        assert!(core.request_refresh().unwrap().accepted);
+        assert_eq!(source.runs.load(Ordering::SeqCst), 1);
+
+        source.release.wait();
+        let notice = notices.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(notice.revision, "2");
+        assert_eq!(core.panel_state().unwrap().revision, "2");
+        assert!(notices.recv_timeout(Duration::from_millis(50)).is_err());
+        assert_eq!(source.runs.load(Ordering::SeqCst), 1);
     }
 
     #[test]

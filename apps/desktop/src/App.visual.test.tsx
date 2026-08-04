@@ -1,51 +1,48 @@
-import {
-  sanitizedDesktopStateSchema,
-  type SanitizedDesktopState,
-} from "@touchgrass/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
-import { DevFixtureSwitcher } from "./components/dev-fixture-switcher";
+import {
+  createBrowserSanitizedDesktopStateAdapter,
+  type BrowserFixtureName,
+} from "@/browserSanitizedDesktopStateAdapter";
+import { DevFixtureSwitcher } from "@/components/dev-fixture-switcher";
 import {
   DoomerboardPreview,
   TokenmaxxersEmpty,
-} from "./components/panel/doomerboard-preview";
-import { PanelView } from "./components/panel/panel-view";
-import { OnboardingScreen } from "./components/screens/onboarding-screen";
-import { SettingsScreen } from "./components/screens/settings-screen";
-import { browserFixture } from "./nativeState";
+} from "@/components/panel/doomerboard-preview";
+import { PanelView } from "@/components/panel/panel-view";
+import { OnboardingScreen } from "@/components/screens/onboarding-screen";
+import { SettingsScreen } from "@/components/screens/settings-screen";
 import {
   currentDoomerboardPreviewRows,
   currentUsagePreview,
   friendsDoomerboardPreviewRows,
-} from "./previewFixtures";
+} from "@/previewFixtures";
+import { createSanitizedDesktopStateDelivery } from "@/sanitizedDesktopStateDelivery";
 
-const unavailableState: SanitizedDesktopState = {
-  contractVersion: 1,
-  generatedAt: "2026-08-03T00:00:00.000Z",
-  providers: [
-    { availability: "unavailable", provider: "codex", quotaLanes: [] },
-    { availability: "unavailable", provider: "claude", quotaLanes: [] },
-  ],
-  revision: "1",
-  sync: { lastSuccessfulAt: null, status: "unavailable" },
-  usage: {
-    claude: {
-      sevenDays: { availability: "unavailable" },
-      thirtyDays: { availability: "unavailable" },
-      today: { availability: "unavailable" },
-    },
-    codex: {
-      sevenDays: { availability: "unavailable" },
-      thirtyDays: { availability: "unavailable" },
-      today: { availability: "unavailable" },
-    },
-  },
-};
+async function deliveredBrowserFixture(name: BrowserFixtureName) {
+  const delivery = createSanitizedDesktopStateDelivery(
+    createBrowserSanitizedDesktopStateAdapter(
+      name,
+      () => new Date("2026-08-03T00:00:00.000Z"),
+    ),
+  );
 
-const currentState = sanitizedDesktopStateSchema.parse(
-  browserFixture("current", new Date("2026-08-03T00:00:00.000Z")),
-);
+  let stop: (() => void) | undefined;
+  const delivered = new Promise<void>((resolve, reject) => {
+    stop = delivery.subscribe(() => {
+      const view = delivery.getSnapshot();
+      if (view.phase === "ready") resolve();
+      if (view.phase === "degraded") reject(new Error("fixture unavailable"));
+    });
+  });
+  await delivered;
+  stop?.();
+
+  const snapshot = delivery.getSnapshot().snapshot;
+  if (snapshot === null) throw new Error("fixture unavailable");
+  return snapshot;
+}
 
 describe("approved panel presentation contract", () => {
   test("offers a compact development fixture switcher", () => {
@@ -65,7 +62,8 @@ describe("approved panel presentation contract", () => {
     expect(markup).not.toContain("bg-[#111713e8]");
   });
 
-  test("keeps the complete unavailable panel stable", () => {
+  test("keeps the complete unavailable panel stable", async () => {
+    const unavailableState = await deliveredBrowserFixture("unavailable");
     const markup = renderToStaticMarkup(
       <PanelView
         error={false}
@@ -140,7 +138,8 @@ describe("approved panel presentation contract", () => {
     expect(markup).toContain("animate-pulse motion-reduce:animate-none");
   });
 
-  test("shows the primary update action only when an update is available", () => {
+  test("shows the primary update action only when an update is available", async () => {
+    const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(
       <PanelView
         error={false}
@@ -161,7 +160,8 @@ describe("approved panel presentation contract", () => {
     expect(markup).not.toContain(">Update</button>");
   });
 
-  test("renders the populated development fixture without changing the production fallback", () => {
+  test("renders the populated development fixture without changing the production fallback", async () => {
+    const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(
       <PanelView
         doomerboardPreviewRows={currentDoomerboardPreviewRows}

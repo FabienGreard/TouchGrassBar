@@ -2,10 +2,12 @@ pub mod sanitized;
 
 use std::time::Instant;
 
-use sanitized::{NativeCore, RefreshReceipt, SanitizedDesktopStateV1};
+use sanitized::{
+    NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RevisionNotice, SanitizedDesktopStateV1,
+};
 use tauri::{
-    ActivationPolicy, AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position,
-    Rect, Size, State, WebviewWindow,
+    ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    Position, Rect, Size, State, WebviewWindow,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -263,6 +265,20 @@ pub fn run() {
                 #[cfg(target_os = "macos")]
                 configure_macos_panel(&panel)?;
             }
+
+            let revision_notices = app
+                .state::<NativeCore>()
+                .revision_notices()
+                .map_err(std::io::Error::other)?;
+            let revision_notice_app = app.handle().clone();
+            std::thread::Builder::new()
+                .name("sanitized-state-revision-notices".to_owned())
+                .spawn(move || {
+                    while let Ok(notice) = revision_notices.recv() {
+                        let _ = revision_notice_app
+                            .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
+                    }
+                })?;
 
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;

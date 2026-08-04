@@ -1,7 +1,7 @@
 import { cn } from "@touchgrass/ui/lib/utils";
 import type { ComponentProps, ReactNode } from "react";
 
-import type { BrowserFixtureName } from "../nativeState";
+import type { BrowserFixtureName } from "@/browserSanitizedDesktopStateAdapter";
 
 type FixtureSwitcherProps = ComponentProps<"aside"> & {
   children: ReactNode;
