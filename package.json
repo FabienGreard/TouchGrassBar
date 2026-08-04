@@ -14,6 +14,7 @@
     "doctor:score": "bunx --bun react-doctor@0.9.3 --yes --json --json-compact",
     "lint": "bunx --bun turbo run lint",
     "test": "bunx --bun turbo run test",
+    "test:visual": "bun run --cwd apps/desktop test:visual",
     "typecheck": "bunx --bun turbo run typecheck",
     "quality": "bun run contracts:check && bun run lint && bun run typecheck && bun run test && bun run build && bun run doctor",
     "convex:dev": "bunx --bun convex dev",

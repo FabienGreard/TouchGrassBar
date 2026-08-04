@@ -1,7 +1,5 @@
 import {
   Button,
-  CheckIcon,
-  CopyIcon,
   InviteIcon,
   PanelMenu,
   PanelMenuContent,
@@ -95,7 +93,7 @@ function CurrentUserIdentity({
   >("idle");
 
   useEffect(() => {
-    if (copyStatus !== "copied") {
+    if (copyStatus === "idle") {
       return undefined;
     }
 
@@ -147,27 +145,18 @@ function CurrentUserIdentity({
         variant="quiet"
       >
         <span className="truncate">{identity}</span>
-        {copyStatus === "copied" ? (
-          <CheckIcon
-            aria-hidden="true"
-            className="size-3"
-            data-copy-indicator="check"
-          />
-        ) : (
-          <CopyIcon
-            aria-hidden="true"
-            className="size-3"
-            data-copy-indicator="copy"
-          />
-        )}
-        <span aria-live="polite" className="sr-only">
-          {copyStatus === "copied"
-            ? "Identity copied"
-            : copyStatus === "unavailable"
-              ? "Identity could not be copied"
-              : ""}
-        </span>
       </Button>
+      <span
+        aria-live="polite"
+        className="font-mono text-[7px] text-cream-ink"
+        data-copy-feedback={copyStatus}
+      >
+        {copyStatus === "copied"
+          ? "Copied"
+          : copyStatus === "unavailable"
+            ? "Unavailable"
+            : ""}
+      </span>
     </span>
   );
 }
@@ -373,17 +362,17 @@ function DoomerboardPreview({
   tokenmaxxerPreviewRows?: readonly DoomerboardPreviewRow[] | undefined;
 }) {
   const [audience, setAudience] = useState<Audience>(initialAudience);
-  const [period, setPeriod] = useState("month");
+  const [period, setPeriod] = useState("today");
   const [provider, setProvider] = useState("combined");
   const fixtureMatchesSelection =
     previewRows !== undefined &&
     audience === "global" &&
-    period === "month" &&
+    period === "today" &&
     provider === "combined";
   const tokenmaxxersMatchSelection =
     tokenmaxxerPreviewRows !== undefined &&
     audience === "mine" &&
-    period === "month" &&
+    period === "today" &&
     provider === "combined";
   const tokenmaxxersEmpty =
     audience === "mine" && tokenmaxxerPreviewRows === undefined;

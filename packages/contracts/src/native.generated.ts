@@ -15,6 +15,7 @@ export const usageTotalSchema = z.discriminatedUnion("availability", [z.object({
 export const usagePeriodsSchema = z.object({ sevenDays: usageTotalSchema, thirtyDays: usageTotalSchema, today: usageTotalSchema }).strict();
 export const usageByProviderSchema = z.object({ claude: usagePeriodsSchema, codex: usagePeriodsSchema }).strict();
 export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal(1), generatedAt: z.string().datetime(), providers: z.tuple([providerSnapshotSchema, providerSnapshotSchema]), revision: z.string().regex(/^[1-9]\d*$/), sync: syncStateSchema, usage: usageByProviderSchema }).strict();
+export const refreshReceiptSchema = z.object({ accepted: z.boolean() }).strict();
 export const revisionNoticeSchema = z.object({ revision: z.string().regex(/^[1-9]\d*$/) }).strict();
 
 export type CodingProvider = z.infer<typeof codingProviderSchema>;
@@ -28,4 +29,5 @@ export type UsageTotal = z.infer<typeof usageTotalSchema>;
 export type UsagePeriods = z.infer<typeof usagePeriodsSchema>;
 export type UsageByProvider = z.infer<typeof usageByProviderSchema>;
 export type SanitizedDesktopState = z.infer<typeof sanitizedDesktopStateSchema>;
+export type RefreshReceipt = z.infer<typeof refreshReceiptSchema>;
 export type RevisionNotice = z.infer<typeof revisionNoticeSchema>;

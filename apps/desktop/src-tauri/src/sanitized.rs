@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
+use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub const CONTRACT_VERSION: u8 = 1;
@@ -140,6 +141,12 @@ pub struct RevisionNotice {
     pub revision: String,
 }
 
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshReceipt {
+    pub accepted: bool,
+}
+
 #[derive(Debug)]
 pub struct NativeCore {
     state: Mutex<SanitizedDesktopStateV1>,
@@ -159,17 +166,9 @@ impl NativeCore {
             .map_err(|_| "native state unavailable")
     }
 
-    pub fn request_refresh(&self) -> Result<RevisionNotice, &'static str> {
-        let mut state = self.state.lock().map_err(|_| "native state unavailable")?;
-        let next_revision = state
-            .revision
-            .parse::<u64>()
-            .unwrap_or_default()
-            .saturating_add(1);
-        *state = unavailable_state(next_revision);
-        Ok(RevisionNotice {
-            revision: state.revision.clone(),
-        })
+    pub fn request_refresh(&self) -> Result<RefreshReceipt, &'static str> {
+        let _state = self.state.lock().map_err(|_| "native state unavailable")?;
+        Ok(RefreshReceipt { accepted: true })
     }
 }
 
@@ -217,6 +216,16 @@ pub fn native_contract_schema() -> Schema {
     schema_for!(SanitizedDesktopStateV1)
 }
 
+pub fn native_contract_export() -> Value {
+    json!({
+        "contractVersion": CONTRACT_VERSION,
+        "refreshReceiptSchema": schema_for!(RefreshReceipt),
+        "revisionNoticeEvent": REVISION_NOTICE_EVENT,
+        "revisionNoticeSchema": schema_for!(RevisionNotice),
+        "stateSchema": native_contract_schema(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
@@ -233,6 +242,18 @@ mod tests {
             json!({ "availability": "unavailable" })
         );
         assert!(value.to_string().find("observedTokens").is_none());
+    }
+
+    #[test]
+    fn refresh_acknowledgement_preserves_the_cached_snapshot() {
+        let core = NativeCore::unavailable();
+        let before = serde_json::to_value(core.panel_state().unwrap()).unwrap();
+
+        let receipt = core.request_refresh().unwrap();
+        let after = serde_json::to_value(core.panel_state().unwrap()).unwrap();
+
+        assert!(receipt.accepted);
+        assert_eq!(after, before);
     }
 
     #[test]
@@ -270,14 +291,5 @@ mod tests {
         }
 
         assert_clean(&value, &prohibited);
-    }
-
-    #[test]
-    fn refresh_commits_before_returning_a_higher_revision() {
-        let core = NativeCore::unavailable();
-        let notice = core.request_refresh().unwrap();
-        let state = core.panel_state().unwrap();
-        assert_eq!(notice.revision, "2");
-        assert_eq!(state.revision, notice.revision);
     }
 }

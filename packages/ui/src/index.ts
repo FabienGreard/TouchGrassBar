@@ -43,7 +43,6 @@ export type { MetricCardTrendTone } from "./lib/metric";
 export { normalizeTouchGrassId } from "./lib/touchgrass-id";
 export {
   CheckIcon,
-  CopyIcon,
   DownloadIcon,
   EllipsisIcon,
   InviteIcon,

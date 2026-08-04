@@ -24,6 +24,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: JavaScript and TypeScript quality
         run: bun quality
+      - name: Desktop visual regression
+        run: bun test:visual
       - name: Rust formatting
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
       - name: Rust tests

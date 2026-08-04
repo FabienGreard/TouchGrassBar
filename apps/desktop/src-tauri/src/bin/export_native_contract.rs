@@ -1,9 +1,9 @@
-use touchgrassbar_lib::sanitized::native_contract_schema;
+use touchgrassbar_lib::sanitized::native_contract_export;
 
 fn main() {
-    let schema = native_contract_schema();
+    let contract = native_contract_export();
     println!(
         "{}",
-        serde_json::to_string_pretty(&schema).expect("native contract schema must serialize")
+        serde_json::to_string_pretty(&contract).expect("native contract must serialize")
     );
 }

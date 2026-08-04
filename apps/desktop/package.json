@@ -7,7 +7,8 @@
   "scripts": {
     "build": "bunx --bun vite build",
     "dev": "bunx --bun vite",
-    "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src vite.config.ts",
+    "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src e2e vite.config.ts playwright.config.ts",
+    "test:visual": "playwright test",
     "tauri": "bunx --bun tauri",
     "test": "bunx vitest run",
     "typecheck": "bunx --bun tsc --noEmit"
@@ -20,8 +21,9 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.4",
+    "@playwright/test": "1.60.0",
     "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.11.4",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.5",

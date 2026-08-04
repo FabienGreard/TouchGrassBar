@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   acceptNewerSnapshot,
   browserFixture,
+  createCoalescedSnapshotReader,
   resolveBrowserFixtureName,
   shouldHidePanel,
   unavailableBrowserFixture,
@@ -107,6 +108,30 @@ describe("native state ordering", () => {
     expect(
       acceptNewerSnapshot(current, state("9007199254740994")).revision,
     ).toBe("9007199254740994");
+  });
+
+  test("performs one trailing read when invalidated during an active read", async () => {
+    const reader = createCoalescedSnapshotReader();
+    const releases: Array<() => void> = [];
+    let calls = 0;
+    const read = () =>
+      new Promise<void>((resolve) => {
+        calls += 1;
+        releases.push(resolve);
+      });
+
+    const request = reader.run(read);
+    expect(calls).toBe(1);
+    expect(reader.run(read)).toBe(request);
+    expect(reader.run(read)).toBe(request);
+
+    releases.shift()?.();
+    await Promise.resolve();
+    expect(calls).toBe(2);
+
+    releases.shift()?.();
+    await request;
+    expect(calls).toBe(2);
   });
 
   test("supports native panel dismissal shortcuts", () => {

@@ -2,7 +2,6 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import {
   CheckIcon,
-  CopyIcon,
   DownloadIcon,
   EllipsisIcon,
   InviteIcon,
@@ -122,15 +121,6 @@ export const Catalog: Story = {
           tone={tone}
         />
         More
-      </span>
-      <span className="flex items-center gap-2 text-xs">
-        <CopyIcon
-          aria-label="Copy"
-          size={size}
-          strokeWidth={strokeWidth}
-          tone={tone}
-        />
-        Copy
       </span>
       <span className="flex items-center gap-2 text-xs">
         <CheckIcon

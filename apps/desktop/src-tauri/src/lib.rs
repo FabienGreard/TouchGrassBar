@@ -2,10 +2,10 @@ pub mod sanitized;
 
 use std::time::Instant;
 
-use sanitized::{NativeCore, REVISION_NOTICE_EVENT, RevisionNotice, SanitizedDesktopStateV1};
+use sanitized::{NativeCore, RefreshReceipt, SanitizedDesktopStateV1};
 use tauri::{
-    ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    Position, Rect, Size, State, WebviewWindow,
+    ActivationPolicy, AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position,
+    Rect, Size, State, WebviewWindow,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -193,25 +193,15 @@ fn get_sanitized_state(
 fn request_refresh(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
-) -> Result<RevisionNotice, String> {
+) -> Result<RefreshReceipt, String> {
     require_panel(&window)?;
-    let notice = core.request_refresh().map_err(str::to_owned)?;
-    window
-        .emit(REVISION_NOTICE_EVENT, notice.clone())
-        .map_err(|_| "state notice unavailable".to_owned())?;
-    Ok(notice)
+    core.request_refresh().map_err(str::to_owned)
 }
 
-fn refresh_and_notify(app: &AppHandle) -> Result<(), String> {
-    let notice = app
-        .state::<NativeCore>()
+fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
+    app.state::<NativeCore>()
         .request_refresh()
         .map_err(str::to_owned)?;
-    if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
-        panel
-            .emit(REVISION_NOTICE_EVENT, notice)
-            .map_err(|_| "state notice unavailable".to_owned())?;
-    }
     Ok(())
 }
 
@@ -291,7 +281,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "refresh" => {
-                        let _ = refresh_and_notify(app);
+                        let _ = request_native_refresh(app);
                     }
                     "settings" => {
                         let _ = show_settings(app);

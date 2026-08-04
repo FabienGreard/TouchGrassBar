@@ -94,7 +94,7 @@ describe("approved panel presentation contract", () => {
     expect(markup).not.toContain("My Tokenmaxxers");
     expect(markup).toContain("Global");
     expect(markup).toMatch(
-      /aria-label="Select Doomerboard period"[^>]*>30 days<\/button>/,
+      /aria-label="Select Doomerboard period"[^>]*>Today<\/button>/,
     );
     expect(markup).toContain("Combined");
     expect(markup).toContain('aria-label="Select Doomerboard period"');
@@ -186,8 +186,8 @@ describe("approved panel presentation contract", () => {
       'aria-label="Copy current user identity Fabien#TG-7K4P9D"',
     );
     expect(markup).toContain('data-copy-status="idle"');
-    expect(markup).toContain('data-copy-indicator="copy"');
-    expect(markup).not.toContain('data-copy-indicator="check"');
+    expect(markup).not.toContain("data-copy-indicator");
+    expect(markup).toContain('data-copy-feedback="idle"');
     expect(markup).not.toContain(">Copied<");
     expect(markup).toContain('data-slot="current-user-identity"');
     expect(markup).not.toContain('data-slot="panel-identity-footer"');

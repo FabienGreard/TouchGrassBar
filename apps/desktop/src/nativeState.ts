@@ -159,6 +159,35 @@ export function acceptNewerSnapshot(
   return candidate;
 }
 
+type SnapshotRead = () => Promise<void>;
+
+export function createCoalescedSnapshotReader() {
+  let activeRead: Promise<void> | null = null;
+  let pendingRead: SnapshotRead | null = null;
+
+  return {
+    run(read: SnapshotRead) {
+      if (activeRead !== null) {
+        pendingRead = read;
+        return activeRead;
+      }
+
+      activeRead = (async () => {
+        let nextRead: SnapshotRead | null = read;
+        while (nextRead !== null) {
+          pendingRead = null;
+          await nextRead();
+          nextRead = pendingRead;
+        }
+      })().finally(() => {
+        activeRead = null;
+      });
+
+      return activeRead;
+    },
+  };
+}
+
 export function shouldHidePanel(event: Pick<KeyboardEvent, "key" | "metaKey">) {
   return (
     event.key === "Escape" || (event.metaKey && event.key.toLowerCase() === "w")

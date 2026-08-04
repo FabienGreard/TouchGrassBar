@@ -3,14 +3,16 @@ import { listen } from "@tauri-apps/api/event";
 import type { SanitizedDesktopState } from "@touchgrass/contracts";
 import {
   REVISION_NOTICE_EVENT,
+  refreshReceiptSchema,
   revisionNoticeSchema,
   sanitizedDesktopStateSchema,
 } from "@touchgrass/contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   acceptNewerSnapshot,
   browserFixture,
+  createCoalescedSnapshotReader,
   resolveBrowserFixtureName,
   shouldHidePanel,
 } from "../../nativeState";
@@ -25,7 +27,7 @@ function PanelScreen() {
   const [state, setState] = useState<SanitizedDesktopState | null>(null);
   const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const requestInFlight = useRef<Promise<void> | null>(null);
+  const [snapshotReader] = useState(createCoalescedSnapshotReader);
   const hasNativeRuntime = "__TAURI_INTERNALS__" in window;
   const previewFixtureName = hasNativeRuntime
     ? "unavailable"
@@ -34,17 +36,15 @@ function PanelScreen() {
     previewFixtureName === "current" || previewFixtureName === "update";
 
   const readSnapshot = useCallback(() => {
-    if (requestInFlight.current) return requestInFlight.current;
-    const payloadRequest =
-      import.meta.env.DEV && !hasNativeRuntime
-        ? Promise.resolve(
-            previewFixtureName === "loading"
-              ? null
-              : browserFixture(previewFixtureName),
-          )
-        : invoke<unknown>("get_sanitized_state");
-    const request = payloadRequest
-      .then((rawPayload) => {
+    return snapshotReader.run(async () => {
+      try {
+        const rawPayload = await (import.meta.env.DEV && !hasNativeRuntime
+          ? Promise.resolve(
+              previewFixtureName === "loading"
+                ? null
+                : browserFixture(previewFixtureName),
+            )
+          : invoke<unknown>("get_sanitized_state"));
         if (rawPayload === null && previewFixtureName === "loading") {
           setState(null);
           setError(false);
@@ -53,14 +53,11 @@ function PanelScreen() {
         const candidate = sanitizedDesktopStateSchema.parse(rawPayload);
         setState((current) => acceptNewerSnapshot(current, candidate));
         setError(false);
-      })
-      .catch(() => setError(true))
-      .finally(() => {
-        requestInFlight.current = null;
-      });
-    requestInFlight.current = request;
-    return request;
-  }, [hasNativeRuntime, previewFixtureName]);
+      } catch {
+        setError(true);
+      }
+    });
+  }, [hasNativeRuntime, previewFixtureName, snapshotReader]);
 
   useEffect(() => {
     let active = true;
@@ -114,7 +111,9 @@ function PanelScreen() {
   const refresh = () => {
     setRefreshing(true);
     const request = hasNativeRuntime
-      ? invoke("request_refresh")
+      ? invoke<unknown>("request_refresh").then((payload) =>
+          refreshReceiptSchema.parse(payload),
+        )
       : Promise.resolve();
     void request.then(() => readSnapshot()).finally(() => setRefreshing(false));
   };

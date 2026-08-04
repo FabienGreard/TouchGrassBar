@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { sanitizedDesktopStateSchema, tokenmaxxerSchema } from "./index";
+import {
+  refreshReceiptSchema,
+  sanitizedDesktopStateSchema,
+  tokenmaxxerSchema,
+} from "./index";
 
 const unavailableState = {
   contractVersion: 1,
@@ -40,6 +44,19 @@ describe("public contracts", () => {
       unavailableState,
     );
     expect(JSON.stringify(unavailableState)).not.toContain("observedTokens");
+  });
+
+  test("accepts only the Rust-owned refresh acknowledgement shape", () => {
+    expect(refreshReceiptSchema.parse({ accepted: true })).toEqual({
+      accepted: true,
+    });
+    expect(
+      refreshReceiptSchema.safeParse({ accepted: "yes" }).success,
+    ).toBe(false);
+    expect(
+      refreshReceiptSchema.safeParse({ accepted: true, revision: "2" })
+        .success,
+    ).toBe(false);
   });
 
   test.each([

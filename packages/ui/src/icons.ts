@@ -1,6 +1,5 @@
 import {
   CheckIcon as HugeCheckIcon,
-  Copy01Icon as HugeCopyIcon,
   Download04Icon as HugeDownloadIcon,
   MoreHorizontalCircle01Icon,
   MoreHorizontalIcon,
@@ -72,7 +71,6 @@ function createIcon(icon: IconSvgElement, displayName: string) {
 }
 
 const CheckIcon: TouchGrassIcon = createIcon(HugeCheckIcon, "CheckIcon");
-const CopyIcon: TouchGrassIcon = createIcon(HugeCopyIcon, "CopyIcon");
 const DownloadIcon: TouchGrassIcon = createIcon(
   HugeDownloadIcon,
   "DownloadIcon",
@@ -101,7 +99,6 @@ const InviteIcon: TouchGrassIcon = createIcon(UserAdd01Icon, "InviteIcon");
 
 export {
   CheckIcon,
-  CopyIcon,
   DownloadIcon,
   EllipsisIcon,
   InviteIcon,
