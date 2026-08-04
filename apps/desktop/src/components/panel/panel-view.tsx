@@ -5,12 +5,12 @@ import { useRef, useState } from "react";
 import type {
   DoomerboardPreviewRow,
   UsagePreview,
-} from "../../previewFixtures";
-import { LoadingPanel } from "./loading-panel";
-import { DoomerboardPreview } from "./doomerboard-preview";
-import { PanelHeader } from "./panel-header";
-import { ProviderCard } from "./provider-card";
-import { UsageOverview } from "./usage-overview";
+} from "@/previewFixtures";
+import { DoomerboardPreview } from "@/components/panel/doomerboard-preview";
+import { LoadingPanel } from "@/components/panel/loading-panel";
+import { PanelHeader } from "@/components/panel/panel-header";
+import { ProviderCard } from "@/components/panel/provider-card";
+import { UsageOverview } from "@/components/panel/usage-overview";
 
 type PanelViewProps = {
   doomerboardPreviewRows?: readonly DoomerboardPreviewRow[] | undefined;

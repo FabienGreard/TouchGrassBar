@@ -8,7 +8,7 @@ import {
 } from "@touchgrass/ui";
 import { useEffect, useState } from "react";
 
-import { ScreenSidebar } from "./screen-sidebar";
+import { ScreenSidebar } from "@/components/screens/screen-sidebar";
 
 function SettingsScreen() {
   const [launchAtLogin, setLaunchAtLogin] = useState<boolean | null>(null);

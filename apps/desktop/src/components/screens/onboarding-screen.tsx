@@ -8,7 +8,7 @@ import {
   ProviderStatusIcon,
 } from "@touchgrass/ui";
 
-import { ScreenSidebar } from "./screen-sidebar";
+import { ScreenSidebar } from "@/components/screens/screen-sidebar";
 
 function ProviderStatusRow({ provider }: { provider: "claude" | "codex" }) {
   const label = provider === "codex" ? "Codex" : "Claude";

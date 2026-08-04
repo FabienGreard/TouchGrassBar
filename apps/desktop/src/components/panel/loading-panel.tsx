@@ -1,8 +1,8 @@
 import type { ProviderSnapshot } from "@touchgrass/contracts";
 
-import { DoomerboardPreview } from "./doomerboard-preview";
-import { ProviderCard } from "./provider-card";
-import { UsageOverview } from "./usage-overview";
+import { DoomerboardPreview } from "@/components/panel/doomerboard-preview";
+import { ProviderCard } from "@/components/panel/provider-card";
+import { UsageOverview } from "@/components/panel/usage-overview";
 
 const loadingProviders = [
   {

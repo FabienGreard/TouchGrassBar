@@ -12,7 +12,7 @@ import {
 } from "@touchgrass/ui";
 import { useEffect, useState } from "react";
 
-import type { DoomerboardPreviewRow } from "../../previewFixtures";
+import type { DoomerboardPreviewRow } from "@/previewFixtures";
 
 const periodOptions = [
   { label: "Today", value: "today" },

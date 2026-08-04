@@ -10,7 +10,7 @@ import {
   getMetricTrendTone,
 } from "@touchgrass/ui";
 
-import type { UsageMetricPreview, UsagePreview } from "../../previewFixtures";
+import type { UsageMetricPreview, UsagePreview } from "@/previewFixtures";
 
 const tokenFormatter = new Intl.NumberFormat("en", {
   maximumFractionDigits: 1,
