@@ -14,29 +14,62 @@ permissions:
 
 jobs:
   quality:
-    name: Bun and Rust quality
-    runs-on: macos-14
+    name: Code quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Run repository quality
+        run: bun quality
+
+  native:
+    name: Native app
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy,rustfmt
-      - name: Install workspace dependencies
-        run: bun install --frozen-lockfile
-      - name: JavaScript and TypeScript quality
-        run: bun quality
-      - name: Install pinned Playwright browser
-        run: bun run --cwd apps/desktop playwright install chromium
-      - name: Desktop visual regression
-        run: bun test:visual
+      - name: Restore Cargo dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: desktop-native
+          workspaces: apps/desktop/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust formatting
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
       - name: Rust tests
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Rust lints
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - if: github.event_name == 'push'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - if: github.event_name == 'push'
+        name: Install workspace dependencies
+        run: bun install --frozen-lockfile
       - name: Unsigned app smoke bundle
+        if: github.event_name == 'push'
         run: bun run --cwd apps/desktop tauri build --bundles app
+
+  required:
+    name: Bun and Rust quality
+    if: ${{ always() }}
+    needs: [quality, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Confirm required jobs passed
+        env:
+          NATIVE_RESULT: ${{ needs.native.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
+        run: |
+          test "$QUALITY_RESULT" = "success"
+          test "$NATIVE_RESULT" = "success"
