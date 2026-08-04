@@ -32,13 +32,9 @@ function ProfileStep({
       />
       <div className="grid gap-1 px-1 text-[8px] leading-3.5 text-sheet-muted">
         <small>
-          Your name, ID, and daily scores are public. A Profile is required to
-          continue.
-        </small>
-        <small>
-          First sync may publish available totals for the current UTC day and
-          previous 29; missing stays missing. Prompts, conversations,
-          credentials, raw logs, and file paths stay on this Mac.
+          Other people can see your Display Name, TouchGrass ID, and daily
+          scores on the Doomerboard. They cannot see your prompts,
+          conversations, credentials, logs, or files.
         </small>
       </div>
     </div>

@@ -42,14 +42,10 @@ describe("onboarding screen", () => {
     expect(profileMarkup).toContain('aria-label="Display name"');
     expect(profileMarkup).not.toContain("Fabien");
     expect(profileMarkup).toContain(
-      "Your name, ID, and daily scores are public.",
+      "Other people can see your Display Name, TouchGrass ID, and daily scores on the Doomerboard.",
     );
-    expect(profileMarkup).toContain("A Profile is required to");
-    expect(profileMarkup).toContain("continue.");
-    expect(profileMarkup).toContain("current UTC day");
-    expect(profileMarkup).toContain("previous 29");
     expect(profileMarkup).toContain(
-      "Prompts, conversations, credentials, raw logs, and file paths stay on this Mac.",
+      "They cannot see your prompts, conversations, credentials, logs, or files.",
     );
     expect(profileMarkup).not.toContain('type="checkbox"');
     expect(unavailableFinishMarkup).toContain('data-setup-state="unavailable"');

@@ -196,7 +196,7 @@ test.describe("onboarding visual states", () => {
   });
 });
 
-test("onboarding does not allow mandatory disclosure to be skipped", async ({
+test("onboarding does not allow required steps to be skipped", async ({
   page,
 }) => {
   await openOnboarding(page, "providers");
@@ -218,7 +218,9 @@ test("onboarding does not allow mandatory disclosure to be skipped", async ({
   await expect(profileStep).toBeEnabled();
   await expect(finishStep).toBeDisabled();
   await expect(
-    page.getByText(/Your name, ID, and daily scores are public/),
+    page.getByText(
+      /Other people can see your Display Name, TouchGrass ID, and daily scores on the Doomerboard/,
+    ),
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Continue", exact: true }).click();
