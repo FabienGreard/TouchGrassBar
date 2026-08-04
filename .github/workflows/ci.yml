@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -24,6 +28,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: JavaScript and TypeScript quality
         run: bun quality
+      - name: Install pinned Playwright browser
+        run: bunx --bun playwright install chromium
       - name: Desktop visual regression
         run: bun test:visual
       - name: Rust formatting

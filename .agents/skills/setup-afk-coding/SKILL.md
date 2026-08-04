@@ -63,10 +63,12 @@ Create or update exactly one standalone project automation with:
 - name `<repository name> AFK Coding`;
 - active status and an hourly schedule;
 - the resolved project;
-- worktree execution and destination;
+- local execution and destination in the resolved project;
 - the user's configured default model;
 - `medium` reasoning effort;
 - the compiled prompt.
+
+The control tower may inspect the repository and external control-plane state, but it must not edit, commit, push, or implement in the local project checkout. Worktree isolation belongs to the implementation and recovery workers created by the orchestrator contract.
 
 Use the automation tool rather than writing automation files. Preserve the existing automation id, notification policy, and fields not owned above. Let the application choose its default notification policy for a new automation. Update a matching automation when its schedule, environment, reasoning, status, or contract hash drifts; create only when none exists.
 
@@ -74,6 +76,6 @@ Completion criterion: the automation tool reports one active matching automation
 
 ## 5. Verify the installed control tower
 
-Read the installed automation back through the automation tool. Confirm project, hourly cadence, active status, worktree isolation, `medium` reasoning, prompt hash, and all three embedded contracts. Report the automation id, first eligible run behavior, worker cap, `xhigh` worker setting, minimum-sufficient-proof policy, notification policy, and branch-protection gate.
+Read the installed automation back through the automation tool. Confirm project, hourly cadence, active status, local controller execution, `medium` reasoning, prompt hash, all three embedded contracts, and fresh-worktree isolation for implementation and recovery workers. Report the automation id, first eligible run behavior, worker cap, `xhigh` worker setting, minimum-sufficient-proof policy, notification policy, and branch-protection gate.
 
 The setup is complete only after read-back matches the compiled contract. Do not dispatch a worker directly from this setup run; the hourly automation owns dispatch.

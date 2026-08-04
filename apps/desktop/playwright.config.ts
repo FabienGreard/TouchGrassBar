@@ -17,7 +17,6 @@ export default defineConfig({
   testMatch: "**/*.pw.ts",
   use: {
     baseURL: previewUrl,
-    channel: "chrome",
     colorScheme: "light",
     deviceScaleFactor: 1,
     locale: "en-US",
