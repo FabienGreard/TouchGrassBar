@@ -1,0 +1,6 @@
+interface:
+  display_name: "Setup AFK Coding"
+  short_description: "Install an hourly autonomous coding orchestrator"
+  default_prompt: "Use $setup-afk-coding to install or update this repository’s hourly AFK coding automation."
+policy:
+  allow_implicit_invocation: false
