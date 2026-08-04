@@ -2,6 +2,7 @@
   "name": "@touchgrass/desktop",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "bunx --bun vite build",

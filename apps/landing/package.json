@@ -2,6 +2,7 @@
   "name": "@touchgrass/landing",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "bunx --bun astro build",

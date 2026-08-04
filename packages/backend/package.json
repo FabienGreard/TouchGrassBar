@@ -2,6 +2,7 @@
   "name": "@touchgrass/backend",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "bun run typecheck",

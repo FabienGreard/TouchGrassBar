@@ -26,3 +26,7 @@ bun desktop
 All JavaScript and TypeScript dependency management and scripts run through Bun. TypeScript tests use Vitest; native tests use Cargo. Rust is limited to the Tauri native core.
 
 Read [CONTEXT.md](./CONTEXT.md), [the product definition](./docs/product.md), and [the architecture](./docs/architecture.md) before changing domain behavior.
+
+## License
+
+TouchGrassBar is available under the [MIT License](./LICENSE). Copyright (c) 2026 Fabien Greard.

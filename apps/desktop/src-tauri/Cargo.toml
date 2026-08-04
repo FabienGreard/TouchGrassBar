@@ -3,6 +3,7 @@ name = "touchgrassbar"
 version = "0.0.0"
 description = "The native core for TouchGrassBar"
 authors = ["TouchGrassBar contributors"]
+license = "MIT"
 default-run = "touchgrassbar"
 edition = "2024"
 rust-version = "1.85"
