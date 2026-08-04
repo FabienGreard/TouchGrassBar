@@ -23,6 +23,9 @@
     "contracts:generate": "bun scripts/generate-native-contract.ts",
     "contracts:check": "bun scripts/generate-native-contract.ts --check",
     "desktop": "bun run --cwd apps/desktop tauri dev",
+    "desktop:clean": "cargo clean --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "desktop:build": "bun run desktop:clean && bun run --cwd apps/desktop tauri build --bundles app",
+    "desktop:reset-local": "bun scripts/reset-desktop-local.ts",
     "landing": "bun run --cwd apps/landing dev",
     "storybook:ui": "bun run --cwd packages/ui storybook",
     "storybook:ui:build": "bun run --cwd packages/ui build-storybook"
