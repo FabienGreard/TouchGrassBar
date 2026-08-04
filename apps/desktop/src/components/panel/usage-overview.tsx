@@ -10,7 +10,17 @@ import {
   getMetricTrendTone,
 } from "@touchgrass/ui";
 
-import type { UsageMetricPreview, UsagePreview } from "@/previewFixtures";
+type UsageMetricPresentation = {
+  gaugeFill: number;
+  trend: string;
+  trendDescription: string;
+};
+
+type UsagePresentation = {
+  sevenDays: UsageMetricPresentation;
+  thirtyDays: UsageMetricPresentation;
+  today: UsageMetricPresentation;
+};
 
 const tokenFormatter = new Intl.NumberFormat("en", {
   maximumFractionDigits: 1,
@@ -27,12 +37,12 @@ type GaugeTone = "month" | "today" | "week";
 
 function UsageMetric({
   label,
-  preview,
+  presentation,
   tone,
   total,
 }: {
   label: string;
-  preview?: UsageMetricPreview | undefined;
+  presentation?: UsageMetricPresentation | undefined;
   tone: GaugeTone;
   total: UsageTotal;
 }) {
@@ -41,10 +51,12 @@ function UsageMetric({
       <MetricCard>
         <MetricCardLabel>{label}</MetricCardLabel>
         <MetricCardTrend
-          aria-label={preview?.trendDescription ?? `${label} trend unavailable`}
-          tone={getMetricTrendTone(preview?.trend)}
+          aria-label={
+            presentation?.trendDescription ?? `${label} trend unavailable`
+          }
+          tone={getMetricTrendTone(presentation?.trend)}
         >
-          {preview?.trend ?? "—"}
+          {presentation?.trend ?? "—"}
         </MetricCardTrend>
         <MetricCardValue
           aria-label={`${label} usage unavailable`}
@@ -55,11 +67,11 @@ function UsageMetric({
         <MetricCardDetail>Not observed</MetricCardDetail>
         <MetricCardGauge
           aria-label={
-            preview
-              ? `${label} development preview gauge ${preview.gaugeFill} percent`
+            presentation
+              ? `${label} usage gauge ${presentation.gaugeFill} percent`
               : `${label} usage gauge unavailable`
           }
-          {...(preview ? { fill: preview.gaugeFill } : {})}
+          {...(presentation ? { fill: presentation.gaugeFill } : {})}
           tone={tone}
         />
       </MetricCard>
@@ -70,10 +82,12 @@ function UsageMetric({
     <MetricCard>
       <MetricCardLabel>{label}</MetricCardLabel>
       <MetricCardTrend
-        aria-label={preview?.trendDescription ?? `${label} trend unavailable`}
-        tone={getMetricTrendTone(preview?.trend)}
+        aria-label={
+          presentation?.trendDescription ?? `${label} trend unavailable`
+        }
+        tone={getMetricTrendTone(presentation?.trend)}
       >
-        {preview?.trend ?? "—"}
+        {presentation?.trend ?? "—"}
       </MetricCardTrend>
       <MetricCardValue>
         {tokenFormatter.format(total.observedTokens)}
@@ -86,11 +100,11 @@ function UsageMetric({
       </MetricCardDetail>
       <MetricCardGauge
         aria-label={
-          preview
-            ? `${label} development preview gauge ${preview.gaugeFill} percent`
+          presentation
+            ? `${label} usage gauge ${presentation.gaugeFill} percent`
             : `${label} usage gauge unavailable`
         }
-        {...(preview ? { fill: preview.gaugeFill } : {})}
+        {...(presentation ? { fill: presentation.gaugeFill } : {})}
         tone={tone}
       />
     </MetricCard>
@@ -100,46 +114,45 @@ function UsageMetric({
 type CodexUsage = SanitizedDesktopState["usage"]["codex"];
 
 function UsageOverview({
-  preview,
+  presentation,
   usage,
 }: {
-  preview?: UsagePreview | undefined;
+  presentation?: UsagePresentation | undefined;
   usage: CodexUsage;
 }) {
   return (
     <section
       aria-labelledby="observed-usage-heading"
-      className="border-b border-cream-line bg-usage-surface px-4 py-[13px] contrast-more:border-cream-ink contrast-more:bg-cream-highlight"
-      data-preview-fixture={preview ? "usage" : undefined}
+      className="border-b border-pearl-line bg-usage-surface px-4 py-[13px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight"
     >
       <header className="flex items-center justify-between">
         <h2 className="m-0 text-[10px]" id="observed-usage-heading">
           Observed tokens
         </h2>
-        <small className="text-[8px] text-cream-muted contrast-more:text-cream-ink">
+        <small className="text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
           API equivalent
         </small>
       </header>
       <div className="mt-2">
         <MetricCardGroup>
-        <UsageMetric
-          label="Today"
-          preview={preview?.today}
-          tone="today"
-          total={usage.today}
-        />
-        <UsageMetric
-          label="7 days"
-          preview={preview?.sevenDays}
-          tone="week"
-          total={usage.sevenDays}
-        />
-        <UsageMetric
-          label="30 days"
-          preview={preview?.thirtyDays}
-          tone="month"
-          total={usage.thirtyDays}
-        />
+          <UsageMetric
+            label="Today"
+            presentation={presentation?.today}
+            tone="today"
+            total={usage.today}
+          />
+          <UsageMetric
+            label="7 days"
+            presentation={presentation?.sevenDays}
+            tone="week"
+            total={usage.sevenDays}
+          />
+          <UsageMetric
+            label="30 days"
+            presentation={presentation?.thirtyDays}
+            tone="month"
+            total={usage.thirtyDays}
+          />
         </MetricCardGroup>
       </div>
     </section>
@@ -147,3 +160,4 @@ function UsageOverview({
 }
 
 export { UsageOverview };
+export type { UsageMetricPresentation, UsagePresentation };

@@ -12,7 +12,7 @@
   "app": {
     "macOSPrivateApi": true,
     "security": {
-      "csp": "default-src 'none'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "csp": "default-src 'none'; connect-src ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'",
       "devCsp": "default-src 'self' http://127.0.0.1:1420; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline' http://127.0.0.1:1420; script-src 'self' 'unsafe-eval' http://127.0.0.1:1420"
     },
     "windows": [
@@ -24,6 +24,7 @@
         "resizable": false,
         "decorations": false,
         "transparent": true,
+        "shadow": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false
@@ -33,14 +34,13 @@
         "title": "TouchGrassBar Settings",
         "width": 760,
         "height": 580,
-        "minWidth": 620,
-        "minHeight": 480,
+        "resizable": false,
         "visible": false
       },
       {
         "label": "onboarding",
         "title": "Welcome to TouchGrassBar",
-        "width": 720,
+        "width": 760,
         "height": 580,
         "resizable": false,
         "visible": false
@@ -56,8 +56,9 @@
     "active": true,
     "category": "DeveloperTool",
     "copyright": "Copyright © 2026 TouchGrassBar contributors",
-    "icon": ["../../../packages/ui/src/assets/brand/glass-lily-derived-decay.png"],
+    "icon": ["icons/icon.png", "icons/icon.icns"],
     "macOS": {
+      "infoPlist": "Info.plist",
       "minimumSystemVersion": "15.0"
     },
     "targets": ["app", "dmg"]

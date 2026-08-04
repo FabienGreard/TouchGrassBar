@@ -5,22 +5,23 @@ import { cn } from "#lib/utils";
 
 type BrandMarkProps = ComponentProps<"img"> & {
   size?: "panel" | "sidebar";
-  tone?: "ink" | "reversed";
+  tone?: "color" | "ink" | "reversed";
 };
 
 function BrandMark({
   className,
   size = "panel",
-  tone = "ink",
+  tone = "color",
   ...props
 }: BrandMarkProps) {
   return (
     <img
       alt=""
       className={cn(
-        "object-contain brightness-0",
+        "object-contain",
         size === "panel" ? "size-[18px]" : "size-[23px]",
-        tone === "reversed" && "invert",
+        tone === "ink" && "brightness-0",
+        tone === "reversed" && "brightness-0 invert",
         className,
       )}
       data-size={size}
@@ -42,10 +43,12 @@ function BrandWordmark({ className, ...props }: ComponentProps<"span">) {
       data-slot="brand-wordmark"
       {...props}
     >
-      <strong className="text-[12px] font-bold text-cream-ink">
+      <strong className="text-[12px] font-bold text-pearl-ink">
         TouchGrass
       </strong>
-      <strong className="text-[12px] font-bold text-primary">Bar</strong>
+      <strong className="relative text-[12px] font-bold text-pearl-ink after:absolute after:right-0 after:-bottom-0.5 after:left-0 after:h-0.5 after:rounded-full after:bg-primary after:content-['']">
+        Bar
+      </strong>
     </span>
   );
 }

@@ -7,7 +7,7 @@ import {
   Typeset,
 } from "@storybook/addon-docs/blocks";
 import appBarGlyph from "../assets/brand/lily-glyph-split-decay.png";
-import desktopAppIcon from "../assets/brand/glass-lily-derived-decay.png";
+import desktopAppIcon from "../assets/brand/glass-lily-frosted-pearl.png";
 
 <Meta title="Foundation/Tokens" />
 
@@ -59,8 +59,8 @@ Storybook theme.
   </figure>
 </div>
 
-The desktop bundle uses
-`packages/ui/src/assets/brand/glass-lily-derived-decay.png`.
+The desktop bundle icons in `apps/desktop/src-tauri/icons` are generated from
+`packages/ui/src/assets/brand/glass-lily-frosted-pearl.png`.
 `packages/ui/src/assets/brand/lily-glyph-split-decay.png` is reserved for the
 compact app-bar brand mark.
 
@@ -70,16 +70,16 @@ compact app-bar brand mark.
   <ColorItem
     title="Ink"
     subtitle="Primary text and icon color"
-    colors={{ Ink: "#151311", Muted: "#675b50" }}
+    colors={{ Ink: "#16171c", Muted: "#616575" }}
   />
   <ColorItem
-    title="Cream surfaces"
+    title="Pearl surfaces"
     subtitle="Panel glass and highlighted surfaces"
-    colors={{ Cream: "#f8f4eb", Highlight: "#fffdf5" }}
+    colors={{ Pearl: "#f7f7fc", Highlight: "#fffefe" }}
   />
   <ColorItem
     title="Brand lime"
-    subtitle="Wordmark, selected controls, primary actions, and focus outlines"
+    subtitle="Wordmark underline, selected controls, primary actions, and focus outlines"
     colors={{ Start: "#aefb65", Focus: "#8bea4b", End: "#76d83f" }}
   />
   <ColorItem
@@ -109,7 +109,7 @@ compact app-bar brand mark.
   sampleText="TouchGrassBar — watch the spiral, locally."
 />
 
-### Identity and data
+### Profile and data
 
 <Typeset
   fontFamily='"SFMono-Regular", "SF Mono", ui-monospace, monospace'

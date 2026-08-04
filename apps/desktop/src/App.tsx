@@ -1,48 +1,53 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  PanelScreen,
+  type PanelPresentation,
+} from "@/components/panel/panel-screen";
+import {
+  OnboardingScreen,
+  type OnboardingScreenProps,
+} from "@/components/screens/onboarding/onboarding-screen";
+import {
+  SettingsScreen,
+  type SettingsScreenProps,
+} from "@/components/screens/settings/settings-screen";
+import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
-import type { BrowserFixtureName } from "@/browserSanitizedDesktopStateAdapter";
-import { DevFixtureSwitcher } from "@/components/dev-fixture-switcher";
-import { PanelScreen } from "@/components/panel/panel-screen";
-import { OnboardingScreen } from "@/components/screens/onboarding-screen";
-import { SettingsScreen } from "@/components/screens/settings-screen";
-import type { SanitizedDesktopStateDelivery } from "@/sanitizedDesktopStateDelivery";
+type DesktopSurface = "onboarding" | "panel" | "settings";
 
-type AppProps = {
-  hasNativeRuntime: boolean;
-  previewFixtureName: BrowserFixtureName;
-  stateDelivery: SanitizedDesktopStateDelivery;
-};
+type AppProps =
+  | {
+      hasNativeRuntime: boolean;
+      onboarding?: OnboardingScreenProps | undefined;
+      surface: "onboarding";
+    }
+  | {
+      hasNativeRuntime: boolean;
+      panelPresentation?: PanelPresentation | undefined;
+      stateDelivery: SanitizedDesktopStateDelivery;
+      surface: "panel";
+    }
+  | {
+      hasNativeRuntime: boolean;
+      settings?: SettingsScreenProps | undefined;
+      surface: "settings";
+    };
 
-export function App({
-  hasNativeRuntime,
-  previewFixtureName,
-  stateDelivery,
-}: AppProps) {
-  const hasBrowserPreview = import.meta.env.DEV && !hasNativeRuntime;
-  const previewLabel = hasBrowserPreview
-    ? new URLSearchParams(window.location.search).get("window")
-    : null;
-  const label = hasNativeRuntime
-    ? getCurrentWindow().label
-    : (previewLabel ?? "panel");
-
-  switch (label) {
+function App(props: AppProps) {
+  switch (props.surface) {
     case "settings":
-      return <SettingsScreen />;
+      return <SettingsScreen {...props.settings} />;
     case "onboarding":
-      return <OnboardingScreen />;
-    default:
+      return <OnboardingScreen {...props.onboarding} />;
+    case "panel":
       return (
-        <>
-          <PanelScreen
-            hasNativeRuntime={hasNativeRuntime}
-            previewFixtureName={previewFixtureName}
-            stateDelivery={stateDelivery}
-          />
-          {hasBrowserPreview ? (
-            <DevFixtureSwitcher activeFixture={previewFixtureName} />
-          ) : null}
-        </>
+        <PanelScreen
+          hasNativeRuntime={props.hasNativeRuntime}
+          presentation={props.panelPresentation}
+          stateDelivery={props.stateDelivery}
+        />
       );
   }
 }
+
+export { App };
+export type { AppProps, DesktopSurface };

@@ -26,7 +26,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Settings: Story = {
+export const BasicLayout: Story = {
   render: () => (
     <NativeWindow>
       <NativeWindowSidebar>

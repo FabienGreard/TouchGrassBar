@@ -20,7 +20,7 @@ function MetricCardGroup({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       className={cn(
-        "grid grid-cols-3 divide-x divide-cream-line rounded-[10px] border border-cream-line bg-cream-surface shadow-surface contrast-more:divide-cream-ink contrast-more:border-cream-ink",
+        "grid grid-cols-3 divide-x divide-pearl-line rounded-[10px] border border-pearl-line bg-pearl-surface shadow-surface contrast-more:divide-pearl-ink contrast-more:border-pearl-ink",
         className,
       )}
       data-slot="metric-card-group"
@@ -33,7 +33,7 @@ function MetricCardLabel({ className, ...props }: ComponentProps<"small">) {
   return (
     <small
       className={cn(
-        "text-[8px] text-cream-muted contrast-more:text-cream-ink",
+        "text-[8px] text-pearl-muted contrast-more:text-pearl-ink",
         className,
       )}
       data-slot="metric-card-label"
@@ -73,7 +73,7 @@ function MetricCardDetail({
   return (
     <span
       className={cn(
-        "overflow-hidden text-[7px] text-ellipsis whitespace-nowrap text-cream-muted contrast-more:text-cream-ink",
+        "overflow-hidden text-[7px] text-ellipsis whitespace-nowrap text-pearl-muted contrast-more:text-pearl-ink",
         tone === "positive" && "text-positive",
         className,
       )}
@@ -95,7 +95,7 @@ function MetricCardTrend({
         "absolute top-2 right-2.5 text-[8px] font-bold",
         tone === "positive" && "text-positive",
         tone === "negative" && "text-destructive",
-        tone === "neutral" && "text-cream-muted",
+        tone === "neutral" && "text-pearl-muted",
         className,
       )}
       data-slot="metric-card-trend"
@@ -128,7 +128,7 @@ function MetricCardGauge({
   return (
     <span
       className={cn(
-        "absolute right-2.5 bottom-[7px] left-2.5 block h-[5px] overflow-hidden rounded-full border border-cream-line-soft bg-progress-track shadow-progress-track",
+        "absolute right-2.5 bottom-[7px] left-2.5 block h-[5px] overflow-hidden rounded-full border border-pearl-line-soft bg-progress-track shadow-progress-track",
         className,
       )}
       data-slot="metric-gauge"

@@ -27,10 +27,10 @@ type Story = StoryObj<typeof meta>;
 export const PanelSurface: Story = {
   render: (args) => (
     <PanelShell {...args}>
-      <header className="border-b border-cream-line bg-panel-header px-4 py-4">
+      <header className="border-b border-pearl-line bg-panel-header px-4 py-4">
         <Brand />
       </header>
-      <section className="bg-provider-row px-4 py-6 text-[11px] text-cream-muted">
+      <section className="bg-provider-row px-4 py-6 text-[11px] text-pearl-muted">
         Shared panel surface
       </section>
     </PanelShell>

@@ -13,12 +13,15 @@ body {
   user-select: none;
 }
 
-html[data-desktop-preview="true"] body {
-  min-height: 100vh;
-  padding: 24px;
+html[data-native-runtime="true"],
+html[data-native-runtime="true"] body,
+html[data-native-runtime="true"] #root {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
-html[data-desktop-preview="true"] #root {
-  display: flex;
-  justify-content: center;
+html[data-native-panel="true"] #root {
+  overflow: hidden;
+  border-radius: var(--radius-panel);
 }

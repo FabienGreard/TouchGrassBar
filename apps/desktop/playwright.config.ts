@@ -24,7 +24,7 @@ export default defineConfig({
   },
   webServer: {
     command: "bunx --bun vite --host 127.0.0.1 --port 1431",
-    reuseExistingServer: false,
+    reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     url: previewUrl,
   },

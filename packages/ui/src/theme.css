@@ -33,17 +33,17 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  --color-cream: var(--cream);
-  --color-cream-highlight: var(--cream-highlight);
-  --color-cream-ink: var(--cream-ink);
-  --color-cream-muted: var(--cream-muted);
-  --color-cream-border: var(--cream-border);
-  --color-cream-line: var(--cream-line);
-  --color-cream-line-soft: var(--cream-line-soft);
-  --color-cream-control: var(--cream-control);
-  --color-cream-surface: var(--cream-surface);
-  --color-cream-surface-soft: var(--cream-surface-soft);
-  --color-cream-focus: var(--cream-focus);
+  --color-pearl: var(--pearl);
+  --color-pearl-highlight: var(--pearl-highlight);
+  --color-pearl-ink: var(--pearl-ink);
+  --color-pearl-muted: var(--pearl-muted);
+  --color-pearl-border: var(--pearl-border);
+  --color-pearl-line: var(--pearl-line);
+  --color-pearl-line-soft: var(--pearl-line-soft);
+  --color-pearl-control: var(--pearl-control);
+  --color-pearl-surface: var(--pearl-surface);
+  --color-pearl-surface-soft: var(--pearl-surface-soft);
+  --color-pearl-focus: var(--pearl-focus);
   --color-progress-track: var(--progress-track);
   --color-usage-unavailable: var(--usage-unavailable);
   --color-sheet-ink: var(--sheet-ink);
@@ -102,81 +102,86 @@
 :root {
   color-scheme: light;
   font-family: var(--font-sans);
-  color: var(--cream-ink);
+  color: var(--pearl-ink);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 
-  --background: #f8f4eb;
-  --foreground: #151311;
-  --card: #fffdf5;
-  --card-foreground: #151311;
-  --popover: #fffdf5;
-  --popover-foreground: #151311;
+  --background: #f7f7fc;
+  --foreground: #16171c;
+  --card: #fffefe;
+  --card-foreground: #16171c;
+  --popover: #fffefe;
+  --popover-foreground: #16171c;
   --primary: #8bea4b;
   --primary-foreground: #102009;
   --positive: #477d2c;
-  --secondary: #fffaf0;
-  --secondary-foreground: #151311;
-  --muted: #e9e3ce;
-  --muted-foreground: #675b50;
+  --secondary: #f4f3fa;
+  --secondary-foreground: #16171c;
+  --muted: #e8e8f1;
+  --muted-foreground: #626474;
   --accent: #aefb65;
   --accent-foreground: #102009;
   --destructive: #b42318;
-  --border: #6043242e;
-  --input: #60432424;
+  --border: #4b557328;
+  --input: #4b557320;
   --ring: var(--primary);
   --radius: 10px;
 
-  --cream: #f8f4eb;
-  --cream-highlight: #fffdf5;
-  --cream-ink: #151311;
-  --cream-muted: #675b50;
-  --cream-border: #fff8e6d9;
-  --cream-line: #6043242e;
-  --cream-line-soft: #6043241c;
-  --cream-control: #fffaf0a8;
-  --cream-surface: #fffdf457;
-  --cream-surface-soft: #fffdf44f;
-  --cream-focus: var(--primary);
-  --progress-track: #4b352426;
+  --pearl: #f7f7fc;
+  --pearl-highlight: #fffefe;
+  --pearl-ink: #16171c;
+  --pearl-muted: #616575;
+  --pearl-border: #ffffffde;
+  --pearl-line: #4a55702b;
+  --pearl-line-soft: #4a55701a;
+  --pearl-control: #fbfcffa8;
+  --pearl-surface: #ffffff61;
+  --pearl-surface-soft: #f7f8ff59;
+  --pearl-focus: var(--primary);
+  --progress-track: #46516c24;
   --quota-codex-low: #bbd3ff;
   --quota-codex-high: #2f61ee;
   --quota-claude-low: #ffc7a3;
   --quota-claude-high: #d6551f;
-  --usage-unavailable: #898678;
+  --usage-unavailable: #858997;
 
-  /* Approved standalone native-sheet palette. Keep it separate from panel glass. */
-  --sheet-ink: #151311;
-  --sheet-muted: #625b54;
+  /* Standalone native windows share the pearl material with stronger structure. */
+  --sheet-ink: #16171c;
+  --sheet-muted: #626474;
   --sheet-green: var(--primary);
-  --sheet-border: #ffffffc9;
-  --sheet-line: #1513111f;
-  --sheet-sidebar: #1513110d;
-  --sheet-active: #d5a45e20;
-  --sheet-row-border: #d4dfd1;
-  --board-tab-surface: #1513110d;
+  --sheet-border: #ffffffd6;
+  --sheet-line: #4a557026;
+  --sheet-sidebar: #3038530d;
+  --sheet-active: #8794c324;
+  --sheet-row-border: #cfd5e2;
+  --board-tab-surface: #20263d0d;
   --board-tab-active-border: #76b947;
   --rank-gold-border: #c8953678;
   --rank-silver-border: #949a9670;
   --rank-bronze-border: #ae6f496d;
 
   --panel-background:
+    radial-gradient(circle at 12% 0%, #c7f7df1c, transparent 34%),
+    radial-gradient(circle at 88% 0%, #eadbff24, transparent 36%),
     linear-gradient(
       115deg,
-      #ffffff61 0%,
+      #ffffff70 0%,
       transparent 30%,
-      #fff9e82e 68%,
-      #ffffff45 100%
+      #eef0ff38 68%,
+      #ffffff52 100%
     ),
-    linear-gradient(140deg, #fffdf5e8, #f8f4ebdf);
-  --panel-header-background: linear-gradient(180deg, #fffdf77d, #fff9e826);
-  --provider-row-background: linear-gradient(90deg, #fffaf12e, #ffffff14);
-  --usage-surface-background: linear-gradient(90deg, #fffaf138, #ffffff1a);
+    linear-gradient(140deg, #fffefefa, #eceaf2f7);
+  --panel-header-background: linear-gradient(180deg, #ffffff96, #eef0fb38);
+  --provider-row-background: linear-gradient(90deg, #f7f9ff42, #ffffff1c);
+  --usage-surface-background: linear-gradient(90deg, #f2f5ff4a, #ffffff22);
   --action-background: linear-gradient(#aefb65, #76d83f);
-  --native-sheet-background: linear-gradient(140deg, #fffdf5, #f8f4eb);
-  --sheet-bar-background: linear-gradient(180deg, #ffffff8a, #ffffff26);
-  --sheet-row-background: linear-gradient(135deg, #fbfff9d9, #e6eee3c9);
-  --menu-glass-background: linear-gradient(145deg, #fffffceb, #f7f7f3e2);
+  --native-sheet-background:
+    radial-gradient(circle at 8% 0%, #c7f7df20, transparent 30%),
+    radial-gradient(circle at 92% 0%, #eadbff2b, transparent 34%),
+    linear-gradient(140deg, #fffefe, #eceaf2);
+  --sheet-bar-background: linear-gradient(180deg, #ffffff96, #eef0fb38);
+  --sheet-row-background: linear-gradient(135deg, #ffffffdf, #edf0f7cf);
+  --menu-glass-background: linear-gradient(145deg, #ffffffef, #f1f3f9e5);
   --rank-gold-background: linear-gradient(145deg, #fff3cec9, #deb45cae);
   --rank-silver-background: linear-gradient(145deg, #ffffffc4, #c8cdcaaf);
   --rank-bronze-background: linear-gradient(145deg, #fff0e2c4, #d49369ad);
@@ -200,17 +205,17 @@
     #d87946 100%
   );
   --panel-shadow:
-    inset 0 1px #fff, inset 1px 0 #ffffff8f, inset 0 -1px #6b4e3024,
-    inset 0 0 0 0.5px #6b4e3029, 0 30px 80px #07100b91, 0 6px 22px #0006;
-  --control-shadow: inset 0 1px #fff, 0 1px 4px #5d493119;
-  --progress-track-shadow: inset 0 1px 2px #4b352438;
+    inset 0 1px #fff, inset 1px 0 #ffffffa3, inset 0 -1px #48547524,
+    inset 0 0 0 0.5px #59638124, 0 30px 80px #1b203c52, 0 6px 22px #0005;
+  --control-shadow: inset 0 1px #fff, 0 1px 4px #4d587219;
+  --progress-track-shadow: inset 0 1px 2px #46516c38;
   --surface-shadow: inset 0 1px #ffffff88;
   --action-shadow: inset 0 1px #ffffff99, 0 1px 2px #0003;
   --sync-dot-shadow: 0 0 0 3px #6464571a;
-  --native-sheet-shadow: inset 0 1px #fff, 0 35px 100px #000a;
+  --native-sheet-shadow: inset 0 1px #fff, 0 35px 100px #1b203c70;
   --menu-glass-shadow:
-    inset 0 1px #fff, inset 0 0 0 0.5px #15131116, 0 16px 38px #1117134f;
-  --rank-card-shadow: inset 0 1px #fff9, 0 4px 13px #5d49311c;
+    inset 0 1px #fff, inset 0 0 0 0.5px #20263d14, 0 16px 38px #20263d45;
+  --rank-card-shadow: inset 0 1px #fff9, 0 4px 13px #4d58721c;
 }
 
 @layer base {
@@ -226,6 +231,15 @@
   input {
     font: inherit;
   }
+}
+
+.menu-bar-cursor-click {
+  transform: rotate(-12deg);
+  transform-origin: 4px 4px;
+}
+
+.menu-bar-app-target {
+  background: rgb(255 255 255 / 18%);
 }
 
 @media (prefers-contrast: more) {

@@ -1,0 +1,125 @@
+import { useState } from "react";
+
+import { App } from "@/App";
+import "@/dev/dev-preview.css";
+import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
+import { DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
+import {
+  currentProfile,
+  currentDoomerboardRows,
+  currentUsagePresentation,
+  myTokenmaxxerRows,
+} from "@/dev/panel-fixtures";
+import { resolveDevPreviewScenario } from "@/dev/preview-scenario";
+import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
+
+document.documentElement.dataset.desktopPreview = "true";
+
+function DevPreviewApp() {
+  const [autoUpdates, setAutoUpdates] = useState(true);
+  const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [profile, setProfile] = useState({
+    displayName: "Fabien",
+    touchGrassId: "#TG-7K4P9D",
+  });
+  const [scenario] = useState(() =>
+    resolveDevPreviewScenario(window.location.search),
+  );
+  const [stateDelivery] = useState(() =>
+    createSanitizedDesktopStateDelivery(
+      createBrowserSanitizedDesktopStateAdapter(scenario.fixture),
+    ),
+  );
+  const hasCurrentPanelPresentation =
+    scenario.fixture === "current" || scenario.fixture === "update";
+  const panelPresentation = hasCurrentPanelPresentation
+    ? {
+        currentProfile,
+        doomerboardRows: currentDoomerboardRows,
+        tokenmaxxerRows: myTokenmaxxerRows,
+        updateAvailable: scenario.fixture === "update",
+        usagePresentation: currentUsagePresentation,
+      }
+    : undefined;
+
+  let surface;
+  switch (scenario.surface) {
+    case "onboarding":
+      surface = (
+        <App
+          hasNativeRuntime={false}
+          onboarding={{
+            ...scenario.onboarding,
+            initialDisplayName: "Fabien",
+            onFinish: () => undefined,
+            setupReady: true,
+          }}
+          surface="onboarding"
+        />
+      );
+      break;
+    case "settings":
+      surface = (
+        <App
+          hasNativeRuntime={false}
+          settings={{
+            autoUpdates,
+            codexState: "ready",
+            launchAtLogin,
+            onAutoUpdatesChange: setAutoUpdates,
+            onCheckForUpdates: () => undefined,
+            onLaunchAtLoginChange: setLaunchAtLogin,
+            onOpenSource: () => undefined,
+            onProfileDisplayNameChange: (displayName) =>
+              setProfile((current) => ({ ...current, displayName })),
+            profile,
+            providerState: scenario.settingsProviderState,
+          }}
+          surface="settings"
+        />
+      );
+      break;
+    case "panel":
+      surface = (
+        <App
+          hasNativeRuntime={false}
+          panelPresentation={panelPresentation}
+          stateDelivery={stateDelivery}
+          surface="panel"
+        />
+      );
+      break;
+  }
+
+  return (
+    <>
+      {surface}
+      <DevPreviewSwitcher
+        activeFixture={scenario.fixture}
+        activeSurface={scenario.surface}
+        onboardingCodexPreviewState={
+          scenario.surface === "onboarding"
+            ? scenario.onboarding.codexState
+            : undefined
+        }
+        onboardingProviderPreviewState={
+          scenario.surface === "onboarding"
+            ? scenario.onboarding.providerState
+            : undefined
+        }
+        onboardingStep={
+          scenario.surface === "onboarding"
+            ? scenario.onboarding.initialStep
+            : undefined
+        }
+        settingsProviderPreviewState={
+          scenario.surface === "settings"
+            ? scenario.settingsProviderState
+            : undefined
+        }
+      />
+    </>
+  );
+}
+
+export { DevPreviewApp };

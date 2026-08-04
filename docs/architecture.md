@@ -30,6 +30,21 @@ React owns:
 
 React cannot read provider source material, credentials, cookies, raw logs, local paths, Convex session material, or local storage. It receives versioned Sanitized Desktop State and bounded view data. Release WebViews are network-dark; development may allow only the localhost Vite/HMR connection.
 
+#### Desktop React module layout
+
+`App.tsx` is only the production surface router. Application-owned components
+are grouped by cohesive domain: `components/panel`,
+`components/screens/onboarding`, `components/screens/settings`, and
+`components/dialogs`. Onboarding keeps its flow definition, coordinator, and
+individual step components together in one flat domain folder; a component
+does not receive a one-file folder merely for symmetry.
+
+`native-state` owns the production delivery contract and Tauri adapter. `dev`
+owns browser adapters, fixture values, query-string scenario parsing, preview
+controls, and preview-only styling. The development entry point is dynamically
+loaded by `main.tsx`; production modules never import from `dev`. The dependency
+direction is `dev` → desktop product modules → `packages/ui`.
+
 ### `apps/landing`
 
 An Astro and Tailwind CSS static marketing and distribution site. It has no authenticated or live product surface.
@@ -46,7 +61,11 @@ Generated TypeScript types and strict runtime validators only for sanitized Rust
 
 ### `packages/ui`
 
-Shared React components, icons, CSS variables, and Tailwind configuration used where sharing does not force desktop-specific behavior into the landing site.
+`packages/ui` stays business-stateless. It owns reusable controlled
+presentation modules—including the Profile and Coding Provider cards—plus
+icons, CSS variables, and Tailwind configuration. Product composition,
+workflow state, domain validation, policy, and native intents remain in the
+owning application.
 
 ### `packages/tooling`
 

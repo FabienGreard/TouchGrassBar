@@ -15,7 +15,7 @@ import {
 
 type PanelHeaderProps = {
   error: boolean;
-  onAddFriend: () => void;
+  onAddTokenmaxxer: () => void;
   onRefresh: () => void;
   onSettings: () => void;
   onUpdate: () => void;
@@ -35,7 +35,7 @@ function syncLabel(error: boolean, state: SanitizedDesktopState | null) {
 
 function PanelHeader({
   error,
-  onAddFriend,
+  onAddTokenmaxxer,
   onRefresh,
   onSettings,
   onUpdate,
@@ -44,10 +44,10 @@ function PanelHeader({
   updateAvailable,
 }: PanelHeaderProps) {
   return (
-    <header className="flex items-center justify-between border-b border-cream-line bg-panel-header px-4 pt-[15px] pb-3 contrast-more:border-cream-ink">
+    <header className="flex items-center justify-between border-b border-pearl-line bg-panel-header px-4 pt-[15px] pb-3 contrast-more:border-pearl-ink">
       <div className="flex min-w-0 items-center gap-2.5">
         <Brand />
-        <small className="truncate border-l border-cream-line pl-2.5 text-[10px] text-cream-muted contrast-more:border-cream-ink contrast-more:text-cream-ink">
+        <small className="truncate border-l border-pearl-line pl-2.5 text-[10px] text-pearl-muted contrast-more:border-pearl-ink contrast-more:text-pearl-ink">
           {syncLabel(error, state)}
         </small>
       </div>
@@ -75,7 +75,7 @@ function PanelHeader({
               size="icon"
               title="Open panel menu"
               type="button"
-              variant="quiet"
+              variant="ghost"
             >
               <EllipsisIcon aria-hidden="true" size={19} />
             </Button>
@@ -85,9 +85,9 @@ function PanelHeader({
               <RefreshIcon aria-hidden="true" spin={refreshing} />
               {refreshing ? "Forcing sync…" : "Force sync"}
             </PanelMenuItem>
-            <PanelMenuItem onSelect={onAddFriend}>
+            <PanelMenuItem onSelect={onAddTokenmaxxer}>
               <InviteIcon aria-hidden="true" />
-              Invite a friend
+              Add a Tokenmaxxer
             </PanelMenuItem>
             <PanelMenuItem onSelect={onSettings}>
               <SettingsIcon aria-hidden="true" />

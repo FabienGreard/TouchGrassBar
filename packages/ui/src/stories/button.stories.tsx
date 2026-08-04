@@ -7,7 +7,7 @@ const meta = {
     children: "Global",
     disabled: false,
     size: "default",
-    variant: "action",
+    variant: "primary",
   },
   argTypes: {
     asChild: { table: { disable: true } },
@@ -16,11 +16,11 @@ const meta = {
     disabled: { control: "boolean" },
     size: {
       control: "select",
-      options: ["default", "identity", "quiet", "icon", "sheet"],
+      options: ["default", "quiet", "link", "icon", "sheet"],
     },
     variant: {
       control: "select",
-      options: ["action", "quiet"],
+      options: ["primary", "secondary", "ghost", "link"],
     },
   },
   component: Button,
@@ -28,7 +28,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "The shared shadcn-based button used by actions, quiet triggers, identity copy, and the panel menu. Shipped visual treatments are named variants and sizes rather than desktop overrides.",
+          "The shared shadcn-based button. Primary, secondary, ghost, and link describe visual hierarchy; disabled is an interaction state.",
       },
     },
   },
@@ -38,27 +38,34 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Action: Story = {};
+export const Primary: Story = {};
 
-export const Quiet: Story = {
+export const Secondary: Story = {
+  args: {
+    children: "Cancel",
+    variant: "secondary",
+  },
+};
+
+export const Ghost: Story = {
   args: {
     children: "Tokenmaxxers",
     size: "quiet",
-    variant: "quiet",
+    variant: "ghost",
   },
 };
 
-export const DisabledInvite: Story = {
+export const Link: Story = {
   args: {
-    children: "Invite a friend",
+    children: "View installation steps",
+    size: "link",
+    variant: "link",
+  },
+};
+
+export const Disabled: Story = {
+  args: {
+    children: "Add item",
     disabled: true,
-  },
-};
-
-export const Identity: Story = {
-  args: {
-    children: "Fabien#TG-7K4P9D",
-    size: "identity",
-    variant: "quiet",
   },
 };

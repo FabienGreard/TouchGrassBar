@@ -1,23 +1,6 @@
 import type { ProviderSnapshot, QuotaLane } from "@touchgrass/contracts";
 import { ProviderMark, QuotaProgress } from "@touchgrass/ui";
 
-const unavailableQuotaLanes = [
-  {
-    allowance: null,
-    label: "Weekly limit",
-    remaining: null,
-    resetAt: null,
-    unit: "percent",
-  },
-  {
-    allowance: null,
-    label: "5-hour limit",
-    remaining: null,
-    resetAt: null,
-    unit: "percent",
-  },
-] as const satisfies readonly QuotaLane[];
-
 function quotaPercentage(lane: QuotaLane | null | undefined) {
   if (
     !lane?.allowance ||
@@ -48,8 +31,7 @@ function quotaLabel(lane: QuotaLane | null) {
 }
 
 function orderedQuotaLanes(provider: ProviderSnapshot) {
-  if (provider.availability === "unavailable")
-    return unavailableQuotaLanes;
+  if (provider.availability === "unavailable") return provider.quotaLanes;
   const weeklyLane = provider.quotaLanes.find((lane) =>
     /week/i.test(lane.label),
   );
@@ -74,7 +56,7 @@ function ProviderQuotaLane({
       className="mt-2.5 grid grid-cols-[1fr_auto] items-center gap-x-2 gap-y-1"
       data-slot="provider-quota-lane"
     >
-      <small className="truncate text-[8px] text-cream-muted contrast-more:text-cream-ink">
+      <small className="truncate text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
         {quotaLabel(lane)}
       </small>
       <strong
@@ -112,17 +94,18 @@ function ProviderCard({ provider }: { provider: ProviderSnapshot }) {
   return (
     <section
       aria-labelledby={`${provider.provider}-heading`}
-      className="border-b border-cream-line bg-provider-row px-4 py-[15px] contrast-more:border-cream-ink contrast-more:bg-cream-highlight"
+      className="border-b border-pearl-line bg-provider-row px-4 py-[15px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight"
+      data-provider-availability={provider.availability}
     >
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2.5">
-        <span className="grid h-[29px] w-[29px] place-items-center overflow-hidden rounded-[7px] border border-input bg-cream-control shadow-control contrast-more:border-cream-ink">
+        <span className="grid h-[29px] w-[29px] place-items-center overflow-hidden rounded-[7px] border border-input bg-pearl-control shadow-control contrast-more:border-pearl-ink">
           <ProviderMark provider={provider.provider} />
         </span>
         <span className="flex min-w-0 flex-col gap-0.5">
           <strong className="text-[13px]" id={`${provider.provider}-heading`}>
             {label}
           </strong>
-          <small className="truncate text-[10px] text-cream-muted contrast-more:text-cream-ink">
+          <small className="truncate text-[10px] text-pearl-muted contrast-more:text-pearl-ink">
             {quotaLabel(primaryLane)}
           </small>
         </span>

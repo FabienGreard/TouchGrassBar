@@ -1,0 +1,9 @@
+html[data-desktop-preview="true"] body {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+html[data-desktop-preview="true"] #root {
+  display: flex;
+  justify-content: center;
+}

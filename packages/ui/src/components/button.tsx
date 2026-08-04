@@ -9,25 +9,27 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        action:
+        primary:
           "border-board-tab-active-border bg-action text-accent-foreground shadow-action hover:brightness-[1.03] aria-expanded:brightness-[1.03]",
-        quiet:
-          "cursor-pointer border-transparent bg-transparent text-cream-muted shadow-none hover:bg-cream-ink/5 hover:text-cream-ink aria-expanded:bg-cream-ink/5 aria-expanded:text-cream-ink focus-visible:border-transparent focus-visible:bg-cream-ink/5 focus-visible:text-cream-ink focus-visible:ring-0",
+        secondary:
+          "border-pearl-line-soft bg-white/55 text-pearl-ink shadow-surface hover:bg-white/80 aria-expanded:bg-white/80",
+        ghost:
+          "cursor-pointer border-transparent bg-transparent text-pearl-muted shadow-none hover:bg-pearl-ink/5 hover:text-pearl-ink aria-expanded:bg-pearl-ink/5 aria-expanded:text-pearl-ink focus-visible:border-transparent focus-visible:bg-pearl-ink/5 focus-visible:text-pearl-ink focus-visible:ring-0",
+        link: "cursor-pointer border-transparent bg-transparent text-sheet-ink shadow-none underline decoration-[1px] decoration-sheet-line underline-offset-4 hover:decoration-primary focus-visible:border-transparent focus-visible:ring-0 focus-visible:decoration-primary active:decoration-primary",
       },
       size: {
         default:
           "h-auto gap-1 rounded-[8px] px-[13px] py-[7px] text-[8px] font-semibold",
-        identity:
-          "h-5 max-w-[142px] gap-1 rounded-[5px] px-1.5 font-mono text-[7px] font-medium leading-none",
         quiet:
           "h-5 gap-1 rounded-[6px] px-1.5 text-[8px] font-semibold leading-none [&_svg:not([class*='size-'])]:size-3",
+        link: "h-auto rounded-[4px] p-0 text-[9px] font-semibold leading-4",
         icon: "h-[28px] w-[30px] rounded-[8px] p-1",
         sheet:
           "h-9 w-full gap-1.5 rounded-[8px] px-3 text-[13px] font-semibold",
       },
     },
     defaultVariants: {
-      variant: "action",
+      variant: "primary",
       size: "default",
     },
   },
@@ -35,7 +37,7 @@ const buttonVariants = cva(
 
 function Button({
   className,
-  variant = "action",
+  variant = "primary",
   size = "default",
   asChild = false,
   ...props

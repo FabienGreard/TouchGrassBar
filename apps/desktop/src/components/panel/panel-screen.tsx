@@ -1,24 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useSyncExternalStore } from "react";
 
-import type { BrowserFixtureName } from "@/browserSanitizedDesktopStateAdapter";
-import { PanelView } from "@/components/panel/panel-view";
-import {
-  currentDoomerboardPreviewRows,
-  currentUsagePreview,
-  friendsDoomerboardPreviewRows,
-} from "@/previewFixtures";
-import type { SanitizedDesktopStateDelivery } from "@/sanitizedDesktopStateDelivery";
+import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
+import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
+import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
+
+type PanelPresentation = Pick<
+  PanelViewProps,
+  | "currentProfile"
+  | "doomerboardRows"
+  | "tokenmaxxerRows"
+  | "updateAvailable"
+  | "usagePresentation"
+>;
 
 type PanelScreenProps = {
   hasNativeRuntime: boolean;
-  previewFixtureName: BrowserFixtureName;
+  presentation?: PanelPresentation | undefined;
   stateDelivery: SanitizedDesktopStateDelivery;
 };
 
 function PanelScreen({
   hasNativeRuntime,
-  previewFixtureName,
+  presentation = {},
   stateDelivery,
 }: PanelScreenProps) {
   const deliveryView = useSyncExternalStore(
@@ -26,20 +30,11 @@ function PanelScreen({
     stateDelivery.getSnapshot,
     stateDelivery.getSnapshot,
   );
-  const hasCurrentPreview =
-    previewFixtureName === "current" || previewFixtureName === "update";
-
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        hasNativeRuntime &&
-        (event.key === "Escape" ||
-          (event.metaKey && event.key.toLowerCase() === "w"))
-      )
-        void invoke("hide_panel");
-      if (hasNativeRuntime && event.metaKey && event.key === ",")
-        void invoke("open_settings");
-    };
+    const onKeyDown = createPanelKeyboardHandler({
+      dispatch: (command) => void invoke(command),
+      enabled: hasNativeRuntime,
+    });
     window.addEventListener("keydown", onKeyDown);
 
     return () => {
@@ -69,11 +64,8 @@ function PanelScreen({
 
   return (
     <PanelView
-      doomerboardPreviewRows={
-        import.meta.env.DEV && !hasNativeRuntime && hasCurrentPreview
-          ? currentDoomerboardPreviewRows
-          : undefined
-      }
+      currentProfile={presentation.currentProfile}
+      doomerboardRows={presentation.doomerboardRows}
       error={deliveryView.phase === "degraded"}
       nativeGlass
       onRefresh={() => {
@@ -85,19 +77,12 @@ function PanelScreen({
       onUpdate={() => undefined}
       refreshing={deliveryView.refreshing}
       state={deliveryView.snapshot}
-      tokenmaxxerPreviewRows={
-        import.meta.env.DEV && !hasNativeRuntime && hasCurrentPreview
-          ? friendsDoomerboardPreviewRows
-          : undefined
-      }
-      usagePreview={
-        import.meta.env.DEV && !hasNativeRuntime && hasCurrentPreview
-          ? currentUsagePreview
-          : undefined
-      }
-      updateAvailable={previewFixtureName === "update"}
+      tokenmaxxerRows={presentation.tokenmaxxerRows}
+      updateAvailable={presentation.updateAvailable}
+      usagePresentation={presentation.usagePresentation}
     />
   );
 }
 
 export { PanelScreen };
+export type { PanelPresentation, PanelScreenProps };

@@ -18,7 +18,7 @@ const meta = {
     align: "center",
     side: "bottom",
     sideOffset: 8,
-    size: "menu",
+    size: "default",
   },
   argTypes: {
     align: {
@@ -36,7 +36,7 @@ const meta = {
     },
     size: {
       control: "inline-radio",
-      options: ["menu", "query"],
+      options: ["default", "compact"],
     },
   },
   component: PanelMenuContent,
@@ -44,7 +44,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "The shared warm-glass menu surface used for both panel actions and compact query selectors.",
+          "The shared pearl-glass menu surface used for command lists and compact option lists.",
       },
     },
     layout: "centered",
@@ -55,12 +55,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Actions: Story = {
+export const CommandList: Story = {
   render: (args) => (
     <PanelMenu defaultOpen>
       <PanelMenuTrigger asChild>
-        <Button size="quiet" variant="quiet">
-          Open actions
+        <Button size="quiet" variant="ghost">
+          Open commands
         </Button>
       </PanelMenuTrigger>
       <PanelMenuContent {...args}>
@@ -68,7 +68,7 @@ export const Actions: Story = {
           <RefreshIcon aria-hidden="true" /> Force sync
         </PanelMenuItem>
         <PanelMenuItem>
-          <InviteIcon aria-hidden="true" /> Invite a friend
+          <InviteIcon aria-hidden="true" /> Add item
         </PanelMenuItem>
         <PanelMenuItem>
           <SettingsIcon aria-hidden="true" /> Settings…
@@ -78,12 +78,12 @@ export const Actions: Story = {
   ),
 };
 
-export const Query: Story = {
-  args: { size: "query" },
+export const OptionList: Story = {
+  args: { size: "compact" },
   render: (args) => (
     <PanelMenu defaultOpen>
       <PanelMenuTrigger asChild>
-        <Button size="quiet" variant="quiet">
+        <Button size="quiet" variant="ghost">
           Today
         </Button>
       </PanelMenuTrigger>

@@ -1,51 +1,19 @@
 import type { ProviderSnapshot } from "@touchgrass/contracts";
 
-import { DoomerboardPreview } from "@/components/panel/doomerboard-preview";
+import { Doomerboard } from "@/components/panel/doomerboard";
 import { ProviderCard } from "@/components/panel/provider-card";
 import { UsageOverview } from "@/components/panel/usage-overview";
 
 const loadingProviders = [
   {
-    availability: "current",
-    observedAt: "1970-01-01T00:00:00.000Z",
+    availability: "unavailable",
     provider: "codex",
-    quotaLanes: [
-      {
-        allowance: null,
-        label: "Weekly limit",
-        remaining: null,
-        resetAt: null,
-        unit: "percent",
-      },
-      {
-        allowance: null,
-        label: "5-hour limit",
-        remaining: null,
-        resetAt: null,
-        unit: "percent",
-      },
-    ],
+    quotaLanes: [],
   },
   {
-    availability: "current",
-    observedAt: "1970-01-01T00:00:00.000Z",
+    availability: "unavailable",
     provider: "claude",
-    quotaLanes: [
-      {
-        allowance: null,
-        label: "Weekly limit",
-        remaining: null,
-        resetAt: null,
-        unit: "percent",
-      },
-      {
-        allowance: null,
-        label: "5-hour limit",
-        remaining: null,
-        resetAt: null,
-        unit: "percent",
-      },
-    ],
+    quotaLanes: [],
   },
 ] as const satisfies readonly ProviderSnapshot[];
 
@@ -75,7 +43,7 @@ function LoadingPanel() {
           ))}
         </div>
         <UsageOverview usage={loadingUsage} />
-        <DoomerboardPreview />
+        <Doomerboard />
       </div>
     </div>
   );

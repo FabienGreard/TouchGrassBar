@@ -14,7 +14,7 @@ function PanelShell({
   return (
     <main
       className={cn(
-        "relative w-[402px] max-w-full overflow-hidden rounded-panel border border-cream-border bg-panel-glass text-cream-ink shadow-panel-glass contrast-more:border-cream-ink contrast-more:bg-cream-highlight contrast-more:shadow-none",
+        "relative w-[402px] max-w-full overflow-hidden rounded-panel border border-pearl-border bg-panel-glass text-pearl-ink shadow-panel-glass contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight contrast-more:shadow-none",
         glass && "backdrop-panel-glass",
         className,
       )}

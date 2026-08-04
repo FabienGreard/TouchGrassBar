@@ -235,7 +235,7 @@ fn set_launch_at_login(window: WebviewWindow, app: AppHandle, enabled: bool) -> 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let process_started_at = Instant::now();
-    tauri::Builder::default()
+    let mut app = tauri::Builder::default()
         .manage(NativeCore::unavailable())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -253,12 +253,6 @@ pub fn run() {
             set_launch_at_login
         ])
         .setup(move |app| {
-            #[cfg(target_os = "macos")]
-            {
-                app.set_activation_policy(ActivationPolicy::Accessory);
-                app.set_dock_visibility(false);
-            }
-
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
                 panel.set_always_on_top(true)?;
@@ -338,13 +332,87 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run TouchGrassBar");
+        .build(tauri::generate_context!())
+        .expect("failed to build TouchGrassBar");
+
+    #[cfg(target_os = "macos")]
+    {
+        app.set_activation_policy(ActivationPolicy::Accessory);
+        app.set_dock_visibility(false);
+    }
+
+    app.run(|_, _| {});
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn native_config() -> serde_json::Value {
+        serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("native configuration should be valid JSON")
+    }
+
+    fn panel_config(config: &serde_json::Value) -> &serde_json::Value {
+        config
+            .pointer("/app/windows")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|windows| {
+                windows.iter().find(|window| {
+                    window.get("label").and_then(serde_json::Value::as_str) == Some(PANEL_LABEL)
+                })
+            })
+            .expect("panel window should be configured")
+    }
+
+    #[test]
+    fn production_csp_allows_bundled_provider_marks() {
+        let config = native_config();
+        let csp = config
+            .pointer("/app/security/csp")
+            .and_then(serde_json::Value::as_str)
+            .expect("production CSP should be configured");
+        let image_sources = csp
+            .split(';')
+            .find_map(|directive| {
+                let mut tokens = directive.split_whitespace();
+                (tokens.next() == Some("img-src")).then(|| tokens.collect::<Vec<_>>())
+            })
+            .expect("production CSP should configure image sources");
+
+        assert!(
+            image_sources.contains(&"data:"),
+            "Vite-inlined provider marks require data: images"
+        );
+    }
+
+    #[test]
+    fn transparent_panel_does_not_stack_a_native_shadow() {
+        let config = native_config();
+        let panel = panel_config(&config);
+
+        assert_eq!(
+            panel.get("shadow").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "the clipped CSS panel owns the rounded edge and shadow treatment"
+        );
+    }
+
+    #[test]
+    fn macos_bundle_launches_as_a_ui_element() {
+        let config = native_config();
+        assert_eq!(
+            config
+                .pointer("/bundle/macOS/infoPlist")
+                .and_then(serde_json::Value::as_str),
+            Some("Info.plist")
+        );
+
+        let info_plist = include_str!("../Info.plist");
+        assert!(info_plist.contains("<key>LSUIElement</key>"));
+        assert!(info_plist.contains("<true/>"));
+        assert!(!info_plist.contains("LSBackgroundOnly"));
+    }
 
     #[test]
     fn centers_panel_below_tray_icon() {
