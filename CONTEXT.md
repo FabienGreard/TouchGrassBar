@@ -17,8 +17,16 @@ The provider-defined period over which a quota applies, ending at a reset time.
 _Avoid_: Day, billing period
 
 **Quota Lane**:
-One provider-reported limit with its provider-defined label, unit, remaining value, and Quota Window. Quota Lanes are presented without cross-provider normalization.
-_Avoid_: Token Score, usage total, combined quota
+One provider-reported limit with its provider-defined label, unit, remaining value, and Quota Window. Its provider-native values remain visible even when its remaining share contributes to Overall Quota Headroom.
+_Avoid_: Token Score, usage total, quota headroom
+
+**Provider Quota Headroom**:
+The lowest remaining share among one Coding Provider's active Quota Lanes. A genuinely absent lane is ignored, while any active lane whose remaining share is unknown makes the provider's headroom unavailable.
+_Avoid_: Provider usage, provider balance
+
+**Overall Quota Headroom**:
+The equal-weighted mean of calculable Provider Quota Headroom values across configured Coding Providers; current and still-valid stale values may contribute, any stale contributor makes the result stale, and an unavailable provider is excluded and makes the result incomplete rather than contributing zero. It is an at-a-glance index, not a sum of provider allowances or an estimate of tokens remaining.
+_Avoid_: Combined quota, usage left, quota total
 
 **Quota Snapshot**:
 A point-in-time collection of a coding provider's Quota Lanes. It can be initialized only from a full provider report; sparse notifications may update an existing snapshot but cannot create one.

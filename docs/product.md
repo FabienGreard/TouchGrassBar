@@ -40,7 +40,11 @@ Doomerboard periods use UTC boundaries. “Today” is the current UTC day; 7-da
 
 ## Provider limits
 
-TouchGrassBar mirrors every active limit reported by Codex or Claude using that provider's own lanes, labels, units, remaining values, and reset times. It does not collapse multiple windows, normalize limits across providers, or derive a combined quota.
+TouchGrassBar mirrors every active limit reported by Codex or Claude using that provider's own lanes, labels, units, remaining values, and reset times. It does not collapse or convert those provider-native values.
+
+For an at-a-glance summary, Provider Quota Headroom is the lowest remaining percentage among one provider's active Quota Lanes. A lane that genuinely does not exist is ignored, but an active lane without a calculable remaining percentage makes that provider's headroom unavailable rather than allowing another lane to overstate it. Overall Quota Headroom is the equal-weighted mean of the calculable Codex and Claude headroom values: Codex at 8% and Claude at 60% produce 34%. A still-valid stale value remains in the calculation and makes the overall result stale. An unavailable configured provider is excluded and makes the result incomplete rather than contributing zero; if no provider has calculable headroom, Overall Quota Headroom is unavailable. This index does not sum allowances, estimate remaining tokens, or replace the underlying Quota Lanes.
+
+The menu-bar item keeps the approved flower mark intact and places a compact horizontal headroom meter beneath it. The bright portion represents Overall Quota Headroom remaining, so the meter is full at 100% and empty at 0%; the flower itself does not progressively disappear. A current, complete result uses a continuous meter; a stale and/or incomplete result keeps the same truthful length but uses one shared segmented treatment, with the precise condition available in the opened panel. Calculated 0% retains the empty meter track. Unavailable headroom hides the meter entirely and leaves the flower-only item, with both its visible hover label and VoiceOver label set to `TouchGrassBar`. When headroom is calculable, both labels contain only the app name and rounded current percentage, for example `TouchGrassBar — 34%`; they do not announce freshness or completeness.
 
 Provider limits, historical Token Scores, and API-equivalent cost are independent displays. No value is converted into another.
 

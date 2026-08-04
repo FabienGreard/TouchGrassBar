@@ -112,7 +112,7 @@ function StepActions({
       submissionState === "submitting";
 
   return (
-    <div className="flex shrink-0 items-center justify-between gap-3 border-t border-sheet-line pt-4 pb-1">
+    <div className="flex shrink-0 items-center justify-between gap-3 border-t border-sheet-line pt-4 pb-4">
       {previous ? (
         <Button
           disabled={submissionState === "submitting"}
