@@ -4,7 +4,6 @@ import { App } from "@/App";
 import "@/dev/dev-preview.css";
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
 import { DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
-import { DevInstanceBadge } from "@/dev/dev-instance-badge";
 import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
 import { currentDevInstance } from "@/dev/dev-instance";
 import { RecoverySheetPreview } from "@/dev/recovery-sheet-preview";
@@ -117,9 +116,6 @@ function DevPreviewApp() {
   return (
     <>
       {surface}
-      {devInstance ? (
-        <DevInstanceBadge instance={devInstance} surface={scenario.surface} />
-      ) : null}
       <RecoverySheetPreview
         onOpenChange={setRecoveryOpen}
         open={recoveryOpen}

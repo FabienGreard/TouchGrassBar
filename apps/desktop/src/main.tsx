@@ -31,21 +31,15 @@ function renderNativeSurface(application: ReactNode, surface: DesktopSurface) {
 
   void Promise.all([
     import("@/dev/dev-instance"),
-    import("@/dev/dev-instance-badge"),
     import("@/dev/dev-instance-document"),
-  ]).then(([{ currentDevInstance }, badgeModule, documentModule]) => {
+  ]).then(([{ currentDevInstance }, documentModule]) => {
     const instance = currentDevInstance();
     if (!instance) {
       render(application);
       return;
     }
     documentModule.applyDevInstanceDocument(instance, surface);
-    render(
-      <>
-        {application}
-        <badgeModule.DevInstanceBadge instance={instance} surface={surface} />
-      </>,
-    );
+    render(application);
   });
 }
 

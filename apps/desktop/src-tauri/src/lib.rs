@@ -1,3 +1,5 @@
+#[cfg(debug_assertions)]
+mod dev_instance;
 pub mod lifecycle;
 pub mod sanitized;
 
@@ -27,31 +29,6 @@ const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
-
-#[derive(Clone, Debug, PartialEq)]
-struct DevelopmentInstance {
-    label: String,
-    tag: String,
-}
-
-#[cfg(debug_assertions)]
-fn bounded_development_value(value: String, limit: usize) -> Option<String> {
-    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    let value = value.chars().take(limit).collect::<String>();
-    (!value.is_empty()).then_some(value)
-}
-
-#[cfg(debug_assertions)]
-fn development_instance() -> Option<DevelopmentInstance> {
-    let label = bounded_development_value(env::var("TOUCHGRASS_DEV_INSTANCE_LABEL").ok()?, 36)?;
-    let tag = bounded_development_value(env::var("TOUCHGRASS_DEV_INSTANCE_TAG").ok()?, 8)?;
-    Some(DevelopmentInstance { label, tag })
-}
-
-#[cfg(not(debug_assertions))]
-fn development_instance() -> Option<DevelopmentInstance> {
-    None
-}
 
 #[cfg(target_os = "macos")]
 fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
@@ -417,7 +394,9 @@ pub fn run() {
             );
             app.manage(lifecycle);
 
-            let development_instance = development_instance();
+            #[cfg(debug_assertions)]
+            let development_instance = dev_instance::DevelopmentInstance::from_environment();
+            #[cfg(debug_assertions)]
             if let Some(instance) = development_instance.as_ref() {
                 for (label, title) in [
                     (PANEL_LABEL, "TouchGrassBar"),
@@ -425,7 +404,7 @@ pub fn run() {
                     (ONBOARDING_LABEL, "Welcome to TouchGrassBar"),
                 ] {
                     if let Some(window) = app.get_webview_window(label) {
-                        window.set_title(&format!("{title} · {}", instance.label))?;
+                        window.set_title(&instance.window_title(title))?;
                     }
                 }
             }
@@ -460,10 +439,13 @@ pub fn run() {
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
+            #[cfg(debug_assertions)]
             let quit_label = development_instance.as_ref().map_or_else(
                 || "Quit TouchGrassBar".to_owned(),
-                |instance| format!("Quit TouchGrassBar · {}", instance.tag),
+                dev_instance::DevelopmentInstance::quit_label,
             );
+            #[cfg(not(debug_assertions))]
+            let quit_label = "Quit TouchGrassBar";
             let quit = MenuItemBuilder::with_id("quit", quit_label).build(app)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let menu = MenuBuilder::new(app)
@@ -471,11 +453,14 @@ pub fn run() {
                 .build()?;
 
             let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
+            #[cfg(debug_assertions)]
             let tray_tooltip = development_instance.as_ref().map_or_else(
                 || "TouchGrassBar".to_owned(),
-                |instance| format!("TouchGrassBar · {}", instance.label),
+                dev_instance::DevelopmentInstance::tooltip,
             );
-            let mut tray_builder = TrayIconBuilder::with_id("touchgrassbar")
+            #[cfg(not(debug_assertions))]
+            let tray_tooltip = "TouchGrassBar";
+            let tray_builder = TrayIconBuilder::with_id("touchgrassbar")
                 .tooltip(tray_tooltip)
                 .icon(tray_icon)
                 .icon_as_template(true)
@@ -511,9 +496,11 @@ pub fn run() {
                         }
                     }
                 });
-            if let Some(instance) = development_instance.as_ref() {
-                tray_builder = tray_builder.title(&instance.tag);
-            }
+            #[cfg(debug_assertions)]
+            let tray_builder = match development_instance.as_ref() {
+                Some(instance) => tray_builder.title(instance.tag()),
+                None => tray_builder,
+            };
             tray_builder.build(app)?;
 
             if show_bootstrap {

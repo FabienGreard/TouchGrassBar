@@ -3,6 +3,7 @@ import {
   devAccentColors,
   type DevInstance,
 } from "@/dev/dev-instance";
+import "@/dev/dev-instance.css";
 
 function applyDevInstanceDocument(
   instance: DevInstance,

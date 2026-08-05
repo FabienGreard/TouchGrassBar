@@ -1,6 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
@@ -18,25 +26,24 @@ const generatedConfigDirectory = join(
   ".dev-instance",
 );
 const generatedConfigPath = join(generatedConfigDirectory, "tauri.conf.json");
+const portLockDirectory = join(tmpdir(), "touchgrassbar-dev-ports");
 
 type RunnerOptions = {
   accent?: string | undefined;
   browserOnly: boolean;
   label?: string | undefined;
-  port?: number | undefined;
 };
 
 function printHelp() {
   console.log(`Run an isolated TouchGrassBar development instance.
 
 Usage:
-  bun run desktop [--label <name>] [--accent <color>] [--port <port>]
-  bun run desktop:preview [--label <name>] [--accent <color>] [--port <port>]
+  bun run desktop [--label <name>] [--accent <color>]
+  bun run desktop:preview [--label <name>] [--accent <color>]
 
 Options:
   --label    Override the branch-derived visible name.
   --accent   Use one of: ${devAccents.join(", ")}.
-  --port     Use one specific localhost port.
   --browser  Start only the browser preview.
   --help     Show this help.`);
 }
@@ -68,15 +75,6 @@ function parseOptions(argumentsList: string[]): RunnerOptions | null {
       index += 1;
       continue;
     }
-    if (argument === "--port") {
-      const value = Number(argumentValue(argumentsList, index, argument));
-      if (!Number.isInteger(value) || value < 1_024 || value > 65_535) {
-        throw new Error("--port must be an integer from 1024 through 65535.");
-      }
-      options.port = value;
-      index += 1;
-      continue;
-    }
     throw new Error(`Unknown argument: ${argument ?? ""}`);
   }
   return options;
@@ -101,15 +99,77 @@ function portIsAvailable(port: number) {
   });
 }
 
-async function availablePort(preferred: number, explicit: boolean) {
-  if (explicit) {
-    if (await portIsAvailable(preferred)) return preferred;
-    throw new Error(`The requested development port ${preferred} is in use.`);
-  }
+type PortLease = {
+  port: number;
+  release: () => void;
+};
 
+function processIsRunning(processId: number) {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function activePortLease(lockPath: string) {
+  try {
+    const processId = Number(readFileSync(lockPath, "utf8"));
+    return !Number.isInteger(processId) || processId <= 0
+      ? true
+      : processIsRunning(processId);
+  } catch {
+    return true;
+  }
+}
+
+function claimPort(port: number): PortLease | null {
+  mkdirSync(portLockDirectory, { recursive: true });
+  const lockPath = join(portLockDirectory, `${port}.lock`);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const descriptor = openSync(lockPath, "wx", 0o600);
+      try {
+        writeFileSync(descriptor, String(process.pid), "utf8");
+      } finally {
+        closeSync(descriptor);
+      }
+
+      let released = false;
+      return {
+        port,
+        release: () => {
+          if (released) return;
+          released = true;
+          try {
+            unlinkSync(lockPath);
+          } catch {
+            // The lease is already absent.
+          }
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (activePortLease(lockPath)) return null;
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+async function availablePort(preferred: number) {
   for (let offset = 0; offset < 1_000; offset += 1) {
     const candidate = 15_000 + ((preferred - 15_000 + offset) % 1_000);
-    if (await portIsAvailable(candidate)) return candidate;
+    const lease = claimPort(candidate);
+    if (!lease) continue;
+    if (await portIsAvailable(candidate)) return lease;
+    lease.release();
   }
   throw new Error("No development port is available from 15000 through 15999.");
 }
@@ -171,11 +231,11 @@ async function main() {
     accent: options.accent ?? Bun.env.TOUCHGRASS_DEV_ACCENT,
     branch: branch || `detached-${gitText(["rev-parse", "--short", "HEAD"])}`,
     label: options.label ?? Bun.env.TOUCHGRASS_DEV_LABEL,
-    port: options.port,
     worktreeSeed,
   });
-  const port = await availablePort(requested.port, options.port !== undefined);
-  const instance = { ...requested, port };
+  const portLease = await availablePort(requested.port);
+  process.once("exit", portLease.release);
+  const instance = { ...requested, port: portLease.port };
   const serializedInstance = JSON.stringify(instance);
   const environment = {
     ...Bun.env,
@@ -184,22 +244,36 @@ async function main() {
     VITE_TOUCHGRASS_DEV_INSTANCE: serializedInstance,
   };
 
-  printInstance(instance, options.browserOnly);
-  if (options.browserOnly) {
+  try {
+    printInstance(instance, options.browserOnly);
+    if (options.browserOnly) {
+      const child = Bun.spawn(
+        ["bun", "run", "dev", "--", "--port", String(instance.port)],
+        {
+          cwd: desktopRoot,
+          env: environment,
+          stderr: "inherit",
+          stdout: "inherit",
+        },
+      );
+      process.exitCode = await child.exited;
+      return;
+    }
+
+    await writeTauriConfig(instance);
     const child = Bun.spawn(
-      ["bun", "run", "dev", "--", "--port", String(instance.port)],
-      { cwd: desktopRoot, env: environment, stderr: "inherit", stdout: "inherit" },
+      ["bun", "run", "tauri", "dev", "--config", generatedConfigPath],
+      {
+        cwd: desktopRoot,
+        env: environment,
+        stderr: "inherit",
+        stdout: "inherit",
+      },
     );
     process.exitCode = await child.exited;
-    return;
+  } finally {
+    portLease.release();
   }
-
-  await writeTauriConfig(instance);
-  const child = Bun.spawn(
-    ["bun", "run", "tauri", "dev", "--config", generatedConfigPath],
-    { cwd: desktopRoot, env: environment, stderr: "inherit", stdout: "inherit" },
-  );
-  process.exitCode = await child.exited;
 }
 
 await main();

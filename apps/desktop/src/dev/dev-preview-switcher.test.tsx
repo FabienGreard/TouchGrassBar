@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { DevInstanceBadge } from "@/dev/dev-instance-badge";
+import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
 import { resolveDevInstance } from "@/dev/dev-instance";
 import { DevFixtureSwitcher } from "@/dev/dev-preview-switcher";
 
@@ -13,17 +13,17 @@ describe("development preview switcher", () => {
       branch: "agent/issue-47-identify-dev-instances",
       worktreeSeed: "semantic-proof",
     });
+    const setProperty = vi.fn();
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {}, style: { setProperty } },
+      title: "",
+    });
+    applyDevInstanceDocument(devInstance, "panel");
     const markup = renderToStaticMarkup(
       <DevFixtureSwitcher
         activeFixture="current"
         devInstance={devInstance}
       />,
-    );
-    const badges = (["panel", "settings", "onboarding"] as const).map(
-      (surface) =>
-        renderToStaticMarkup(
-          <DevInstanceBadge instance={devInstance} surface={surface} />,
-        ),
     );
 
     expect(markup).toContain('aria-label="Development fixture"');
@@ -39,20 +39,17 @@ describe("development preview switcher", () => {
     expect(markup).not.toContain('aria-label="Hide development preview"');
     expect(markup).toContain('data-state="minimized"');
     expect(markup).toContain("Preview · #47 Identify dev instances");
+    expect(document.title).toBe(
+      "TouchGrassBar · #47 Identify dev instances",
+    );
+    expect(document.documentElement.dataset.devInstance).toBe(devInstance.key);
+    expect(setProperty).toHaveBeenCalledWith(
+      "--dev-instance-accent",
+      expect.any(String),
+    );
     expect(markup).toContain("fixed");
     expect(markup).toContain("bg-menu-glass");
     expect(markup).not.toContain("bg-[#111713e8]");
-    expect(badges).toHaveLength(3);
-    for (const badge of badges) {
-      expect(badge).toContain(
-        'aria-label="Development instance #47 Identify dev instances"',
-      );
-      expect(badge).toContain('data-slot="dev-instance-badge"');
-      expect(badge).toContain("#47 Identify dev instances");
-    }
-    expect(badges[0]).toContain('data-dev-instance-surface="panel"');
-    expect(badges[1]).toContain('data-dev-instance-surface="settings"');
-    expect(badges[2]).toContain('data-dev-instance-surface="onboarding"');
   });
 
   test("restores its expanded state and position after navigation", () => {
