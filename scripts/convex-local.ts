@@ -13,6 +13,7 @@ const localConfigPath = resolve(
 );
 const localEnvPath = resolve(workspaceRoot, ".env.local");
 const waitTimeoutMs = 60_000;
+const anonymousSelectionPattern = /^anonymous:anonymous-[A-Za-z0-9_-]+$/;
 
 type LocalConfig = {
   deploymentName?: unknown;
@@ -55,7 +56,41 @@ function convexEnvironment() {
   ]) {
     delete environment[name];
   }
+  environment.CONVEX_AGENT_MODE = "anonymous";
   return environment;
+}
+
+function environmentValues(source: string, name: string) {
+  const pattern = new RegExp(
+    `^[ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=[ \\t]*(.*)$`,
+    "gm",
+  );
+  return [...source.matchAll(pattern)].map((match) => match[1]?.trim() ?? "");
+}
+
+function requireSafeEnvironmentSelection() {
+  if (!existsSync(localEnvPath)) return;
+
+  const source = readFileSync(localEnvPath, "utf8");
+  const deployments = environmentValues(source, "CONVEX_DEPLOYMENT");
+  if (deployments.some((value) => !anonymousSelectionPattern.test(value))) {
+    throw new Error(
+      "Refusing to run with a non-local Convex deployment selection.",
+    );
+  }
+
+  for (const name of [
+    "CONVEX_DEPLOY_KEY",
+    "CONVEX_DEPLOYMENT_TOKEN",
+    "CONVEX_SELF_HOSTED_ADMIN_KEY",
+    "CONVEX_SELF_HOSTED_URL",
+  ]) {
+    if (environmentValues(source, name).some(Boolean)) {
+      throw new Error(
+        `Refusing to run while ${name} selects a non-anonymous deployment.`,
+      );
+    }
+  }
 }
 
 function commandArguments(arguments_: string[]) {
@@ -119,8 +154,17 @@ function localDeployment() {
 
 function setEnvironmentValue(source: string, name: string, value: string) {
   const line = `${name}=${value}`;
-  const pattern = new RegExp(`^${name}=.*$`, "m");
-  if (pattern.test(source)) return source.replace(pattern, line);
+  const pattern = new RegExp(
+    `^[ \\t]*(?:export[ \\t]+)?${name}[ \\t]*=.*$`,
+    "gm",
+  );
+  let replaced = false;
+  const normalized = source.replace(pattern, () => {
+    if (replaced) return "";
+    replaced = true;
+    return line;
+  });
+  if (replaced) return normalized;
   const separator = source.length === 0 || source.endsWith("\n") ? "" : "\n";
   return `${source}${separator}${line}\n`;
 }
@@ -131,8 +175,8 @@ function configureDesktopUrls() {
   const current = existsSync(localEnvPath)
     ? readFileSync(localEnvPath, "utf8")
     : "";
-  const selected = current.match(/^CONVEX_DEPLOYMENT=(.+)$/m)?.[1];
-  if (selected && !selected.startsWith("anonymous:")) {
+  const selected = environmentValues(current, "CONVEX_DEPLOYMENT");
+  if (selected.some((value) => !anonymousSelectionPattern.test(value))) {
     throw new Error(
       "Refusing to replace a non-local Convex deployment selection.",
     );
@@ -176,12 +220,12 @@ function requireLocalDeployment() {
 async function waitForLocalBackend(backend: ReturnType<typeof Bun.spawn>) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < waitTimeoutMs) {
+    const result = await runCaptured(["env", "list", "--names-only"]);
+    if (result.exitCode === 0) return result.stdout;
     if (backend.exitCode !== null) {
       throw new Error("The worktree-local Convex backend stopped early.");
     }
     if (existsSync(localConfigPath)) configureDesktopUrls();
-    const result = await runCaptured(["env", "list", "--names-only"]);
-    if (result.exitCode === 0) return result.stdout;
     await Bun.sleep(500);
   }
   throw new Error("The worktree-local Convex backend did not become ready.");
@@ -229,6 +273,7 @@ async function configureLocalSecret() {
 }
 
 async function setup() {
+  requireSafeEnvironmentSelection();
   if (existsSync(localConfigPath)) requireLocalDeployment();
   await configureLocalSecret();
   requireLocalDeployment();
@@ -249,6 +294,7 @@ async function setup() {
 }
 
 async function dev() {
+  requireSafeEnvironmentSelection();
   if (!existsSync(localConfigPath)) {
     throw new Error("Run `bun run convex:setup:local` first.");
   }
