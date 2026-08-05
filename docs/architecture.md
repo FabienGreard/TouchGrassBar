@@ -45,6 +45,13 @@ controls, and preview-only styling. The development entry point is dynamically
 loaded by `main.tsx`; production modules never import from `dev`. The dependency
 direction is `dev` → desktop product modules → `packages/ui`.
 
+The root desktop development runner derives one bounded display identity from
+the current branch and worktree. It supplies that identity only through
+development environment values and an ignored Tauri configuration overlay.
+Parallel worktrees receive separate localhost ports, Tauri identifiers, and
+local application data locations. Production configuration, product modules,
+and Sanitized Desktop State do not contain the development identity.
+
 ### `apps/landing`
 
 An Astro and Tailwind CSS static marketing and distribution site. It has no authenticated or live product surface.

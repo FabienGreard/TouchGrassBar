@@ -28,6 +28,7 @@ describe("native App composition", () => {
     expect(markup).not.toContain("was not found");
     expect(markup).not.toContain("Check now");
     expect(markup).not.toContain("Check again");
+    expect(markup).not.toContain("data-dev-instance");
   });
 
   test("does not invent a Profile in production Settings", () => {

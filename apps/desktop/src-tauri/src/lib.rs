@@ -1,3 +1,5 @@
+#[cfg(debug_assertions)]
+mod dev_instance;
 pub mod lifecycle;
 pub mod sanitized;
 
@@ -392,6 +394,21 @@ pub fn run() {
             );
             app.manage(lifecycle);
 
+            #[cfg(debug_assertions)]
+            let development_instance = dev_instance::DevelopmentInstance::from_environment();
+            #[cfg(debug_assertions)]
+            if let Some(instance) = development_instance.as_ref() {
+                for (label, title) in [
+                    (PANEL_LABEL, "TouchGrassBar"),
+                    (SETTINGS_LABEL, "TouchGrassBar Settings"),
+                    (ONBOARDING_LABEL, "Welcome to TouchGrassBar"),
+                ] {
+                    if let Some(window) = app.get_webview_window(label) {
+                        window.set_title(&instance.window_title(title))?;
+                    }
+                }
+            }
+
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
                 panel.set_always_on_top(true)?;
@@ -422,15 +439,29 @@ pub fn run() {
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit TouchGrassBar").build(app)?;
+            #[cfg(debug_assertions)]
+            let quit_label = development_instance.as_ref().map_or_else(
+                || "Quit TouchGrassBar".to_owned(),
+                dev_instance::DevelopmentInstance::quit_label,
+            );
+            #[cfg(not(debug_assertions))]
+            let quit_label = "Quit TouchGrassBar";
+            let quit = MenuItemBuilder::with_id("quit", quit_label).build(app)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let menu = MenuBuilder::new(app)
                 .items(&[&refresh, &settings, &profile, &separator, &quit])
                 .build()?;
 
             let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
-            TrayIconBuilder::with_id("touchgrassbar")
-                .tooltip("TouchGrassBar")
+            #[cfg(debug_assertions)]
+            let tray_tooltip = development_instance.as_ref().map_or_else(
+                || "TouchGrassBar".to_owned(),
+                dev_instance::DevelopmentInstance::tooltip,
+            );
+            #[cfg(not(debug_assertions))]
+            let tray_tooltip = "TouchGrassBar";
+            let tray_builder = TrayIconBuilder::with_id("touchgrassbar")
+                .tooltip(tray_tooltip)
                 .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
@@ -464,8 +495,13 @@ pub fn run() {
                             );
                         }
                     }
-                })
-                .build(app)?;
+                });
+            #[cfg(debug_assertions)]
+            let tray_builder = match development_instance.as_ref() {
+                Some(instance) => tray_builder.title(instance.tag()),
+                None => tray_builder,
+            };
+            tray_builder.build(app)?;
 
             if show_bootstrap {
                 show_onboarding(app.handle())?;

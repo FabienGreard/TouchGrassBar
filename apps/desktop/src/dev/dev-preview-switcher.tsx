@@ -22,6 +22,7 @@ import {
   onboardingSteps,
   type OnboardingStep,
 } from "@/components/screens/onboarding/onboarding-flow";
+import type { DevInstance } from "@/dev/dev-instance";
 type PreviewSurface = "onboarding" | "panel" | "settings";
 
 const providerPreviewStates = codingProviderAccessStates;
@@ -81,11 +82,13 @@ function clampPreviewPanelPosition(
 
 type FixtureSwitcherProps = ComponentProps<"aside"> & {
   children: ReactNode;
+  instanceLabel?: string | undefined;
 };
 
 function FixtureSwitcher({
   children,
   className,
+  instanceLabel,
   style,
   ...props
 }: FixtureSwitcherProps) {
@@ -217,7 +220,9 @@ function FixtureSwitcher({
               tone="muted"
             />
           ) : null}
-          <span className="truncate">Preview state</span>
+          <span className="truncate">
+            {instanceLabel ? `Preview · ${instanceLabel}` : "Preview state"}
+          </span>
         </button>
         <button
           aria-label={
@@ -322,13 +327,16 @@ function PreviewSwitcherOption({
 
 function DevFixtureSwitcher({
   activeFixture,
+  devInstance,
 }: {
   activeFixture: BrowserFixtureName;
+  devInstance?: DevInstance | null | undefined;
 }) {
   return (
     <FixtureSwitcher
       aria-label="Development fixture"
       data-dev-only="preview-switcher"
+      instanceLabel={devInstance?.label}
     >
       <FixtureOptions activeFixture={activeFixture} />
     </FixtureSwitcher>
@@ -376,6 +384,7 @@ function FixtureOptions({
 function DevPreviewSwitcher({
   activeFixture,
   activeSurface,
+  devInstance,
   onboardingCodexPreviewState,
   onboardingProviderPreviewState,
   onboardingStep,
@@ -383,6 +392,7 @@ function DevPreviewSwitcher({
 }: {
   activeFixture: BrowserFixtureName;
   activeSurface: PreviewSurface;
+  devInstance?: DevInstance | null | undefined;
   onboardingCodexPreviewState?: CodingProviderAccessState | undefined;
   onboardingProviderPreviewState?: CodingProviderAccessState | undefined;
   onboardingStep?: OnboardingStep | undefined;
@@ -410,7 +420,10 @@ function DevPreviewSwitcher({
     `?window=onboarding&fixture=${fixture}&onboardingStep=${encodeURIComponent(step)}&codexState=${encodeURIComponent(codexState)}&providerState=${encodeURIComponent(providerState)}`;
 
   return (
-    <FixtureSwitcher data-dev-only="preview-switcher">
+    <FixtureSwitcher
+      data-dev-only="preview-switcher"
+      instanceLabel={devInstance?.label}
+    >
       <PreviewControlRow aria-label="Native surfaces" label="Surface">
         <PreviewSwitcherOption
           active={activeSurface === "panel"}

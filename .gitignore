@@ -12,6 +12,7 @@ storybook-static/
 # Rust and Tauri
 target/
 apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/.dev-instance/
 
 # Astro
 .astro/

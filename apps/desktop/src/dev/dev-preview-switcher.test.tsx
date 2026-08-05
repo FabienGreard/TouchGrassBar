@@ -1,14 +1,29 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
+import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
+import { resolveDevInstance } from "@/dev/dev-instance";
 import { DevFixtureSwitcher } from "@/dev/dev-preview-switcher";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("development preview switcher", () => {
-  test("offers compact panel fixture controls", () => {
+  test("presents the development identity and compact panel controls", () => {
+    const devInstance = resolveDevInstance({
+      branch: "agent/issue-47-identify-dev-instances",
+      worktreeSeed: "semantic-proof",
+    });
+    const setProperty = vi.fn();
+    vi.stubGlobal("document", {
+      documentElement: { dataset: {}, style: { setProperty } },
+      title: "",
+    });
+    applyDevInstanceDocument(devInstance, "panel");
     const markup = renderToStaticMarkup(
-      <DevFixtureSwitcher activeFixture="current" />,
+      <DevFixtureSwitcher
+        activeFixture="current"
+        devInstance={devInstance}
+      />,
     );
 
     expect(markup).toContain('aria-label="Development fixture"');
@@ -23,6 +38,17 @@ describe("development preview switcher", () => {
     expect(markup).toContain('data-icon-source="ArrowExpand01Icon"');
     expect(markup).not.toContain('aria-label="Hide development preview"');
     expect(markup).toContain('data-state="minimized"');
+    expect(markup).toContain("Preview · #47 Identify dev instances");
+    expect(document.title).toBe(
+      "TouchGrassBar · #47 Identify dev instances",
+    );
+    expect(document.documentElement.dataset.devInstance).toBe(
+      devInstance.instanceKey,
+    );
+    expect(setProperty).toHaveBeenCalledWith(
+      "--dev-instance-accent",
+      expect.any(String),
+    );
     expect(markup).toContain("fixed");
     expect(markup).toContain("bg-menu-glass");
     expect(markup).not.toContain("bg-[#111713e8]");
