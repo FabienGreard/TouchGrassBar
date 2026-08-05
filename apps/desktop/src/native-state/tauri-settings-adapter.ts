@@ -24,6 +24,9 @@ const defaultBindings: TauriSettingsBindings = {
   listen: (event, receive) => listen<unknown>(event, receive),
 };
 
+const recoveryKeyPattern =
+  /^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{48}$/;
+
 async function closedInvoke(
   bindings: TauriSettingsBindings,
   command: string,
@@ -69,7 +72,17 @@ function createTauriSettingsAdapter(
         "reveal_recovery_key",
         "recovery-key-unavailable",
       );
-      return outcome.ok ? { ok: true, value: undefined } : outcome;
+      if (
+        !outcome.ok ||
+        typeof outcome.value !== "string" ||
+        !recoveryKeyPattern.test(outcome.value)
+      ) {
+        return {
+          fault: { code: "recovery-key-unavailable" },
+          ok: false,
+        };
+      }
+      return { ok: true, value: outcome.value };
     },
     selectSection: async (section) => {
       const outcome = await closedInvoke(

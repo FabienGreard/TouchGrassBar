@@ -34,6 +34,7 @@ function SettingsCoordinator({
     return () => {
       disposed = true;
       stop();
+      void delivery.hideRecoveryKey();
     };
   }, [delivery]);
 
@@ -58,6 +59,7 @@ function SettingsCoordinator({
     typeof state.touchGrassId === "string"
       ? {
           displayName: state.displayName,
+          profileKeyId: state.profileKeyId ?? null,
           touchGrassId: state.touchGrassId,
         }
       : null;
@@ -75,6 +77,9 @@ function SettingsCoordinator({
       onLaunchAtLoginChange={(enabled) => {
         void delivery.setLaunchAtLogin(enabled);
       }}
+      onHideRecoveryKey={() => {
+        void delivery.hideRecoveryKey();
+      }}
       onRevealRecoveryKey={() => {
         void delivery.revealRecoveryKey();
       }}
@@ -83,6 +88,7 @@ function SettingsCoordinator({
       profile={profile}
       profileProvisioning={state?.profileProvisioning}
       providerState={providerAccessStateFromPresence(providers, "claude")}
+      recoveryKey={view.recoveryKey}
       revealingRecoveryKey={view.revealingRecoveryKey}
       section={state?.section}
     />

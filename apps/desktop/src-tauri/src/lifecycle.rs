@@ -110,6 +110,8 @@ pub struct SettingsStateV2 {
     pub launch_at_login: LaunchAtLoginState,
     pub profile_provisioning: ProfileProvisioningStatus,
     pub display_name: Option<String>,
+    #[schemars(regex(pattern = r"^[A-F0-9]{3}$"))]
+    pub profile_key_id: Option<String>,
     pub touch_grass_id: Option<String>,
     pub providers: [ProviderPresence; 2],
 }
@@ -717,6 +719,7 @@ impl DesktopLifecycle {
             launch_at_login,
             profile_provisioning: record.profile_provisioning,
             display_name: record.display_name,
+            profile_key_id: None,
             touch_grass_id: record.touch_grass_id,
             providers: self.providers(),
         }

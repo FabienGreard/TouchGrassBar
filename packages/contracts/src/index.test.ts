@@ -78,6 +78,7 @@ describe("public contracts", () => {
       contractVersion: 2,
       displayName: "Fabien",
       launchAtLogin: { availability: "available", enabled: true },
+      profileKeyId: "A7F",
       profileProvisioning: "profile-pending",
       providers,
       section: "profile",
@@ -91,6 +92,10 @@ describe("public contracts", () => {
     ).toBe(false);
     expect(
       settingsStateSchema.safeParse({ ...settings, contractVersion: 3 })
+        .success,
+    ).toBe(false);
+    expect(
+      settingsStateSchema.safeParse({ ...settings, profileKeyId: "actual-key-suffix" })
         .success,
     ).toBe(false);
   });

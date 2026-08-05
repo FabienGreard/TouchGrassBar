@@ -7,10 +7,13 @@ import {
 
 describe("Tauri Settings adapter", () => {
   test("uses exact Settings commands and the bounded navigation event", async () => {
+    const fakeRecoveryKey = "2".repeat(48);
     const stop = vi.fn();
     let navigate!: (event: { payload: unknown }) => void;
     const bindings: TauriSettingsBindings = {
-      invoke: vi.fn(async (command) => ({ command })),
+      invoke: vi.fn(async (command) =>
+        command === "reveal_recovery_key" ? fakeRecoveryKey : { command },
+      ),
       listen: vi.fn(async (_event, receive) => {
         navigate = receive;
         return stop;
@@ -23,7 +26,10 @@ describe("Tauri Settings adapter", () => {
     await adapter.setLaunchAtLogin(true);
     await adapter.selectSection("profile");
     await adapter.requestRecoveryDisclosure();
-    await adapter.revealRecoveryKey();
+    expect(await adapter.revealRecoveryKey()).toEqual({
+      ok: true,
+      value: fakeRecoveryKey,
+    });
     const subscription = await adapter.subscribeNavigation(receive);
     navigate({ payload: { section: "profile" } });
 
@@ -88,6 +94,18 @@ describe("Tauri Settings adapter", () => {
     });
     expect(await adapter.subscribeNavigation(() => undefined)).toEqual({
       fault: { code: "navigation-stream-unavailable" },
+      ok: false,
+    });
+  });
+
+  test("rejects a malformed Recovery Key response", async () => {
+    const adapter = createTauriSettingsAdapter({
+      invoke: vi.fn(async () => "not-a-recovery-key"),
+      listen: vi.fn(async () => () => undefined),
+    });
+
+    expect(await adapter.revealRecoveryKey()).toEqual({
+      fault: { code: "recovery-key-unavailable" },
       ok: false,
     });
   });

@@ -324,13 +324,17 @@ impl ProfileRuntime {
     fn reveal_recovery_key(
         &self,
         authorization: SettingsProfileAuthorization,
-    ) -> Result<(), String> {
-        let disclosure_was_pending = self.lifecycle.pending_recovery_disclosure();
+    ) -> Result<String, String> {
         self.coordinator
             .lock()
             .map_err(|_| "Recovery Key unavailable".to_owned())?
-            .reveal_recovery_key(disclosure_was_pending, authorization)
+            .recovery_key(authorization)
+            .map(|key| key.expose().to_owned())
             .map_err(|_| "Recovery Key unavailable".to_owned())
+    }
+
+    fn profile_key_id(&self) -> Option<String> {
+        profile::production_profile_key_id(&self.lifecycle)
     }
 }
 
@@ -661,14 +665,31 @@ fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
         .unwrap_or(LaunchAtLoginState::Unavailable)
 }
 
+fn settings_state_with_profile_key_id(
+    lifecycle: &DesktopLifecycle,
+    launch_at_login: LaunchAtLoginState,
+    profile_runtime: &ProfileRuntime,
+) -> SettingsStateV2 {
+    let mut state = lifecycle.settings_state(launch_at_login);
+    if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready {
+        state.profile_key_id = profile_runtime.profile_key_id();
+    }
+    state
+}
+
 #[tauri::command]
 fn get_settings_state(
     window: WebviewWindow,
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
+    profile_runtime: State<'_, ProfileRuntime>,
 ) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
-    Ok(lifecycle.settings_state(launch_at_login_state(&app)))
+    Ok(settings_state_with_profile_key_id(
+        &lifecycle,
+        launch_at_login_state(&app),
+        &profile_runtime,
+    ))
 }
 
 #[tauri::command]
@@ -676,6 +697,7 @@ fn set_launch_at_login(
     window: WebviewWindow,
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
+    profile_runtime: State<'_, ProfileRuntime>,
     enabled: bool,
 ) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
@@ -689,7 +711,11 @@ fn set_launch_at_login(
     } else {
         LaunchAtLoginState::Unavailable
     };
-    Ok(lifecycle.settings_state(launch_at_login))
+    Ok(settings_state_with_profile_key_id(
+        &lifecycle,
+        launch_at_login,
+        &profile_runtime,
+    ))
 }
 
 #[tauri::command]
@@ -719,7 +745,7 @@ async fn reveal_recovery_key(
     window: WebviewWindow,
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let authorization = require_profile_settings(&window, &lifecycle)?;
     let runtime = profile_runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || runtime.reveal_recovery_key(authorization))
@@ -1101,27 +1127,9 @@ mod tests {
             initial.note,
             "Stored in this Mac’s Keychain. Save a separate copy somewhere secure."
         );
-        assert_eq!(
-            initial.visual_order,
-            [
-                "title",
-                "introduction",
-                "touch-grass-id",
-                "recovery-key",
-                "keychain-note",
-                "action",
-            ]
-        );
-        assert!(!initial.uses_icon);
         assert_eq!(initial.palette.ivory, [0.992, 0.984, 0.953, 1.0]);
         assert_eq!(initial.palette.ink, [0.071, 0.071, 0.078, 1.0]);
         assert_eq!(initial.palette.green, [0.098, 0.455, 0.239, 1.0]);
-
-        let reveal =
-            crate::recovery_sheet::design(crate::profile::RecoveryPresentationKind::Reveal);
-        assert_eq!(reveal.title, "Recovery Key");
-        assert_eq!(reveal.button_title, "Done");
-        assert_eq!(reveal.note, "Stored in this Mac’s Keychain.");
     }
 
     #[test]

@@ -7,7 +7,8 @@ use std::{
 
 use convex::{AuthenticationToken, ConvexClient, FunctionResult, Value};
 use serde::Deserialize;
-use zeroize::Zeroizing;
+use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::lifecycle::{DesktopLifecycle, SettingsProfileAuthorization};
 use crate::sanitized::SanitizedProfileOutcome;
@@ -21,6 +22,25 @@ const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const SIGNUP_PROOF_HEADER: &str = "x-touchgrass-signup-proof";
 const ID_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const SECRET_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const PROFILE_KEY_ID_DOMAIN: &[u8] = b"touchgrass-profile-key-id:v1\0";
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct KeychainConfiguration {
+    service: &'static str,
+}
+
+fn keychain_configuration(development_service: Option<&'static str>) -> KeychainConfiguration {
+    KeychainConfiguration {
+        service: development_service
+            .filter(|service| !service.is_empty())
+            .unwrap_or(KEYCHAIN_SERVICE),
+    }
+}
+
+fn build_keychain_configuration() -> KeychainConfiguration {
+    keychain_configuration(option_env!("TOUCHGRASS_DEV_KEYCHAIN_SERVICE"))
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SecretKind {
@@ -98,6 +118,19 @@ impl fmt::Debug for Secret {
     }
 }
 
+fn profile_key_id(key: &Secret) -> String {
+    let mut digest = Sha256::new()
+        .chain_update(PROFILE_KEY_ID_DOMAIN)
+        .chain_update(key.expose().as_bytes())
+        .finalize();
+    let mut id = String::with_capacity(3);
+    id.push(char::from(HEX[usize::from(digest[0] >> 4)]));
+    id.push(char::from(HEX[usize::from(digest[0] & 0x0f)]));
+    id.push(char::from(HEX[usize::from(digest[1] >> 4)]));
+    digest.zeroize();
+    id
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProfileError(&'static str);
 
@@ -126,8 +159,10 @@ impl MacKeychain {
         if kind == SecretKind::ConvexJwt {
             return Err(ProfileError("memory-only credential cannot be stored"));
         }
+        let configuration = build_keychain_configuration();
         let policy = keychain_policy(kind);
-        let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, policy.account);
+        let mut options =
+            PasswordOptions::new_generic_password(configuration.service, policy.account);
         options.set_access_synchronized(Some(policy.synchronized));
         options.use_protected_keychain();
         Ok(options)
@@ -195,6 +230,21 @@ impl SecretCustody for MacKeychain {
         )
         .map_err(|_| ProfileError("secure custody unavailable"))
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn production_profile_key_id(lifecycle: &DesktopLifecycle) -> Option<String> {
+    lifecycle.ready_touch_grass_id()?;
+    MacKeychain
+        .read(SecretKind::RecoveryKey)
+        .ok()
+        .flatten()
+        .map(|key| profile_key_id(&key))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn production_profile_key_id(_lifecycle: &DesktopLifecycle) -> Option<String> {
+    None
 }
 
 #[derive(Clone, Debug)]
@@ -277,7 +327,6 @@ pub(crate) enum RecoveryPresentationAudience {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RecoveryPresentationKind {
     InitialDisclosure,
-    Reveal,
 }
 
 pub(crate) trait RecoverySheetPresenter: Send + Sync {
@@ -385,32 +434,19 @@ impl ProfileCoordinator {
         Ok(())
     }
 
-    pub(crate) fn reveal_recovery_key(
+    pub(crate) fn recovery_key(
         &self,
-        disclosure_was_pending: bool,
         authorization: SettingsProfileAuthorization,
-    ) -> Result<(), ProfileError> {
-        let pending = self.lifecycle.pending_recovery_disclosure();
-        if disclosure_was_pending && !pending {
-            return Ok(());
-        }
-        let kind = if pending {
-            RecoveryPresentationKind::InitialDisclosure
-        } else {
-            RecoveryPresentationKind::Reveal
-        };
-        if !self.present_recovery_key(
-            kind,
-            RecoveryPresentationAudience::ProfileSettings(authorization),
-        )? {
+    ) -> Result<Secret, ProfileError> {
+        if !self.lifecycle.is_current_profile_settings(authorization) {
             return Err(ProfileError("Recovery Key unavailable"));
         }
-        if pending {
-            self.lifecycle
-                .mark_recovery_disclosed()
-                .map_err(ProfileError)?;
-        }
-        Ok(())
+        self.lifecycle
+            .ready_touch_grass_id()
+            .ok_or(ProfileError("Recovery Key unavailable"))?;
+        self.custody
+            .read(SecretKind::RecoveryKey)?
+            .ok_or(ProfileError("Recovery Key unavailable"))
     }
 
     fn present_recovery_key(
@@ -956,6 +992,22 @@ mod tests {
     }
 
     #[test]
+    fn profile_key_id_is_stable_without_exposing_key_characters() {
+        let key = Secret::new("not-a-secret".to_owned());
+
+        let key_id = profile_key_id(&key);
+
+        assert_eq!(key_id, "52E");
+        assert_eq!(key_id, profile_key_id(&key));
+        assert!(
+            key_id
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
+        assert!(!key.expose().to_ascii_uppercase().contains(&key_id));
+    }
+
+    #[test]
     fn prepare_sends_json_to_the_better_auth_http_route() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1017,7 +1069,16 @@ mod tests {
     }
 
     #[test]
-    fn disclosure_uses_only_the_native_presenter_and_sanitized_state() {
+    fn development_custody_uses_one_isolated_data_protection_service() {
+        let development = keychain_configuration(Some("app.touchgrass.bar.dev.wexample"));
+        let production = keychain_configuration(None);
+
+        assert_eq!(development.service, "app.touchgrass.bar.dev.wexample");
+        assert_eq!(production.service, KEYCHAIN_SERVICE);
+    }
+
+    #[test]
+    fn creation_disclosure_is_native_and_settings_reveal_is_authorized() {
         let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
         fixture.presenter.set_available(false);
@@ -1033,7 +1094,6 @@ mod tests {
         assert!(fixture.lifecycle.pending_recovery_disclosure());
 
         fixture.presenter.set_available(true);
-        let queued_reveal_saw_pending = fixture.lifecycle.pending_recovery_disclosure();
         fixture
             .coordinator
             .present_pending_disclosure(RecoveryPresentationAudience::EligibleForeground)
@@ -1068,21 +1128,15 @@ mod tests {
             .authorize_profile_settings()
             .expect("Profile Settings authorization");
 
-        fixture
-            .coordinator
-            .reveal_recovery_key(queued_reveal_saw_pending, authorization)
-            .unwrap();
+        let revealed = fixture.coordinator.recovery_key(authorization).unwrap();
+        assert_eq!(revealed.expose(), presentation.recovery_key.expose());
         assert!(fixture.presenter.take_last().is_none());
+        assert!(!fixture.lifecycle.pending_recovery_disclosure());
 
         fixture
-            .coordinator
-            .reveal_recovery_key(false, authorization)
-            .unwrap();
-        let revealed = fixture.presenter.take_last().expect("native reveal");
-        assert_eq!(revealed.kind, RecoveryPresentationKind::Reveal);
-        assert_eq!(revealed.touch_grass_id, fixture.transport.touch_grass_id());
-        assert!(!revealed.recovery_key.expose().is_empty());
-        assert!(!fixture.lifecycle.pending_recovery_disclosure());
+            .lifecycle
+            .request_settings_section(crate::lifecycle::SettingsSection::General);
+        assert!(fixture.coordinator.recovery_key(authorization).is_err());
     }
 
     #[test]

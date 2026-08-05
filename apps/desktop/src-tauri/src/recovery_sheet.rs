@@ -13,14 +13,6 @@ use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect, NSSize, NSSt
 use crate::profile::{RecoveryPresentation, RecoveryPresentationKind};
 
 const INTRODUCTION: &str = "Use it with your TouchGrass ID to restore this Profile on another Mac.";
-const VISUAL_ORDER: [&str; 6] = [
-    "title",
-    "introduction",
-    "touch-grass-id",
-    "recovery-key",
-    "keychain-note",
-    "action",
-];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RecoverySheetPalette {
@@ -37,8 +29,6 @@ pub(crate) struct RecoverySheetDesign {
     pub(crate) palette: RecoverySheetPalette,
     pub(crate) size: (f64, f64),
     pub(crate) title: &'static str,
-    pub(crate) uses_icon: bool,
-    pub(crate) visual_order: [&'static str; 6],
 }
 
 pub(crate) fn design(kind: RecoveryPresentationKind) -> RecoverySheetDesign {
@@ -48,9 +38,6 @@ pub(crate) fn design(kind: RecoveryPresentationKind) -> RecoverySheetDesign {
             "I saved a copy",
             "Stored in this Mac’s Keychain. Save a separate copy somewhere secure.",
         ),
-        RecoveryPresentationKind::Reveal => {
-            ("Recovery Key", "Done", "Stored in this Mac’s Keychain.")
-        }
     };
     RecoverySheetDesign {
         button_title,
@@ -63,8 +50,6 @@ pub(crate) fn design(kind: RecoveryPresentationKind) -> RecoverySheetDesign {
         },
         size: (440.0, 304.0),
         title,
-        uses_icon: false,
-        visual_order: VISUAL_ORDER,
     }
 }
 

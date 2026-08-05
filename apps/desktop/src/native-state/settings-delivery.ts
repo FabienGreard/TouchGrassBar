@@ -21,7 +21,7 @@ type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
   requestRecoveryDisclosure: () => Promise<SettingsPortOutcome<void>>;
-  revealRecoveryKey: () => Promise<SettingsPortOutcome<void>>;
+  revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
   selectSection: (
     section: SettingsSection,
   ) => Promise<SettingsPortOutcome<void>>;
@@ -33,6 +33,7 @@ type SettingsPort = {
 
 type SettingsDeliverySnapshot = {
   phase: "degraded" | "loading" | "ready";
+  recoveryKey: string | null;
   revealingRecoveryKey: boolean;
   savingLaunchAtLogin: boolean;
   snapshot: SettingsState | null;
@@ -41,12 +42,14 @@ type SettingsDeliverySnapshot = {
 function createSettingsDelivery(port: SettingsPort) {
   let current: SettingsDeliverySnapshot = {
     phase: "loading",
+    recoveryKey: null,
     revealingRecoveryKey: false,
     savingLaunchAtLogin: false,
     snapshot: null,
   };
   let readInFlight: Promise<void> | null = null;
   let revealInFlight: Promise<boolean> | null = null;
+  let recoveryRevision = 0;
   let saveInFlight: Promise<boolean> | null = null;
   let sectionSelection = Promise.resolve(true);
   let sectionRevision = 0;
@@ -69,6 +72,7 @@ function createSettingsDelivery(port: SettingsPort) {
     const snapshot = { ...parsed.data, section };
     publish({
       phase: "ready",
+      recoveryKey: current.recoveryKey,
       revealingRecoveryKey: current.revealingRecoveryKey,
       savingLaunchAtLogin,
       snapshot,
@@ -96,6 +100,12 @@ function createSettingsDelivery(port: SettingsPort) {
     if (!request.success) return;
     sectionRevision += 1;
     selectedSection = request.data.section;
+    if (request.data.section !== "profile") {
+      recoveryRevision += 1;
+      if (current.recoveryKey !== null) {
+        publish({ ...current, recoveryKey: null });
+      }
+    }
     sectionSelection =
       request.data.section === "profile"
         ? port.requestRecoveryDisclosure().then((outcome) => outcome.ok)
@@ -117,11 +127,23 @@ function createSettingsDelivery(port: SettingsPort) {
     },
     getSnapshot: () => current,
     hide: async () => {
+      recoveryRevision += 1;
+      if (current.recoveryKey !== null) {
+        publish({ ...current, recoveryKey: null });
+      }
       await port.hide();
+    },
+    async hideRecoveryKey() {
+      recoveryRevision += 1;
+      if (current.recoveryKey !== null) {
+        publish({ ...current, recoveryKey: null });
+      }
+      return true;
     },
     read,
     revealRecoveryKey() {
       if (revealInFlight !== null) return revealInFlight;
+      const revision = ++recoveryRevision;
       publish({ ...current, revealingRecoveryKey: true });
       revealInFlight = (async () => {
         if (!(await sectionSelection)) {
@@ -129,8 +151,14 @@ function createSettingsDelivery(port: SettingsPort) {
           return false;
         }
         const outcome = await port.revealRecoveryKey();
-        publish({ ...current, revealingRecoveryKey: false });
-        return outcome.ok;
+        const recoveryKey =
+          outcome.ok && revision === recoveryRevision ? outcome.value : null;
+        publish({
+          ...current,
+          recoveryKey,
+          revealingRecoveryKey: false,
+        });
+        return recoveryKey !== null;
       })().finally(() => {
         revealInFlight = null;
       });
@@ -139,6 +167,12 @@ function createSettingsDelivery(port: SettingsPort) {
     selectSection(section: SettingsSection) {
       const revision = ++sectionRevision;
       selectedSection = section;
+      if (section !== "profile") {
+        recoveryRevision += 1;
+        if (current.recoveryKey !== null) {
+          publish({ ...current, recoveryKey: null });
+        }
+      }
       sectionSelection = (async () => {
         const outcome = await port.selectSection(section);
         if (!outcome.ok || revision !== sectionRevision) return false;

@@ -18,6 +18,8 @@ const settingsState = {
   section: "general",
 } as const;
 
+const fakeRecoveryKey = "2".repeat(48);
+
 function ignoreNavigation(_payload: unknown) {}
 
 function port(): SettingsPort & { navigate: (payload: unknown) => void } {
@@ -32,7 +34,7 @@ function port(): SettingsPort & { navigate: (payload: unknown) => void } {
     })),
     revealRecoveryKey: vi.fn(async () => ({
       ok: true as const,
-      value: undefined,
+      value: fakeRecoveryKey,
     })),
     selectSection: vi.fn(async () => ({
       ok: true as const,
@@ -127,7 +129,7 @@ describe("Settings delivery", () => {
     expect(delivery.getSnapshot().snapshot?.section).toBe("providers");
   });
 
-  test("contains Recovery Key reveal behind one sanitized Settings action", async () => {
+  test("keeps the deliberate Recovery Key reveal only until it is hidden", async () => {
     const native = port();
     let confirmSection!: (outcome: SettingsPortOutcome<void>) => void;
     native.selectSection = vi.fn(
@@ -147,10 +149,13 @@ describe("Settings delivery", () => {
     confirmSection({ ok: true, value: undefined });
     expect(await reveal).toBe(true);
     expect(native.selectSection).toHaveBeenCalledWith("profile");
-    expect(native.revealRecoveryKey).toHaveBeenCalledWith();
+    expect(native.revealRecoveryKey).toHaveBeenCalledOnce();
     expect(delivery.getSnapshot()).toMatchObject({
+      recoveryKey: fakeRecoveryKey,
       revealingRecoveryKey: false,
     });
+    expect(await delivery.hideRecoveryKey()).toBe(true);
+    expect(delivery.getSnapshot()).toMatchObject({ recoveryKey: null });
   });
 
   test("does not disclose Recovery Key for a superseded Profile selection", async () => {

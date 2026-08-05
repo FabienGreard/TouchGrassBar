@@ -11,6 +11,7 @@ type JsonSchema = {
   minimum?: number;
   minLength?: number;
   oneOf?: JsonSchema[];
+  pattern?: string;
   properties?: Record<string, JsonSchema>;
   required?: string[];
   title?: string;
@@ -128,6 +129,8 @@ function render(node: JsonSchema, fieldName = ""): string {
     if (fieldName.endsWith("At")) return "z.string().datetime()";
     let expression = "z.string()";
     if (node.minLength !== undefined) expression += `.min(${node.minLength})`;
+    if (node.pattern !== undefined)
+      expression += `.regex(new RegExp(${JSON.stringify(node.pattern)}))`;
     return expression;
   }
   return "z.unknown()";

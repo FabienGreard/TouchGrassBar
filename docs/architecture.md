@@ -28,7 +28,7 @@ React owns:
 - Loading, stale, unavailable, and error presentation
 - User intent delivered to Rust through narrow Tauri commands
 
-React cannot read provider source material, credentials, cookies, raw logs, local paths, Convex session material, or local storage. It receives versioned Sanitized Desktop State and bounded view data. Release WebViews are network-dark; development may allow only the localhost Vite/HMR connection.
+React cannot read provider source material, cookies, raw logs, local paths, Convex session material, or local storage. Credentials remain native-owned, except that Profile Settings may receive the Recovery Key through one narrow command after the Tokenmaxxer selects **View**. It receives versioned Sanitized Desktop State and bounded view data for all other presentation. Release WebViews are network-dark; development may allow only the localhost Vite/HMR connection.
 
 #### Desktop React module layout
 
@@ -95,8 +95,8 @@ Shared strict TypeScript and Oxlint configuration.
 ## Trust boundaries
 
 1. Rust reads local provider sources and immediately reduces them into private parser metadata, sanitized Quota Snapshots, and Daily Usage Aggregates.
-2. Only DTOs in the sanitized contract may serialize across Tauri IPC. Privileged provider and authentication types are separate and non-serializable through commands.
-3. React sends narrow typed intents and receives Sanitized Desktop State or bounded sanitized views; it has no generic transport command or direct provider, filesystem, Keychain, or network access.
+2. DTOs in the sanitized contract and the deliberate Profile Settings Recovery Key reveal may serialize across Tauri IPC. Privileged provider and other authentication types are separate and non-serializable through commands.
+3. React sends narrow typed intents and receives Sanitized Desktop State, bounded sanitized views, or the Recovery Key after the explicit **View** action. It has no generic transport command or direct provider, filesystem, Keychain, or network access.
 4. Rust synchronizes only validated cumulative Usage Snapshots through the official Convex Rust client.
 5. Convex validates the live Profile and Active Mac generation, then updates Daily Usage, scores, and Aggregate projections transactionally.
 6. Rust sanitizes Convex results before React receives them.
@@ -115,7 +115,7 @@ Production WebViews deny arbitrary HTTP and WebSocket egress through CSP and rec
 
 ## Local persistence
 
-Rust owns one transactional SQLite database in Application Support. It separates private parser checkpoints and deduplication metadata, sanitized provider/read-model state, effective-dated pricing versions, and a synchronization outbox. Raw provider content is never copied into the database. The Recovery Key, Better Auth session, and opaque installation credential are separate non-synchronizing Keychain items. Provider credentials remain in provider-owned storage and exist in TouchGrassBar memory only while needed. Profile creation, recovery, and key reveal use native secure sheets that return only sanitized outcomes to React.
+Rust owns one transactional SQLite database in Application Support. It separates private parser checkpoints and deduplication metadata, sanitized provider/read-model state, effective-dated pricing versions, and a synchronization outbox. Raw provider content is never copied into the database. The Recovery Key, Better Auth session, and opaque installation credential are separate non-synchronizing Keychain items. Provider credentials remain in provider-owned storage and exist in TouchGrassBar memory only while needed. Profile creation and recovery use native secure sheets. Profile Settings may request the stored Recovery Key through one narrow command and hold it in React memory only while the inline field is visible. This exception is recorded in [ADR 0015](adr/0015-allow-a-deliberate-recovery-key-reveal-in-react.md).
 
 The native core retains 60 UTC Ranking Days of local aggregates and deduplication metadata. Pricing versions remain while referenced. A Quota Lane may be cached as stale only until its reset, after which its allowance and remaining value are unavailable. Profile creation queues at most the approved 30-day aggregate backfill.
 
