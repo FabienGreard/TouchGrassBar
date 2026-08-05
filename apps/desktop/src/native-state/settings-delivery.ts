@@ -51,6 +51,7 @@ function createSettingsDelivery(port: SettingsPort) {
     snapshot: null,
   };
   let readInFlight: Promise<void> | null = null;
+  let recoveryClearAvailable = false;
   let revealInFlight: Promise<boolean> | null = null;
   let recoveryRevision = 0;
   let saveInFlight: Promise<boolean> | null = null;
@@ -83,7 +84,13 @@ function createSettingsDelivery(port: SettingsPort) {
     }
     const section = selectedSection ?? parsed.data.section;
     selectedSection = section;
-    const snapshot = { ...parsed.data, section };
+    const snapshot = {
+      ...parsed.data,
+      recoveryKeySuffix: recoveryClearAvailable
+        ? parsed.data.recoveryKeySuffix
+        : null,
+      section,
+    };
     const previousRecoveryContext =
       current.snapshot?.profileProvisioning === "ready"
         ? [
@@ -150,8 +157,14 @@ function createSettingsDelivery(port: SettingsPort) {
         port.subscribeNavigation(receiveNavigation),
         port.subscribeRecoveryClear(clearRecoveryKey),
       ]);
+      recoveryClearAvailable = recoveryClear.ok;
       await read();
+      if (!recoveryClearAvailable) {
+        publish({ ...current, phase: "degraded" });
+      }
       return () => {
+        recoveryClearAvailable = false;
+        clearRecoveryKey();
         if (navigation.ok) navigation.value();
         if (recoveryClear.ok) recoveryClear.value();
       };
@@ -167,6 +180,7 @@ function createSettingsDelivery(port: SettingsPort) {
     },
     read,
     revealRecoveryKey() {
+      if (!recoveryClearAvailable) return Promise.resolve(false);
       if (revealInFlight !== null) return revealInFlight;
       const revision = ++recoveryRevision;
       publish({ ...current, revealingRecoveryKey: true });

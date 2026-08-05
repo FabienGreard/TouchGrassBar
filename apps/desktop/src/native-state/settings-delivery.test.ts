@@ -212,6 +212,33 @@ describe("Settings delivery", () => {
     expect(delivery.getSnapshot().recoveryKey).toBeNull();
   });
 
+  test("fails closed when the native recovery-clear stream is unavailable", async () => {
+    const native = port();
+    native.read = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        ...settingsState,
+        profileProvisioning: "ready",
+        recoveryKeySuffix: "K9m",
+        touchGrassId: "TG-234567",
+      },
+    }));
+    native.subscribeRecoveryClear = vi.fn(async () => ({
+      fault: { code: "recovery-clear-stream-unavailable" as const },
+      ok: false as const,
+    }));
+    const delivery = createSettingsDelivery(native);
+
+    await delivery.activate();
+
+    expect(delivery.getSnapshot()).toMatchObject({
+      phase: "degraded",
+      snapshot: { recoveryKeySuffix: null },
+    });
+    expect(await delivery.revealRecoveryKey()).toBe(false);
+    expect(native.revealRecoveryKey).not.toHaveBeenCalled();
+  });
+
   test("a changed Profile recovery context clears the revealed key", async () => {
     const native = port();
     native.read = vi
