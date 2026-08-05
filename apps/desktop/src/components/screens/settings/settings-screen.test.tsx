@@ -32,9 +32,7 @@ describe("settings screen", () => {
     expect(markup).not.toContain("Fabien");
     expect(markup).not.toContain("#TG-7K4P9D");
     expect(markup).toContain("Profile security");
-    expect(markup).toContain(
-      "Recovery Key is stored in the local macOS Keychain",
-    );
+    expect(markup).not.toContain("local macOS Keychain");
     expect(markup).not.toContain('type="password"');
     expect(markup).not.toContain("Reveal recovery key");
     expect(markup).toContain("Recover from another Mac");
