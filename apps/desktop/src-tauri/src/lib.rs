@@ -1,6 +1,7 @@
 #[cfg(debug_assertions)]
 mod dev_instance;
 pub mod lifecycle;
+mod network;
 pub mod sanitized;
 
 use std::{env, time::Instant};
@@ -10,11 +11,12 @@ use lifecycle::{
     SettingsNavigationRequest, SettingsSection, SettingsStateV1,
 };
 use sanitized::{
-    NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RevisionNotice, SanitizedDesktopStateV1,
+    NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
+    SanitizedDesktopStateV1,
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    Position, Rect, Size, State, WebviewWindow,
+    Position, Rect, RunEvent, Size, State, WebviewWindow,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -162,6 +164,9 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
     panel.set_position(origin)?;
     panel.show()?;
     panel.set_focus()?;
+    if let Some(core) = app.try_state::<NativeCore>() {
+        let _ = core.request_refresh(RefreshSource::StalePanelOpen);
+    }
     Ok(())
 }
 
@@ -245,12 +250,13 @@ fn request_refresh(
     core: State<'_, NativeCore>,
 ) -> Result<RefreshReceipt, String> {
     require_panel(&window)?;
-    core.request_refresh().map_err(str::to_owned)
+    core.request_refresh(RefreshSource::Manual)
+        .map_err(str::to_owned)
 }
 
 fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
     app.state::<NativeCore>()
-        .request_refresh()
+        .request_refresh(RefreshSource::Manual)
         .map_err(str::to_owned)?;
     Ok(())
 }
@@ -360,7 +366,6 @@ pub fn run() {
                 }
             },
         ))
-        .manage(NativeCore::unavailable())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -380,19 +385,25 @@ pub fn run() {
             set_launch_at_login
         ])
         .setup(move |app| {
-            let lifecycle = app
+            let database_path = app
                 .path()
                 .app_data_dir()
                 .ok()
-                .and_then(|directory| {
-                    DesktopLifecycle::open(&directory.join("touchgrassbar.sqlite3")).ok()
-                })
+                .map(|directory| directory.join("touchgrassbar.sqlite3"));
+            let lifecycle = database_path
+                .as_deref()
+                .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
+            let core = database_path
+                .as_deref()
+                .and_then(|path| NativeCore::open(path).ok())
+                .unwrap_or_else(NativeCore::unavailable);
             let show_bootstrap = should_show_bootstrap_on_start(
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,
             );
             app.manage(lifecycle);
+            app.manage(core.clone());
 
             #[cfg(debug_assertions)]
             let development_instance = dev_instance::DevelopmentInstance::from_environment();
@@ -422,10 +433,7 @@ pub fn run() {
                 }
             }
 
-            let revision_notices = app
-                .state::<NativeCore>()
-                .revision_notices()
-                .map_err(std::io::Error::other)?;
+            let revision_notices = core.revision_notices().map_err(std::io::Error::other)?;
             let revision_notice_app = app.handle().clone();
             std::thread::Builder::new()
                 .name("sanitized-state-revision-notices".to_owned())
@@ -435,7 +443,6 @@ pub fn run() {
                             .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
                     }
                 })?;
-
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
@@ -535,7 +542,19 @@ pub fn run() {
         app.set_dock_visibility(false);
     }
 
-    app.run(|_, _| {});
+    app.run(|app, event| match event {
+        RunEvent::Resumed => {
+            if let Some(core) = app.try_state::<NativeCore>() {
+                let _ = core.request_refresh(RefreshSource::Wake);
+            }
+        }
+        RunEvent::Exit => {
+            if let Some(core) = app.try_state::<NativeCore>() {
+                core.shutdown();
+            }
+        }
+        _ => {}
+    });
 }
 
 #[cfg(test)]
