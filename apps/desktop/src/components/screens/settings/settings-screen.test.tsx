@@ -73,6 +73,12 @@ describe("settings screen", () => {
     );
     expect(developmentMarkup).not.toContain('type="password"');
     expect(readyMarkup).toContain("Stored in this Mac’s Keychain.");
+    expect(readyMarkup).toContain(
+      'aria-label="Copy TouchGrass ID TG-234567"',
+    );
+    expect(readyMarkup).toContain('data-copy-status="idle"');
+    expect(readyMarkup).toContain('data-copy-feedback="idle"');
+    expect(readyMarkup).not.toContain(">Copy ID<");
     expect(readyMarkup).toContain('data-slot="input"');
     expect(readyMarkup).toContain('value="••••••••••••K9m"');
     expect(readyMarkup).toMatch(

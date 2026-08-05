@@ -11,7 +11,9 @@ import {
   SegmentedControl,
   SegmentedControlItem,
 } from "@touchgrass/ui";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+
+import { useCopyText } from "@/components/use-copy-text";
 
 type DoomerboardRow = {
   id: string;
@@ -95,18 +97,10 @@ function CurrentUserProfile({
 }: {
   currentUser: CurrentUser | null;
 }) {
-  const [copyStatus, setCopyStatus] = useState<
-    "idle" | "copied" | "unavailable"
-  >("idle");
-
-  useEffect(() => {
-    if (copyStatus === "idle") {
-      return undefined;
-    }
-
-    const resetTimer = window.setTimeout(() => setCopyStatus("idle"), 1600);
-    return () => window.clearTimeout(resetTimer);
-  }, [copyStatus]);
+  const profile = currentUser
+    ? `${currentUser.name}${currentUser.id}`
+    : "";
+  const { copyStatus, copyText } = useCopyText(profile);
 
   if (currentUser === null) {
     return (
@@ -120,16 +114,6 @@ function CurrentUserProfile({
     );
   }
 
-  const profile = `${currentUser.name}${currentUser.id}`;
-  const copyProfile = async () => {
-    try {
-      await navigator.clipboard.writeText(profile);
-      setCopyStatus("copied");
-    } catch {
-      setCopyStatus("unavailable");
-    }
-  };
-
   return (
     <span
       className="inline-flex min-w-0 items-center gap-0.5"
@@ -140,7 +124,7 @@ function CurrentUserProfile({
         className="max-w-[142px] rounded-[5px] font-mono text-[7px] font-medium"
         data-copy-status={copyStatus}
         data-slot="current-user-profile-action"
-        onClick={() => void copyProfile()}
+        onClick={() => void copyText()}
         size="quiet"
         title={
           copyStatus === "copied"
