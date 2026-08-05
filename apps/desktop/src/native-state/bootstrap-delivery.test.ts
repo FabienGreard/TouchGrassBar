@@ -45,7 +45,7 @@ describe("bootstrap delivery", () => {
       submitting: false,
     });
 
-    expect(await delivery.complete("  Fabien  ")).toBe(true);
+    expect(await delivery.complete("  Fabien  ")).toBe(false);
     expect(native.complete).toHaveBeenCalledWith("Fabien");
     expect(native.hide).not.toHaveBeenCalled();
     expect(delivery.getSnapshot()).toMatchObject({

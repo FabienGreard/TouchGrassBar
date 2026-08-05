@@ -81,7 +81,7 @@ function createBootstrapDelivery(port: BootstrapPort) {
         }
         const accepted = accept(outcome.value);
         if (!accepted) return false;
-        if (current.snapshot?.profileProvisioning !== "ready") return true;
+        if (current.snapshot?.profileProvisioning !== "ready") return false;
         const hidden = await port.hide();
         if (!hidden.ok) {
           publish({ ...current, phase: "degraded", submitting: false });
