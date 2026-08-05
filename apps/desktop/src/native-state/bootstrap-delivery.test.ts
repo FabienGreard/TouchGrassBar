@@ -47,6 +47,7 @@ describe("bootstrap delivery", () => {
 
     expect(await delivery.complete("  Fabien  ")).toBe(true);
     expect(native.complete).toHaveBeenCalledWith("Fabien");
+    expect(native.hide).toHaveBeenCalledOnce();
     expect(delivery.getSnapshot()).toMatchObject({
       phase: "ready",
       snapshot: {
@@ -78,5 +79,18 @@ describe("bootstrap delivery", () => {
     expect(await first).toBe(false);
     expect(native.complete).toHaveBeenCalledOnce();
     expect(delivery.getSnapshot().phase).toBe("degraded");
+  });
+
+  test("fails closed when the completed onboarding surface cannot close", async () => {
+    const native = port();
+    native.hide = vi.fn(async () => ({
+      fault: { code: "surface-unavailable" as const },
+      ok: false as const,
+    }));
+    const delivery = createBootstrapDelivery(native);
+    await delivery.read();
+
+    expect(await delivery.complete("Fabien")).toBe(false);
+    expect(native.hide).toHaveBeenCalledOnce();
   });
 });

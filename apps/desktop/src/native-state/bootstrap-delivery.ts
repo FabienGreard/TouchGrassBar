@@ -79,7 +79,14 @@ function createBootstrapDelivery(port: BootstrapPort) {
           publish({ ...current, phase: "degraded", submitting: false });
           return false;
         }
-        return accept(outcome.value);
+        const accepted = accept(outcome.value);
+        if (!accepted) return false;
+        const hidden = await port.hide();
+        if (!hidden.ok) {
+          publish({ ...current, phase: "degraded", submitting: false });
+          return false;
+        }
+        return true;
       })().finally(() => {
         submissionInFlight = null;
       });

@@ -463,17 +463,14 @@ fn monitor_for_tray(window: &WebviewWindow, tray: Frame) -> tauri::Result<Frame>
 enum TrayForegroundDestination {
     Onboarding,
     Panel,
-    ProfileSettings,
 }
 
 fn tray_foreground_destination(
     bootstrap_required: bool,
     recovery_disclosure_pending: bool,
 ) -> TrayForegroundDestination {
-    if bootstrap_required {
+    if bootstrap_required || recovery_disclosure_pending {
         TrayForegroundDestination::Onboarding
-    } else if recovery_disclosure_pending {
-        TrayForegroundDestination::ProfileSettings
     } else {
         TrayForegroundDestination::Panel
     }
@@ -490,9 +487,6 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
             });
     match destination {
         TrayForegroundDestination::Onboarding => return show_onboarding(app),
-        TrayForegroundDestination::ProfileSettings => {
-            return show_settings(app, SettingsSection::Profile);
-        }
         TrayForegroundDestination::Panel => {}
     }
 
@@ -649,7 +643,6 @@ fn get_bootstrap_state(
 #[tauri::command]
 fn complete_bootstrap(
     window: WebviewWindow,
-    app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
     core: State<'_, NativeCore>,
@@ -661,10 +654,6 @@ fn complete_bootstrap(
         .map_err(str::to_owned)?;
     core.set_profile_outcome(SanitizedProfileOutcome::ProfilePending)
         .map_err(str::to_owned)?;
-    show_settings(&app, SettingsSection::Profile).map_err(|_| "settings unavailable".to_owned())?;
-    window
-        .hide()
-        .map_err(|_| "bootstrap window unavailable".to_owned())?;
     profile_runtime.trigger();
     Ok(state)
 }
@@ -1088,10 +1077,10 @@ mod tests {
     }
 
     #[test]
-    fn pending_recovery_disclosure_routes_the_next_tray_foreground_to_profile_settings() {
+    fn pending_recovery_disclosure_routes_the_next_tray_foreground_to_onboarding() {
         assert_eq!(
             tray_foreground_destination(false, true),
-            TrayForegroundDestination::ProfileSettings,
+            TrayForegroundDestination::Onboarding,
         );
         assert_eq!(
             tray_foreground_destination(true, false),
