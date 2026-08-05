@@ -8,19 +8,25 @@ import {
 describe("Tauri Settings adapter", () => {
   test("uses exact Settings commands and the bounded navigation event", async () => {
     const fakeRecoveryKey = "2".repeat(48);
-    const stop = vi.fn();
-    let navigate!: (event: { payload: unknown }) => void;
+    const stops = new Map<string, ReturnType<typeof vi.fn>>();
+    const listeners = new Map<
+      string,
+      (event: { payload: unknown }) => void
+    >();
     const bindings: TauriSettingsBindings = {
       invoke: vi.fn(async (command) =>
         command === "reveal_recovery_key" ? fakeRecoveryKey : { command },
       ),
-      listen: vi.fn(async (_event, receive) => {
-        navigate = receive;
+      listen: vi.fn(async (event, receive) => {
+        listeners.set(event, receive);
+        const stop = vi.fn();
+        stops.set(event, stop);
         return stop;
       }),
     };
     const adapter = createTauriSettingsAdapter(bindings);
     const receive = vi.fn();
+    const clearRecovery = vi.fn();
 
     await adapter.read();
     await adapter.setLaunchAtLogin(true);
@@ -30,7 +36,14 @@ describe("Tauri Settings adapter", () => {
       value: fakeRecoveryKey,
     });
     const subscription = await adapter.subscribeNavigation(receive);
-    navigate({ payload: { section: "profile" } });
+    const recoverySubscription =
+      await adapter.subscribeRecoveryClear(clearRecovery);
+    listeners.get("settings-navigation-requested")?.({
+      payload: { section: "profile" },
+    });
+    listeners.get("settings-recovery-clear-requested")?.({
+      payload: null,
+    });
 
     expect(bindings.invoke).toHaveBeenNthCalledWith(
       1,
@@ -54,9 +67,18 @@ describe("Tauri Settings adapter", () => {
       "settings-navigation-requested",
       expect.any(Function),
     );
+    expect(bindings.listen).toHaveBeenCalledWith(
+      "settings-recovery-clear-requested",
+      expect.any(Function),
+    );
     expect(receive).toHaveBeenCalledWith({ section: "profile" });
+    expect(clearRecovery).toHaveBeenCalledOnce();
     if (subscription.ok) subscription.value();
-    expect(stop).toHaveBeenCalledOnce();
+    if (recoverySubscription.ok) recoverySubscription.value();
+    expect(stops.get("settings-navigation-requested")).toHaveBeenCalledOnce();
+    expect(
+      stops.get("settings-recovery-clear-requested"),
+    ).toHaveBeenCalledOnce();
   });
 
   test("contains raw invoke and listener failures", async () => {
@@ -84,6 +106,10 @@ describe("Tauri Settings adapter", () => {
     });
     expect(await adapter.subscribeNavigation(() => undefined)).toEqual({
       fault: { code: "navigation-stream-unavailable" },
+      ok: false,
+    });
+    expect(await adapter.subscribeRecoveryClear(() => undefined)).toEqual({
+      fault: { code: "recovery-clear-stream-unavailable" },
       ok: false,
     });
   });

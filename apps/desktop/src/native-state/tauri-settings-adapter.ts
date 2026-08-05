@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { SETTINGS_NAVIGATION_EVENT } from "@touchgrass/contracts";
+import {
+  SETTINGS_NAVIGATION_EVENT,
+  SETTINGS_RECOVERY_CLEAR_EVENT,
+} from "@touchgrass/contracts";
 
 import type {
   SettingsPort,
@@ -102,6 +105,20 @@ function createTauriSettingsAdapter(
       } catch {
         return {
           fault: { code: "navigation-stream-unavailable" },
+          ok: false,
+        };
+      }
+    },
+    subscribeRecoveryClear: async (receive) => {
+      try {
+        const stop = await bindings.listen(
+          SETTINGS_RECOVERY_CLEAR_EVENT,
+          () => receive(),
+        );
+        return { ok: true, value: stop };
+      } catch {
+        return {
+          fault: { code: "recovery-clear-stream-unavailable" },
           ok: false,
         };
       }

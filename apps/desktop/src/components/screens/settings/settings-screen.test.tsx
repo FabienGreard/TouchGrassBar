@@ -32,7 +32,6 @@ describe("settings screen", () => {
         onRevealRecoveryKey={() => undefined}
         profile={{
           displayName: "Tester",
-          profileKeyId: "A7F",
           recoveryKeySuffix: "K9m",
           touchGrassId: "TG-234567",
         }}
@@ -44,7 +43,6 @@ describe("settings screen", () => {
         onHideRecoveryKey={() => undefined}
         profile={{
           displayName: "Tester",
-          profileKeyId: "A7F",
           recoveryKeySuffix: "K9m",
           touchGrassId: "TG-234567",
         }}
@@ -77,12 +75,12 @@ describe("settings screen", () => {
     expect(readyMarkup).toContain("Stored in this Mac’s Keychain.");
     expect(readyMarkup).toContain('data-slot="input"');
     expect(readyMarkup).toContain('value="••••••••••••K9m"');
-    expect(readyMarkup).not.toContain("A7F");
     expect(readyMarkup).toMatch(
       /<button[^>]*data-variant="ghost"[^>]*>View<\/button>/,
     );
     expect(readyMarkup).not.toContain("2".repeat(48));
     expect(revealedMarkup).toContain('type="text"');
+    expect(revealedMarkup).toContain('autofocus=""');
     expect(revealedMarkup).toContain(`value="${"2".repeat(48)}"`);
     expect(revealedMarkup).toMatch(
       /<button[^>]*data-variant="ghost"[^>]*>Hide<\/button>/,

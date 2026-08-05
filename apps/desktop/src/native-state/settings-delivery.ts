@@ -8,6 +8,7 @@ import {
 type SettingsPortFaultCode =
   | "launch-at-login-unavailable"
   | "navigation-stream-unavailable"
+  | "recovery-clear-stream-unavailable"
   | "recovery-key-unavailable"
   | "settings-section-unavailable"
   | "settings-state-unavailable"
@@ -27,6 +28,9 @@ type SettingsPort = {
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
   subscribeNavigation: (
     receive: (payload: unknown) => void,
+  ) => Promise<SettingsPortOutcome<() => void>>;
+  subscribeRecoveryClear: (
+    receive: () => void,
   ) => Promise<SettingsPortOutcome<() => void>>;
 };
 
@@ -60,6 +64,17 @@ function createSettingsDelivery(port: SettingsPort) {
     for (const listener of listeners) listener();
   };
 
+  const clearRecoveryKey = () => {
+    recoveryRevision += 1;
+    if (current.recoveryKey !== null || current.revealingRecoveryKey) {
+      publish({
+        ...current,
+        recoveryKey: null,
+        revealingRecoveryKey: false,
+      });
+    }
+  };
+
   const accept = (value: unknown, savingLaunchAtLogin = false) => {
     const parsed = settingsStateSchema.safeParse(value);
     if (!parsed.success) {
@@ -69,6 +84,23 @@ function createSettingsDelivery(port: SettingsPort) {
     const section = selectedSection ?? parsed.data.section;
     selectedSection = section;
     const snapshot = { ...parsed.data, section };
+    const previousRecoveryContext =
+      current.snapshot?.profileProvisioning === "ready"
+        ? [
+            current.snapshot.touchGrassId,
+            current.snapshot.recoveryKeySuffix,
+          ].join(":")
+        : null;
+    const nextRecoveryContext =
+      snapshot.profileProvisioning === "ready"
+        ? [snapshot.touchGrassId, snapshot.recoveryKeySuffix].join(":")
+        : null;
+    if (
+      current.snapshot !== null &&
+      previousRecoveryContext !== nextRecoveryContext
+    ) {
+      clearRecoveryKey();
+    }
     publish({
       phase: "ready",
       recoveryKey: current.recoveryKey,
@@ -100,10 +132,7 @@ function createSettingsDelivery(port: SettingsPort) {
     sectionRevision += 1;
     selectedSection = request.data.section;
     if (request.data.section !== "profile") {
-      recoveryRevision += 1;
-      if (current.recoveryKey !== null) {
-        publish({ ...current, recoveryKey: null });
-      }
+      clearRecoveryKey();
     }
     sectionSelection = Promise.resolve(true);
     if (current.snapshot !== null) {
@@ -117,23 +146,23 @@ function createSettingsDelivery(port: SettingsPort) {
 
   return {
     async activate() {
-      const subscription = await port.subscribeNavigation(receiveNavigation);
+      const [navigation, recoveryClear] = await Promise.all([
+        port.subscribeNavigation(receiveNavigation),
+        port.subscribeRecoveryClear(clearRecoveryKey),
+      ]);
       await read();
-      return subscription.ok ? subscription.value : () => undefined;
+      return () => {
+        if (navigation.ok) navigation.value();
+        if (recoveryClear.ok) recoveryClear.value();
+      };
     },
     getSnapshot: () => current,
     hide: async () => {
-      recoveryRevision += 1;
-      if (current.recoveryKey !== null) {
-        publish({ ...current, recoveryKey: null });
-      }
+      clearRecoveryKey();
       await port.hide();
     },
     async hideRecoveryKey() {
-      recoveryRevision += 1;
-      if (current.recoveryKey !== null) {
-        publish({ ...current, recoveryKey: null });
-      }
+      clearRecoveryKey();
       return true;
     },
     read,
@@ -164,10 +193,7 @@ function createSettingsDelivery(port: SettingsPort) {
       const revision = ++sectionRevision;
       selectedSection = section;
       if (section !== "profile") {
-        recoveryRevision += 1;
-        if (current.recoveryKey !== null) {
-          publish({ ...current, recoveryKey: null });
-        }
+        clearRecoveryKey();
       }
       sectionSelection = (async () => {
         const outcome = await port.selectSection(section);

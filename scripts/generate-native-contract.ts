@@ -28,6 +28,7 @@ type NativeContractExport = {
   settingsContractVersion: number;
   settingsNavigationEvent: string;
   settingsNavigationSchema: JsonSchema;
+  settingsRecoveryClearEvent: string;
   settingsStateSchema: JsonSchema;
   stateSchema: JsonSchema;
 };
@@ -175,6 +176,7 @@ export const CONTRACT_VERSION = ${JSON.stringify(contract.contractVersion)} as c
 export const REVISION_NOTICE_EVENT = ${JSON.stringify(contract.revisionNoticeEvent)} as const;
 export const SETTINGS_CONTRACT_VERSION = ${JSON.stringify(contract.settingsContractVersion)} as const;
 export const SETTINGS_NAVIGATION_EVENT = ${JSON.stringify(contract.settingsNavigationEvent)} as const;
+export const SETTINGS_RECOVERY_CLEAR_EVENT = ${JSON.stringify(contract.settingsRecoveryClearEvent)} as const;
 
 ${ordered.map((name) => `export const ${schemaName(name)} = ${render(definitions[name]!)};`).join("\n")}
 export const bootstrapStateSchema = ${render({ ...bootstrapStateSchema, properties: { ...bootstrapStateSchema.properties, contractVersion: { const: contract.bootstrapContractVersion } } })};

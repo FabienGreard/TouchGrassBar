@@ -82,12 +82,14 @@ function RecoverySheetPreview({
             <Input
               aria-describedby={helpId}
               autoComplete="off"
+              autoFocus
               className="mt-1.5 font-mono tracking-[0.06em] uppercase"
               id={inputId}
               onChange={(event) => {
                 setRecoveryKey(event.target.value);
                 setSubmitted(false);
               }}
+              onFocus={(event) => event.currentTarget.select()}
               placeholder={RECOVERY_KEY_PLACEHOLDER}
               ref={inputRef}
               spellCheck={false}

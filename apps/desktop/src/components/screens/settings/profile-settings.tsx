@@ -10,7 +10,6 @@ import {
 
 type SettingsProfile = {
   displayName: string;
-  profileKeyId: string | null;
   recoveryKeySuffix: string | null;
   touchGrassId: string;
 };
@@ -49,13 +48,7 @@ function ProfileSettings({
   useEffect(() => {
     if (recoveryKey === null || onHideRecoveryKey === undefined) return;
     focusAndSelectRecoveryInput(recoveryInput.current);
-    const hide = () => onHideRecoveryKey();
-    window.addEventListener("resize", hide);
-    window.addEventListener("scroll", hide, true);
-    return () => {
-      window.removeEventListener("resize", hide);
-      window.removeEventListener("scroll", hide, true);
-    };
+    return () => onHideRecoveryKey();
   }, [onHideRecoveryKey, recoveryKey]);
 
   function toggleRecoveryKey() {
@@ -109,7 +102,7 @@ function ProfileSettings({
           Manage recovery for this Profile.
         </p>
         <div className="grid gap-3">
-          {profile === null || profile.profileKeyId === null ? (
+          {profile === null || profile.recoveryKeySuffix === null ? (
             <div data-profile-recovery-key-state="unavailable">
               <strong className="block text-[12px]">
                 Recovery Key unavailable
@@ -130,8 +123,10 @@ function ProfileSettings({
                 <Input
                   aria-label="Recovery Key"
                   autoComplete="off"
+                  autoFocus={recoveryKeyVisible}
                   className="h-12 rounded-[12px] pr-[72px] font-mono tracking-[0.06em]"
                   disabled={recoveryKeyUnavailable}
+                  onFocus={(event) => event.currentTarget.select()}
                   readOnly
                   ref={recoveryInput}
                   spellCheck={false}

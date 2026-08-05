@@ -13,6 +13,7 @@ use crate::sanitized::{CodingProvider, SanitizedProfileOutcome};
 
 pub const LIFECYCLE_CONTRACT_VERSION: u8 = 2;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
+pub const SETTINGS_RECOVERY_CLEAR_EVENT: &str = "settings-recovery-clear-requested";
 const DATABASE_SCHEMA_VERSION: i64 = 4;
 const PUBLIC_BACKFILL_WINDOW_DAYS: u8 = 30;
 
@@ -110,8 +111,6 @@ pub struct SettingsStateV2 {
     pub launch_at_login: LaunchAtLoginState,
     pub profile_provisioning: ProfileProvisioningStatus,
     pub display_name: Option<String>,
-    #[schemars(regex(pattern = r"^[A-F0-9]{3}$"))]
-    pub profile_key_id: Option<String>,
     #[schemars(regex(
         pattern = r"^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{3}$"
     ))]
@@ -706,7 +705,6 @@ impl DesktopLifecycle {
             launch_at_login,
             profile_provisioning: record.profile_provisioning,
             display_name: record.display_name,
-            profile_key_id: None,
             recovery_key_suffix: None,
             touch_grass_id: record.touch_grass_id,
             providers: self.providers(),

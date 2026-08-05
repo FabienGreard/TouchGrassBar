@@ -6,6 +6,7 @@ export const CONTRACT_VERSION = 2 as const;
 export const REVISION_NOTICE_EVENT = "sanitized-desktop-state-revision" as const;
 export const SETTINGS_CONTRACT_VERSION = 2 as const;
 export const SETTINGS_NAVIGATION_EVENT = "settings-navigation-requested" as const;
+export const SETTINGS_RECOVERY_CLEAR_EVENT = "settings-recovery-clear-requested" as const;
 
 export const bootstrapStatusSchema = z.enum(["required","completed"]);
 export const codingProviderSchema = z.enum(["codex","claude"]);
@@ -30,7 +31,7 @@ export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal
 export const refreshReceiptSchema = z.object({ accepted: z.boolean() }).strict();
 export const revisionNoticeSchema = z.object({ revision: z.string().regex(/^[1-9]\d*$/) }).strict();
 export const settingsNavigationRequestSchema = z.object({ section: settingsSectionSchema }).strict();
-export const settingsStateSchema = z.object({ contractVersion: z.literal(2), section: settingsSectionSchema, launchAtLogin: launchAtLoginStateSchema, profileProvisioning: profileProvisioningStatusSchema, displayName: z.string().nullable().optional(), profileKeyId: z.string().regex(new RegExp("^[A-F0-9]{3}$")).nullable().optional(), recoveryKeySuffix: z.string().regex(new RegExp("^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{3}$")).nullable().optional(), touchGrassId: z.string().nullable().optional(), providers: z.tuple([providerPresenceSchema, providerPresenceSchema]) }).strict();
+export const settingsStateSchema = z.object({ contractVersion: z.literal(2), section: settingsSectionSchema, launchAtLogin: launchAtLoginStateSchema, profileProvisioning: profileProvisioningStatusSchema, displayName: z.string().nullable().optional(), recoveryKeySuffix: z.string().regex(new RegExp("^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{3}$")).nullable().optional(), touchGrassId: z.string().nullable().optional(), providers: z.tuple([providerPresenceSchema, providerPresenceSchema]) }).strict();
 
 export type BootstrapStatus = z.infer<typeof bootstrapStatusSchema>;
 export type CodingProvider = z.infer<typeof codingProviderSchema>;

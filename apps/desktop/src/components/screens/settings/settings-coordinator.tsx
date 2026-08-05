@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { providerAccessStateFromPresence } from "@/components/coding-provider-access-state";
 import { createNativeWindowKeyboardHandler } from "@/components/screens/native-window-keyboard";
+import { bindRecoveryKeyClearEvents } from "@/components/screens/settings/recovery-key-input";
 import { SettingsScreen } from "@/components/screens/settings/settings-screen";
 import { createSettingsDelivery } from "@/native-state/settings-delivery";
 import { createTauriSettingsAdapter } from "@/native-state/tauri-settings-adapter";
@@ -38,6 +39,14 @@ function SettingsCoordinator({
     };
   }, [delivery]);
 
+  useEffect(
+    () =>
+      bindRecoveryKeyClearEvents(window, () => {
+        void delivery.hideRecoveryKey();
+      }),
+    [delivery],
+  );
+
   useEffect(() => {
     const handler = createNativeWindowKeyboardHandler({
       enabled: true,
@@ -59,7 +68,6 @@ function SettingsCoordinator({
     typeof state.touchGrassId === "string"
       ? {
           displayName: state.displayName,
-          profileKeyId: state.profileKeyId ?? null,
           recoveryKeySuffix: state.recoveryKeySuffix ?? null,
           touchGrassId: state.touchGrassId,
         }

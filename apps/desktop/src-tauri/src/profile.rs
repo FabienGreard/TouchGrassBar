@@ -7,8 +7,7 @@ use std::{
 
 use convex::{AuthenticationToken, ConvexClient, FunctionResult, Value};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::lifecycle::{DesktopLifecycle, SettingsProfileAuthorization};
 use crate::sanitized::SanitizedProfileOutcome;
@@ -22,8 +21,6 @@ const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const SIGNUP_PROOF_HEADER: &str = "x-touchgrass-signup-proof";
 const ID_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const SECRET_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-const PROFILE_KEY_ID_DOMAIN: &[u8] = b"touchgrass-profile-key-id:v1\0";
-const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct KeychainConfiguration {
@@ -118,19 +115,6 @@ impl fmt::Debug for Secret {
     }
 }
 
-fn profile_key_id(key: &Secret) -> String {
-    let mut digest = Sha256::new()
-        .chain_update(PROFILE_KEY_ID_DOMAIN)
-        .chain_update(key.expose().as_bytes())
-        .finalize();
-    let mut id = String::with_capacity(3);
-    id.push(char::from(HEX[usize::from(digest[0] >> 4)]));
-    id.push(char::from(HEX[usize::from(digest[0] & 0x0f)]));
-    id.push(char::from(HEX[usize::from(digest[1] >> 4)]));
-    digest.zeroize();
-    id
-}
-
 fn recovery_key_suffix(key: &Secret) -> String {
     key.expose()
         .chars()
@@ -140,11 +124,6 @@ fn recovery_key_suffix(key: &Secret) -> String {
         .into_iter()
         .rev()
         .collect()
-}
-
-pub(crate) struct ProfileKeyMetadata {
-    pub(crate) id: String,
-    pub(crate) recovery_key_suffix: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -249,24 +228,17 @@ impl SecretCustody for MacKeychain {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn production_profile_key_metadata(
-    lifecycle: &DesktopLifecycle,
-) -> Option<ProfileKeyMetadata> {
+pub(crate) fn production_recovery_key_suffix(lifecycle: &DesktopLifecycle) -> Option<String> {
     lifecycle.ready_touch_grass_id()?;
     MacKeychain
         .read(SecretKind::RecoveryKey)
         .ok()
         .flatten()
-        .map(|key| ProfileKeyMetadata {
-            id: profile_key_id(&key),
-            recovery_key_suffix: recovery_key_suffix(&key),
-        })
+        .map(|key| recovery_key_suffix(&key))
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn production_profile_key_metadata(
-    _lifecycle: &DesktopLifecycle,
-) -> Option<ProfileKeyMetadata> {
+pub(crate) fn production_recovery_key_suffix(_lifecycle: &DesktopLifecycle) -> Option<String> {
     None
 }
 
@@ -911,21 +883,14 @@ mod tests {
     }
 
     #[test]
-    fn profile_key_metadata_is_stable_and_limits_the_visible_suffix() {
+    fn recovery_key_suffix_is_limited_to_the_real_final_characters() {
         let key = Secret::new("not-a-secret".to_owned());
 
-        let key_id = profile_key_id(&key);
         let suffix = recovery_key_suffix(&key);
 
-        assert_eq!(key_id, "52E");
-        assert_eq!(key_id, profile_key_id(&key));
         assert_eq!(suffix, "ret");
-        assert!(
-            key_id
-                .chars()
-                .all(|character| character.is_ascii_hexdigit())
-        );
-        assert!(!key.expose().to_ascii_uppercase().contains(&key_id));
+        assert_eq!(suffix.chars().count(), 3);
+        assert!(key.expose().ends_with(&suffix));
     }
 
     #[test]

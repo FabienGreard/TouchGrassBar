@@ -13,7 +13,8 @@ use std::{
 
 use lifecycle::{
     BootstrapStateV2, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
-    SettingsNavigationRequest, SettingsProfileAuthorization, SettingsSection, SettingsStateV2,
+    SETTINGS_RECOVERY_CLEAR_EVENT, SettingsNavigationRequest, SettingsProfileAuthorization,
+    SettingsSection, SettingsStateV2,
 };
 use sanitized::{
     NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
@@ -157,8 +158,8 @@ impl ProfileRuntime {
             .map_err(|_| "Recovery Key unavailable".to_owned())
     }
 
-    fn profile_key_metadata(&self) -> Option<profile::ProfileKeyMetadata> {
-        profile::production_profile_key_metadata(&self.lifecycle)
+    fn recovery_key_suffix(&self) -> Option<String> {
+        profile::production_recovery_key_suffix(&self.lifecycle)
     }
 }
 
@@ -483,17 +484,14 @@ fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
         .unwrap_or(LaunchAtLoginState::Unavailable)
 }
 
-fn settings_state_with_profile_key_metadata(
+fn settings_state_with_recovery_key_suffix(
     lifecycle: &DesktopLifecycle,
     launch_at_login: LaunchAtLoginState,
     profile_runtime: &ProfileRuntime,
 ) -> SettingsStateV2 {
     let mut state = lifecycle.settings_state(launch_at_login);
     if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready {
-        if let Some(metadata) = profile_runtime.profile_key_metadata() {
-            state.profile_key_id = Some(metadata.id);
-            state.recovery_key_suffix = Some(metadata.recovery_key_suffix);
-        }
+        state.recovery_key_suffix = profile_runtime.recovery_key_suffix();
     }
     state
 }
@@ -506,7 +504,7 @@ fn get_settings_state(
     profile_runtime: State<'_, ProfileRuntime>,
 ) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
-    Ok(settings_state_with_profile_key_metadata(
+    Ok(settings_state_with_recovery_key_suffix(
         &lifecycle,
         launch_at_login_state(&app),
         &profile_runtime,
@@ -532,7 +530,7 @@ fn set_launch_at_login(
     } else {
         LaunchAtLoginState::Unavailable
     };
-    Ok(settings_state_with_profile_key_metadata(
+    Ok(settings_state_with_recovery_key_suffix(
         &lifecycle,
         launch_at_login,
         &profile_runtime,
@@ -760,10 +758,16 @@ pub fn run() {
             tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {
                 let _ = window.hide();
             }
+            tauri::WindowEvent::Focused(false) if window.label() == SETTINGS_LABEL => {
+                let _ = window.emit(SETTINGS_RECOVERY_CLEAR_EVENT, ());
+            }
             tauri::WindowEvent::CloseRequested { api, .. }
                 if matches!(window.label(), SETTINGS_LABEL | ONBOARDING_LABEL) =>
             {
                 api.prevent_close();
+                if window.label() == SETTINGS_LABEL {
+                    let _ = window.emit(SETTINGS_RECOVERY_CLEAR_EVENT, ());
+                }
                 let _ = window.hide();
             }
             _ => {}

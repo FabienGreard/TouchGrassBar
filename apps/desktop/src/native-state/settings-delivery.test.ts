@@ -22,9 +22,14 @@ const fakeRecoveryKey = "2".repeat(48);
 
 function ignoreNavigation(_payload: unknown) {}
 
-function port(): SettingsPort & { navigate: (payload: unknown) => void } {
+function port(): SettingsPort & {
+  clearRecovery: () => void;
+  navigate: (payload: unknown) => void;
+} {
   let navigate = ignoreNavigation;
+  let clearRecovery = () => undefined;
   return {
+    clearRecovery: () => clearRecovery(),
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
     navigate: (payload) => navigate(payload),
     read: vi.fn(async () => ({ ok: true as const, value: settingsState })),
@@ -45,6 +50,10 @@ function port(): SettingsPort & { navigate: (payload: unknown) => void } {
     })),
     subscribeNavigation: vi.fn(async (receive) => {
       navigate = receive;
+      return { ok: true as const, value: () => undefined };
+    }),
+    subscribeRecoveryClear: vi.fn(async (receive) => {
+      clearRecovery = receive;
       return { ok: true as const, value: () => undefined };
     }),
   };
@@ -176,6 +185,68 @@ describe("Settings delivery", () => {
       expect(native.selectSection).toHaveBeenCalledWith("general");
     });
     expect(native.revealRecoveryKey).not.toHaveBeenCalled();
+  });
+
+  test("native window clear invalidates visible and in-flight Recovery Keys", async () => {
+    const native = port();
+    let finishReveal!: (outcome: SettingsPortOutcome<string>) => void;
+    native.revealRecoveryKey = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<string>>((resolve) => {
+          finishReveal = resolve;
+        }),
+    );
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    const reveal = delivery.revealRecoveryKey();
+    await Promise.resolve();
+    expect(delivery.getSnapshot().revealingRecoveryKey).toBe(true);
+    native.clearRecovery();
+    expect(delivery.getSnapshot()).toMatchObject({
+      recoveryKey: null,
+      revealingRecoveryKey: false,
+    });
+    finishReveal({ ok: true, value: fakeRecoveryKey });
+    expect(await reveal).toBe(false);
+    expect(delivery.getSnapshot().recoveryKey).toBeNull();
+  });
+
+  test("a changed Profile recovery context clears the revealed key", async () => {
+    const native = port();
+    native.read = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true as const,
+        value: {
+          ...settingsState,
+          profileProvisioning: "ready",
+          recoveryKeySuffix: "K9m",
+          touchGrassId: "TG-234567",
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        value: {
+          ...settingsState,
+          profileProvisioning: "ready",
+          recoveryKeySuffix: "P7x",
+          touchGrassId: "TG-765432",
+        },
+      });
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+    expect(await delivery.revealRecoveryKey()).toBe(true);
+
+    await delivery.read();
+
+    expect(delivery.getSnapshot()).toMatchObject({
+      recoveryKey: null,
+      snapshot: {
+        recoveryKeySuffix: "P7x",
+        touchGrassId: "TG-765432",
+      },
+    });
   });
 
   test("preserves the last confirmed toggle when a mutation fails", async () => {
