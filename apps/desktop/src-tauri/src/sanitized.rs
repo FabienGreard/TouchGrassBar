@@ -169,16 +169,16 @@ pub struct RefreshReceipt {
     pub accepted: bool,
 }
 
-trait RefreshSource: Send + Sync {
+trait SnapshotRefreshAdapter: Send + Sync {
     fn refresh(
         &self,
         cached: SanitizedDesktopStateV1,
     ) -> Result<Option<SanitizedDesktopStateV1>, &'static str>;
 }
 
-struct CachedProjectionRefreshSource;
+struct CachedProjectionRefreshAdapter;
 
-impl RefreshSource for CachedProjectionRefreshSource {
+impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     fn refresh(
         &self,
         _cached: SanitizedDesktopStateV1,
@@ -390,13 +390,9 @@ enum ReadModelStore {
     Memory,
 }
 
-impl ReadModelStore {
-    fn commit(&self, state: &SanitizedDesktopStateV1) -> Result<(), &'static str> {
-        match self {
-            Self::Persistent(store) => store.commit(state),
-            Self::Memory => Ok(()),
-        }
-    }
+struct SnapshotCommitOutcome {
+    notice: Option<RevisionNotice>,
+    persistence_failed: bool,
 }
 
 struct RefreshCoordinatorState {
@@ -406,14 +402,25 @@ struct RefreshCoordinatorState {
     retry_not_before: Option<OffsetDateTime>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RefreshSource {
+    Launch,
+    StalePanelOpen,
+    Manual,
+    Wake,
+    NetworkRecovery,
+    Schedule,
+}
+
 struct NativeCoreInner {
     state: Mutex<SanitizedDesktopStateV1>,
-    store: ReadModelStore,
+    store: Mutex<ReadModelStore>,
     revision_subscribers: Mutex<Vec<Sender<RevisionNotice>>>,
     refresh_coordinator: Mutex<RefreshCoordinatorState>,
-    refresh_source: Arc<dyn RefreshSource>,
+    refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     clock: Arc<dyn Clock>,
     scheduler_started: AtomicBool,
+    scheduler_thread: Mutex<Option<thread::Thread>>,
 }
 
 impl NativeCoreInner {
@@ -423,13 +430,15 @@ impl NativeCoreInner {
         let mut source_failed = false;
         let candidate = match cached.as_ref() {
             Ok(cached) => match catch_unwind(AssertUnwindSafe(|| {
-                self.refresh_source.refresh(cached.clone())
+                self.refresh_adapter.refresh(cached.clone())
             })) {
-                Ok(Ok(Some(refreshed))) => Some(refreshed),
-                Ok(Ok(None)) => stale_snapshot_if_due(cached, now),
+                Ok(Ok(Some(refreshed))) => {
+                    Some(transition_snapshot_at(&refreshed, now).unwrap_or(refreshed))
+                }
+                Ok(Ok(None)) => transition_snapshot_at(cached, now),
                 Ok(Err(_)) | Err(_) => {
                     source_failed = true;
-                    stale_snapshot_if_due(cached, now)
+                    transition_snapshot_at(cached, now)
                 }
             },
             Err(_) => {
@@ -441,8 +450,17 @@ impl NativeCoreInner {
         let commit_result = candidate
             .map(|candidate| self.commit_refreshed_snapshot(candidate, now))
             .transpose();
-        let failed = source_failed || commit_result.is_err();
-        let notice = commit_result.ok().flatten().flatten();
+        let failed = source_failed
+            || commit_result.is_err()
+            || commit_result
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .is_some_and(|outcome| outcome.persistence_failed);
+        let notice = commit_result
+            .ok()
+            .flatten()
+            .and_then(|outcome| outcome.notice);
         self.finish_refresh(failed, now);
         if let Some(notice) = notice {
             self.publish_notice(notice);
@@ -453,7 +471,7 @@ impl NativeCoreInner {
         &self,
         mut refreshed: SanitizedDesktopStateV1,
         now: OffsetDateTime,
-    ) -> Result<Option<RevisionNotice>, &'static str> {
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
         let cached = self
             .state
             .lock()
@@ -462,9 +480,20 @@ impl NativeCoreInner {
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
+        let memory_only = self
+            .store
+            .lock()
+            .map_err(|_| "native state persistence unavailable")
+            .map(|store| matches!(*store, ReadModelStore::Memory))?;
+        if memory_only {
+            refreshed.sync.status = SyncStatus::Unavailable;
+        }
         validate_snapshot(&refreshed)?;
         if refreshed == cached {
-            return Ok(None);
+            return Ok(SnapshotCommitOutcome {
+                notice: None,
+                persistence_failed: false,
+            });
         }
         let revision = cached
             .revision
@@ -476,13 +505,40 @@ impl NativeCoreInner {
         refreshed.revision = revision.to_string();
         validate_snapshot(&refreshed)?;
 
-        // Persist first. Panel reads can continue to clone the previous complete
-        // snapshot while SQLite writes the next complete snapshot.
-        self.store.commit(&refreshed)?;
+        // Persist first when SQLite is available. Panel reads can continue to
+        // clone the previous complete snapshot during this transaction. If the
+        // write fails, keep operating from memory and expose that synchronization
+        // is unavailable instead of leaving expired values marked as current.
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "native state persistence unavailable")?;
+        let persistence_failed = match &*store {
+            ReadModelStore::Persistent(persistent) => {
+                if persistent.commit(&refreshed).is_err() {
+                    *store = ReadModelStore::Memory;
+                    true
+                } else {
+                    false
+                }
+            }
+            ReadModelStore::Memory => {
+                refreshed.sync.status = SyncStatus::Unavailable;
+                false
+            }
+        };
+        if persistence_failed {
+            refreshed.sync.status = SyncStatus::Unavailable;
+        }
+        drop(store);
+        validate_snapshot(&refreshed)?;
         *self.state.lock().map_err(|_| "native state unavailable")? = refreshed;
-        Ok(Some(RevisionNotice {
-            revision: revision.to_string(),
-        }))
+        Ok(SnapshotCommitOutcome {
+            notice: Some(RevisionNotice {
+                revision: revision.to_string(),
+            }),
+            persistence_failed,
+        })
     }
 
     fn publish_notice(&self, notice: RevisionNotice) {
@@ -493,34 +549,50 @@ impl NativeCoreInner {
     }
 
     fn finish_refresh(&self, failed: bool, now: OffsetDateTime) {
+        let next_refresh_at = self
+            .state
+            .lock()
+            .map(|state| next_refresh_at(&state, now))
+            .unwrap_or(now + to_time_duration(REFRESH_INTERVAL));
         let Ok(mut coordinator) = self.refresh_coordinator.lock() else {
             return;
         };
         coordinator.in_flight = false;
+        coordinator.next_scheduled_at = next_refresh_at;
         if failed {
             coordinator.consecutive_failures = coordinator.consecutive_failures.saturating_add(1);
             let backoff = refresh_backoff(coordinator.consecutive_failures);
-            coordinator.retry_not_before = Some(now + to_time_duration(backoff));
+            let retry_not_before = now + to_time_duration(backoff);
+            coordinator.retry_not_before = Some(retry_not_before);
+            coordinator.next_scheduled_at = coordinator.next_scheduled_at.min(retry_not_before);
         } else {
             coordinator.consecutive_failures = 0;
             coordinator.retry_not_before = None;
         }
+        drop(coordinator);
+        self.wake_scheduler();
     }
 
-    fn begin_refresh(&self, scheduled: bool) -> Result<bool, &'static str> {
+    fn begin_refresh(&self, source: RefreshSource) -> Result<bool, &'static str> {
         let now = self.clock.now();
         let mut coordinator = self
             .refresh_coordinator
             .lock()
             .map_err(|_| "refresh coordinator unavailable")?;
-        if scheduled && now < coordinator.next_scheduled_at {
+        if coordinator.in_flight {
             return Ok(false);
         }
-        if coordinator.in_flight
-            || coordinator
-                .retry_not_before
-                .is_some_and(|retry_not_before| now < retry_not_before)
+        if let Some(retry_not_before) = coordinator.retry_not_before
+            && now < retry_not_before
         {
+            if source == RefreshSource::NetworkRecovery {
+                coordinator.next_scheduled_at = coordinator.next_scheduled_at.min(retry_not_before);
+                drop(coordinator);
+                self.wake_scheduler();
+            }
+            return Ok(false);
+        }
+        if source == RefreshSource::Schedule && now < coordinator.next_scheduled_at {
             return Ok(false);
         }
         coordinator.in_flight = true;
@@ -539,6 +611,14 @@ impl NativeCoreInner {
             Duration::from_secs(u64::try_from(remaining.whole_seconds()).unwrap_or(1))
         }
     }
+
+    fn wake_scheduler(&self) {
+        if let Ok(scheduler) = self.scheduler_thread.lock()
+            && let Some(scheduler) = scheduler.as_ref()
+        {
+            scheduler.unpark();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -551,23 +631,29 @@ impl NativeCore {
         Self::open_with(
             path,
             Arc::new(SystemClock),
-            Arc::new(CachedProjectionRefreshSource),
+            Arc::new(CachedProjectionRefreshAdapter),
         )
     }
 
     fn open_with(
         path: &Path,
         clock: Arc<dyn Clock>,
-        refresh_source: Arc<dyn RefreshSource>,
+        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     ) -> Result<Self, &'static str> {
-        let initial = unavailable_state_at(1, clock.now());
+        let now = clock.now();
+        let initial = unavailable_state_at(1, now);
         let (store, state) = SqliteReadModelStore::open(path, &initial)?;
-        Ok(Self::with_components(
+        let transition = transition_snapshot_at(&state, now);
+        let core = Self::with_components(
             state,
             ReadModelStore::Persistent(store),
             clock,
-            refresh_source,
-        ))
+            refresh_adapter,
+        );
+        if let Some(transitioned) = transition {
+            core.inner.commit_refreshed_snapshot(transitioned, now)?;
+        }
+        Ok(core)
     }
 
     pub fn unavailable() -> Self {
@@ -576,42 +662,62 @@ impl NativeCore {
             unavailable_state_at(1, clock.now()),
             ReadModelStore::Memory,
             clock,
-            Arc::new(CachedProjectionRefreshSource),
+            Arc::new(CachedProjectionRefreshAdapter),
         )
     }
 
     #[cfg(test)]
-    fn with_refresh_source(refresh_source: Arc<dyn RefreshSource>) -> Self {
+    fn with_refresh_adapter(refresh_adapter: Arc<dyn SnapshotRefreshAdapter>) -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         Self::with_components(
             unavailable_state_at(1, clock.now()),
             ReadModelStore::Memory,
             clock,
-            refresh_source,
+            refresh_adapter,
         )
+    }
+
+    #[cfg(test)]
+    fn force_persistence_failure(&self) -> Result<(), &'static str> {
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state persistence unavailable")?;
+        let ReadModelStore::Persistent(store) = &*store else {
+            return Err("native state persistence unavailable");
+        };
+        store
+            .connection
+            .lock()
+            .map_err(|_| "native state persistence unavailable")?
+            .execute_batch("PRAGMA query_only = ON;")
+            .map_err(|_| "native state persistence unavailable")
     }
 
     fn with_components(
         state: SanitizedDesktopStateV1,
         store: ReadModelStore,
         clock: Arc<dyn Clock>,
-        refresh_source: Arc<dyn RefreshSource>,
+        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     ) -> Self {
         let now = clock.now();
+        let next_scheduled_at = next_refresh_at(&state, now);
         Self {
             inner: Arc::new(NativeCoreInner {
                 state: Mutex::new(state),
-                store,
+                store: Mutex::new(store),
                 revision_subscribers: Mutex::new(Vec::new()),
                 refresh_coordinator: Mutex::new(RefreshCoordinatorState {
                     consecutive_failures: 0,
                     in_flight: false,
-                    next_scheduled_at: now + to_time_duration(REFRESH_INTERVAL),
+                    next_scheduled_at,
                     retry_not_before: None,
                 }),
-                refresh_source,
+                refresh_adapter,
                 clock,
                 scheduler_started: AtomicBool::new(false),
+                scheduler_thread: Mutex::new(None),
             }),
         }
     }
@@ -634,8 +740,19 @@ impl NativeCore {
         Ok(receiver)
     }
 
-    fn request_coordinated_refresh(&self, scheduled: bool) -> Result<RefreshReceipt, &'static str> {
-        if self.inner.begin_refresh(scheduled)? {
+    pub fn request_refresh(&self, source: RefreshSource) -> Result<RefreshReceipt, &'static str> {
+        if source == RefreshSource::StalePanelOpen {
+            let stale = self
+                .inner
+                .state
+                .lock()
+                .map_err(|_| "native state unavailable")
+                .map(|state| snapshot_needs_refresh(&state, self.inner.clock.now()))?;
+            if !stale {
+                return Ok(RefreshReceipt { accepted: true });
+            }
+        }
+        if self.inner.begin_refresh(source)? {
             let refresh_inner = Arc::clone(&self.inner);
             if thread::Builder::new()
                 .name("sanitized-state-refresh".to_owned())
@@ -649,40 +766,6 @@ impl NativeCore {
             }
         }
         Ok(RefreshReceipt { accepted: true })
-    }
-
-    pub fn request_refresh(&self) -> Result<RefreshReceipt, &'static str> {
-        self.request_coordinated_refresh(false)
-    }
-
-    pub fn request_launch_refresh(&self) -> Result<RefreshReceipt, &'static str> {
-        self.request_coordinated_refresh(false)
-    }
-
-    pub fn request_stale_panel_refresh(&self) -> Result<RefreshReceipt, &'static str> {
-        let stale = self
-            .inner
-            .state
-            .lock()
-            .map_err(|_| "native state unavailable")
-            .map(|state| snapshot_is_stale(&state, self.inner.clock.now()))?;
-        if stale {
-            self.request_coordinated_refresh(false)
-        } else {
-            Ok(RefreshReceipt { accepted: true })
-        }
-    }
-
-    pub fn request_wake_refresh(&self) -> Result<RefreshReceipt, &'static str> {
-        self.request_coordinated_refresh(false)
-    }
-
-    pub fn request_network_recovery_refresh(&self) -> Result<RefreshReceipt, &'static str> {
-        self.request_coordinated_refresh(false)
-    }
-
-    pub fn request_scheduled_refresh(&self) -> Result<RefreshReceipt, &'static str> {
-        self.request_coordinated_refresh(true)
     }
 
     pub fn start_scheduler(&self) -> Result<(), &'static str> {
@@ -703,20 +786,26 @@ impl NativeCore {
 }
 
 fn scheduled_refresh_loop(inner: Weak<NativeCoreInner>) {
+    let Some(current) = inner.upgrade() else {
+        return;
+    };
+    if let Ok(mut scheduler) = current.scheduler_thread.lock() {
+        *scheduler = Some(thread::current());
+    }
+    drop(current);
+
     loop {
         let Some(current) = inner.upgrade() else {
             return;
         };
-        let wait = current
-            .schedule_wait()
-            .clamp(Duration::from_secs(1), Duration::from_secs(30));
+        let wait = current.schedule_wait().max(Duration::from_secs(1));
         drop(current);
         thread::park_timeout(wait);
         let Some(current) = inner.upgrade() else {
             return;
         };
         let core = NativeCore { inner: current };
-        let _ = core.request_scheduled_refresh();
+        let _ = core.request_refresh(RefreshSource::Schedule);
     }
 }
 
@@ -743,27 +832,162 @@ fn timestamp_is_due(timestamp: &str, now: OffsetDateTime) -> bool {
         .unwrap_or(true)
 }
 
-fn provider_is_stale(snapshot: &ProviderSnapshot, now: OffsetDateTime) -> bool {
-    match snapshot {
-        ProviderSnapshot::Stale { .. } => true,
-        ProviderSnapshot::Current { observed_at, .. } => timestamp_is_due(observed_at, now),
-        ProviderSnapshot::Unavailable { .. } => false,
+fn freshness_deadline_after(timestamp: &str, now: OffsetDateTime) -> Option<OffsetDateTime> {
+    OffsetDateTime::parse(timestamp, &Rfc3339)
+        .ok()
+        .map(|observed_at| observed_at + to_time_duration(REFRESH_INTERVAL))
+        .filter(|deadline| *deadline > now)
+}
+
+impl QuotaLane {
+    fn is_valid_at(&self, now: OffsetDateTime) -> bool {
+        self.reset_at.as_deref().is_none_or(|reset_at| {
+            OffsetDateTime::parse(reset_at, &Rfc3339).is_ok_and(|reset_at| now < reset_at)
+        })
+    }
+
+    fn next_reset_after(&self, now: OffsetDateTime) -> Option<OffsetDateTime> {
+        self.reset_at
+            .as_deref()
+            .and_then(|reset_at| OffsetDateTime::parse(reset_at, &Rfc3339).ok())
+            .filter(|reset_at| *reset_at > now)
     }
 }
 
-fn usage_is_stale(total: &UsageTotal, now: OffsetDateTime) -> bool {
-    match total {
-        UsageTotal::Stale { .. } => true,
-        UsageTotal::Current { observed_at, .. } => timestamp_is_due(observed_at, now),
-        UsageTotal::Unavailable => false,
+impl ProviderSnapshot {
+    fn needs_refresh(&self, now: OffsetDateTime) -> bool {
+        match self {
+            Self::Unavailable { .. } => false,
+            Self::Stale { .. } => true,
+            Self::Current {
+                observed_at,
+                quota_lanes,
+                ..
+            } => {
+                timestamp_is_due(observed_at, now)
+                    || quota_lanes.iter().any(|lane| !lane.is_valid_at(now))
+            }
+        }
+    }
+
+    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
+        let (provider, observed_at, quota_lanes, current) = match self {
+            Self::Unavailable { .. } => return (self.clone(), false),
+            Self::Current {
+                provider,
+                observed_at,
+                quota_lanes,
+            } => (*provider, observed_at, quota_lanes, true),
+            Self::Stale {
+                provider,
+                observed_at,
+                quota_lanes,
+            } => (*provider, observed_at, quota_lanes, false),
+        };
+        let valid_lanes = quota_lanes
+            .iter()
+            .filter(|lane| lane.is_valid_at(now))
+            .cloned()
+            .collect::<Vec<_>>();
+        if valid_lanes.is_empty() {
+            return (
+                Self::Unavailable {
+                    provider,
+                    quota_lanes: [],
+                },
+                true,
+            );
+        }
+        let becomes_stale = current && timestamp_is_due(observed_at, now);
+        let changed = becomes_stale || valid_lanes.len() != quota_lanes.len();
+        if current && !becomes_stale {
+            (
+                Self::Current {
+                    provider,
+                    observed_at: observed_at.clone(),
+                    quota_lanes: valid_lanes,
+                },
+                changed,
+            )
+        } else {
+            (
+                Self::Stale {
+                    provider,
+                    observed_at: observed_at.clone(),
+                    quota_lanes: valid_lanes,
+                },
+                changed,
+            )
+        }
+    }
+
+    fn next_transition_after(&self, now: OffsetDateTime) -> Option<OffsetDateTime> {
+        match self {
+            Self::Unavailable { .. } => None,
+            Self::Current {
+                observed_at,
+                quota_lanes,
+                ..
+            } => freshness_deadline_after(observed_at, now)
+                .into_iter()
+                .chain(
+                    quota_lanes
+                        .iter()
+                        .filter_map(|lane| lane.next_reset_after(now)),
+                )
+                .min(),
+            Self::Stale { quota_lanes, .. } => quota_lanes
+                .iter()
+                .filter_map(|lane| lane.next_reset_after(now))
+                .min(),
+        }
     }
 }
 
-fn snapshot_is_stale(snapshot: &SanitizedDesktopStateV1, now: OffsetDateTime) -> bool {
+impl UsageTotal {
+    fn needs_refresh(&self, now: OffsetDateTime) -> bool {
+        match self {
+            Self::Unavailable => false,
+            Self::Stale { .. } => true,
+            Self::Current { observed_at, .. } => timestamp_is_due(observed_at, now),
+        }
+    }
+
+    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
+        match self {
+            Self::Current {
+                evidence_basis,
+                coverage,
+                observed_at,
+                observed_tokens,
+                api_equivalent_cost_usd,
+            } if timestamp_is_due(observed_at, now) => (
+                Self::Stale {
+                    evidence_basis: *evidence_basis,
+                    coverage: *coverage,
+                    observed_at: observed_at.clone(),
+                    observed_tokens: *observed_tokens,
+                    api_equivalent_cost_usd: *api_equivalent_cost_usd,
+                },
+                true,
+            ),
+            _ => (self.clone(), false),
+        }
+    }
+
+    fn next_transition_after(&self, now: OffsetDateTime) -> Option<OffsetDateTime> {
+        match self {
+            Self::Current { observed_at, .. } => freshness_deadline_after(observed_at, now),
+            Self::Unavailable | Self::Stale { .. } => None,
+        }
+    }
+}
+
+fn snapshot_needs_refresh(snapshot: &SanitizedDesktopStateV1, now: OffsetDateTime) -> bool {
     snapshot
         .providers
         .iter()
-        .any(|provider| provider_is_stale(provider, now))
+        .any(|provider| provider.needs_refresh(now))
         || [
             &snapshot.usage.codex.today,
             &snapshot.usage.codex.seven_days,
@@ -773,56 +997,13 @@ fn snapshot_is_stale(snapshot: &SanitizedDesktopStateV1, now: OffsetDateTime) ->
             &snapshot.usage.claude.thirty_days,
         ]
         .into_iter()
-        .any(|usage| usage_is_stale(usage, now))
+        .any(|usage| usage.needs_refresh(now))
 }
 
-fn stale_provider_if_due(
-    snapshot: &ProviderSnapshot,
-    now: OffsetDateTime,
-) -> (ProviderSnapshot, bool) {
-    match snapshot {
-        ProviderSnapshot::Current {
-            provider,
-            observed_at,
-            quota_lanes,
-        } if timestamp_is_due(observed_at, now) => (
-            ProviderSnapshot::Stale {
-                provider: *provider,
-                observed_at: observed_at.clone(),
-                quota_lanes: quota_lanes.clone(),
-            },
-            true,
-        ),
-        _ => (snapshot.clone(), false),
-    }
-}
-
-fn stale_usage_if_due(total: &UsageTotal, now: OffsetDateTime) -> (UsageTotal, bool) {
-    match total {
-        UsageTotal::Current {
-            evidence_basis,
-            coverage,
-            observed_at,
-            observed_tokens,
-            api_equivalent_cost_usd,
-        } if timestamp_is_due(observed_at, now) => (
-            UsageTotal::Stale {
-                evidence_basis: *evidence_basis,
-                coverage: *coverage,
-                observed_at: observed_at.clone(),
-                observed_tokens: *observed_tokens,
-                api_equivalent_cost_usd: *api_equivalent_cost_usd,
-            },
-            true,
-        ),
-        _ => (total.clone(), false),
-    }
-}
-
-fn stale_periods_if_due(periods: &UsagePeriods, now: OffsetDateTime) -> (UsagePeriods, bool) {
-    let (today, today_changed) = stale_usage_if_due(&periods.today, now);
-    let (seven_days, seven_days_changed) = stale_usage_if_due(&periods.seven_days, now);
-    let (thirty_days, thirty_days_changed) = stale_usage_if_due(&periods.thirty_days, now);
+fn transition_periods_at(periods: &UsagePeriods, now: OffsetDateTime) -> (UsagePeriods, bool) {
+    let (today, today_changed) = periods.today.transition_at(now);
+    let (seven_days, seven_days_changed) = periods.seven_days.transition_at(now);
+    let (thirty_days, thirty_days_changed) = periods.thirty_days.transition_at(now);
     (
         UsagePeriods {
             today,
@@ -833,23 +1014,48 @@ fn stale_periods_if_due(periods: &UsagePeriods, now: OffsetDateTime) -> (UsagePe
     )
 }
 
-fn stale_snapshot_if_due(
+fn transition_snapshot_at(
     snapshot: &SanitizedDesktopStateV1,
     now: OffsetDateTime,
 ) -> Option<SanitizedDesktopStateV1> {
-    let (codex, codex_changed) = stale_provider_if_due(&snapshot.providers[0], now);
-    let (claude, claude_changed) = stale_provider_if_due(&snapshot.providers[1], now);
-    let (codex_usage, codex_usage_changed) = stale_periods_if_due(&snapshot.usage.codex, now);
-    let (claude_usage, claude_usage_changed) = stale_periods_if_due(&snapshot.usage.claude, now);
+    let (codex, codex_changed) = snapshot.providers[0].transition_at(now);
+    let (claude, claude_changed) = snapshot.providers[1].transition_at(now);
+    let (codex_usage, codex_usage_changed) = transition_periods_at(&snapshot.usage.codex, now);
+    let (claude_usage, claude_usage_changed) = transition_periods_at(&snapshot.usage.claude, now);
     (codex_changed || claude_changed || codex_usage_changed || claude_usage_changed).then(|| {
-        let mut stale = snapshot.clone();
-        stale.providers = [codex, claude];
-        stale.usage = UsageByProvider {
+        let mut transitioned = snapshot.clone();
+        transitioned.providers = [codex, claude];
+        transitioned.usage = UsageByProvider {
             codex: codex_usage,
             claude: claude_usage,
         };
-        stale
+        transitioned
     })
+}
+
+fn next_refresh_at(snapshot: &SanitizedDesktopStateV1, now: OffsetDateTime) -> OffsetDateTime {
+    let provider_deadline = snapshot
+        .providers
+        .iter()
+        .filter_map(|provider| provider.next_transition_after(now))
+        .min();
+    let usage_deadline = [
+        &snapshot.usage.codex.today,
+        &snapshot.usage.codex.seven_days,
+        &snapshot.usage.codex.thirty_days,
+        &snapshot.usage.claude.today,
+        &snapshot.usage.claude.seven_days,
+        &snapshot.usage.claude.thirty_days,
+    ]
+    .into_iter()
+    .filter_map(|usage| usage.next_transition_after(now))
+    .min();
+    provider_deadline
+        .into_iter()
+        .chain(usage_deadline)
+        .min()
+        .unwrap_or(now + to_time_duration(REFRESH_INTERVAL))
+        .min(now + to_time_duration(REFRESH_INTERVAL))
 }
 
 fn validate_snapshot(snapshot: &SanitizedDesktopStateV1) -> Result<(), &'static str> {
@@ -1024,7 +1230,7 @@ mod tests {
         }
     }
 
-    impl RefreshSource for ScriptedRefreshSource {
+    impl SnapshotRefreshAdapter for ScriptedRefreshSource {
         fn refresh(
             &self,
             _cached: SanitizedDesktopStateV1,
@@ -1115,7 +1321,7 @@ mod tests {
         .unwrap();
         let notices = core.revision_notices().unwrap();
 
-        let receipt = core.request_refresh().unwrap();
+        let receipt = core.request_refresh(RefreshSource::Manual).unwrap();
         let notice = notices.recv_timeout(Duration::from_secs(1)).unwrap();
         let after = core.panel_state().unwrap();
 
@@ -1130,13 +1336,17 @@ mod tests {
 
     #[test]
     fn refresh_drops_closed_notice_receivers_without_rejecting_work() {
-        let core = NativeCore::with_refresh_source(Arc::new(ScriptedRefreshSource::new([Ok(
+        let core = NativeCore::with_refresh_adapter(Arc::new(ScriptedRefreshSource::new([Ok(
             Some(observed_state(test_time(), 42)),
         )])));
         drop(core.revision_notices().unwrap());
         let live_notices = core.revision_notices().unwrap();
 
-        assert!(core.request_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
         live_notices.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(core.panel_state().unwrap().revision, "2");
     }
@@ -1157,30 +1367,37 @@ mod tests {
         }
     }
 
-    impl RefreshSource for BlockingRefreshSource {
+    impl SnapshotRefreshAdapter for BlockingRefreshSource {
         fn refresh(
             &self,
-            mut cached: SanitizedDesktopStateV1,
+            _cached: SanitizedDesktopStateV1,
         ) -> Result<Option<SanitizedDesktopStateV1>, &'static str> {
             self.runs.fetch_add(1, Ordering::SeqCst);
             self.started.wait();
             self.release.wait();
-            cached.sync.status = SyncStatus::Pending;
-            Ok(Some(cached))
+            Ok(Some(observed_state(test_time(), 42)))
         }
     }
 
     #[test]
     fn concurrent_refresh_requests_join_one_in_flight_commit() {
         let source = Arc::new(BlockingRefreshSource::new());
-        let core = NativeCore::with_refresh_source(source.clone());
+        let core = NativeCore::with_refresh_adapter(source.clone());
         let notices = core.revision_notices().unwrap();
 
-        assert!(core.request_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
         source.started.wait();
 
         assert_eq!(core.panel_state().unwrap().revision, "1");
-        assert!(core.request_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(source.runs.load(Ordering::SeqCst), 1);
 
         source.release.wait();
@@ -1193,7 +1410,25 @@ mod tests {
     }
 
     #[test]
-    fn restores_cached_snapshot_without_panel_io_after_relaunch() {
+    #[ignore = "subprocess fixture"]
+    fn crash_writer_fixture() {
+        let Some(database_path) = env::var_os("TOUCHGRASS_CRASH_DB_PATH") else {
+            return;
+        };
+        let connection = Connection::open(database_path).unwrap();
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 UPDATE sanitized_desktop_state
+                 SET revision = '999'
+                 WHERE singleton = 1;",
+            )
+            .unwrap();
+        process::exit(97);
+    }
+
+    #[test]
+    fn restores_cached_snapshot_after_interrupted_transaction_without_panel_io() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
         let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
@@ -1203,7 +1438,11 @@ mod tests {
         let core = NativeCore::open_with(&database.0, clock.clone(), source).unwrap();
         let notices = core.revision_notices().unwrap();
 
-        assert!(core.request_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1212,6 +1451,15 @@ mod tests {
             "2"
         );
         drop(core);
+
+        let crash_status = process::Command::new(env::current_exe().unwrap())
+            .arg("--ignored")
+            .arg("--exact")
+            .arg("sanitized::tests::crash_writer_fixture")
+            .env("TOUCHGRASS_CRASH_DB_PATH", &database.0)
+            .status()
+            .unwrap();
+        assert_eq!(crash_status.code(), Some(97));
 
         let relaunched =
             NativeCore::open_with(&database.0, clock, Arc::new(ScriptedRefreshSource::new([])))
@@ -1269,7 +1517,11 @@ mod tests {
         let core = NativeCore::open_with(&database.0, clock.clone(), source.clone()).unwrap();
         let notices = core.revision_notices().unwrap();
 
-        assert!(core.request_launch_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Launch)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1279,7 +1531,11 @@ mod tests {
         );
 
         clock.advance(REFRESH_INTERVAL);
-        assert!(core.request_stale_panel_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::StalePanelOpen)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1288,7 +1544,11 @@ mod tests {
             "3"
         );
 
-        assert!(core.request_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1296,7 +1556,7 @@ mod tests {
                 .revision,
             "4"
         );
-        assert!(core.request_wake_refresh().unwrap().accepted);
+        assert!(core.request_refresh(RefreshSource::Wake).unwrap().accepted);
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1304,7 +1564,11 @@ mod tests {
                 .revision,
             "5"
         );
-        assert!(core.request_network_recovery_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::NetworkRecovery)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1314,10 +1578,18 @@ mod tests {
         );
 
         clock.advance(REFRESH_INTERVAL - Duration::from_secs(1));
-        assert!(core.request_scheduled_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Schedule)
+                .unwrap()
+                .accepted
+        );
         assert!(notices.recv_timeout(Duration::from_millis(50)).is_err());
         clock.advance(Duration::from_secs(1));
-        assert!(core.request_scheduled_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Schedule)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1329,7 +1601,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_failure_preserves_stale_values_and_backs_off() {
+    fn offline_and_persistence_failures_preserve_stale_values_and_back_off() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
         let source = Arc::new(ScriptedRefreshSource::new([
@@ -1343,11 +1615,20 @@ mod tests {
         let core = NativeCore::open_with(&database.0, clock.clone(), source.clone()).unwrap();
         let notices = core.revision_notices().unwrap();
 
-        assert!(core.request_launch_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Launch)
+                .unwrap()
+                .accepted
+        );
         notices.recv_timeout(Duration::from_secs(1)).unwrap();
+        core.force_persistence_failure().unwrap();
         clock.advance(REFRESH_INTERVAL);
 
-        assert!(core.request_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1364,11 +1645,20 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(stale.sync.status, SyncStatus::Unavailable);
 
-        assert!(core.request_wake_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::NetworkRecovery)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(source.runs.load(Ordering::SeqCst), 2);
         clock.advance(REFRESH_BACKOFF_BASE);
-        assert!(core.request_network_recovery_refresh().unwrap().accepted);
+        assert!(
+            core.request_refresh(RefreshSource::Schedule)
+                .unwrap()
+                .accepted
+        );
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1383,7 +1673,63 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
         assert_eq!(source.runs.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn reset_deadline_expires_only_the_affected_quota_lane() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let mut observed = observed_state(test_time(), 42);
+        if let ProviderSnapshot::Current { quota_lanes, .. } = &mut observed.providers[0] {
+            quota_lanes[0].reset_at = Some(format_time(test_time() + TimeDuration::minutes(2)));
+        }
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed)), Ok(None)]));
+        let core = NativeCore::open_with(&database.0, clock.clone(), source).unwrap();
+        let notices = core.revision_notices().unwrap();
+
+        assert!(
+            core.request_refresh(RefreshSource::Launch)
+                .unwrap()
+                .accepted
+        );
+        assert_eq!(
+            notices
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            "2"
+        );
+
+        clock.advance(Duration::from_secs(2 * 60));
+        assert!(
+            core.request_refresh(RefreshSource::Schedule)
+                .unwrap()
+                .accepted
+        );
+        assert_eq!(
+            notices
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            "3"
+        );
+        let after_reset = core.panel_state().unwrap();
+        assert!(matches!(
+            after_reset.providers[0],
+            ProviderSnapshot::Unavailable { .. }
+        ));
+        assert!(matches!(
+            after_reset.usage.codex.today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
     }
 
     #[test]

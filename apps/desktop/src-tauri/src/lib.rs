@@ -14,7 +14,8 @@ use lifecycle::{
     SettingsNavigationRequest, SettingsSection, SettingsStateV1,
 };
 use sanitized::{
-    NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RevisionNotice, SanitizedDesktopStateV1,
+    NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
+    SanitizedDesktopStateV1,
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -160,10 +161,6 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
         return Ok(());
     }
 
-    if let Some(core) = app.try_state::<NativeCore>() {
-        let _ = core.request_stale_panel_refresh();
-    }
-
     let scale_factor = panel.scale_factor()?;
     let tray = frame_for_rect(tray_rect, scale_factor);
     let monitor = monitor_for_tray(&panel, tray)?;
@@ -171,6 +168,9 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
     panel.set_position(origin)?;
     panel.show()?;
     panel.set_focus()?;
+    if let Some(core) = app.try_state::<NativeCore>() {
+        let _ = core.request_refresh(RefreshSource::StalePanelOpen);
+    }
     Ok(())
 }
 
@@ -254,12 +254,13 @@ fn request_refresh(
     core: State<'_, NativeCore>,
 ) -> Result<RefreshReceipt, String> {
     require_panel(&window)?;
-    core.request_refresh().map_err(str::to_owned)
+    core.request_refresh(RefreshSource::Manual)
+        .map_err(str::to_owned)
 }
 
 fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
     app.state::<NativeCore>()
-        .request_refresh()
+        .request_refresh(RefreshSource::Manual)
         .map_err(str::to_owned)?;
     Ok(())
 }
@@ -273,7 +274,7 @@ fn start_network_recovery_monitor(core: NativeCore) -> Result<(), std::io::Error
                 thread::sleep(NETWORK_MONITOR_INTERVAL);
                 let current = network::is_reachable();
                 if previous == Some(false) && current == Some(true) {
-                    let _ = core.request_network_recovery_refresh();
+                    let _ = core.request_refresh(RefreshSource::NetworkRecovery);
                 }
                 if current.is_some() {
                     previous = current;
@@ -467,7 +468,7 @@ pub fn run() {
                 })?;
             core.start_scheduler().map_err(std::io::Error::other)?;
             start_network_recovery_monitor(core.clone())?;
-            core.request_launch_refresh()
+            core.request_refresh(RefreshSource::Launch)
                 .map_err(std::io::Error::other)?;
 
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
@@ -573,7 +574,7 @@ pub fn run() {
         if matches!(event, RunEvent::Resumed)
             && let Some(core) = app.try_state::<NativeCore>()
         {
-            let _ = core.request_wake_refresh();
+            let _ = core.request_refresh(RefreshSource::Wake);
         }
     });
 }
