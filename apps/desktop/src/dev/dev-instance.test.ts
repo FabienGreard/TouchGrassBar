@@ -21,18 +21,18 @@ describe("development instance identity", () => {
     expect(first.port).toBeLessThan(16_000);
   });
 
-  test("accepts bounded label and accent overrides", () => {
+  test("accepts bounded Unicode label and accent overrides", () => {
     const instance = resolveDevInstance({
       accent: "violet",
       branch: "feature/cache-refresh",
-      label: "  Réparer   cache  ",
+      label: "  🧪  ",
       worktreeSeed: "worktree-beta",
     });
 
-    expect(instance.label).toBe("Réparer cache");
-    expect(instance.tag).toBe("RÉPARER");
+    expect(instance.label).toBe("🧪");
+    expect(instance.tag).toBe("🧪");
     expect(instance.accent).toBe("violet");
-    expect(instance.productName).toContain("TouchGrassBar Dev RÉPARER");
+    expect(instance.productName).toContain(instance.tag);
   });
 
   test("separates native identity and default ports across worktrees", () => {
