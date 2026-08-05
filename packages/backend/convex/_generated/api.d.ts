@@ -9,6 +9,7 @@
  */
 
 import type * as auth from "../auth.js";
+import type * as auth_credentialAttempts from "../auth/credentialAttempts.js";
 import type * as auth_touchgrassSignup from "../auth/touchgrassSignup.js";
 import type * as crons from "../crons.js";
 import type * as doomerboards from "../doomerboards.js";
@@ -32,6 +33,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
+  "auth/credentialAttempts": typeof auth_credentialAttempts;
   "auth/touchgrassSignup": typeof auth_touchgrassSignup;
   crons: typeof crons;
   doomerboards: typeof doomerboards;

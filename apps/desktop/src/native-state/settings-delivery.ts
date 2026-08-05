@@ -8,6 +8,8 @@ import {
 type SettingsPortFaultCode =
   | "launch-at-login-unavailable"
   | "navigation-stream-unavailable"
+  | "recovery-key-unavailable"
+  | "settings-section-unavailable"
   | "settings-state-unavailable"
   | "surface-unavailable";
 
@@ -18,6 +20,11 @@ type SettingsPortOutcome<Value> =
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
+  requestRecoveryDisclosure: () => Promise<SettingsPortOutcome<void>>;
+  revealRecoveryKey: () => Promise<SettingsPortOutcome<void>>;
+  selectSection: (
+    section: SettingsSection,
+  ) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
   subscribeNavigation: (
     receive: (payload: unknown) => void,
@@ -26,6 +33,7 @@ type SettingsPort = {
 
 type SettingsDeliverySnapshot = {
   phase: "degraded" | "loading" | "ready";
+  revealingRecoveryKey: boolean;
   savingLaunchAtLogin: boolean;
   snapshot: SettingsState | null;
 };
@@ -33,11 +41,15 @@ type SettingsDeliverySnapshot = {
 function createSettingsDelivery(port: SettingsPort) {
   let current: SettingsDeliverySnapshot = {
     phase: "loading",
+    revealingRecoveryKey: false,
     savingLaunchAtLogin: false,
     snapshot: null,
   };
   let readInFlight: Promise<void> | null = null;
+  let revealInFlight: Promise<boolean> | null = null;
   let saveInFlight: Promise<boolean> | null = null;
+  let sectionSelection = Promise.resolve(true);
+  let sectionRevision = 0;
   let selectedSection: SettingsSection | null = null;
   const listeners = new Set<() => void>();
 
@@ -55,7 +67,12 @@ function createSettingsDelivery(port: SettingsPort) {
     const section = selectedSection ?? parsed.data.section;
     selectedSection = section;
     const snapshot = { ...parsed.data, section };
-    publish({ phase: "ready", savingLaunchAtLogin, snapshot });
+    publish({
+      phase: "ready",
+      revealingRecoveryKey: current.revealingRecoveryKey,
+      savingLaunchAtLogin,
+      snapshot,
+    });
     return true;
   };
 
@@ -77,7 +94,12 @@ function createSettingsDelivery(port: SettingsPort) {
   const receiveNavigation = (payload: unknown) => {
     const request = settingsNavigationRequestSchema.safeParse(payload);
     if (!request.success) return;
+    sectionRevision += 1;
     selectedSection = request.data.section;
+    sectionSelection =
+      request.data.section === "profile"
+        ? port.requestRecoveryDisclosure().then((outcome) => outcome.ok)
+        : Promise.resolve(true);
     if (current.snapshot !== null) {
       publish({
         ...current,
@@ -98,8 +120,32 @@ function createSettingsDelivery(port: SettingsPort) {
       await port.hide();
     },
     read,
+    revealRecoveryKey() {
+      if (revealInFlight !== null) return revealInFlight;
+      publish({ ...current, revealingRecoveryKey: true });
+      revealInFlight = (async () => {
+        if (!(await sectionSelection)) {
+          publish({ ...current, revealingRecoveryKey: false });
+          return false;
+        }
+        const outcome = await port.revealRecoveryKey();
+        publish({ ...current, revealingRecoveryKey: false });
+        return outcome.ok;
+      })().finally(() => {
+        revealInFlight = null;
+      });
+      return revealInFlight;
+    },
     selectSection(section: SettingsSection) {
+      const revision = ++sectionRevision;
       selectedSection = section;
+      sectionSelection = (async () => {
+        const outcome = await port.selectSection(section);
+        if (!outcome.ok || revision !== sectionRevision) return false;
+        if (section !== "profile") return true;
+        const disclosure = await port.requestRecoveryDisclosure();
+        return disclosure.ok;
+      })();
       if (current.snapshot === null) {
         return;
       }

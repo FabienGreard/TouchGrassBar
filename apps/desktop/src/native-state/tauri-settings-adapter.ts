@@ -55,6 +55,31 @@ function createTauriSettingsAdapter(
         "get_settings_state",
         "settings-state-unavailable",
       ),
+    requestRecoveryDisclosure: async () => {
+      const outcome = await closedInvoke(
+        bindings,
+        "request_recovery_disclosure",
+        "recovery-key-unavailable",
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
+    revealRecoveryKey: async () => {
+      const outcome = await closedInvoke(
+        bindings,
+        "reveal_recovery_key",
+        "recovery-key-unavailable",
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
+    selectSection: async (section) => {
+      const outcome = await closedInvoke(
+        bindings,
+        "select_settings_section",
+        "settings-section-unavailable",
+        { section },
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
     setLaunchAtLogin: (enabled) =>
       closedInvoke(
         bindings,

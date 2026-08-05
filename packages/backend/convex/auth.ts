@@ -4,11 +4,15 @@ import { betterAuth } from "better-auth/minimal";
 import { bearer } from "better-auth/plugins/bearer";
 import { username } from "better-auth/plugins/username";
 
-import { components } from "./_generated/api";
+import { components, internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
-import { env } from "./_generated/server";
+import { env, type ActionCtx } from "./_generated/server";
 import authConfig from "./auth.config";
-import { touchGrassSignup } from "./auth/touchgrassSignup";
+import {
+  touchGrassSignup,
+  type TouchGrassPolicyPort,
+} from "./auth/touchgrassSignup";
+import { rateLimiter } from "./model/rateLimits";
 
 declare const process: {
   env: { readonly CONVEX_SITE_URL?: string };
@@ -16,20 +20,84 @@ declare const process: {
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
 
-export const createAuth = (ctx: GenericCtx<DataModel>) => {
+function actionContext(
+  ctx: GenericCtx<DataModel>,
+): ActionCtx {
+  if (!("runAction" in ctx)) {
+    throw new Error("TouchGrass authentication requires an action context");
+  }
+  return ctx;
+}
+
+function touchGrassPolicy(
+  ctx: GenericCtx<DataModel>,
+  requestIpAddress: () => Promise<string | null>,
+): TouchGrassPolicyPort {
+  const action = () => actionContext(ctx);
+
+  return {
+    consumeSignupProof: (args) =>
+      action().runMutation(
+        internal.auth.touchgrassSignup.consumeSignupProof,
+        args,
+      ),
+    finalizeCredentialAttempt: (args) =>
+      action().runMutation(
+        internal.auth.credentialAttempts.finalizeCredentialAttempt,
+        args,
+      ),
+    issueSignupProof: async (args) => {
+      await action().runMutation(
+        internal.auth.touchgrassSignup.issueSignupProof,
+        args,
+      );
+    },
+    limitProfilePreparation: async ({ ipKey }) => {
+      const limit = await rateLimiter.limit(
+        action(),
+        "profilePreparationByIp",
+        { key: ipKey },
+      );
+      return limit.ok;
+    },
+    requestIpAddress,
+    reserveCredentialAttempt: (args) =>
+      action().runMutation(
+        internal.auth.credentialAttempts.reserveCredentialAttempt,
+        args,
+      ),
+  };
+}
+
+export const createAuthWithRequestIp = (
+  ctx: GenericCtx<DataModel>,
+  requestIpAddress: () => Promise<string | null>,
+) => {
   const convexSiteUrl = process.env.CONVEX_SITE_URL;
   if (!convexSiteUrl) throw new Error("CONVEX_SITE_URL is unavailable");
   return betterAuth({
     baseURL: convexSiteUrl,
     database: authComponent.adapter(ctx),
-    disabledPaths: ["/is-username-available"],
+    disabledPaths: [
+      "/change-email",
+      "/change-password",
+      "/delete-user",
+      "/delete-user/callback",
+      "/is-username-available",
+      "/link-social",
+      "/request-password-reset",
+      "/reset-password",
+      "/sign-in/email",
+      "/unlink-account",
+      "/update-user",
+    ],
     emailAndPassword: {
       autoSignIn: false,
       enabled: true,
       requireEmailVerification: false,
     },
     plugins: [
-      touchGrassSignup(),
+      touchGrassSignup(touchGrassPolicy(ctx, requestIpAddress)),
       username({
         maxUsernameLength: 9,
         minUsernameLength: 9,
@@ -46,9 +114,16 @@ export const createAuth = (ctx: GenericCtx<DataModel>) => {
         },
       }),
     ],
+    rateLimit: { enabled: false },
     secret: env.BETTER_AUTH_SECRET,
   });
 };
+
+export const createAuth = (ctx: GenericCtx<DataModel>) =>
+  createAuthWithRequestIp(ctx, async () => {
+    const metadata = await actionContext(ctx).meta.getRequestMetadata();
+    return metadata.ip;
+  });
 
 export async function requireAuthUser(ctx: GenericCtx<DataModel>) {
   const user = await authComponent.getAuthUser(ctx);

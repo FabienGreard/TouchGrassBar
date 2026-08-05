@@ -21,6 +21,9 @@ describe("Tauri Settings adapter", () => {
 
     await adapter.read();
     await adapter.setLaunchAtLogin(true);
+    await adapter.selectSection("profile");
+    await adapter.requestRecoveryDisclosure();
+    await adapter.revealRecoveryKey();
     const subscription = await adapter.subscribeNavigation(receive);
     navigate({ payload: { section: "profile" } });
 
@@ -32,6 +35,21 @@ describe("Tauri Settings adapter", () => {
     expect(bindings.invoke).toHaveBeenNthCalledWith(2, "set_launch_at_login", {
       enabled: true,
     });
+    expect(bindings.invoke).toHaveBeenNthCalledWith(
+      3,
+      "select_settings_section",
+      { section: "profile" },
+    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(
+      4,
+      "request_recovery_disclosure",
+      undefined,
+    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(
+      5,
+      "reveal_recovery_key",
+      undefined,
+    );
     expect(bindings.listen).toHaveBeenCalledWith(
       "settings-navigation-requested",
       expect.any(Function),
@@ -54,6 +72,18 @@ describe("Tauri Settings adapter", () => {
     });
     expect(await adapter.setLaunchAtLogin(true)).toEqual({
       fault: { code: "launch-at-login-unavailable" },
+      ok: false,
+    });
+    expect(await adapter.selectSection("profile")).toEqual({
+      fault: { code: "settings-section-unavailable" },
+      ok: false,
+    });
+    expect(await adapter.requestRecoveryDisclosure()).toEqual({
+      fault: { code: "recovery-key-unavailable" },
+      ok: false,
+    });
+    expect(await adapter.revealRecoveryKey()).toEqual({
+      fault: { code: "recovery-key-unavailable" },
       ok: false,
     });
     expect(await adapter.subscribeNavigation(() => undefined)).toEqual({

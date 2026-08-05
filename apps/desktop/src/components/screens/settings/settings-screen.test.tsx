@@ -27,6 +27,13 @@ describe("settings screen", () => {
     const developmentMarkup = renderToStaticMarkup(
       <ProfileSettings onStartRecovery={() => undefined} />,
     );
+    const readyMarkup = renderToStaticMarkup(
+      <ProfileSettings
+        onRevealRecoveryKey={() => undefined}
+        profile={{ displayName: "Tester", touchGrassId: "TG-234567" }}
+        profileProvisioning="ready"
+      />,
+    );
 
     expect(markup).toContain("Profile unavailable");
     expect(markup).not.toContain("Fabien");
@@ -34,7 +41,10 @@ describe("settings screen", () => {
     expect(markup).toContain("Profile security");
     expect(markup).not.toContain("local macOS Keychain");
     expect(markup).not.toContain('type="password"');
-    expect(markup).not.toContain("Reveal recovery key");
+    expect(markup).toContain("View Recovery Key…");
+    expect(markup).toMatch(
+      /<button[^>]*disabled=""[^>]*>View Recovery Key…<\/button>/,
+    );
     expect(markup).toContain("Recover from another Mac");
     expect(markup).toMatch(
       /<button[^>]*disabled=""[^>]*>Enter Recovery Key…<\/button>/,
@@ -45,6 +55,9 @@ describe("settings screen", () => {
       /<button[^>]*>Enter Recovery Key…<\/button>/,
     );
     expect(developmentMarkup).not.toContain('type="password"');
+    expect(readyMarkup).toMatch(/<button[^>]*>View Recovery Key…<\/button>/);
+    expect(readyMarkup).not.toContain('type="password"');
+    expect(readyMarkup).not.toContain("TG-RK-");
   });
 
   test("presents Profile Pending without inventing a public ID", () => {

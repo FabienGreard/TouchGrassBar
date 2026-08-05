@@ -1,6 +1,9 @@
 ## Baseline instructions
 
-Use ASD-STE100 Simplified Technical English.
+Always use ASD-STE100 Simplified Technical English.
+
+Always read all applicable `CONTEXT.md` files before you start work. Use the
+ubiquitous language that these files define.
 
 ## Agent skills
 

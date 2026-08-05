@@ -10,16 +10,20 @@ type SettingsProfile = {
 
 function ProfileSettings({
   onDisplayNameChange,
+  onRevealRecoveryKey,
   onStartRecovery,
   pendingDisplayName,
   profile = null,
   profileProvisioning = "not-authorized",
+  revealingRecoveryKey = false,
 }: {
   onDisplayNameChange?: ((displayName: string) => void) | undefined;
+  onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
   profileProvisioning?: ProfileProvisioningStatus | undefined;
+  revealingRecoveryKey?: boolean | undefined;
 }) {
   const pendingName = pendingDisplayName?.trim() || "Your Profile";
   const pendingInitial = pendingName.slice(0, 1).toUpperCase();
@@ -60,6 +64,21 @@ function ProfileSettings({
       )}
       <div className="px-1 py-1" data-profile-security-state="native-required">
         <strong className="block text-[11px]">Profile security</strong>
+        <div className="mt-3 border-t border-sheet-line pt-4">
+          <strong className="block text-[11px]">Recovery Key</strong>
+          <Button
+            className="mt-3"
+            disabled={
+              profile === null ||
+              onRevealRecoveryKey === undefined ||
+              revealingRecoveryKey
+            }
+            onClick={onRevealRecoveryKey}
+            type="button"
+          >
+            {revealingRecoveryKey ? "Opening…" : "View Recovery Key…"}
+          </Button>
+        </div>
         <div className="mt-3 border-t border-sheet-line pt-4">
           <strong className="block text-[11px]">
             Recover from another Mac

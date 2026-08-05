@@ -7,7 +7,7 @@ use std::{
 
 use rusqlite::{Connection, params};
 use schemars::{JsonSchema, Schema, schema_for};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::sanitized::{CodingProvider, SanitizedProfileOutcome};
 
@@ -46,12 +46,31 @@ pub enum PersistenceStatus {
     Unavailable,
 }
 
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SettingsSection {
     General,
     Providers,
     Profile,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SettingsSelection {
+    pub section: SettingsSection,
+    pub revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SettingsProfileAuthorization {
+    revision: u64,
+}
+
+impl SettingsProfileAuthorization {
+    pub(crate) fn from_selection(selection: SettingsSelection) -> Option<Self> {
+        (selection.section == SettingsSection::Profile).then_some(Self {
+            revision: selection.revision,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
@@ -536,7 +555,7 @@ enum LifecycleStore {
 struct DesktopLifecycleInner {
     store: LifecycleStore,
     detector: Arc<dyn ProviderPresenceDetector>,
-    settings_section: Mutex<SettingsSection>,
+    settings_selection: Mutex<SettingsSelection>,
 }
 
 #[derive(Clone)]
@@ -557,7 +576,10 @@ impl DesktopLifecycle {
             inner: Arc::new(DesktopLifecycleInner {
                 store: LifecycleStore::Persistent(SqliteLifecycleStore::open(path)?),
                 detector,
-                settings_section: Mutex::new(SettingsSection::General),
+                settings_selection: Mutex::new(SettingsSelection {
+                    section: SettingsSection::General,
+                    revision: 0,
+                }),
             }),
         })
     }
@@ -567,7 +589,10 @@ impl DesktopLifecycle {
             inner: Arc::new(DesktopLifecycleInner {
                 store: LifecycleStore::Unavailable,
                 detector: Arc::new(SystemProviderPresenceDetector),
-                settings_section: Mutex::new(SettingsSection::General),
+                settings_selection: Mutex::new(SettingsSelection {
+                    section: SettingsSection::General,
+                    revision: 0,
+                }),
             }),
         }
     }
@@ -678,15 +703,9 @@ impl DesktopLifecycle {
         let record = self
             .record()
             .unwrap_or_else(|_| LifecycleRecord::required());
-        let section = self
-            .inner
-            .settings_section
-            .lock()
-            .map(|section| *section)
-            .unwrap_or(SettingsSection::General);
         SettingsStateV2 {
             contract_version: LIFECYCLE_CONTRACT_VERSION,
-            section,
+            section: self.current_settings_section(),
             launch_at_login,
             profile_provisioning: record.profile_provisioning,
             display_name: record.display_name,
@@ -696,9 +715,38 @@ impl DesktopLifecycle {
     }
 
     pub fn request_settings_section(&self, section: SettingsSection) {
-        if let Ok(mut current) = self.inner.settings_section.lock() {
-            *current = section;
+        if let Ok(mut current) = self.inner.settings_selection.lock() {
+            current.section = section;
+            current.revision = current.revision.wrapping_add(1);
         }
+    }
+
+    pub fn current_settings_section(&self) -> SettingsSection {
+        self.current_settings_selection().section
+    }
+
+    pub(crate) fn current_settings_selection(&self) -> SettingsSelection {
+        self.inner
+            .settings_selection
+            .lock()
+            .map(|selection| *selection)
+            .unwrap_or(SettingsSelection {
+                section: SettingsSection::General,
+                revision: 0,
+            })
+    }
+
+    pub(crate) fn authorize_profile_settings(&self) -> Option<SettingsProfileAuthorization> {
+        SettingsProfileAuthorization::from_selection(self.current_settings_selection())
+    }
+
+    pub(crate) fn is_current_profile_settings(
+        &self,
+        authorization: SettingsProfileAuthorization,
+    ) -> bool {
+        let selection = self.current_settings_selection();
+        selection.section == SettingsSection::Profile
+            && selection.revision == authorization.revision
     }
 }
 

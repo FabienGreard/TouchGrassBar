@@ -75,11 +75,15 @@ function SettingsCoordinator({
       onLaunchAtLoginChange={(enabled) => {
         void delivery.setLaunchAtLogin(enabled);
       }}
+      onRevealRecoveryKey={() => {
+        void delivery.revealRecoveryKey();
+      }}
       onSectionChange={delivery.selectSection}
       pendingDisplayName={state?.displayName}
       profile={profile}
       profileProvisioning={state?.profileProvisioning}
       providerState={providerAccessStateFromPresence(providers, "claude")}
+      revealingRecoveryKey={view.revealingRecoveryKey}
       section={state?.section}
     />
   );
