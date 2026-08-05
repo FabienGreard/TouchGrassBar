@@ -4,7 +4,7 @@ import * as z from "zod";
 
 export const tokenmaxxerSchema = z
   .object({
-    touchGrassId: z.string().regex(/^TG-[A-Z0-9]{6}$/),
+    touchGrassId: z.string().regex(/^TG-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/),
     displayName: z.string().trim().min(1).max(40),
   })
   .strict();

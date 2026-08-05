@@ -61,8 +61,8 @@ function ProfileSettings({
       <div className="px-1 py-1" data-profile-security-state="native-required">
         <strong className="block text-[11px]">Profile security</strong>
         <small className="mt-1 block text-[9px] leading-4 text-sheet-muted">
-          Recovery and key access require a secure macOS sheet and are not
-          available in this build.
+          Your Recovery Key is stored in the local macOS Keychain. TouchGrassBar
+          shows it only in a secure native sheet when this Profile is created.
         </small>
         <div className="mt-4 border-t border-sheet-line pt-4">
           <strong className="block text-[11px]">

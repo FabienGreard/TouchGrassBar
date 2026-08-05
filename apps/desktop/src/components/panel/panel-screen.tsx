@@ -62,9 +62,21 @@ function PanelScreen({
     return () => observer.disconnect();
   }, [hasNativeRuntime]);
 
+  const nativeProfile =
+    deliveryView.snapshot?.profile?.status === "ready"
+      ? {
+          id: `#${deliveryView.snapshot.profile.touchGrassId}`,
+          name: deliveryView.snapshot.profile.displayName,
+        }
+      : null;
+  const currentProfile =
+    presentation.currentProfile === undefined
+      ? nativeProfile
+      : presentation.currentProfile;
+
   return (
     <PanelView
-      currentProfile={presentation.currentProfile}
+      currentProfile={currentProfile}
       doomerboardRows={presentation.doomerboardRows}
       error={deliveryView.phase === "degraded"}
       nativeGlass

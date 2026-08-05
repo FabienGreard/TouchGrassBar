@@ -29,6 +29,22 @@ pub struct SanitizedDesktopStateV1 {
     pub providers: [ProviderSnapshot; 2],
     pub usage: UsageByProvider,
     pub sync: SyncState,
+    pub profile: SanitizedProfileOutcome,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+#[serde(
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    tag = "status"
+)]
+pub enum SanitizedProfileOutcome {
+    NotAuthorized,
+    IdentityPending,
+    Ready {
+        display_name: String,
+        touch_grass_id: String,
+    },
 }
 
 #[allow(dead_code)]
@@ -265,6 +281,10 @@ impl NativeCore {
             .map_err(|_| "native state unavailable")
     }
 
+    pub fn invalidate_projection(&self) -> Result<(), &'static str> {
+        self.inner.commit_refreshed_snapshot(self.panel_state()?)
+    }
+
     pub fn revision_notices(&self) -> Result<Receiver<RevisionNotice>, &'static str> {
         let (sender, receiver) = mpsc::channel();
         self.inner
@@ -341,6 +361,7 @@ pub fn unavailable_state(revision: u64) -> SanitizedDesktopStateV1 {
             status: SyncStatus::Unavailable,
             last_successful_at: None,
         },
+        profile: SanitizedProfileOutcome::NotAuthorized,
     }
 }
 

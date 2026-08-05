@@ -52,6 +52,15 @@ function SettingsCoordinator({
       ? state.launchAtLogin.enabled
       : null;
   const providers = state?.providers;
+  const profile =
+    state?.profileProvisioning === "ready" &&
+    typeof state.displayName === "string" &&
+    typeof state.touchGrassId === "string"
+      ? {
+          displayName: state.displayName,
+          touchGrassId: state.touchGrassId,
+        }
+      : null;
 
   return (
     <SettingsScreen
@@ -68,6 +77,7 @@ function SettingsCoordinator({
       }}
       onSectionChange={delivery.selectSection}
       pendingDisplayName={state?.displayName}
+      profile={profile}
       profileProvisioning={state?.profileProvisioning}
       providerState={providerAccessStateFromPresence(providers, "claude")}
       section={state?.section}

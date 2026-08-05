@@ -22,6 +22,19 @@ import {
 import type { DataModel } from "./dataModel.js";
 
 /**
+ * Typesafe environment variables declared in `convex.config.ts`.
+ */
+type Env = {
+  readonly BETTER_AUTH_SECRET: string;
+  readonly CONVEX_SITE_URL: string;
+};
+
+/**
+ * Typesafe environment variables declared in `convex.config.ts`.
+ */
+export declare const env: Env;
+
+/**
  * Define a query in this Convex app's public API.
  *
  * This function will be allowed to read your Convex database and will be accessible from the client.

@@ -11,6 +11,7 @@ import {
 const unavailableState = {
   contractVersion: 1,
   generatedAt: "2026-08-03T00:00:00.000Z",
+  profile: { status: "not-authorized" },
   revision: "1",
   providers: [
     { availability: "unavailable", provider: "codex", quotaLanes: [] },

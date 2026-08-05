@@ -22,6 +22,9 @@
     "convex": "1.43.0"
   },
   "devDependencies": {
-    "typescript": "7.0.2"
+    "@edge-runtime/vm": "5.0.0",
+    "convex-test": "0.0.51",
+    "typescript": "7.0.2",
+    "vite": "8.2.0"
   }
 }

@@ -19,6 +19,11 @@ import {
 } from "convex/server";
 
 /**
+ * Typesafe environment variables declared in `convex.config.ts`.
+ */
+export const env = process.env;
+
+/**
  * Define a query in this Convex app's public API.
  *
  * This function will be allowed to read your Convex database and will be accessible from the client.
