@@ -3,12 +3,12 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
     },
-    thread,
-    time::Duration,
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -29,6 +29,8 @@ const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const REFRESH_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
+const REFRESH_ATTEMPT_TIMEOUT: Duration = REFRESH_INTERVAL;
+const NETWORK_RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,11 +171,54 @@ pub struct RefreshReceipt {
     pub accepted: bool,
 }
 
+#[derive(Clone)]
+struct RefreshAttempt {
+    cancelled: Arc<AtomicBool>,
+    deadline: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RefreshFailure {
+    Cancelled,
+    DeadlineExceeded,
+    #[cfg(test)]
+    SourceUnavailable,
+}
+
+impl RefreshAttempt {
+    fn new(cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            cancelled,
+            deadline: Instant::now() + REFRESH_ATTEMPT_TIMEOUT,
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn remaining(&self) -> Result<Duration, RefreshFailure> {
+        if self.is_cancelled() {
+            return Err(RefreshFailure::Cancelled);
+        }
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            Err(RefreshFailure::DeadlineExceeded)
+        } else {
+            Ok(remaining)
+        }
+    }
+}
+
 trait SnapshotRefreshAdapter: Send + Sync {
+    /// Production adapters must bound each blocking operation by
+    /// `attempt.remaining()` and stop when cancellation is observed. This
+    /// keeps application shutdown bounded.
     fn refresh(
         &self,
         cached: SanitizedDesktopStateV1,
-    ) -> Result<Option<SanitizedDesktopStateV1>, &'static str>;
+        attempt: &RefreshAttempt,
+    ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure>;
 }
 
 struct CachedProjectionRefreshAdapter;
@@ -182,7 +227,9 @@ impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     fn refresh(
         &self,
         _cached: SanitizedDesktopStateV1,
-    ) -> Result<Option<SanitizedDesktopStateV1>, &'static str> {
+        attempt: &RefreshAttempt,
+    ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+        attempt.remaining()?;
         // Provider observation is not wired yet. An unchanged cached projection
         // does not create a false revision or notice.
         Ok(None)
@@ -202,7 +249,7 @@ impl Clock for SystemClock {
 }
 
 struct SqliteReadModelStore {
-    connection: Mutex<Connection>,
+    connection: Connection,
 }
 
 impl SqliteReadModelStore {
@@ -224,12 +271,7 @@ impl SqliteReadModelStore {
             .execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
             .map_err(|_| "native state persistence unavailable")?;
         let state = Self::read_from(&connection)?;
-        Ok((
-            Self {
-                connection: Mutex::new(connection),
-            },
-            state,
-        ))
+        Ok((Self { connection }, state))
     }
 
     fn migrate(
@@ -352,15 +394,12 @@ impl SqliteReadModelStore {
         Ok(snapshot)
     }
 
-    fn commit(&self, state: &SanitizedDesktopStateV1) -> Result<(), &'static str> {
+    fn commit(&mut self, state: &SanitizedDesktopStateV1) -> Result<(), &'static str> {
         validate_snapshot(state)?;
         let snapshot_json =
             serde_json::to_string(state).map_err(|_| "native state persistence unavailable")?;
-        let mut connection = self
+        let transaction = self
             .connection
-            .lock()
-            .map_err(|_| "native state persistence unavailable")?;
-        let transaction = connection
             .transaction()
             .map_err(|_| "native state persistence unavailable")?;
         let updated = transaction
@@ -395,13 +434,6 @@ struct SnapshotCommitOutcome {
     persistence_failed: bool,
 }
 
-struct RefreshCoordinatorState {
-    consecutive_failures: u32,
-    in_flight: bool,
-    next_scheduled_at: OffsetDateTime,
-    retry_not_before: Option<OffsetDateTime>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RefreshSource {
     Launch,
@@ -412,80 +444,82 @@ pub enum RefreshSource {
     Schedule,
 }
 
-struct NativeCoreInner {
-    state: Mutex<SanitizedDesktopStateV1>,
-    store: Mutex<ReadModelStore>,
-    revision_subscribers: Mutex<Vec<Sender<RevisionNotice>>>,
-    refresh_coordinator: Mutex<RefreshCoordinatorState>,
-    refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
-    clock: Arc<dyn Clock>,
-    scheduler_started: AtomicBool,
-    scheduler_thread: Mutex<Option<thread::Thread>>,
+impl RefreshSource {
+    fn bit(self) -> u8 {
+        match self {
+            Self::Launch => 1 << 0,
+            Self::StalePanelOpen => 1 << 1,
+            Self::Manual => 1 << 2,
+            Self::Wake => 1 << 3,
+            Self::NetworkRecovery => 1 << 4,
+            Self::Schedule => 1 << 5,
+        }
+    }
 }
 
-impl NativeCoreInner {
-    fn run_refresh(&self) {
-        let now = self.clock.now();
-        let cached = self.state.lock().map(|state| state.clone());
-        let mut source_failed = false;
-        let candidate = match cached.as_ref() {
-            Ok(cached) => match catch_unwind(AssertUnwindSafe(|| {
-                self.refresh_adapter.refresh(cached.clone())
-            })) {
-                Ok(Ok(Some(refreshed))) => {
-                    Some(transition_snapshot_at(&refreshed, now).unwrap_or(refreshed))
-                }
-                Ok(Ok(None)) => transition_snapshot_at(cached, now),
-                Ok(Err(_)) | Err(_) => {
-                    source_failed = true;
-                    transition_snapshot_at(cached, now)
-                }
-            },
-            Err(_) => {
-                source_failed = true;
-                None
-            }
-        };
+#[derive(Clone, Copy)]
+struct RefreshSources(u8);
 
-        let commit_result = candidate
-            .map(|candidate| self.commit_refreshed_snapshot(candidate, now))
-            .transpose();
-        let failed = source_failed
-            || commit_result.is_err()
-            || commit_result
-                .as_ref()
-                .ok()
-                .and_then(Option::as_ref)
-                .is_some_and(|outcome| outcome.persistence_failed);
-        let notice = commit_result
-            .ok()
-            .flatten()
-            .and_then(|outcome| outcome.notice);
-        self.finish_refresh(failed, now);
-        if let Some(notice) = notice {
-            self.publish_notice(notice);
+impl RefreshSources {
+    fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn contains(self, source: RefreshSource) -> bool {
+        self.0 & source.bit() != 0
+    }
+
+    fn contains_immediate_request(self) -> bool {
+        [
+            RefreshSource::Launch,
+            RefreshSource::Manual,
+            RefreshSource::Wake,
+            RefreshSource::NetworkRecovery,
+        ]
+        .into_iter()
+        .any(|source| self.contains(source))
+    }
+}
+
+struct CachedProjection {
+    state: Mutex<SanitizedDesktopStateV1>,
+}
+
+#[derive(Default)]
+struct RevisionSubscribersState {
+    closed: bool,
+    senders: Vec<Sender<RevisionNotice>>,
+}
+
+struct RevisionSubscribers {
+    state: Mutex<RevisionSubscribersState>,
+}
+
+impl CachedProjection {
+    fn new(state: SanitizedDesktopStateV1) -> Self {
+        Self {
+            state: Mutex::new(state),
         }
+    }
+
+    fn snapshot(&self) -> Result<SanitizedDesktopStateV1, &'static str> {
+        self.state
+            .lock()
+            .map(|state| state.clone())
+            .map_err(|_| "native state unavailable")
     }
 
     fn commit_refreshed_snapshot(
         &self,
+        store: &mut ReadModelStore,
         mut refreshed: SanitizedDesktopStateV1,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
-        let cached = self
-            .state
-            .lock()
-            .map_err(|_| "native state unavailable")?
-            .clone();
+        let cached = self.snapshot()?;
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
-        let memory_only = self
-            .store
-            .lock()
-            .map_err(|_| "native state persistence unavailable")
-            .map(|store| matches!(*store, ReadModelStore::Memory))?;
-        if memory_only {
+        if matches!(&*store, ReadModelStore::Memory) {
             refreshed.sync.status = SyncStatus::Unavailable;
         }
         validate_snapshot(&refreshed)?;
@@ -509,11 +543,7 @@ impl NativeCoreInner {
         // clone the previous complete snapshot during this transaction. If the
         // write fails, keep operating from memory and expose that synchronization
         // is unavailable instead of leaving expired values marked as current.
-        let mut store = self
-            .store
-            .lock()
-            .map_err(|_| "native state persistence unavailable")?;
-        let persistence_failed = match &*store {
+        let persistence_failed = match store {
             ReadModelStore::Persistent(persistent) => {
                 if persistent.commit(&refreshed).is_err() {
                     *store = ReadModelStore::Memory;
@@ -530,7 +560,6 @@ impl NativeCoreInner {
         if persistence_failed {
             refreshed.sync.status = SyncStatus::Unavailable;
         }
-        drop(store);
         validate_snapshot(&refreshed)?;
         *self.state.lock().map_err(|_| "native state unavailable")? = refreshed;
         Ok(SnapshotCommitOutcome {
@@ -540,85 +569,377 @@ impl NativeCoreInner {
             persistence_failed,
         })
     }
+}
 
-    fn publish_notice(&self, notice: RevisionNotice) {
-        let Ok(mut subscribers) = self.revision_subscribers.lock() else {
-            return;
-        };
-        subscribers.retain(|subscriber| subscriber.send(notice.clone()).is_ok());
+impl RevisionSubscribers {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(RevisionSubscribersState::default()),
+        }
     }
 
-    fn finish_refresh(&self, failed: bool, now: OffsetDateTime) {
-        let next_refresh_at = self
+    fn subscribe(&self) -> Result<Receiver<RevisionNotice>, &'static str> {
+        let mut state = self
             .state
             .lock()
-            .map(|state| next_refresh_at(&state, now))
-            .unwrap_or(now + to_time_duration(REFRESH_INTERVAL));
-        let Ok(mut coordinator) = self.refresh_coordinator.lock() else {
+            .map_err(|_| "revision notices unavailable")?;
+        if state.closed {
+            return Err("revision notices unavailable");
+        }
+        let (sender, receiver) = mpsc::channel();
+        state.senders.push(sender);
+        Ok(receiver)
+    }
+
+    fn publish(&self, notice: RevisionNotice) {
+        let Ok(mut state) = self.state.lock() else {
             return;
         };
-        coordinator.in_flight = false;
-        coordinator.next_scheduled_at = next_refresh_at;
-        if failed {
-            coordinator.consecutive_failures = coordinator.consecutive_failures.saturating_add(1);
-            let backoff = refresh_backoff(coordinator.consecutive_failures);
-            let retry_not_before = now + to_time_duration(backoff);
-            coordinator.retry_not_before = Some(retry_not_before);
-            coordinator.next_scheduled_at = coordinator.next_scheduled_at.min(retry_not_before);
-        } else {
-            coordinator.consecutive_failures = 0;
-            coordinator.retry_not_before = None;
+        if state.closed {
+            return;
         }
-        drop(coordinator);
-        self.wake_scheduler();
+        state
+            .senders
+            .retain(|sender| sender.send(notice.clone()).is_ok());
     }
 
-    fn begin_refresh(&self, source: RefreshSource) -> Result<bool, &'static str> {
-        let now = self.clock.now();
-        let mut coordinator = self
-            .refresh_coordinator
-            .lock()
-            .map_err(|_| "refresh coordinator unavailable")?;
-        if coordinator.in_flight {
-            return Ok(false);
+    fn close(&self) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.closed = true;
+        state.senders.clear();
+    }
+}
+
+struct RefreshInbox {
+    pending_sources: AtomicU8,
+    in_flight: AtomicBool,
+    stopping: AtomicBool,
+    wake: SyncSender<()>,
+}
+
+impl RefreshInbox {
+    fn request(&self, source: RefreshSource) -> Result<RefreshReceipt, &'static str> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err("refresh coordinator unavailable");
         }
-        if let Some(retry_not_before) = coordinator.retry_not_before
+        if !self.in_flight.load(Ordering::Acquire) {
+            self.record(source);
+            match self.wake.try_send(()) {
+                Ok(()) | Err(TrySendError::Full(())) => {}
+                Err(TrySendError::Disconnected(())) => {
+                    return Err("refresh coordinator unavailable");
+                }
+            }
+        }
+        if self.stopping.load(Ordering::Acquire) {
+            return Err("refresh coordinator unavailable");
+        }
+        Ok(RefreshReceipt { accepted: true })
+    }
+
+    fn record(&self, source: RefreshSource) {
+        self.pending_sources
+            .fetch_or(source.bit(), Ordering::AcqRel);
+    }
+
+    fn take_sources(&self) -> RefreshSources {
+        RefreshSources(self.pending_sources.swap(0, Ordering::AcqRel))
+    }
+}
+
+struct RefreshCoordinator {
+    inbox: Arc<RefreshInbox>,
+    cancelled: Arc<AtomicBool>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+    subscribers: Arc<RevisionSubscribers>,
+}
+
+impl RefreshCoordinator {
+    fn start(
+        projection: Arc<CachedProjection>,
+        store: ReadModelStore,
+        subscribers: Arc<RevisionSubscribers>,
+        clock: Arc<dyn Clock>,
+        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
+    ) -> Self {
+        let (wake, wake_receiver) = mpsc::sync_channel(1);
+        let inbox = Arc::new(RefreshInbox {
+            pending_sources: AtomicU8::new(0),
+            in_flight: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
+            wake,
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker = CoordinatorWorker::new(
+            projection,
+            store,
+            Arc::clone(&subscribers),
+            clock,
+            refresh_adapter,
+            Arc::clone(&inbox),
+            Arc::clone(&cancelled),
+        );
+        let worker_inbox = Arc::clone(&inbox);
+        let worker = thread::Builder::new()
+            .name("sanitized-state-coordinator".to_owned())
+            .spawn(move || {
+                let _ = catch_unwind(AssertUnwindSafe(|| worker.run(wake_receiver)));
+                worker_inbox.in_flight.store(false, Ordering::Release);
+                worker_inbox.stopping.store(true, Ordering::Release);
+            })
+            .ok();
+        if worker.is_none() {
+            inbox.stopping.store(true, Ordering::Release);
+            cancelled.store(true, Ordering::Release);
+        }
+        Self {
+            inbox,
+            cancelled,
+            worker: Mutex::new(worker),
+            subscribers,
+        }
+    }
+
+    fn request(&self, source: RefreshSource) -> Result<RefreshReceipt, &'static str> {
+        self.inbox.request(source)
+    }
+
+    fn shutdown(&self) {
+        self.inbox.stopping.store(true, Ordering::Release);
+        self.cancelled.store(true, Ordering::Release);
+        let _ = self.inbox.wake.try_send(());
+        let mut worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(worker) = worker.take() {
+            let _ = worker.join();
+        }
+        drop(worker);
+        self.subscribers.close();
+    }
+}
+
+impl Drop for RefreshCoordinator {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+enum RefreshRunResult {
+    Completed {
+        failed: bool,
+        notice: Option<RevisionNotice>,
+    },
+    Cancelled,
+}
+
+struct CoordinatorWorker {
+    projection: Arc<CachedProjection>,
+    store: ReadModelStore,
+    subscribers: Arc<RevisionSubscribers>,
+    clock: Arc<dyn Clock>,
+    refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
+    inbox: Arc<RefreshInbox>,
+    cancelled: Arc<AtomicBool>,
+    consecutive_failures: u32,
+    retry_not_before: Option<OffsetDateTime>,
+    next_scheduled_at: OffsetDateTime,
+    next_network_poll_at: Instant,
+    last_network_reachability: Option<bool>,
+}
+
+impl CoordinatorWorker {
+    fn new(
+        projection: Arc<CachedProjection>,
+        store: ReadModelStore,
+        subscribers: Arc<RevisionSubscribers>,
+        clock: Arc<dyn Clock>,
+        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
+        inbox: Arc<RefreshInbox>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
+        let now = clock.now();
+        let next_scheduled_at = projection
+            .snapshot()
+            .map(|state| next_refresh_at(&state, now))
+            .unwrap_or(now + to_time_duration(REFRESH_INTERVAL));
+        Self {
+            projection,
+            store,
+            subscribers,
+            clock,
+            refresh_adapter,
+            inbox,
+            cancelled,
+            consecutive_failures: 0,
+            retry_not_before: None,
+            next_scheduled_at,
+            next_network_poll_at: Instant::now() + NETWORK_RECOVERY_POLL_INTERVAL,
+            last_network_reachability: None,
+        }
+    }
+
+    fn run(mut self, wake_receiver: Receiver<()>) {
+        self.last_network_reachability = crate::network::is_reachable();
+        while !self.inbox.stopping.load(Ordering::Acquire) {
+            let schedule_wait = wait_until(self.clock.now(), self.next_scheduled_at);
+            let network_wait = self
+                .next_network_poll_at
+                .saturating_duration_since(Instant::now());
+            match wake_receiver.recv_timeout(schedule_wait.min(network_wait)) {
+                Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if self.inbox.stopping.load(Ordering::Acquire) {
+                break;
+            }
+
+            self.poll_network_if_due();
+            let now = self.clock.now();
+            if now >= self.next_scheduled_at {
+                self.inbox.record(RefreshSource::Schedule);
+            }
+            let sources = self.inbox.take_sources();
+            if sources.is_empty() || !self.refresh_is_due(sources, now) {
+                continue;
+            }
+
+            self.inbox.in_flight.store(true, Ordering::Release);
+            let result = self.refresh_once();
+            // A request that races with admission joins this active attempt.
+            self.inbox.take_sources();
+            while wake_receiver.try_recv().is_ok() {}
+            let notice = match result {
+                RefreshRunResult::Completed { failed, notice } => {
+                    self.record_refresh_result(failed, self.clock.now());
+                    notice
+                }
+                RefreshRunResult::Cancelled => None,
+            };
+            self.inbox.in_flight.store(false, Ordering::Release);
+            if let Some(notice) = notice {
+                self.subscribers.publish(notice);
+            }
+        }
+    }
+
+    fn poll_network_if_due(&mut self) {
+        if Instant::now() < self.next_network_poll_at {
+            return;
+        }
+        let current = crate::network::is_reachable();
+        if self.last_network_reachability == Some(false) && current == Some(true) {
+            self.inbox.record(RefreshSource::NetworkRecovery);
+        }
+        if current.is_some() {
+            self.last_network_reachability = current;
+        }
+        self.next_network_poll_at = Instant::now() + NETWORK_RECOVERY_POLL_INTERVAL;
+    }
+
+    fn refresh_is_due(&mut self, sources: RefreshSources, now: OffsetDateTime) -> bool {
+        if let Some(retry_not_before) = self.retry_not_before
             && now < retry_not_before
         {
-            if source == RefreshSource::NetworkRecovery {
-                coordinator.next_scheduled_at = coordinator.next_scheduled_at.min(retry_not_before);
-                drop(coordinator);
-                self.wake_scheduler();
-            }
-            return Ok(false);
+            self.next_scheduled_at = retry_not_before;
+            return false;
         }
-        if source == RefreshSource::Schedule && now < coordinator.next_scheduled_at {
-            return Ok(false);
+        if sources.contains_immediate_request() {
+            return true;
         }
-        coordinator.in_flight = true;
-        coordinator.next_scheduled_at = now + to_time_duration(REFRESH_INTERVAL);
-        Ok(true)
-    }
-
-    fn schedule_wait(&self) -> Duration {
-        let Ok(coordinator) = self.refresh_coordinator.lock() else {
-            return Duration::from_secs(1);
-        };
-        let remaining = coordinator.next_scheduled_at - self.clock.now();
-        if remaining.is_negative() || remaining.is_zero() {
-            Duration::ZERO
-        } else {
-            Duration::from_secs(u64::try_from(remaining.whole_seconds()).unwrap_or(1))
-        }
-    }
-
-    fn wake_scheduler(&self) {
-        if let Ok(scheduler) = self.scheduler_thread.lock()
-            && let Some(scheduler) = scheduler.as_ref()
+        if sources.contains(RefreshSource::StalePanelOpen)
+            && self
+                .projection
+                .snapshot()
+                .is_ok_and(|state| snapshot_needs_refresh(&state, now))
         {
-            scheduler.unpark();
+            return true;
+        }
+        sources.contains(RefreshSource::Schedule) && now >= self.next_scheduled_at
+    }
+
+    fn refresh_once(&mut self) -> RefreshRunResult {
+        let cached = match self.projection.snapshot() {
+            Ok(cached) => cached,
+            Err(_) => {
+                return RefreshRunResult::Completed {
+                    failed: true,
+                    notice: None,
+                };
+            }
+        };
+        let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled));
+        let observation = catch_unwind(AssertUnwindSafe(|| {
+            self.refresh_adapter.refresh(cached.clone(), &attempt)
+        }));
+        if attempt.is_cancelled() {
+            return RefreshRunResult::Cancelled;
+        }
+        let completed_at = self.clock.now();
+
+        let (candidate, source_failed) = match observation {
+            Ok(Ok(Some(refreshed))) if attempt.remaining().is_ok() => (
+                Some(transition_snapshot_at(&refreshed, completed_at).unwrap_or(refreshed)),
+                false,
+            ),
+            Ok(Ok(None)) if attempt.remaining().is_ok() => {
+                (transition_snapshot_at(&cached, completed_at), false)
+            }
+            Ok(Err(RefreshFailure::Cancelled)) => return RefreshRunResult::Cancelled,
+            Ok(Err(_)) | Ok(Ok(_)) | Err(_) => {
+                (transition_snapshot_at(&cached, completed_at), true)
+            }
+        };
+        if attempt.is_cancelled() {
+            return RefreshRunResult::Cancelled;
+        }
+
+        let commit_result = candidate
+            .map(|candidate| {
+                self.projection
+                    .commit_refreshed_snapshot(&mut self.store, candidate, completed_at)
+            })
+            .transpose();
+        let failed = source_failed
+            || commit_result.is_err()
+            || commit_result
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .is_some_and(|outcome| outcome.persistence_failed);
+        let notice = commit_result
+            .ok()
+            .flatten()
+            .and_then(|outcome| outcome.notice);
+        RefreshRunResult::Completed { failed, notice }
+    }
+
+    fn record_refresh_result(&mut self, failed: bool, now: OffsetDateTime) {
+        self.next_scheduled_at = self
+            .projection
+            .snapshot()
+            .map(|state| next_refresh_at(&state, now))
+            .unwrap_or(now + to_time_duration(REFRESH_INTERVAL));
+        if failed {
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+            let retry_not_before =
+                now + to_time_duration(refresh_backoff(self.consecutive_failures));
+            self.retry_not_before = Some(retry_not_before);
+            self.next_scheduled_at = self.next_scheduled_at.min(retry_not_before);
+        } else {
+            self.consecutive_failures = 0;
+            self.retry_not_before = None;
         }
     }
+}
+
+struct NativeCoreInner {
+    projection: Arc<CachedProjection>,
+    subscribers: Arc<RevisionSubscribers>,
+    coordinator: RefreshCoordinator,
 }
 
 #[derive(Clone)]
@@ -640,30 +961,43 @@ impl NativeCore {
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     ) -> Result<Self, &'static str> {
+        let core = Self::open_without_launch(path, clock, refresh_adapter)?;
+        // A failed coordinator must not discard a valid restored snapshot.
+        let _ = core.request_refresh(RefreshSource::Launch);
+        Ok(core)
+    }
+
+    fn open_without_launch(
+        path: &Path,
+        clock: Arc<dyn Clock>,
+        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
+    ) -> Result<Self, &'static str> {
         let now = clock.now();
         let initial = unavailable_state_at(1, now);
         let (store, state) = SqliteReadModelStore::open(path, &initial)?;
-        let transition = transition_snapshot_at(&state, now);
-        let core = Self::with_components(
-            state,
-            ReadModelStore::Persistent(store),
+        let mut store = ReadModelStore::Persistent(store);
+        let projection = Arc::new(CachedProjection::new(state));
+        if let Some(transitioned) = transition_snapshot_at(&projection.snapshot()?, now) {
+            projection.commit_refreshed_snapshot(&mut store, transitioned, now)?;
+        }
+        Ok(Self::from_components(
+            projection,
+            store,
             clock,
             refresh_adapter,
-        );
-        if let Some(transitioned) = transition {
-            core.inner.commit_refreshed_snapshot(transitioned, now)?;
-        }
-        Ok(core)
+        ))
     }
 
     pub fn unavailable() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        Self::with_components(
+        let core = Self::with_components(
             unavailable_state_at(1, clock.now()),
             ReadModelStore::Memory,
             clock,
             Arc::new(CachedProjectionRefreshAdapter),
-        )
+        );
+        let _ = core.request_refresh(RefreshSource::Launch);
+        core
     }
 
     #[cfg(test)]
@@ -677,140 +1011,71 @@ impl NativeCore {
         )
     }
 
-    #[cfg(test)]
-    fn force_persistence_failure(&self) -> Result<(), &'static str> {
-        let store = self
-            .inner
-            .store
-            .lock()
-            .map_err(|_| "native state persistence unavailable")?;
-        let ReadModelStore::Persistent(store) = &*store else {
-            return Err("native state persistence unavailable");
-        };
-        store
-            .connection
-            .lock()
-            .map_err(|_| "native state persistence unavailable")?
-            .execute_batch("PRAGMA query_only = ON;")
-            .map_err(|_| "native state persistence unavailable")
-    }
-
     fn with_components(
         state: SanitizedDesktopStateV1,
         store: ReadModelStore,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     ) -> Self {
-        let now = clock.now();
-        let next_scheduled_at = next_refresh_at(&state, now);
+        Self::from_components(
+            Arc::new(CachedProjection::new(state)),
+            store,
+            clock,
+            refresh_adapter,
+        )
+    }
+
+    fn from_components(
+        projection: Arc<CachedProjection>,
+        store: ReadModelStore,
+        clock: Arc<dyn Clock>,
+        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
+    ) -> Self {
+        let subscribers = Arc::new(RevisionSubscribers::new());
+        let coordinator = RefreshCoordinator::start(
+            Arc::clone(&projection),
+            store,
+            Arc::clone(&subscribers),
+            clock,
+            refresh_adapter,
+        );
         Self {
             inner: Arc::new(NativeCoreInner {
-                state: Mutex::new(state),
-                store: Mutex::new(store),
-                revision_subscribers: Mutex::new(Vec::new()),
-                refresh_coordinator: Mutex::new(RefreshCoordinatorState {
-                    consecutive_failures: 0,
-                    in_flight: false,
-                    next_scheduled_at,
-                    retry_not_before: None,
-                }),
-                refresh_adapter,
-                clock,
-                scheduler_started: AtomicBool::new(false),
-                scheduler_thread: Mutex::new(None),
+                projection,
+                subscribers,
+                coordinator,
             }),
         }
     }
 
     pub fn panel_state(&self) -> Result<SanitizedDesktopStateV1, &'static str> {
-        self.inner
-            .state
-            .lock()
-            .map(|state| state.clone())
-            .map_err(|_| "native state unavailable")
+        self.inner.projection.snapshot()
     }
 
     pub fn revision_notices(&self) -> Result<Receiver<RevisionNotice>, &'static str> {
-        let (sender, receiver) = mpsc::channel();
-        self.inner
-            .revision_subscribers
-            .lock()
-            .map_err(|_| "revision notices unavailable")?
-            .push(sender);
-        Ok(receiver)
+        self.inner.subscribers.subscribe()
     }
 
     pub fn request_refresh(&self, source: RefreshSource) -> Result<RefreshReceipt, &'static str> {
-        if source == RefreshSource::StalePanelOpen {
-            let stale = self
-                .inner
-                .state
-                .lock()
-                .map_err(|_| "native state unavailable")
-                .map(|state| snapshot_needs_refresh(&state, self.inner.clock.now()))?;
-            if !stale {
-                return Ok(RefreshReceipt { accepted: true });
-            }
-        }
-        if self.inner.begin_refresh(source)? {
-            let refresh_inner = Arc::clone(&self.inner);
-            if thread::Builder::new()
-                .name("sanitized-state-refresh".to_owned())
-                .spawn(move || refresh_inner.run_refresh())
-                .is_err()
-            {
-                if let Ok(mut coordinator) = self.inner.refresh_coordinator.lock() {
-                    coordinator.in_flight = false;
-                }
-                return Err("refresh coordinator unavailable");
-            }
-        }
-        Ok(RefreshReceipt { accepted: true })
+        self.inner.coordinator.request(source)
     }
 
-    pub fn start_scheduler(&self) -> Result<(), &'static str> {
-        if self.inner.scheduler_started.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-        let inner = Arc::downgrade(&self.inner);
-        if thread::Builder::new()
-            .name("sanitized-state-schedule".to_owned())
-            .spawn(move || scheduled_refresh_loop(inner))
-            .is_err()
-        {
-            self.inner.scheduler_started.store(false, Ordering::SeqCst);
-            return Err("refresh coordinator unavailable");
-        }
-        Ok(())
-    }
-}
-
-fn scheduled_refresh_loop(inner: Weak<NativeCoreInner>) {
-    let Some(current) = inner.upgrade() else {
-        return;
-    };
-    if let Ok(mut scheduler) = current.scheduler_thread.lock() {
-        *scheduler = Some(thread::current());
-    }
-    drop(current);
-
-    loop {
-        let Some(current) = inner.upgrade() else {
-            return;
-        };
-        let wait = current.schedule_wait().max(Duration::from_secs(1));
-        drop(current);
-        thread::park_timeout(wait);
-        let Some(current) = inner.upgrade() else {
-            return;
-        };
-        let core = NativeCore { inner: current };
-        let _ = core.request_refresh(RefreshSource::Schedule);
+    pub(crate) fn shutdown(&self) {
+        self.inner.coordinator.shutdown();
     }
 }
 
 fn read_model_backup_path(path: &Path) -> PathBuf {
     path.with_extension("sqlite3.read-model-v0.backup")
+}
+
+fn wait_until(now: OffsetDateTime, deadline: OffsetDateTime) -> Duration {
+    let remaining = deadline - now;
+    if remaining.is_negative() || remaining.is_zero() {
+        Duration::ZERO
+    } else {
+        Duration::from_millis(u64::try_from(remaining.whole_milliseconds()).unwrap_or(u64::MAX))
+    }
 }
 
 fn to_time_duration(duration: Duration) -> TimeDuration {
@@ -1215,18 +1480,53 @@ mod tests {
     }
 
     struct ScriptedRefreshSource {
-        responses: Mutex<VecDeque<Result<Option<SanitizedDesktopStateV1>, &'static str>>>,
+        responses: Mutex<VecDeque<Result<Option<SanitizedDesktopStateV1>, RefreshFailure>>>,
         runs: AtomicUsize,
+        first_refresh_gate: Option<Arc<RefreshGate>>,
+        clock: Option<Arc<FixtureClock>>,
+        elapsed: Mutex<VecDeque<Duration>>,
+    }
+
+    struct RefreshGate {
+        started: Barrier,
+        release: Barrier,
+    }
+
+    impl RefreshGate {
+        fn new() -> Self {
+            Self {
+                started: Barrier::new(2),
+                release: Barrier::new(2),
+            }
+        }
     }
 
     impl ScriptedRefreshSource {
         fn new(
-            responses: impl IntoIterator<Item = Result<Option<SanitizedDesktopStateV1>, &'static str>>,
+            responses: impl IntoIterator<Item = Result<Option<SanitizedDesktopStateV1>, RefreshFailure>>,
         ) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
                 runs: AtomicUsize::new(0),
+                first_refresh_gate: None,
+                clock: None,
+                elapsed: Mutex::new(VecDeque::new()),
             }
+        }
+
+        fn with_first_refresh_gate(mut self, gate: Arc<RefreshGate>) -> Self {
+            self.first_refresh_gate = Some(gate);
+            self
+        }
+
+        fn with_elapsed(
+            mut self,
+            clock: Arc<FixtureClock>,
+            elapsed: impl IntoIterator<Item = Duration>,
+        ) -> Self {
+            self.clock = Some(clock);
+            self.elapsed = Mutex::new(elapsed.into_iter().collect());
+            self
         }
     }
 
@@ -1234,8 +1534,22 @@ mod tests {
         fn refresh(
             &self,
             _cached: SanitizedDesktopStateV1,
-        ) -> Result<Option<SanitizedDesktopStateV1>, &'static str> {
-            self.runs.fetch_add(1, Ordering::SeqCst);
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+            attempt.remaining()?;
+            let run = self.runs.fetch_add(1, Ordering::SeqCst);
+            if run == 0
+                && let Some(gate) = &self.first_refresh_gate
+            {
+                gate.started.wait();
+                gate.release.wait();
+                attempt.remaining()?;
+            }
+            if let Some(elapsed) = self.elapsed.lock().unwrap().pop_front()
+                && let Some(clock) = &self.clock
+            {
+                clock.advance(elapsed);
+            }
             self.responses
                 .lock()
                 .unwrap()
@@ -1310,7 +1624,7 @@ mod tests {
     #[test]
     fn refresh_commit_is_monotonic_and_notified_after_commit() {
         let database = TestDatabase::new();
-        let core = NativeCore::open_with(
+        let core = NativeCore::open_without_launch(
             &database.0,
             Arc::new(FixtureClock::new(test_time())),
             Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
@@ -1371,10 +1685,13 @@ mod tests {
         fn refresh(
             &self,
             _cached: SanitizedDesktopStateV1,
-        ) -> Result<Option<SanitizedDesktopStateV1>, &'static str> {
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+            attempt.remaining()?;
             self.runs.fetch_add(1, Ordering::SeqCst);
             self.started.wait();
             self.release.wait();
+            attempt.remaining()?;
             Ok(Some(observed_state(test_time(), 42)))
         }
     }
@@ -1409,6 +1726,70 @@ mod tests {
         assert_eq!(source.runs.load(Ordering::SeqCst), 1);
     }
 
+    struct ShutdownRefreshSource {
+        started: Barrier,
+        cancellation_observed: Barrier,
+        release: Barrier,
+    }
+
+    impl ShutdownRefreshSource {
+        fn new() -> Self {
+            Self {
+                started: Barrier::new(2),
+                cancellation_observed: Barrier::new(2),
+                release: Barrier::new(2),
+            }
+        }
+    }
+
+    impl SnapshotRefreshAdapter for ShutdownRefreshSource {
+        fn refresh(
+            &self,
+            _cached: SanitizedDesktopStateV1,
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+            self.started.wait();
+            while !attempt.is_cancelled() {
+                std::thread::yield_now();
+            }
+            self.cancellation_observed.wait();
+            self.release.wait();
+            Err(RefreshFailure::Cancelled)
+        }
+    }
+
+    #[test]
+    fn shutdown_cancels_active_refresh_and_joins_the_coordinator() {
+        let source = Arc::new(ShutdownRefreshSource::new());
+        let core = NativeCore::with_refresh_adapter(source.clone());
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        source.started.wait();
+
+        let shutdown_core = core.clone();
+        let (shutdown_complete, shutdown_completed) = mpsc::channel();
+        let shutdown_thread = std::thread::spawn(move || {
+            shutdown_core.shutdown();
+            shutdown_complete.send(()).unwrap();
+        });
+
+        source.cancellation_observed.wait();
+        assert!(
+            shutdown_completed
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+        source.release.wait();
+        shutdown_thread.join().unwrap();
+        shutdown_completed
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert!(core.request_refresh(RefreshSource::Manual).is_err());
+    }
+
     #[test]
     #[ignore = "subprocess fixture"]
     fn crash_writer_fixture() {
@@ -1435,7 +1816,7 @@ mod tests {
             test_time(),
             42,
         )))]));
-        let core = NativeCore::open_with(&database.0, clock.clone(), source).unwrap();
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
         let notices = core.revision_notices().unwrap();
 
         assert!(
@@ -1461,9 +1842,12 @@ mod tests {
             .unwrap();
         assert_eq!(crash_status.code(), Some(97));
 
-        let relaunched =
-            NativeCore::open_with(&database.0, clock, Arc::new(ScriptedRefreshSource::new([])))
-                .unwrap();
+        let relaunched = NativeCore::open_without_launch(
+            &database.0,
+            clock,
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
         fs::remove_file(&database.0).unwrap();
         let cached = relaunched.panel_state().unwrap();
 
@@ -1491,7 +1875,7 @@ mod tests {
         drop(connection);
 
         assert!(
-            NativeCore::open_with(
+            NativeCore::open_without_launch(
                 &database.0,
                 Arc::new(FixtureClock::new(test_time())),
                 Arc::new(ScriptedRefreshSource::new([])),
@@ -1511,17 +1895,18 @@ mod tests {
     fn every_refresh_trigger_uses_the_fake_clock_coordinator() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
-        let source = Arc::new(ScriptedRefreshSource::new(
-            (1..=6).map(|tokens| Ok(Some(observed_state(test_time(), tokens)))),
-        ));
-        let core = NativeCore::open_with(&database.0, clock.clone(), source.clone()).unwrap();
-        let notices = core.revision_notices().unwrap();
-
-        assert!(
-            core.request_refresh(RefreshSource::Launch)
-                .unwrap()
-                .accepted
+        let launch_gate = Arc::new(RefreshGate::new());
+        let source = Arc::new(
+            ScriptedRefreshSource::new(
+                (1..=6).map(|tokens| Ok(Some(observed_state(test_time(), tokens)))),
+            )
+            .with_first_refresh_gate(Arc::clone(&launch_gate)),
         );
+        let core = NativeCore::open_with(&database.0, clock.clone(), source.clone()).unwrap();
+        launch_gate.started.wait();
+        let notices = core.revision_notices().unwrap();
+        launch_gate.release.wait();
+
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
@@ -1604,15 +1989,22 @@ mod tests {
     fn offline_and_persistence_failures_preserve_stale_values_and_back_off() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
-        let source = Arc::new(ScriptedRefreshSource::new([
-            Ok(Some(observed_state(test_time(), 42))),
-            Err("offline"),
-            Ok(Some(observed_state(
-                test_time() + time::Duration::minutes(5),
-                43,
-            ))),
-        ]));
-        let core = NativeCore::open_with(&database.0, clock.clone(), source.clone()).unwrap();
+        let source = Arc::new(
+            ScriptedRefreshSource::new([
+                Ok(Some(observed_state(test_time(), 42))),
+                Err(RefreshFailure::SourceUnavailable),
+                Ok(Some(observed_state(
+                    test_time() + time::Duration::minutes(5),
+                    43,
+                ))),
+            ])
+            .with_elapsed(
+                Arc::clone(&clock),
+                [Duration::ZERO, REFRESH_BACKOFF_BASE * 2],
+            ),
+        );
+        let core =
+            NativeCore::open_without_launch(&database.0, clock.clone(), source.clone()).unwrap();
         let notices = core.revision_notices().unwrap();
 
         assert!(
@@ -1621,7 +2013,10 @@ mod tests {
                 .accepted
         );
         notices.recv_timeout(Duration::from_secs(1)).unwrap();
-        core.force_persistence_failure().unwrap();
+        Connection::open(&database.0)
+            .unwrap()
+            .execute_batch("DROP TABLE sanitized_desktop_state;")
+            .unwrap();
         clock.advance(REFRESH_INTERVAL);
 
         assert!(
@@ -1689,7 +2084,7 @@ mod tests {
             quota_lanes[0].reset_at = Some(format_time(test_time() + TimeDuration::minutes(2)));
         }
         let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed)), Ok(None)]));
-        let core = NativeCore::open_with(&database.0, clock.clone(), source).unwrap();
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
         let notices = core.revision_notices().unwrap();
 
         assert!(

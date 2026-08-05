@@ -4,10 +4,7 @@ pub mod lifecycle;
 mod network;
 pub mod sanitized;
 
-use std::{
-    env, thread,
-    time::{Duration, Instant},
-};
+use std::{env, time::Instant};
 
 use lifecycle::{
     BootstrapStateV1, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
@@ -32,7 +29,6 @@ const ONBOARDING_LABEL: &str = "onboarding";
 const PANEL_WIDTH: f64 = 402.0;
 const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
-const NETWORK_MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
 
@@ -265,25 +261,6 @@ fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn start_network_recovery_monitor(core: NativeCore) -> Result<(), std::io::Error> {
-    thread::Builder::new()
-        .name("network-recovery-monitor".to_owned())
-        .spawn(move || {
-            let mut previous = network::is_reachable();
-            loop {
-                thread::sleep(NETWORK_MONITOR_INTERVAL);
-                let current = network::is_reachable();
-                if previous == Some(false) && current == Some(true) {
-                    let _ = core.request_refresh(RefreshSource::NetworkRecovery);
-                }
-                if current.is_some() {
-                    previous = current;
-                }
-            }
-        })
-        .map(|_| ())
-}
-
 fn require_settings(window: &WebviewWindow) -> Result<(), String> {
     (window.label() == SETTINGS_LABEL)
         .then_some(())
@@ -466,11 +443,6 @@ pub fn run() {
                             .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
                     }
                 })?;
-            core.start_scheduler().map_err(std::io::Error::other)?;
-            start_network_recovery_monitor(core.clone())?;
-            core.request_refresh(RefreshSource::Launch)
-                .map_err(std::io::Error::other)?;
-
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
@@ -570,12 +542,18 @@ pub fn run() {
         app.set_dock_visibility(false);
     }
 
-    app.run(|app, event| {
-        if matches!(event, RunEvent::Resumed)
-            && let Some(core) = app.try_state::<NativeCore>()
-        {
-            let _ = core.request_refresh(RefreshSource::Wake);
+    app.run(|app, event| match event {
+        RunEvent::Resumed => {
+            if let Some(core) = app.try_state::<NativeCore>() {
+                let _ = core.request_refresh(RefreshSource::Wake);
+            }
         }
+        RunEvent::Exit => {
+            if let Some(core) = app.try_state::<NativeCore>() {
+                core.shutdown();
+            }
+        }
+        _ => {}
     });
 }
 
