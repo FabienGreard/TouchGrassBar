@@ -21,7 +21,7 @@ export async function ensureTokenmaxxer(
   const existing = await tokenmaxxerForAuthUser(ctx, authUserId);
   if (existing) {
     if (existing.publicId !== publicId) {
-      throw new Error("TouchGrass identity does not match the authenticated Profile");
+      throw new Error("TouchGrass Profile does not match the authenticated Profile");
     }
     return existing;
   }
@@ -31,7 +31,7 @@ export async function ensureTokenmaxxer(
     .withIndex("by_public_id", (q) => q.eq("publicId", publicId))
     .unique();
   if (collision) {
-    throw new Error("TouchGrass identity is unavailable");
+    throw new Error("TouchGrass Profile is unavailable");
   }
 
   const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {

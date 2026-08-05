@@ -25,7 +25,7 @@ function port(): BootstrapPort {
         ...bootstrapState,
         bootstrap: "completed",
         displayName: "Fabien",
-        profileProvisioning: "identity-pending",
+        profileProvisioning: "profile-pending",
       },
     })),
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
@@ -34,7 +34,7 @@ function port(): BootstrapPort {
 }
 
 describe("bootstrap delivery", () => {
-  test("validates native provider presence and completes as Identity Pending", async () => {
+  test("validates native provider presence and completes as Profile Pending", async () => {
     const native = port();
     const delivery = createBootstrapDelivery(native);
 
@@ -51,7 +51,7 @@ describe("bootstrap delivery", () => {
       phase: "ready",
       snapshot: {
         bootstrap: "completed",
-        profileProvisioning: "identity-pending",
+        profileProvisioning: "profile-pending",
       },
       submitting: false,
     });

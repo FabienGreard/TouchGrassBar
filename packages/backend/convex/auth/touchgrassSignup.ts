@@ -51,7 +51,7 @@ function createTouchGrassId() {
 }
 
 function syntheticEmail(touchGrassId: string) {
-  return `${touchGrassId.toLowerCase()}@identity.touchgrass.invalid`;
+  return `${touchGrassId.toLowerCase()}@profile.touchgrass.invalid`;
 }
 
 async function hmacKey(secret: string) {

@@ -70,8 +70,8 @@ function OnboardingCoordinator({
   const setupState: OnboardingSetupState =
     view.snapshot?.persistence !== "available"
       ? "unavailable"
-      : view.snapshot.profileProvisioning === "identity-pending"
-        ? "identity-pending"
+      : view.snapshot.profileProvisioning === "profile-pending"
+        ? "profile-pending"
         : view.snapshot.profileProvisioning === "ready"
           ? "ready"
           : "required";

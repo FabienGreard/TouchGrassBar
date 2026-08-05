@@ -9,7 +9,7 @@ const settingsState = {
   contractVersion: 1,
   displayName: "Fabien",
   launchAtLogin: { availability: "available", enabled: false },
-  profileProvisioning: "identity-pending",
+  profileProvisioning: "profile-pending",
   providers: [
     { provider: "codex", status: "detected" },
     { provider: "claude", status: "not-detected" },

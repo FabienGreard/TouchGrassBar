@@ -12,8 +12,8 @@ use zeroize::Zeroizing;
 use crate::lifecycle::DesktopLifecycle;
 use crate::sanitized::SanitizedProfileOutcome;
 
-const KEYCHAIN_SERVICE: &str = "app.touchgrass.bar.identity";
-const PROFILE_MUTATION: &str = "tokenmaxxers:ensureIdentity";
+const KEYCHAIN_SERVICE: &str = "app.touchgrass.bar.profile";
+const PROFILE_MUTATION: &str = "tokenmaxxers:ensureProfile";
 const PREPARE_PATH: &str = "/api/auth/touchgrass/prepare";
 const SIGN_UP_PATH: &str = "/api/auth/sign-up/email";
 const SIGN_IN_PATH: &str = "/api/auth/sign-in/username";
@@ -99,18 +99,18 @@ impl fmt::Debug for Secret {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct IdentityError(&'static str);
+pub(crate) struct ProfileError(&'static str);
 
-impl fmt::Display for IdentityError {
+impl fmt::Display for ProfileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.0)
     }
 }
 
 pub(crate) trait SecretCustody: Send + Sync {
-    fn delete(&self, kind: SecretKind) -> Result<(), IdentityError>;
-    fn read(&self, kind: SecretKind) -> Result<Option<Secret>, IdentityError>;
-    fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), IdentityError>;
+    fn delete(&self, kind: SecretKind) -> Result<(), ProfileError>;
+    fn read(&self, kind: SecretKind) -> Result<Option<Secret>, ProfileError>;
+    fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), ProfileError>;
 }
 
 #[cfg(target_os = "macos")]
@@ -120,11 +120,11 @@ pub(crate) struct MacKeychain;
 impl MacKeychain {
     fn options(
         kind: SecretKind,
-    ) -> Result<security_framework::passwords::PasswordOptions, IdentityError> {
+    ) -> Result<security_framework::passwords::PasswordOptions, ProfileError> {
         use security_framework::passwords::PasswordOptions;
 
         if kind == SecretKind::ConvexJwt {
-            return Err(IdentityError("memory-only credential cannot be stored"));
+            return Err(ProfileError("memory-only credential cannot be stored"));
         }
         let policy = keychain_policy(kind);
         let mut options = PasswordOptions::new_generic_password(KEYCHAIN_SERVICE, policy.account);
@@ -135,7 +135,7 @@ impl MacKeychain {
 
     fn write_options(
         kind: SecretKind,
-    ) -> Result<security_framework::passwords::PasswordOptions, IdentityError> {
+    ) -> Result<security_framework::passwords::PasswordOptions, ProfileError> {
         use security_framework::{
             access_control::{ProtectionMode, SecAccessControl},
             passwords::AccessControlOptions,
@@ -154,7 +154,7 @@ impl MacKeychain {
             Some(protection),
             AccessControlOptions::empty().bits(),
         )
-        .map_err(|_| IdentityError("secure custody unavailable"))?;
+        .map_err(|_| ProfileError("secure custody unavailable"))?;
         let mut options = Self::options(kind)?;
         options.set_access_control(access_control);
         Ok(options)
@@ -163,18 +163,18 @@ impl MacKeychain {
 
 #[cfg(target_os = "macos")]
 impl SecretCustody for MacKeychain {
-    fn delete(&self, kind: SecretKind) -> Result<(), IdentityError> {
+    fn delete(&self, kind: SecretKind) -> Result<(), ProfileError> {
         use security_framework::passwords::delete_generic_password_options;
         use security_framework_sys::base::errSecItemNotFound;
 
         match delete_generic_password_options(Self::options(kind)?) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == errSecItemNotFound => Ok(()),
-            Err(_) => Err(IdentityError("secure custody unavailable")),
+            Err(_) => Err(ProfileError("secure custody unavailable")),
         }
     }
 
-    fn read(&self, kind: SecretKind) -> Result<Option<Secret>, IdentityError> {
+    fn read(&self, kind: SecretKind) -> Result<Option<Secret>, ProfileError> {
         use security_framework::passwords::generic_password;
         use security_framework_sys::base::errSecItemNotFound;
 
@@ -182,29 +182,29 @@ impl SecretCustody for MacKeychain {
             Ok(value) => String::from_utf8(value)
                 .map(Secret::new)
                 .map(Some)
-                .map_err(|_| IdentityError("secure custody unavailable")),
+                .map_err(|_| ProfileError("secure custody unavailable")),
             Err(error) if error.code() == errSecItemNotFound => Ok(None),
-            Err(_) => Err(IdentityError("secure custody unavailable")),
+            Err(_) => Err(ProfileError("secure custody unavailable")),
         }
     }
 
-    fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), IdentityError> {
+    fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), ProfileError> {
         security_framework::passwords::set_generic_password_options(
             value.expose().as_bytes(),
             Self::write_options(kind)?,
         )
-        .map_err(|_| IdentityError("secure custody unavailable"))
+        .map_err(|_| ProfileError("secure custody unavailable"))
     }
 }
 
 #[derive(Clone, Debug)]
-struct PreparedIdentity {
+struct PreparedProfile {
     expires_at_ms: u64,
     touch_grass_id: String,
     signup_proof: Secret,
 }
 
-impl PreparedIdentity {
+impl PreparedProfile {
     fn encode(&self) -> Secret {
         Secret::new(format!(
             "{}\n{}\n{}",
@@ -214,18 +214,18 @@ impl PreparedIdentity {
         ))
     }
 
-    fn decode(value: &Secret) -> Result<Self, IdentityError> {
+    fn decode(value: &Secret) -> Result<Self, ProfileError> {
         let mut fields = value.expose().splitn(3, '\n');
         let (Some(touch_grass_id), Some(expires_at), Some(signup_proof)) =
             (fields.next(), fields.next(), fields.next())
         else {
-            return Err(IdentityError("identity preparation unavailable"));
+            return Err(ProfileError("profile preparation unavailable"));
         };
         let expires_at_ms = expires_at
             .parse::<u64>()
-            .map_err(|_| IdentityError("identity preparation unavailable"))?;
+            .map_err(|_| ProfileError("profile preparation unavailable"))?;
         if !valid_touch_grass_id(touch_grass_id) || signup_proof.is_empty() {
-            return Err(IdentityError("identity preparation unavailable"));
+            return Err(ProfileError("profile preparation unavailable"));
         }
         Ok(Self {
             expires_at_ms,
@@ -240,20 +240,20 @@ enum SignInOutcome {
     NoAccount,
 }
 
-trait IdentityTransport: Send + Sync {
-    fn prepare(&self) -> Result<PreparedIdentity, IdentityError>;
+trait ProfileTransport: Send + Sync {
+    fn prepare(&self) -> Result<PreparedProfile, ProfileError>;
     fn sign_up(
         &self,
-        prepared: &PreparedIdentity,
+        prepared: &PreparedProfile,
         recovery_key: &Secret,
         display_name: &str,
-    ) -> Result<(), IdentityError>;
+    ) -> Result<(), ProfileError>;
     fn sign_in(
         &self,
         touch_grass_id: &str,
         recovery_key: &Secret,
-    ) -> Result<SignInOutcome, IdentityError>;
-    fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), IdentityError>;
+    ) -> Result<SignInOutcome, ProfileError>;
+    fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), ProfileError>;
 }
 
 fn profile_mutation_payload(display_name: String) -> BTreeMap<String, Value> {
@@ -270,18 +270,18 @@ pub(crate) trait RecoverySheetPresenter: Send + Sync {
     fn present(&self, presentation: RecoveryPresentation) -> bool;
 }
 
-pub(crate) struct IdentityCoordinator {
+pub(crate) struct ProfileCoordinator {
     lifecycle: DesktopLifecycle,
     custody: Arc<dyn SecretCustody>,
-    transport: Arc<dyn IdentityTransport>,
+    transport: Arc<dyn ProfileTransport>,
     presenter: Arc<dyn RecoverySheetPresenter>,
 }
 
-impl IdentityCoordinator {
+impl ProfileCoordinator {
     fn new(
         lifecycle: DesktopLifecycle,
         custody: Arc<dyn SecretCustody>,
-        transport: Arc<dyn IdentityTransport>,
+        transport: Arc<dyn ProfileTransport>,
         presenter: Arc<dyn RecoverySheetPresenter>,
     ) -> Self {
         Self {
@@ -292,8 +292,8 @@ impl IdentityCoordinator {
         }
     }
 
-    pub(crate) fn retry_pending(&self) -> Result<Option<SanitizedProfileOutcome>, IdentityError> {
-        let Some(request) = self.lifecycle.identity_request() else {
+    pub(crate) fn retry_pending(&self) -> Result<Option<SanitizedProfileOutcome>, ProfileError> {
+        let Some(request) = self.lifecycle.profile_request() else {
             self.present_pending_disclosure()?;
             return Ok(None);
         };
@@ -301,11 +301,11 @@ impl IdentityCoordinator {
         self.ensure_secret(SecretKind::InstallationCredential, 52)?;
         let recovery_key = self.ensure_secret(SecretKind::RecoveryKey, 48)?;
         let mut prepared = match self.custody.read(SecretKind::SignupPreparation)? {
-            Some(value) => PreparedIdentity::decode(&value)?,
+            Some(value) => PreparedProfile::decode(&value)?,
             None => {
                 let prepared = self.transport.prepare()?;
                 if !valid_touch_grass_id(&prepared.touch_grass_id) {
-                    return Err(IdentityError("identity preparation unavailable"));
+                    return Err(ProfileError("profile preparation unavailable"));
                 }
                 self.custody
                     .write(SecretKind::SignupPreparation, &prepared.encode())?;
@@ -332,7 +332,7 @@ impl IdentityCoordinator {
                 {
                     SignInOutcome::Authenticated(session) => session,
                     SignInOutcome::NoAccount => {
-                        return Err(IdentityError("Profile creation pending"));
+                        return Err(ProfileError("Profile creation pending"));
                     }
                 }
             }
@@ -342,8 +342,8 @@ impl IdentityCoordinator {
         self.transport
             .ensure_profile(&session, &request.display_name)?;
         self.lifecycle
-            .mark_identity_ready(&prepared.touch_grass_id)
-            .map_err(IdentityError)?;
+            .mark_profile_ready(&prepared.touch_grass_id)
+            .map_err(ProfileError)?;
         let _ = self.custody.delete(SecretKind::SignupPreparation);
         let profile = SanitizedProfileOutcome::Ready {
             display_name: request.display_name,
@@ -353,30 +353,30 @@ impl IdentityCoordinator {
         Ok(Some(profile))
     }
 
-    pub(crate) fn present_pending_disclosure(&self) -> Result<(), IdentityError> {
+    pub(crate) fn present_pending_disclosure(&self) -> Result<(), ProfileError> {
         if !self.lifecycle.pending_recovery_disclosure() {
             return Ok(());
         }
         let touch_grass_id = self
             .lifecycle
             .ready_touch_grass_id()
-            .ok_or(IdentityError("Profile disclosure pending"))?;
+            .ok_or(ProfileError("Profile disclosure pending"))?;
         let recovery_key = self
             .custody
             .read(SecretKind::RecoveryKey)?
-            .ok_or(IdentityError("Profile disclosure pending"))?;
+            .ok_or(ProfileError("Profile disclosure pending"))?;
         if self.presenter.present(RecoveryPresentation {
             touch_grass_id,
             recovery_key,
         }) {
             self.lifecycle
                 .mark_recovery_disclosed()
-                .map_err(IdentityError)?;
+                .map_err(ProfileError)?;
         }
         Ok(())
     }
 
-    fn ensure_secret(&self, kind: SecretKind, length: usize) -> Result<Secret, IdentityError> {
+    fn ensure_secret(&self, kind: SecretKind, length: usize) -> Result<Secret, ProfileError> {
         if let Some(value) = self.custody.read(kind)? {
             return Ok(value);
         }
@@ -390,29 +390,29 @@ impl IdentityCoordinator {
 pub(crate) fn production_coordinator(
     lifecycle: DesktopLifecycle,
     presenter: Arc<dyn RecoverySheetPresenter>,
-) -> IdentityCoordinator {
-    IdentityCoordinator::new(
+) -> ProfileCoordinator {
+    ProfileCoordinator::new(
         lifecycle,
         Arc::new(MacKeychain),
-        Arc::new(HttpIdentityTransport::from_build_configuration()),
+        Arc::new(HttpProfileTransport::from_build_configuration()),
         presenter,
     )
 }
 
-fn generate_secret(length: usize) -> Result<String, IdentityError> {
+fn generate_secret(length: usize) -> Result<String, ProfileError> {
     let mut random = vec![0_u8; length];
-    getrandom::fill(&mut random).map_err(|_| IdentityError("secure random unavailable"))?;
+    getrandom::fill(&mut random).map_err(|_| ProfileError("secure random unavailable"))?;
     Ok(random
         .into_iter()
         .map(|byte| SECRET_ALPHABET[usize::from(byte) % SECRET_ALPHABET.len()] as char)
         .collect())
 }
 
-fn unix_time_ms() -> Result<u64, IdentityError> {
+fn unix_time_ms() -> Result<u64, ProfileError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
-        .map_err(|_| IdentityError("system clock unavailable"))
+        .map_err(|_| ProfileError("system clock unavailable"))
 }
 
 fn valid_touch_grass_id(value: &str) -> bool {
@@ -425,13 +425,13 @@ fn valid_touch_grass_id(value: &str) -> bool {
 }
 
 #[derive(Clone)]
-pub(crate) struct HttpIdentityTransport {
+pub(crate) struct HttpProfileTransport {
     auth_site_url: Option<&'static str>,
     convex_url: Option<&'static str>,
     client: reqwest::blocking::Client,
 }
 
-impl HttpIdentityTransport {
+impl HttpProfileTransport {
     pub(crate) fn from_build_configuration() -> Self {
         Self {
             auth_site_url: option_env!("TOUCHGRASS_AUTH_SITE_URL")
@@ -441,10 +441,10 @@ impl HttpIdentityTransport {
         }
     }
 
-    fn endpoint(&self, path: &str) -> Result<String, IdentityError> {
+    fn endpoint(&self, path: &str) -> Result<String, ProfileError> {
         let base = self
             .auth_site_url
-            .ok_or(IdentityError("identity service unavailable"))?;
+            .ok_or(ProfileError("profile service unavailable"))?;
         Ok(format!("{}{path}", base.trim_end_matches('/')))
     }
 }
@@ -467,17 +467,17 @@ struct ConvexTokenResponse {
     token: String,
 }
 
-impl IdentityTransport for HttpIdentityTransport {
-    fn prepare(&self) -> Result<PreparedIdentity, IdentityError> {
+impl ProfileTransport for HttpProfileTransport {
+    fn prepare(&self) -> Result<PreparedProfile, ProfileError> {
         let response = self
             .client
             .post(self.endpoint(PREPARE_PATH)?)
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|_| IdentityError("Profile creation pending"))?
+            .map_err(|_| ProfileError("Profile creation pending"))?
             .json::<PrepareResponse>()
-            .map_err(|_| IdentityError("Profile creation pending"))?;
-        Ok(PreparedIdentity {
+            .map_err(|_| ProfileError("Profile creation pending"))?;
+        Ok(PreparedProfile {
             expires_at_ms: response.expires_at,
             touch_grass_id: response.touch_grass_id,
             signup_proof: Secret::new(response.signup_proof),
@@ -486,12 +486,12 @@ impl IdentityTransport for HttpIdentityTransport {
 
     fn sign_up(
         &self,
-        prepared: &PreparedIdentity,
+        prepared: &PreparedProfile,
         recovery_key: &Secret,
         display_name: &str,
-    ) -> Result<(), IdentityError> {
+    ) -> Result<(), ProfileError> {
         let email = format!(
-            "{}@identity.touchgrass.invalid",
+            "{}@profile.touchgrass.invalid",
             prepared.touch_grass_id.to_lowercase()
         );
         self.client
@@ -505,7 +505,7 @@ impl IdentityTransport for HttpIdentityTransport {
             }))
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|_| IdentityError("Profile creation pending"))?;
+            .map_err(|_| ProfileError("Profile creation pending"))?;
         Ok(())
     }
 
@@ -513,7 +513,7 @@ impl IdentityTransport for HttpIdentityTransport {
         &self,
         touch_grass_id: &str,
         recovery_key: &Secret,
-    ) -> Result<SignInOutcome, IdentityError> {
+    ) -> Result<SignInOutcome, ProfileError> {
         let response = self
             .client
             .post(self.endpoint(SIGN_IN_PATH)?)
@@ -522,36 +522,36 @@ impl IdentityTransport for HttpIdentityTransport {
                 "username": touch_grass_id,
             }))
             .send()
-            .map_err(|_| IdentityError("Profile creation pending"))?;
+            .map_err(|_| ProfileError("Profile creation pending"))?;
         if matches!(response.status().as_u16(), 400 | 401 | 403 | 404) {
             return Ok(SignInOutcome::NoAccount);
         }
         let response = response
             .error_for_status()
-            .map_err(|_| IdentityError("Profile creation pending"))?
+            .map_err(|_| ProfileError("Profile creation pending"))?
             .json::<SignInResponse>()
-            .map_err(|_| IdentityError("Profile creation pending"))?;
+            .map_err(|_| ProfileError("Profile creation pending"))?;
         Ok(SignInOutcome::Authenticated(Secret::new(response.token)))
     }
 
-    fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), IdentityError> {
+    fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), ProfileError> {
         let auth_site_url = self
             .auth_site_url
-            .ok_or(IdentityError("identity service unavailable"))?
+            .ok_or(ProfileError("profile service unavailable"))?
             .trim_end_matches('/')
             .to_owned();
         let convex_url = self
             .convex_url
-            .ok_or(IdentityError("identity service unavailable"))?
+            .ok_or(ProfileError("profile service unavailable"))?
             .to_owned();
         let session = Arc::new(Zeroizing::new(session.expose().to_owned()));
         let display_name = display_name.to_owned();
         tokio::runtime::Runtime::new()
-            .map_err(|_| IdentityError("Profile creation pending"))?
+            .map_err(|_| ProfileError("Profile creation pending"))?
             .block_on(async move {
                 let mut client = ConvexClient::new(&convex_url)
                     .await
-                    .map_err(|_| IdentityError("Profile creation pending"))?;
+                    .map_err(|_| ProfileError("Profile creation pending"))?;
                 let fetcher: convex::AuthTokenFetcher = Box::new(move |_force_refresh| {
                     let auth_site_url = auth_site_url.clone();
                     let session = Arc::clone(&session);
@@ -571,12 +571,12 @@ impl IdentityTransport for HttpIdentityTransport {
                 let result = client
                     .mutation(PROFILE_MUTATION, profile_mutation_payload(display_name))
                     .await
-                    .map_err(|_| IdentityError("Profile creation pending"))?;
+                    .map_err(|_| ProfileError("Profile creation pending"))?;
                 client.set_auth_callback(None).await;
                 match result {
                     FunctionResult::Value(_) => Ok(()),
                     FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-                        Err(IdentityError("Profile creation pending"))
+                        Err(ProfileError("Profile creation pending"))
                     }
                 }
             })
@@ -622,18 +622,18 @@ mod tests {
     }
 
     impl SecretCustody for FakeCustody {
-        fn delete(&self, kind: SecretKind) -> Result<(), IdentityError> {
+        fn delete(&self, kind: SecretKind) -> Result<(), ProfileError> {
             self.0.lock().unwrap().remove(&kind);
             Ok(())
         }
 
-        fn read(&self, kind: SecretKind) -> Result<Option<Secret>, IdentityError> {
+        fn read(&self, kind: SecretKind) -> Result<Option<Secret>, ProfileError> {
             Ok(self.0.lock().unwrap().get(&kind).cloned())
         }
 
-        fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), IdentityError> {
+        fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), ProfileError> {
             if kind == SecretKind::ConvexJwt {
-                return Err(IdentityError("memory-only credential cannot be stored"));
+                return Err(ProfileError("memory-only credential cannot be stored"));
             }
             self.0.lock().unwrap().insert(kind, value.clone());
             Ok(())
@@ -707,12 +707,12 @@ mod tests {
         }
     }
 
-    impl IdentityTransport for FakeTransport {
-        fn prepare(&self) -> Result<PreparedIdentity, IdentityError> {
+    impl ProfileTransport for FakeTransport {
+        fn prepare(&self) -> Result<PreparedProfile, ProfileError> {
             if self.fail_next.swap(false, Ordering::SeqCst) {
-                return Err(IdentityError("Profile creation pending"));
+                return Err(ProfileError("Profile creation pending"));
             }
-            Ok(PreparedIdentity {
+            Ok(PreparedProfile {
                 expires_at_ms: u64::MAX,
                 touch_grass_id: self.touch_grass_id.clone(),
                 signup_proof: self.signup_proof.clone(),
@@ -721,10 +721,10 @@ mod tests {
 
         fn sign_up(
             &self,
-            _prepared: &PreparedIdentity,
+            _prepared: &PreparedProfile,
             _recovery_key: &Secret,
             _display_name: &str,
-        ) -> Result<(), IdentityError> {
+        ) -> Result<(), ProfileError> {
             self.account_exists.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -733,7 +733,7 @@ mod tests {
             &self,
             _touch_grass_id: &str,
             _recovery_key: &Secret,
-        ) -> Result<SignInOutcome, IdentityError> {
+        ) -> Result<SignInOutcome, ProfileError> {
             Ok(if self.account_exists.load(Ordering::SeqCst) {
                 SignInOutcome::Authenticated(Secret::new(generate_secret(42)?))
             } else {
@@ -745,7 +745,7 @@ mod tests {
             &self,
             _session: &Secret,
             _display_name: &str,
-        ) -> Result<(), IdentityError> {
+        ) -> Result<(), ProfileError> {
             self.exchange_count.fetch_add(1, Ordering::SeqCst);
             let jwt = Secret::new(generate_secret(44)?);
             *self.last_jwt.lock().unwrap() = Some(jwt.expose().to_owned());
@@ -790,7 +790,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             Self(std::env::temp_dir().join(format!(
-                "touchgrassbar-identity-{}-{timestamp}.sqlite3",
+                "touchgrassbar-profile-{}-{timestamp}.sqlite3",
                 process::id()
             )))
         }
@@ -804,23 +804,23 @@ mod tests {
         }
     }
 
-    struct IdentityFixture {
+    struct ProfileFixture {
         _database: TestDatabase,
         lifecycle: DesktopLifecycle,
         custody: Arc<FakeCustody>,
         transport: Arc<FakeTransport>,
         presenter: Arc<FakePresenter>,
-        coordinator: IdentityCoordinator,
+        coordinator: ProfileCoordinator,
     }
 
-    impl IdentityFixture {
+    impl ProfileFixture {
         fn new() -> Self {
             let database = TestDatabase::new();
             let lifecycle = DesktopLifecycle::open(&database.0).unwrap();
             let custody = Arc::new(FakeCustody::default());
             let transport = Arc::new(FakeTransport::new());
             let presenter = Arc::new(FakePresenter::default());
-            let coordinator = IdentityCoordinator::new(
+            let coordinator = ProfileCoordinator::new(
                 lifecycle.clone(),
                 custody.clone(),
                 transport.clone(),
@@ -857,7 +857,7 @@ mod tests {
                     "Fabien".to_owned(),
                 )))
                 .to_string(),
-                crate::identity_attempt_metric(&Result::<(), IdentityError>::Err(IdentityError(
+                crate::profile_attempt_metric(&Result::<(), ProfileError>::Err(ProfileError(
                     "cookie credential private path raw response",
                 )))
                 .to_owned(),
@@ -891,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn custody_keeps_identity_secrets_in_separate_non_sync_items() {
+    fn custody_keeps_profile_secrets_in_separate_non_sync_items() {
         let policies = [
             keychain_policy(SecretKind::RecoveryKey),
             keychain_policy(SecretKind::BetterAuthSession),
@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn disclosure_uses_only_the_native_presenter_and_sanitized_state() {
-        let fixture = IdentityFixture::new();
+        let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
         fixture.presenter.set_available(false);
         let outcome = fixture.coordinator.retry_pending().unwrap();
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn session_exchange_keeps_the_convex_jwt_in_memory() {
-        let fixture = IdentityFixture::new();
+        let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
         fixture.coordinator.retry_pending().unwrap();
 
@@ -957,8 +957,8 @@ mod tests {
     }
 
     #[test]
-    fn retry_keeps_identity_pending_without_blocking_provider_utility() {
-        let fixture = IdentityFixture::new();
+    fn retry_keeps_profile_pending_without_blocking_provider_utility() {
+        let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
         let providers_before = fixture.lifecycle.bootstrap_state().providers;
         fixture.transport.fail_next_attempt();
@@ -967,7 +967,7 @@ mod tests {
         let pending = fixture.lifecycle.bootstrap_state();
         assert_eq!(
             pending.profile_provisioning,
-            ProfileProvisioningStatus::IdentityPending
+            ProfileProvisioningStatus::ProfilePending
         );
         assert_eq!(
             pending.providers.map(|provider| provider.status),
@@ -989,7 +989,7 @@ mod tests {
 
     #[test]
     fn secret_sentinel_rejects_private_material_from_public_boundaries() {
-        let fixture = IdentityFixture::new();
+        let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
         fixture.coordinator.retry_pending().unwrap();
 

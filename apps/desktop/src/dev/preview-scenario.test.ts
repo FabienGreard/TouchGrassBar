@@ -16,14 +16,14 @@ describe("development preview scenarios", () => {
   test("owns surface and onboarding query parsing outside production", () => {
     expect(
       resolveDevPreviewScenario(
-        "?window=onboarding&onboardingStep=profile&codexState=needs-access&providerState=ready&setupState=identity-pending",
+        "?window=onboarding&onboardingStep=profile&codexState=needs-access&providerState=ready&setupState=profile-pending",
       ),
     ).toMatchObject({
       onboarding: {
         codexState: "needs-access",
         initialStep: "profile",
         providerState: "ready",
-        setupState: "identity-pending",
+        setupState: "profile-pending",
       },
       settingsProfileState: "saved",
       settingsProviderState: "ready",
@@ -31,11 +31,11 @@ describe("development preview scenarios", () => {
     });
   });
 
-  test("resolves the Identity Pending Settings fixture", () => {
+  test("resolves the Profile Pending Settings fixture", () => {
     expect(
       resolveDevPreviewScenario(
-        "?window=settings&profileState=identity-pending",
+        "?window=settings&profileState=profile-pending",
       ).settingsProfileState,
-    ).toBe("identity-pending");
+    ).toBe("profile-pending");
   });
 });

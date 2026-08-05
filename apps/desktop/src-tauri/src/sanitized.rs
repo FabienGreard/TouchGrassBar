@@ -52,7 +52,7 @@ pub struct SanitizedDesktopStateV1 {
 )]
 pub enum SanitizedProfileOutcome {
     NotAuthorized,
-    IdentityPending,
+    ProfilePending,
     Ready {
         display_name: String,
         touch_grass_id: String,

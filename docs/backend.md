@@ -46,7 +46,7 @@ The migrations component owns repair/backfill work. Migrations are forward-only,
 
 ## Authentication boundary
 
-Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from `tokenIdentifier`, and never accepts a client-supplied identity as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
+Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from `tokenIdentifier`, and never accepts a client-supplied user identifier as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
 
 Better Auth is pinned but its generated Recovery Key adapter and device-transfer flow remain an implementation gate. Until that is wired, the authenticated mutations are deliberately inaccessible to the desktop scaffold.
 

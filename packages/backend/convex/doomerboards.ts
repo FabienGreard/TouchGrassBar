@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import { query } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { globalDoomerboard } from "./model/aggregate";
-import { tokenmaxxerForAuthUser } from "./model/identity";
+import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
   boardKey,
   scoreScopeValidator,

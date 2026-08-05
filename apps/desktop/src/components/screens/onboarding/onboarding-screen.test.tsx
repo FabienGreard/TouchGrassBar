@@ -51,7 +51,7 @@ describe("onboarding screen", () => {
     expect(unavailableFinishMarkup).toContain('data-setup-state="unavailable"');
     expect(unavailableFinishMarkup).toContain("Setup is not connected yet");
     expect(finishMarkup).not.toContain("Local setup ready");
-    expect(finishMarkup).toContain("Identity Pending");
+    expect(finishMarkup).toContain("Profile Pending");
     expect(finishMarkup).not.toContain(">—<");
     expect(finishMarkup).toContain("retries automatically");
     expect(finishMarkup).toContain("local provider utility stays available");

@@ -53,7 +53,7 @@ test("generated credential signup is short-lived, hashed, and session-validating
   const recoveryKey = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const expiredSignup = await t.fetch("/api/auth/sign-up/email", {
     body: JSON.stringify({
-      email: `${String(expired.touchGrassId).toLowerCase()}@identity.touchgrass.invalid`,
+      email: `${String(expired.touchGrassId).toLowerCase()}@profile.touchgrass.invalid`,
       name: "Fabien",
       password: recoveryKey,
       username: expired.touchGrassId,
@@ -74,7 +74,7 @@ test("generated credential signup is short-lived, hashed, and session-validating
   expect(typeof prepared.signupProof).toBe("string");
 
   const signupBody = {
-    email: `${String(prepared.touchGrassId).toLowerCase()}@identity.touchgrass.invalid`,
+    email: `${String(prepared.touchGrassId).toLowerCase()}@profile.touchgrass.invalid`,
     name: "Fabien",
     password: recoveryKey,
     username: prepared.touchGrassId,
@@ -136,7 +136,7 @@ test("generated credential signup is short-lived, hashed, and session-validating
     tokenIdentifier: `touchgrass|${user.id}`,
   });
   await expect(
-    authenticated.mutation(api.tokenmaxxers.ensureIdentity, {
+    authenticated.mutation(api.tokenmaxxers.ensureProfile, {
       displayName: "Fabien",
     }),
   ).resolves.toEqual({
@@ -150,7 +150,7 @@ test("generated credential signup is short-lived, hashed, and session-validating
   });
   expect(signOut.status).toBe(200);
   await expect(
-    authenticated.mutation(api.tokenmaxxers.ensureIdentity, {
+    authenticated.mutation(api.tokenmaxxers.ensureProfile, {
       displayName: "Fabien",
     }),
   ).rejects.toThrow("Unauthenticated");

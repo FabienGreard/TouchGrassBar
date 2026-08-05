@@ -13,7 +13,7 @@ import type * as doomerboards from "../doomerboards.js";
 import type * as internal_migrations from "../internal/migrations.js";
 import type * as internal_recompute from "../internal/recompute.js";
 import type * as model_aggregate from "../model/aggregate.js";
-import type * as model_identity from "../model/identity.js";
+import type * as model_profile from "../model/profile.js";
 import type * as model_rateLimits from "../model/rateLimits.js";
 import type * as model_scores from "../model/scores.js";
 import type * as model_sync from "../model/sync.js";
@@ -33,7 +33,7 @@ declare const fullApi: ApiFromModules<{
   "internal/migrations": typeof internal_migrations;
   "internal/recompute": typeof internal_recompute;
   "model/aggregate": typeof model_aggregate;
-  "model/identity": typeof model_identity;
+  "model/profile": typeof model_profile;
   "model/rateLimits": typeof model_rateLimits;
   "model/scores": typeof model_scores;
   "model/sync": typeof model_sync;

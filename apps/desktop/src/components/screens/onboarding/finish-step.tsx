@@ -1,7 +1,7 @@
 import { CheckIcon, MacMenuBarPreview } from "@touchgrass/ui";
 
 type OnboardingSetupState =
-  "identity-pending" | "ready" | "required" | "unavailable";
+  "profile-pending" | "ready" | "required" | "unavailable";
 
 function setupCopy(state: OnboardingSetupState) {
   if (state === "ready") {
@@ -10,23 +10,23 @@ function setupCopy(state: OnboardingSetupState) {
       title: "Local setup ready",
     };
   }
-  if (state === "identity-pending") {
+  if (state === "profile-pending") {
     return {
       detail:
         "Creation retries automatically while local provider utility stays available.",
-      title: "Identity Pending",
+      title: "Profile Pending",
     };
   }
   if (state === "required") {
     return {
       detail:
-        "If Profile services are unavailable, setup completes as Identity Pending, retries automatically, and local provider utility stays available.",
+        "If Profile services are unavailable, setup completes as Profile Pending, retries automatically, and local provider utility stays available.",
       title: "Ready to finish setup",
     };
   }
   return {
     detail:
-      "Local setup storage is unavailable. Identity Pending cannot be recorded safely yet; local provider utility stays available.",
+      "Local setup storage is unavailable. Profile Pending cannot be recorded safely yet; local provider utility stays available.",
     title: "Setup is not connected yet",
   };
 }

@@ -13,7 +13,7 @@ use crate::sanitized::{CodingProvider, SanitizedProfileOutcome};
 
 pub const LIFECYCLE_CONTRACT_VERSION: u8 = 1;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
-const DATABASE_SCHEMA_VERSION: i64 = 2;
+const DATABASE_SCHEMA_VERSION: i64 = 3;
 const PUBLIC_BACKFILL_WINDOW_DAYS: u8 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -27,7 +27,7 @@ pub enum BootstrapStatus {
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileProvisioningStatus {
     NotAuthorized,
-    IdentityPending,
+    ProfilePending,
     Ready,
 }
 
@@ -105,7 +105,7 @@ struct LifecycleRecord {
     bootstrap: BootstrapStatus,
     profile_provisioning: ProfileProvisioningStatus,
     public_participation_authorized: bool,
-    identity_retry_pending: bool,
+    profile_retry_pending: bool,
     backfill_window_days: Option<u8>,
     display_name: Option<String>,
     touch_grass_id: Option<String>,
@@ -118,7 +118,7 @@ impl LifecycleRecord {
             bootstrap: BootstrapStatus::Required,
             profile_provisioning: ProfileProvisioningStatus::NotAuthorized,
             public_participation_authorized: false,
-            identity_retry_pending: false,
+            profile_retry_pending: false,
             backfill_window_days: None,
             display_name: None,
             touch_grass_id: None,
@@ -158,9 +158,9 @@ impl SqliteLifecycleStore {
                      CREATE TABLE lifecycle_state (
                        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                        bootstrap_completed INTEGER NOT NULL CHECK (bootstrap_completed IN (0, 1)),
-                       profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'identity-pending', 'ready')),
+                       profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'profile-pending', 'ready')),
                        public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
-                       identity_retry_pending INTEGER NOT NULL CHECK (identity_retry_pending IN (0, 1)),
+                       profile_retry_pending INTEGER NOT NULL CHECK (profile_retry_pending IN (0, 1)),
                        backfill_window_days INTEGER CHECK (backfill_window_days = 30),
                        display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40)),
                        touch_grass_id TEXT,
@@ -171,22 +171,105 @@ impl SqliteLifecycleStore {
                        bootstrap_completed,
                        profile_provisioning,
                        public_participation_authorized,
-                       identity_retry_pending,
+                       profile_retry_pending,
                        backfill_window_days,
                        display_name
                      ) VALUES (1, 0, 'not-authorized', 0, 0, NULL, NULL);
-                     PRAGMA user_version = 2;
+                     PRAGMA user_version = 3;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
         } else if version == 1 {
-            Self::backup_before_migration(connection, path)?;
+            Self::backup_before_migration(connection, path, version)?;
             connection
                 .execute_batch(
                     "BEGIN IMMEDIATE;
-                     ALTER TABLE lifecycle_state ADD COLUMN touch_grass_id TEXT;
-                     ALTER TABLE lifecycle_state ADD COLUMN recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1));
-                     PRAGMA user_version = 2;
+                     ALTER TABLE lifecycle_state RENAME TO lifecycle_state_v1;
+                     CREATE TABLE lifecycle_state (
+                       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                       bootstrap_completed INTEGER NOT NULL CHECK (bootstrap_completed IN (0, 1)),
+                       profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'profile-pending', 'ready')),
+                       public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
+                       profile_retry_pending INTEGER NOT NULL CHECK (profile_retry_pending IN (0, 1)),
+                       backfill_window_days INTEGER CHECK (backfill_window_days = 30),
+                       display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40)),
+                       touch_grass_id TEXT,
+                       recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1))
+                     );
+                     INSERT INTO lifecycle_state (
+                       singleton,
+                       bootstrap_completed,
+                       profile_provisioning,
+                       public_participation_authorized,
+                       profile_retry_pending,
+                       backfill_window_days,
+                       display_name,
+                       touch_grass_id,
+                       recovery_disclosure_pending
+                     )
+                     SELECT
+                       singleton,
+                       bootstrap_completed,
+                       CASE profile_provisioning
+                         WHEN 'identity-pending' THEN 'profile-pending'
+                         ELSE profile_provisioning
+                       END,
+                       public_participation_authorized,
+                       identity_retry_pending,
+                       backfill_window_days,
+                       display_name,
+                       NULL,
+                       0
+                     FROM lifecycle_state_v1;
+                     DROP TABLE lifecycle_state_v1;
+                     PRAGMA user_version = 3;
+                     COMMIT;",
+                )
+                .map_err(|_| "lifecycle persistence unavailable")?;
+        } else if version == 2 {
+            Self::backup_before_migration(connection, path, version)?;
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     ALTER TABLE lifecycle_state RENAME TO lifecycle_state_v2;
+                     CREATE TABLE lifecycle_state (
+                       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                       bootstrap_completed INTEGER NOT NULL CHECK (bootstrap_completed IN (0, 1)),
+                       profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'profile-pending', 'ready')),
+                       public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
+                       profile_retry_pending INTEGER NOT NULL CHECK (profile_retry_pending IN (0, 1)),
+                       backfill_window_days INTEGER CHECK (backfill_window_days = 30),
+                       display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40)),
+                       touch_grass_id TEXT,
+                       recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1))
+                     );
+                     INSERT INTO lifecycle_state (
+                       singleton,
+                       bootstrap_completed,
+                       profile_provisioning,
+                       public_participation_authorized,
+                       profile_retry_pending,
+                       backfill_window_days,
+                       display_name,
+                       touch_grass_id,
+                       recovery_disclosure_pending
+                     )
+                     SELECT
+                       singleton,
+                       bootstrap_completed,
+                       CASE profile_provisioning
+                         WHEN 'identity-pending' THEN 'profile-pending'
+                         ELSE profile_provisioning
+                       END,
+                       public_participation_authorized,
+                       identity_retry_pending,
+                       backfill_window_days,
+                       display_name,
+                       touch_grass_id,
+                       recovery_disclosure_pending
+                     FROM lifecycle_state_v2;
+                     DROP TABLE lifecycle_state_v2;
+                     PRAGMA user_version = 3;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
@@ -194,23 +277,27 @@ impl SqliteLifecycleStore {
         Ok(())
     }
 
-    fn backup_before_migration(connection: &Connection, path: &Path) -> Result<(), &'static str> {
-        let backup_path = path.with_extension("sqlite3.backup-v1");
+    fn backup_before_migration(
+        connection: &Connection,
+        path: &Path,
+        version: i64,
+    ) -> Result<(), &'static str> {
+        let backup_path = path.with_extension(format!("sqlite3.backup-v{version}"));
         if backup_path.exists() {
             let backup = Connection::open_with_flags(
                 backup_path,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
             )
             .map_err(|_| "lifecycle persistence unavailable")?;
-            let version = backup
+            let backup_version = backup
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .map_err(|_| "lifecycle persistence unavailable")?;
-            return (version == 1)
+            return (backup_version == version)
                 .then_some(())
                 .ok_or("lifecycle persistence unavailable");
         }
 
-        let partial_path = path.with_extension("sqlite3.backup-v1.partial");
+        let partial_path = path.with_extension(format!("sqlite3.backup-v{version}.partial"));
         if partial_path.exists() {
             fs::remove_file(&partial_path).map_err(|_| "lifecycle persistence unavailable")?;
         }
@@ -234,7 +321,7 @@ impl SqliteLifecycleStore {
                    bootstrap_completed,
                    profile_provisioning,
                    public_participation_authorized,
-                   identity_retry_pending,
+                   profile_retry_pending,
                    backfill_window_days,
                    display_name,
                    touch_grass_id,
@@ -246,7 +333,7 @@ impl SqliteLifecycleStore {
                     let bootstrap_completed = row.get::<_, i64>(0)?;
                     let profile_provisioning = row.get::<_, String>(1)?;
                     let public_participation_authorized = row.get::<_, i64>(2)?;
-                    let identity_retry_pending = row.get::<_, i64>(3)?;
+                    let profile_retry_pending = row.get::<_, i64>(3)?;
                     let backfill_window_days = row.get::<_, Option<u8>>(4)?;
                     let display_name = row.get::<_, Option<String>>(5)?;
                     let touch_grass_id = row.get::<_, Option<String>>(6)?;
@@ -255,7 +342,7 @@ impl SqliteLifecycleStore {
                         bootstrap_completed,
                         profile_provisioning,
                         public_participation_authorized,
-                        identity_retry_pending,
+                        profile_retry_pending,
                         backfill_window_days,
                         display_name,
                         touch_grass_id,
@@ -272,7 +359,7 @@ impl SqliteLifecycleStore {
         };
         let profile_provisioning = match record.1.as_str() {
             "not-authorized" => ProfileProvisioningStatus::NotAuthorized,
-            "identity-pending" => ProfileProvisioningStatus::IdentityPending,
+            "profile-pending" => ProfileProvisioningStatus::ProfilePending,
             "ready" => ProfileProvisioningStatus::Ready,
             _ => return Err("lifecycle persistence unavailable"),
         };
@@ -280,7 +367,7 @@ impl SqliteLifecycleStore {
             bootstrap,
             profile_provisioning,
             public_participation_authorized: record.2 == 1,
-            identity_retry_pending: record.3 == 1,
+            profile_retry_pending: record.3 == 1,
             backfill_window_days: record.4,
             display_name: record.5,
             touch_grass_id: record.6,
@@ -290,15 +377,15 @@ impl SqliteLifecycleStore {
         let valid = match (result.bootstrap, result.profile_provisioning) {
             (BootstrapStatus::Required, ProfileProvisioningStatus::NotAuthorized) => {
                 !result.public_participation_authorized
-                    && !result.identity_retry_pending
+                    && !result.profile_retry_pending
                     && result.backfill_window_days.is_none()
                     && result.display_name.is_none()
                     && result.touch_grass_id.is_none()
                     && !result.recovery_disclosure_pending
             }
-            (BootstrapStatus::Completed, ProfileProvisioningStatus::IdentityPending) => {
+            (BootstrapStatus::Completed, ProfileProvisioningStatus::ProfilePending) => {
                 result.public_participation_authorized
-                    && result.identity_retry_pending
+                    && result.profile_retry_pending
                     && result.backfill_window_days == Some(PUBLIC_BACKFILL_WINDOW_DAYS)
                     && result.display_name.is_some()
                     && result.touch_grass_id.is_none()
@@ -306,7 +393,7 @@ impl SqliteLifecycleStore {
             }
             (BootstrapStatus::Completed, ProfileProvisioningStatus::Ready) => {
                 result.public_participation_authorized
-                    && !result.identity_retry_pending
+                    && !result.profile_retry_pending
                     && result.backfill_window_days == Some(PUBLIC_BACKFILL_WINDOW_DAYS)
                     && result.display_name.is_some()
                     && result.touch_grass_id.is_some()
@@ -335,9 +422,9 @@ impl SqliteLifecycleStore {
             .execute(
                 "UPDATE lifecycle_state
                  SET bootstrap_completed = 1,
-                     profile_provisioning = 'identity-pending',
+                     profile_provisioning = 'profile-pending',
                      public_participation_authorized = 1,
-                     identity_retry_pending = 1,
+                     profile_retry_pending = 1,
                      backfill_window_days = ?1,
                      display_name = ?2
                  WHERE singleton = 1",
@@ -351,7 +438,7 @@ impl SqliteLifecycleStore {
         self.read()
     }
 
-    fn mark_identity_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
+    fn mark_profile_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
         let updated = self
             .connection
             .lock()
@@ -359,17 +446,17 @@ impl SqliteLifecycleStore {
             .execute(
                 "UPDATE lifecycle_state
                  SET profile_provisioning = 'ready',
-                     identity_retry_pending = 0,
+                     profile_retry_pending = 0,
                      touch_grass_id = ?1,
                      recovery_disclosure_pending = 1
                  WHERE singleton = 1
-                   AND profile_provisioning = 'identity-pending'",
+                   AND profile_provisioning = 'profile-pending'",
                 [touch_grass_id],
             )
             .map_err(|_| "lifecycle persistence unavailable")?;
         (updated == 1)
             .then_some(())
-            .ok_or("identity lifecycle unavailable")
+            .ok_or("profile lifecycle unavailable")
     }
 
     fn mark_recovery_disclosed(&self) -> Result<(), &'static str> {
@@ -388,7 +475,7 @@ impl SqliteLifecycleStore {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct IdentityRequest {
+pub(crate) struct ProfileRequest {
     pub display_name: String,
 }
 
@@ -531,20 +618,20 @@ impl DesktopLifecycle {
         }
     }
 
-    pub(crate) fn identity_request(&self) -> Option<IdentityRequest> {
+    pub(crate) fn profile_request(&self) -> Option<ProfileRequest> {
         let record = self.record().ok()?;
-        (record.profile_provisioning == ProfileProvisioningStatus::IdentityPending
-            && record.identity_retry_pending)
-            .then(|| IdentityRequest {
+        (record.profile_provisioning == ProfileProvisioningStatus::ProfilePending
+            && record.profile_retry_pending)
+            .then(|| ProfileRequest {
                 display_name: record
                     .display_name
                     .expect("pending Profile has a display name"),
             })
     }
 
-    pub(crate) fn mark_identity_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
+    pub(crate) fn mark_profile_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
         match &self.inner.store {
-            LifecycleStore::Persistent(store) => store.mark_identity_ready(touch_grass_id),
+            LifecycleStore::Persistent(store) => store.mark_profile_ready(touch_grass_id),
             LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
         }
     }
@@ -568,7 +655,7 @@ impl DesktopLifecycle {
         };
         match record.profile_provisioning {
             ProfileProvisioningStatus::NotAuthorized => SanitizedProfileOutcome::NotAuthorized,
-            ProfileProvisioningStatus::IdentityPending => SanitizedProfileOutcome::IdentityPending,
+            ProfileProvisioningStatus::ProfilePending => SanitizedProfileOutcome::ProfilePending,
             ProfileProvisioningStatus::Ready => SanitizedProfileOutcome::Ready {
                 display_name: record
                     .display_name
@@ -664,6 +751,8 @@ mod tests {
             let _ = fs::remove_file(self.0.with_extension("sqlite3-wal"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v1"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v1.partial"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v2"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v2.partial"));
         }
     }
 
@@ -698,18 +787,18 @@ mod tests {
         assert_eq!(completed.bootstrap, BootstrapStatus::Completed);
         assert_eq!(
             completed.profile_provisioning,
-            ProfileProvisioningStatus::IdentityPending
+            ProfileProvisioningStatus::ProfilePending
         );
         assert_eq!(completed.display_name.as_deref(), Some("Fabien"));
 
         let record = lifecycle.record().unwrap();
         assert!(record.public_participation_authorized);
-        assert!(record.identity_retry_pending);
+        assert!(record.profile_retry_pending);
         assert_eq!(record.backfill_window_days, Some(30));
     }
 
     #[test]
-    fn identity_pending_bootstrap_stays_closed_after_store_reconstruction() {
+    fn profile_pending_bootstrap_stays_closed_after_store_reconstruction() {
         let database = TestDatabase::new();
         {
             let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
@@ -720,7 +809,7 @@ mod tests {
         assert!(!relaunched.should_show_bootstrap());
         assert_eq!(
             relaunched.bootstrap_state().profile_provisioning,
-            ProfileProvisioningStatus::IdentityPending
+            ProfileProvisioningStatus::ProfilePending
         );
     }
 
@@ -739,13 +828,19 @@ mod tests {
                    backfill_window_days INTEGER CHECK (backfill_window_days = 30),
                    display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40))
                  );
-                 INSERT INTO lifecycle_state VALUES (1, 0, 'not-authorized', 0, 0, NULL, NULL);
+                 INSERT INTO lifecycle_state VALUES (1, 1, 'identity-pending', 1, 1, 30, 'Fabien');
                  PRAGMA user_version = 1;",
             )
             .unwrap();
         drop(connection);
 
-        DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+        let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+        let record = lifecycle.record().unwrap();
+        assert_eq!(
+            record.profile_provisioning,
+            ProfileProvisioningStatus::ProfilePending
+        );
+        assert!(record.profile_retry_pending);
 
         let backup_path = database.0.with_extension("sqlite3.backup-v1");
         let backup =
@@ -755,16 +850,72 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap();
         assert_eq!(backup_version, 1);
+        let backup_record = backup
+            .query_row(
+                "SELECT profile_provisioning, identity_retry_pending FROM lifecycle_state",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(backup_record, ("identity-pending".to_owned(), 1));
         assert!(
             !database
                 .0
                 .with_extension("sqlite3.backup-v1.partial")
                 .exists()
         );
+
+        let draft_database = TestDatabase::new();
+        let connection = Connection::open(&draft_database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE lifecycle_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   bootstrap_completed INTEGER NOT NULL CHECK (bootstrap_completed IN (0, 1)),
+                   profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'identity-pending', 'ready')),
+                   public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
+                   identity_retry_pending INTEGER NOT NULL CHECK (identity_retry_pending IN (0, 1)),
+                   backfill_window_days INTEGER CHECK (backfill_window_days = 30),
+                   display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40)),
+                   touch_grass_id TEXT,
+                   recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1))
+                 );
+                 INSERT INTO lifecycle_state VALUES (1, 1, 'identity-pending', 1, 1, 30, 'Fabien', NULL, 0);
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let lifecycle =
+            DesktopLifecycle::open_with_detector(&draft_database.0, detector()).unwrap();
+        let record = lifecycle.record().unwrap();
+        assert_eq!(
+            record.profile_provisioning,
+            ProfileProvisioningStatus::ProfilePending
+        );
+        assert!(record.profile_retry_pending);
+
+        let backup = Connection::open_with_flags(
+            draft_database.0.with_extension("sqlite3.backup-v2"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let backup_version = backup
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(backup_version, 2);
+        let backup_record = backup
+            .query_row(
+                "SELECT profile_provisioning, identity_retry_pending FROM lifecycle_state",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(backup_record, ("identity-pending".to_owned(), 1));
     }
 
     #[test]
-    fn identity_pending_does_not_gate_local_provider_presence() {
+    fn profile_pending_does_not_gate_local_provider_presence() {
         let database = TestDatabase::new();
         let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
         lifecycle.complete_bootstrap("Fabien").unwrap();

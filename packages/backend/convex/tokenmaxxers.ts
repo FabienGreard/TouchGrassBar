@@ -5,7 +5,7 @@ import { requireAuthUser } from "./auth";
 import {
   ensureTokenmaxxer,
   tokenmaxxerForAuthUser,
-} from "./model/identity";
+} from "./model/profile";
 
 const publicTokenmaxxer = v.object({
   displayName: v.string(),
@@ -30,7 +30,7 @@ function touchGrassIdForAuthUser(user: { username?: unknown }) {
   return user.username;
 }
 
-export const ensureIdentity = mutation({
+export const ensureProfile = mutation({
   args: { displayName: v.string() },
   returns: publicTokenmaxxer,
   handler: async (ctx, args) => {
@@ -55,7 +55,7 @@ export const updateDisplayName = mutation({
     const authUser = await requireAuthUser(ctx);
     const tokenmaxxer = await tokenmaxxerForAuthUser(ctx, authUser.id);
     if (!tokenmaxxer) {
-      throw new Error("TouchGrass identity not found");
+      throw new Error("TouchGrass Profile not found");
     }
     const displayName = cleanDisplayName(args.displayName);
     await ctx.db.patch(tokenmaxxer._id, { displayName });
@@ -84,7 +84,7 @@ export const addToMyTokenmaxxers = mutation({
     const authUser = await requireAuthUser(ctx);
     const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
     if (!owner) {
-      throw new Error("TouchGrass identity not found");
+      throw new Error("TouchGrass Profile not found");
     }
     const added = await ctx.db
       .query("tokenmaxxers")
@@ -116,7 +116,7 @@ export const removeFromMyTokenmaxxers = mutation({
     const authUser = await requireAuthUser(ctx);
     const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
     if (!owner) {
-      throw new Error("TouchGrass identity not found");
+      throw new Error("TouchGrass Profile not found");
     }
     const added = await ctx.db
       .query("tokenmaxxers")

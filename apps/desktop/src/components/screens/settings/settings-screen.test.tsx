@@ -49,16 +49,16 @@ describe("settings screen", () => {
     expect(developmentMarkup).not.toContain('type="password"');
   });
 
-  test("presents Identity Pending without inventing a public ID", () => {
+  test("presents Profile Pending without inventing a public ID", () => {
     const markup = renderToStaticMarkup(
       <ProfileSettings
         pendingDisplayName="Fabien"
-        profileProvisioning="identity-pending"
+        profileProvisioning="profile-pending"
       />,
     );
 
-    expect(markup).toContain('data-profile-state="identity-pending"');
-    expect(markup).toContain("Identity Pending");
+    expect(markup).toContain('data-profile-state="profile-pending"');
+    expect(markup).toContain("Profile Pending");
     expect(markup).toContain(">Fabien<");
     expect(markup).toContain(
       "Assigned automatically when Profile services are available.",

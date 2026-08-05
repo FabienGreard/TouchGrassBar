@@ -27,10 +27,10 @@ function ProfileSettings({
   return (
     <div className="grid gap-3" data-slot="profile-settings">
       {profile === null ? (
-        profileProvisioning === "identity-pending" ? (
+        profileProvisioning === "profile-pending" ? (
           <ProfileCard
             avatarLabel={pendingInitial}
-            data-profile-state="identity-pending"
+            data-profile-state="profile-pending"
             displayName={
               <strong className="mt-0.5 block truncate text-[13px]">
                 {pendingName}
@@ -38,7 +38,7 @@ function ProfileSettings({
             }
             touchGrassId={
               <strong className="mt-1 block font-mono text-[10px]">
-                Identity Pending
+                Profile Pending
               </strong>
             }
             touchGrassIdDescription="Assigned automatically when Profile services are available. Local provider utility remains available."

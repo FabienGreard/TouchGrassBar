@@ -1,8 +1,8 @@
 #[cfg(debug_assertions)]
 mod dev_instance;
-pub mod identity;
 pub mod lifecycle;
 mod network;
+pub mod profile;
 pub mod sanitized;
 
 use std::{
@@ -11,11 +11,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use identity::{RecoveryPresentation, RecoverySheetPresenter};
 use lifecycle::{
     BootstrapStateV1, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
     SettingsNavigationRequest, SettingsSection, SettingsStateV1,
 };
+use profile::{RecoveryPresentation, RecoverySheetPresenter};
 use sanitized::{
     NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
     SanitizedDesktopStateV1, SanitizedProfileOutcome,
@@ -110,26 +110,26 @@ impl RecoverySheetPresenter for NativeRecoverySheetPresenter {
     }
 }
 
-pub(crate) fn identity_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static str {
+pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static str {
     match attempt {
-        Ok(_) => "touchgrassbar_metric identity_attempt=complete",
-        Err(_) => "touchgrassbar_metric identity_attempt=pending",
+        Ok(_) => "touchgrassbar_metric profile_attempt=complete",
+        Err(_) => "touchgrassbar_metric profile_attempt=pending",
     }
 }
 
 #[derive(Clone)]
-struct IdentityRuntime {
+struct ProfileRuntime {
     retry: mpsc::SyncSender<()>,
 }
 
-impl IdentityRuntime {
+impl ProfileRuntime {
     #[cfg(target_os = "macos")]
     fn start(lifecycle: DesktopLifecycle, app: AppHandle) -> std::io::Result<Self> {
         let presenter = Arc::new(NativeRecoverySheetPresenter { app: app.clone() });
-        let coordinator = identity::production_coordinator(lifecycle, presenter);
+        let coordinator = profile::production_coordinator(lifecycle, presenter);
         let (retry, requests) = mpsc::sync_channel(1);
         std::thread::Builder::new()
-            .name("profile-identity-retry".to_owned())
+            .name("profile-provisioning-retry".to_owned())
             .spawn(move || {
                 while let Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) =
                     requests.recv_timeout(Duration::from_secs(300))
@@ -140,7 +140,7 @@ impl IdentityRuntime {
                             .state::<NativeCore>()
                             .set_profile_outcome(profile.clone());
                     }
-                    eprintln!("{}", identity_attempt_metric(&attempt));
+                    eprintln!("{}", profile_attempt_metric(&attempt));
                 }
             })?;
         Ok(Self { retry })
@@ -411,7 +411,7 @@ fn get_bootstrap_state(
 fn complete_bootstrap(
     window: WebviewWindow,
     lifecycle: State<'_, DesktopLifecycle>,
-    identity_runtime: State<'_, IdentityRuntime>,
+    profile_runtime: State<'_, ProfileRuntime>,
     core: State<'_, NativeCore>,
     display_name: String,
 ) -> Result<BootstrapStateV1, String> {
@@ -419,12 +419,12 @@ fn complete_bootstrap(
     let state = lifecycle
         .complete_bootstrap(&display_name)
         .map_err(str::to_owned)?;
-    core.set_profile_outcome(SanitizedProfileOutcome::IdentityPending)
+    core.set_profile_outcome(SanitizedProfileOutcome::ProfilePending)
         .map_err(str::to_owned)?;
     window
         .hide()
         .map_err(|_| "bootstrap window unavailable".to_owned())?;
-    identity_runtime.trigger();
+    profile_runtime.trigger();
     Ok(state)
 }
 
@@ -547,9 +547,9 @@ pub fn run() {
                     }
                 }
             }
-            let identity_runtime = IdentityRuntime::start(lifecycle, app.handle().clone())?;
-            identity_runtime.trigger();
-            app.manage(identity_runtime);
+            let profile_runtime = ProfileRuntime::start(lifecycle, app.handle().clone())?;
+            profile_runtime.trigger();
+            app.manage(profile_runtime);
 
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
@@ -654,8 +654,8 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Focused(true) => {
-                if let Some(identity_runtime) = window.app_handle().try_state::<IdentityRuntime>() {
-                    identity_runtime.trigger();
+                if let Some(profile_runtime) = window.app_handle().try_state::<ProfileRuntime>() {
+                    profile_runtime.trigger();
                 }
             }
             tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {

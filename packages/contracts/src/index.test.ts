@@ -71,14 +71,14 @@ describe("public contracts", () => {
       contractVersion: 1,
       displayName: "Fabien",
       persistence: "available",
-      profileProvisioning: "identity-pending",
+      profileProvisioning: "profile-pending",
       providers,
     } as const;
     const settings = {
       contractVersion: 1,
       displayName: "Fabien",
       launchAtLogin: { availability: "available", enabled: true },
-      profileProvisioning: "identity-pending",
+      profileProvisioning: "profile-pending",
       providers,
       section: "profile",
     } as const;
