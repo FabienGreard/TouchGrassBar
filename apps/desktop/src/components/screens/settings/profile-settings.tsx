@@ -27,6 +27,10 @@ function ProfileSettings({
 }) {
   const pendingName = pendingDisplayName?.trim() || "Your Profile";
   const pendingInitial = pendingName.slice(0, 1).toUpperCase();
+  const recoveryKeyUnavailable =
+    profile === null ||
+    onRevealRecoveryKey === undefined ||
+    revealingRecoveryKey;
 
   return (
     <div className="grid gap-3" data-slot="profile-settings">
@@ -62,41 +66,64 @@ function ProfileSettings({
           touchGrassId={profile.touchGrassId}
         />
       )}
-      <div className="px-1 py-1" data-profile-security-state="native-required">
-        <strong className="block text-[11px]">Profile security</strong>
-        <div className="mt-3 border-t border-sheet-line pt-4">
-          <strong className="block text-[11px]">Recovery Key</strong>
-          <Button
-            className="mt-3"
-            disabled={
-              profile === null ||
-              onRevealRecoveryKey === undefined ||
-              revealingRecoveryKey
-            }
-            onClick={onRevealRecoveryKey}
-            type="button"
-          >
-            {revealingRecoveryKey ? "Opening…" : "View Recovery Key…"}
-          </Button>
+      <section
+        className="mt-1 border-t border-sheet-line pt-5"
+        data-profile-recovery-state="native-required"
+      >
+        <h2 className="m-0 text-[14px]">Recovery</h2>
+        <p className="mt-1 mb-4 text-[10px] leading-4 text-sheet-muted">
+          Manage recovery for this Profile.
+        </p>
+        <div className="grid gap-3">
+          <div>
+            <strong className="block text-[12px]">Recovery Key</strong>
+            <small className="mt-0.5 block text-[9px] text-sheet-muted">
+              Stored in this Mac’s Keychain.
+            </small>
+            <div
+              aria-disabled={recoveryKeyUnavailable}
+              className="mt-3 flex h-9 items-center rounded-[8px] border border-input bg-white px-3 shadow-control aria-disabled:opacity-50 contrast-more:border-pearl-ink"
+              data-slot="masked-recovery-key"
+            >
+              <span
+                aria-hidden="true"
+                className="font-mono text-[11px] tracking-[0.12em] text-pearl-muted"
+              >
+                ••••••••••••••••
+              </span>
+              <Button
+                aria-label="View Recovery Key"
+                className="ml-auto"
+                disabled={recoveryKeyUnavailable}
+                onClick={onRevealRecoveryKey}
+                size="quiet"
+                type="button"
+                variant="ghost"
+              >
+                {revealingRecoveryKey ? "Opening…" : "View"}
+              </Button>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-6 border-t border-sheet-line pt-4">
+            <span>
+              <strong className="block text-[11px]">
+                Recover from another Mac
+              </strong>
+              <small className="mt-0.5 block text-[9px] leading-4 text-sheet-muted">
+                Enter the Recovery Key stored on your other Mac to restore its
+                Profile here.
+              </small>
+            </span>
+            <Button
+              disabled={onStartRecovery === undefined}
+              onClick={onStartRecovery}
+              type="button"
+            >
+              Enter Recovery Key…
+            </Button>
+          </div>
         </div>
-        <div className="mt-3 border-t border-sheet-line pt-4">
-          <strong className="block text-[11px]">
-            Recover from another Mac
-          </strong>
-          <small className="mt-1 block text-[9px] leading-4 text-sheet-muted">
-            Enter the Recovery Key stored on your other Mac to restore its
-            Profile here.
-          </small>
-          <Button
-            className="mt-3"
-            disabled={onStartRecovery === undefined}
-            onClick={onStartRecovery}
-            type="button"
-          >
-            Enter Recovery Key…
-          </Button>
-        </div>
-      </div>
+      </section>
     </div>
   );
 }

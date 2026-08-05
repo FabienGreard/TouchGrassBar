@@ -3,6 +3,8 @@ mod dev_instance;
 pub mod lifecycle;
 mod network;
 pub mod profile;
+#[cfg(target_os = "macos")]
+mod recovery_sheet;
 pub mod sanitized;
 
 use std::{
@@ -16,10 +18,7 @@ use lifecycle::{
     SettingsNavigationRequest, SettingsProfileAuthorization, SettingsSection, SettingsSelection,
     SettingsStateV2,
 };
-use profile::{
-    RecoveryPresentation, RecoveryPresentationAudience, RecoveryPresentationKind,
-    RecoverySheetPresenter,
-};
+use profile::{RecoveryPresentation, RecoveryPresentationAudience, RecoverySheetPresenter};
 use sanitized::{
     NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
     SanitizedDesktopStateV2, SanitizedProfileOutcome,
@@ -155,12 +154,8 @@ impl RecoverySheetPresenter for NativeRecoverySheetPresenter {
         let lifecycle = self.lifecycle.clone();
         if parent
             .with_webview(move |webview| {
-                use block2::RcBlock;
                 use objc2::MainThreadMarker;
-                use objc2_app_kit::{
-                    NSAlert, NSApplication, NSColor, NSImage, NSModalResponse, NSWindow,
-                };
-                use objc2_foundation::{NSSize, NSString};
+                use objc2_app_kit::{NSApplication, NSWindow};
 
                 if !recovery_sheet_authorization_is_current(authorization, &lifecycle) {
                     let _ = sender.send(false);
@@ -174,41 +169,12 @@ impl RecoverySheetPresenter for NativeRecoverySheetPresenter {
                     let _ = sender.send(false);
                     return;
                 }
-                let alert = NSAlert::new(main_thread);
-                let icon_free_layout = NSImage::initWithSize(
-                    main_thread.alloc(),
-                    NSSize::new(0.0, 0.0),
-                );
-                // SAFETY: The non-nil image is retained by NSAlert and is valid for this sheet.
-                unsafe { alert.setIcon(Some(&icon_free_layout)) };
-                let (title, button) = match presentation.kind {
-                    RecoveryPresentationKind::InitialDisclosure => {
-                        ("Save your Recovery Key", "I saved my Recovery Key")
-                    }
-                    RecoveryPresentationKind::Reveal => ("Recovery Key", "Done"),
-                };
-                alert.setMessageText(&NSString::from_str(title));
-                alert.setInformativeText(&NSString::from_str(&format!(
-                    "TouchGrass ID\n{}\n\nRecovery Key\n{}\n\nStore this key in a safe place. TouchGrassBar cannot recover it for you.",
-                    presentation.touch_grass_id,
-                    presentation.recovery_key.expose()
-                )));
-                let saved = alert.addButtonWithTitle(&NSString::from_str(button));
-                let ivory = NSColor::colorWithSRGBRed_green_blue_alpha(
-                    0.992, 0.984, 0.953, 1.0,
-                );
-                let green = NSColor::colorWithSRGBRed_green_blue_alpha(
-                    0.098, 0.455, 0.239, 1.0,
-                );
-                alert.window().setBackgroundColor(Some(&ivory));
-                saved.setContentTintColor(Some(&green));
-                let completion = RcBlock::new(move |_response: NSModalResponse| {
-                    let _ = callback_sender.send(true);
-                });
                 let parent_window: &NSWindow = unsafe { &*webview.ns_window().cast() };
-                alert.beginSheetModalForWindow_completionHandler(
+                crate::recovery_sheet::begin(
                     parent_window,
-                    Some(&completion),
+                    presentation,
+                    callback_sender,
+                    main_thread,
                 );
             })
             .is_err()
@@ -1120,6 +1086,42 @@ mod tests {
             tray_foreground_destination(false, false),
             TrayForegroundDestination::Panel,
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn recovery_sheet_design_is_compact_and_uses_the_approved_hierarchy() {
+        let initial = crate::recovery_sheet::design(
+            crate::profile::RecoveryPresentationKind::InitialDisclosure,
+        );
+        assert_eq!(initial.size, (440.0, 304.0));
+        assert_eq!(initial.title, "Save your Recovery Key");
+        assert_eq!(initial.button_title, "I saved a copy");
+        assert_eq!(
+            initial.note,
+            "Stored in this Mac’s Keychain. Save a separate copy somewhere secure."
+        );
+        assert_eq!(
+            initial.visual_order,
+            [
+                "title",
+                "introduction",
+                "touch-grass-id",
+                "recovery-key",
+                "keychain-note",
+                "action",
+            ]
+        );
+        assert!(!initial.uses_icon);
+        assert_eq!(initial.palette.ivory, [0.992, 0.984, 0.953, 1.0]);
+        assert_eq!(initial.palette.ink, [0.071, 0.071, 0.078, 1.0]);
+        assert_eq!(initial.palette.green, [0.098, 0.455, 0.239, 1.0]);
+
+        let reveal =
+            crate::recovery_sheet::design(crate::profile::RecoveryPresentationKind::Reveal);
+        assert_eq!(reveal.title, "Recovery Key");
+        assert_eq!(reveal.button_title, "Done");
+        assert_eq!(reveal.note, "Stored in this Mac’s Keychain.");
     }
 
     #[test]

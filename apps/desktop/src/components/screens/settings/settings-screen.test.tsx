@@ -38,16 +38,20 @@ describe("settings screen", () => {
     expect(markup).toContain("Profile unavailable");
     expect(markup).not.toContain("Fabien");
     expect(markup).not.toContain("#TG-7K4P9D");
-    expect(markup).toContain("Profile security");
+    expect(markup).not.toContain("Profile security");
+    expect(markup).toMatch(/<h2[^>]*>Recovery<\/h2>/);
+    expect(markup).toContain("Manage recovery for this Profile.");
+    expect(markup).toContain("Stored in this Mac’s Keychain.");
     expect(markup).not.toContain("local macOS Keychain");
     expect(markup).not.toContain('type="password"');
-    expect(markup).toContain("View Recovery Key…");
+    expect(markup).toContain('data-slot="masked-recovery-key"');
+    expect(markup).toMatch(/aria-hidden="true"[^>]*>••••••••••••••••<\/span>/);
     expect(markup).toMatch(
-      /<button[^>]*disabled=""[^>]*>View Recovery Key…<\/button>/,
+      /<button[^>]*data-variant="ghost"[^>]*disabled=""[^>]*>View<\/button>/,
     );
     expect(markup).toContain("Recover from another Mac");
     expect(markup).toMatch(
-      /<button[^>]*disabled=""[^>]*>Enter Recovery Key…<\/button>/,
+      /<button[^>]*data-variant="primary"[^>]*disabled=""[^>]*>Enter Recovery Key…<\/button>/,
     );
     expect(markup).not.toContain("Recover on this Mac");
     expect(markup).not.toContain("TG-RK-");
@@ -55,7 +59,9 @@ describe("settings screen", () => {
       /<button[^>]*>Enter Recovery Key…<\/button>/,
     );
     expect(developmentMarkup).not.toContain('type="password"');
-    expect(readyMarkup).toMatch(/<button[^>]*>View Recovery Key…<\/button>/);
+    expect(readyMarkup).toMatch(
+      /<button[^>]*data-variant="ghost"[^>]*>View<\/button>/,
+    );
     expect(readyMarkup).not.toContain('type="password"');
     expect(readyMarkup).not.toContain("TG-RK-");
   });
