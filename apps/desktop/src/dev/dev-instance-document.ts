@@ -14,7 +14,7 @@ function applyDevInstanceDocument(
       ? "TouchGrassBar"
       : `TouchGrassBar ${surface === "settings" ? "Settings" : "Onboarding"}`;
   document.title = `${surfaceName} · ${instance.label}`;
-  document.documentElement.dataset.devInstance = instance.key;
+  document.documentElement.dataset.devInstance = instance.instanceKey;
   document.documentElement.style.setProperty(
     "--dev-instance-accent",
     devAccentColors[instance.accent],

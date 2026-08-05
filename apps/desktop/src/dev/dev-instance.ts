@@ -1,10 +1,9 @@
-const devAccents = ["blue", "violet", "rose", "amber", "teal"] as const;
+const devAccents = ["blue", "violet", "rose", "orange"] as const;
 
 const devAccentColors = {
-  amber: "#b45309",
   blue: "#1d4ed8",
+  orange: "#c2410c",
   rose: "#be123c",
-  teal: "#0f766e",
   violet: "#6d28d9",
 } as const;
 
@@ -13,7 +12,7 @@ type DevAccent = (typeof devAccents)[number];
 type DevInstance = {
   accent: DevAccent;
   identifier: string;
-  key: string;
+  instanceKey: string;
   label: string;
   port: number;
   productName: string;
@@ -64,7 +63,7 @@ function titleFromSlug(value: string) {
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
 
-function branchPresentation(branch: string, key: string) {
+function branchPresentation(branch: string, instanceKey: string) {
   const issue = /(?:^|\/)issue-(\d+)-(.+)$/.exec(branch);
   if (issue) {
     const tag = boundedLabel(`#${issue[1]}`).slice(0, tagLimit);
@@ -73,14 +72,16 @@ function branchPresentation(branch: string, key: string) {
   }
 
   const title = titleFromSlug(branch.split("/").at(-1) ?? branch);
-  const tag = key.slice(0, 4).toUpperCase();
+  const tag = instanceKey.slice(0, 4).toUpperCase();
   return { label: boundedLabel(`${title} · ${tag}`), tag };
 }
 
 function labelTag(label: string, fallback: string) {
   if (!label) return fallback;
-  const firstWord = /[#a-zA-Z0-9]+/.exec(label)?.[0] ?? fallback;
-  return firstWord.slice(0, tagLimit).toUpperCase();
+  const firstWord = /[#\p{L}\p{N}]+/u.exec(label)?.[0] ?? label;
+  return [...firstWord.toLocaleUpperCase("en-US")]
+    .slice(0, tagLimit)
+    .join("");
 }
 
 function resolveDevInstance({
@@ -90,8 +91,8 @@ function resolveDevInstance({
   worktreeSeed,
 }: ResolveDevInstanceInput): DevInstance {
   const hash = stableHash(worktreeSeed);
-  const key = hash.toString(36).padStart(7, "0");
-  const presentation = branchPresentation(branch, key);
+  const instanceKey = hash.toString(36).padStart(7, "0");
+  const presentation = branchPresentation(branch, instanceKey);
   const requestedLabel = label === undefined ? "" : boundedLabel(label);
   const tag = labelTag(requestedLabel, presentation.tag);
   const resolvedAccent = devAccents.includes(accent as DevAccent)
@@ -101,11 +102,11 @@ function resolveDevInstance({
 
   return {
     accent: resolvedAccent,
-    identifier: `app.touchgrass.bar.dev.w${key}`,
-    key,
+    identifier: `app.touchgrass.bar.dev.w${instanceKey}`,
+    instanceKey,
     label: requestedLabel || presentation.label,
     port: resolvedPort,
-    productName: `TouchGrassBar Dev ${tag} ${key.slice(0, 4)}`,
+    productName: `TouchGrassBar Dev ${tag} ${instanceKey.slice(0, 4)}`,
     tag,
   };
 }
@@ -115,7 +116,7 @@ function parseDevInstance(value: string | undefined): DevInstance | null {
   try {
     const candidate = JSON.parse(value) as Partial<DevInstance>;
     if (
-      typeof candidate.key !== "string" ||
+      typeof candidate.instanceKey !== "string" ||
       typeof candidate.label !== "string" ||
       typeof candidate.tag !== "string" ||
       typeof candidate.identifier !== "string" ||

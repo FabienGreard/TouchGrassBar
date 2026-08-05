@@ -25,14 +25,14 @@ describe("development instance identity", () => {
     const instance = resolveDevInstance({
       accent: "violet",
       branch: "feature/cache-refresh",
-      label: "  Cache   refresh  ",
+      label: "  Réparer   cache  ",
       worktreeSeed: "worktree-beta",
     });
 
-    expect(instance.label).toBe("Cache refresh");
-    expect(instance.tag).toBe("CACHE");
+    expect(instance.label).toBe("Réparer cache");
+    expect(instance.tag).toBe("RÉPARER");
     expect(instance.accent).toBe("violet");
-    expect(instance.productName).toContain("TouchGrassBar Dev CACHE");
+    expect(instance.productName).toContain("TouchGrassBar Dev RÉPARER");
   });
 
   test("separates native identity and default ports across worktrees", () => {
@@ -45,7 +45,7 @@ describe("development instance identity", () => {
       worktreeSeed: "worktree-two",
     });
 
-    expect(first.key).not.toBe(second.key);
+    expect(first.instanceKey).not.toBe(second.instanceKey);
     expect(first.identifier).not.toBe(second.identifier);
     expect(first.productName).not.toBe(second.productName);
     expect(first.port).not.toBe(second.port);

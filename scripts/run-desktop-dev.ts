@@ -26,6 +26,11 @@ const generatedConfigDirectory = join(
   ".dev-instance",
 );
 const generatedConfigPath = join(generatedConfigDirectory, "tauri.conf.json");
+const generatedConfigArgument = join(
+  "src-tauri",
+  ".dev-instance",
+  "tauri.conf.json",
+);
 const portLockDirectory = join(tmpdir(), "touchgrassbar-dev-ports");
 
 type RunnerOptions = {
@@ -262,7 +267,7 @@ async function main() {
 
     await writeTauriConfig(instance);
     const child = Bun.spawn(
-      ["bun", "run", "tauri", "dev", "--config", generatedConfigPath],
+      ["bun", "run", "tauri", "dev", "--config", generatedConfigArgument],
       {
         cwd: desktopRoot,
         env: environment,

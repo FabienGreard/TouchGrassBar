@@ -8,7 +8,7 @@ import { DevFixtureSwitcher } from "@/dev/dev-preview-switcher";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("development preview switcher", () => {
-  test("offers compact panel fixture controls", () => {
+  test("presents the development identity and compact panel controls", () => {
     const devInstance = resolveDevInstance({
       branch: "agent/issue-47-identify-dev-instances",
       worktreeSeed: "semantic-proof",
@@ -42,7 +42,9 @@ describe("development preview switcher", () => {
     expect(document.title).toBe(
       "TouchGrassBar · #47 Identify dev instances",
     );
-    expect(document.documentElement.dataset.devInstance).toBe(devInstance.key);
+    expect(document.documentElement.dataset.devInstance).toBe(
+      devInstance.instanceKey,
+    );
     expect(setProperty).toHaveBeenCalledWith(
       "--dev-instance-accent",
       expect.any(String),

@@ -1,7 +1,3 @@
-html[data-dev-instance] [data-slot="brand-wordmark"] strong {
-  color: var(--dev-instance-accent);
-}
-
 html[data-dev-instance] [data-slot="brand-wordmark"] strong::after {
   background-color: var(--dev-instance-accent);
 }
