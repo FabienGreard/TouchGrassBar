@@ -44,7 +44,7 @@ pub struct SanitizedDesktopStateV1 {
     pub profile: SanitizedProfileOutcome,
 }
 
-#[derive(Clone, Debug, JsonSchema, Serialize)]
+#[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(
     rename_all = "kebab-case",
     rename_all_fields = "camelCase",
@@ -1068,8 +1068,16 @@ impl NativeCore {
         self.inner.projection.snapshot()
     }
 
-    pub fn invalidate_projection(&self) -> Result<(), &'static str> {
-        self.inner.commit_refreshed_snapshot(self.panel_state()?)
+    pub fn set_profile_outcome(
+        &self,
+        profile: SanitizedProfileOutcome,
+    ) -> Result<(), &'static str> {
+        let mut state = self.panel_state()?;
+        if state.profile == profile {
+            return Ok(());
+        }
+        state.profile = profile;
+        self.inner.commit_refreshed_snapshot(state)
     }
 
     pub fn revision_notices(&self) -> Result<Receiver<RevisionNotice>, &'static str> {

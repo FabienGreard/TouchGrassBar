@@ -10,6 +10,7 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use crate::lifecycle::DesktopLifecycle;
+use crate::sanitized::SanitizedProfileOutcome;
 
 const KEYCHAIN_SERVICE: &str = "app.touchgrass.bar.identity";
 const PROFILE_MUTATION: &str = "tokenmaxxers:ensureIdentity";
@@ -255,6 +256,10 @@ trait IdentityTransport: Send + Sync {
     fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), IdentityError>;
 }
 
+fn profile_mutation_payload(display_name: String) -> BTreeMap<String, Value> {
+    BTreeMap::from([("displayName".to_owned(), Value::String(display_name))])
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RecoveryPresentation {
     pub touch_grass_id: String,
@@ -287,10 +292,10 @@ impl IdentityCoordinator {
         }
     }
 
-    pub(crate) fn retry_pending(&self) -> Result<bool, IdentityError> {
+    pub(crate) fn retry_pending(&self) -> Result<Option<SanitizedProfileOutcome>, IdentityError> {
         let Some(request) = self.lifecycle.identity_request() else {
             self.present_pending_disclosure()?;
-            return Ok(false);
+            return Ok(None);
         };
 
         self.ensure_secret(SecretKind::InstallationCredential, 52)?;
@@ -340,8 +345,12 @@ impl IdentityCoordinator {
             .mark_identity_ready(&prepared.touch_grass_id)
             .map_err(IdentityError)?;
         let _ = self.custody.delete(SecretKind::SignupPreparation);
-        self.present_pending_disclosure()?;
-        Ok(true)
+        let profile = SanitizedProfileOutcome::Ready {
+            display_name: request.display_name,
+            touch_grass_id: prepared.touch_grass_id,
+        };
+        let _ = self.present_pending_disclosure();
+        Ok(Some(profile))
     }
 
     pub(crate) fn present_pending_disclosure(&self) -> Result<(), IdentityError> {
@@ -560,10 +569,7 @@ impl IdentityTransport for HttpIdentityTransport {
                 });
                 client.set_auth_callback(Some(fetcher)).await;
                 let result = client
-                    .mutation(
-                        PROFILE_MUTATION,
-                        BTreeMap::from([("displayName".to_owned(), Value::String(display_name))]),
-                    )
+                    .mutation(PROFILE_MUTATION, profile_mutation_payload(display_name))
                     .await
                     .map_err(|_| IdentityError("Profile creation pending"))?;
                 client.set_auth_callback(None).await;
@@ -590,7 +596,10 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::lifecycle::{LaunchAtLoginState, ProfileProvisioningStatus, ProviderPresenceStatus};
+    use crate::{
+        lifecycle::{LaunchAtLoginState, ProfileProvisioningStatus, ProviderPresenceStatus},
+        sanitized::NativeCore,
+    };
 
     use super::*;
 
@@ -639,6 +648,7 @@ mod tests {
         exchange_count: AtomicUsize,
         fixed_profile_mutation: AtomicBool,
         last_jwt: Mutex<Option<String>>,
+        private_sentinels: [Secret; 3],
     }
 
     impl FakeTransport {
@@ -659,6 +669,17 @@ mod tests {
                 exchange_count: AtomicUsize::new(0),
                 fixed_profile_mutation: AtomicBool::new(false),
                 last_jwt: Mutex::new(None),
+                private_sentinels: [
+                    Secret::new(format!("COOKIE_SENTINEL_{}", generate_secret(18).unwrap())),
+                    Secret::new(format!(
+                        "PRIVATE_PATH_SENTINEL_{}",
+                        generate_secret(18).unwrap()
+                    )),
+                    Secret::new(format!(
+                        "RAW_RESPONSE_SENTINEL_{}",
+                        generate_secret(18).unwrap()
+                    )),
+                ],
             }
         }
 
@@ -676,6 +697,13 @@ mod tests {
 
         fn used_fixed_profile_mutation(&self) -> bool {
             self.fixed_profile_mutation.load(Ordering::SeqCst)
+        }
+
+        fn private_values(&self) -> Vec<String> {
+            self.private_sentinels
+                .iter()
+                .map(|value| value.expose().to_owned())
+                .collect()
         }
     }
 
@@ -813,7 +841,11 @@ mod tests {
         }
 
         fn public_boundaries(&self) -> Vec<String> {
+            let core = NativeCore::unavailable();
+            core.set_profile_outcome(self.lifecycle.sanitized_profile_outcome())
+                .unwrap();
             vec![
+                serde_json::to_string(&core.panel_state().unwrap()).unwrap(),
                 serde_json::to_string(&self.lifecycle.bootstrap_state()).unwrap(),
                 serde_json::to_string(
                     &self
@@ -821,11 +853,14 @@ mod tests {
                         .settings_state(LaunchAtLoginState::Unavailable),
                 )
                 .unwrap(),
-                serde_json::json!({
-                    "sync": { "profileProvisioning": "ready" }
-                })
+                serde_json::Value::from(Value::Object(profile_mutation_payload(
+                    "Fabien".to_owned(),
+                )))
                 .to_string(),
-                "touchgrassbar_metric identity_attempt=complete".to_owned(),
+                crate::identity_attempt_metric(&Result::<(), IdentityError>::Err(IdentityError(
+                    "cookie credential private path raw response",
+                )))
+                .to_owned(),
             ]
         }
 
@@ -845,6 +880,7 @@ mod tests {
             }
             let mut private_values = self.custody.private_values();
             private_values.push(self.transport.signup_proof.expose().to_owned());
+            private_values.extend(self.transport.private_values());
             if let Some(jwt) = self.transport.last_jwt.lock().unwrap().clone() {
                 private_values.push(jwt);
             }
@@ -880,8 +916,13 @@ mod tests {
         let fixture = IdentityFixture::new();
         fixture.complete_bootstrap();
         fixture.presenter.set_available(false);
-        fixture.coordinator.retry_pending().unwrap();
+        let outcome = fixture.coordinator.retry_pending().unwrap();
+        assert!(matches!(
+            outcome,
+            Some(SanitizedProfileOutcome::Ready { .. })
+        ));
         assert!(fixture.presenter.take_last().is_none());
+        assert!(fixture.lifecycle.pending_recovery_disclosure());
 
         fixture.presenter.set_available(true);
         fixture.coordinator.present_pending_disclosure().unwrap();
@@ -900,6 +941,7 @@ mod tests {
             state.touch_grass_id.as_deref(),
             Some(fixture.transport.touch_grass_id())
         );
+        assert!(!fixture.lifecycle.pending_recovery_disclosure());
         assert!(!serialized.contains(presentation.recovery_key.expose()));
     }
 
