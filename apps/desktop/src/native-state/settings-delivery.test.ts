@@ -21,13 +21,14 @@ const settingsState = {
 const fakeRecoveryKey = "2".repeat(48);
 
 function ignoreNavigation(_payload: unknown) {}
+function ignoreRecoveryClear() {}
 
 function port(): SettingsPort & {
   clearRecovery: () => void;
   navigate: (payload: unknown) => void;
 } {
   let navigate = ignoreNavigation;
-  let clearRecovery = () => undefined;
+  let clearRecovery = ignoreRecoveryClear;
   return {
     clearRecovery: () => clearRecovery(),
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
