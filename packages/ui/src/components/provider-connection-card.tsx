@@ -54,7 +54,7 @@ function ProviderConnectionCard({
   return (
     <article
       className={cn(
-        "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-4 gap-y-3 rounded-[14px] border border-sheet-line bg-white/42 px-5 py-4 shadow-surface",
+        "grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-4 gap-y-3 rounded-[12px] border border-sheet-line bg-white/42 px-5 py-4 shadow-surface",
         className,
       )}
       data-slot="provider-connection-card"
