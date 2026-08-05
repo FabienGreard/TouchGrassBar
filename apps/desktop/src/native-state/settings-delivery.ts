@@ -43,6 +43,7 @@ type SettingsDeliverySnapshot = {
 };
 
 function createSettingsDelivery(port: SettingsPort) {
+  let activationRevision = 0;
   let current: SettingsDeliverySnapshot = {
     phase: "loading",
     recoveryKey: null,
@@ -153,20 +154,35 @@ function createSettingsDelivery(port: SettingsPort) {
 
   return {
     async activate() {
+      const revision = ++activationRevision;
       const [navigation, recoveryClear] = await Promise.all([
         port.subscribeNavigation(receiveNavigation),
         port.subscribeRecoveryClear(clearRecoveryKey),
       ]);
+      const stopSubscriptions = () => {
+        if (navigation.ok) navigation.value();
+        if (recoveryClear.ok) recoveryClear.value();
+      };
+      if (revision !== activationRevision) {
+        stopSubscriptions();
+        return () => undefined;
+      }
       recoveryClearAvailable = recoveryClear.ok;
       await read();
+      if (revision !== activationRevision) {
+        stopSubscriptions();
+        return () => undefined;
+      }
       if (!recoveryClearAvailable) {
         publish({ ...current, phase: "degraded" });
       }
       return () => {
-        recoveryClearAvailable = false;
-        clearRecoveryKey();
-        if (navigation.ok) navigation.value();
-        if (recoveryClear.ok) recoveryClear.value();
+        if (revision === activationRevision) {
+          activationRevision += 1;
+          recoveryClearAvailable = false;
+          clearRecoveryKey();
+        }
+        stopSubscriptions();
       };
     },
     getSnapshot: () => current,

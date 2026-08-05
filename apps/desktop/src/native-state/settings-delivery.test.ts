@@ -239,6 +239,43 @@ describe("Settings delivery", () => {
     expect(native.revealRecoveryKey).not.toHaveBeenCalled();
   });
 
+  test("stale activation disposal cannot disable the current clear stream", async () => {
+    const native = port();
+    const subscriptions: Array<{
+      resolve: (outcome: SettingsPortOutcome<() => void>) => void;
+      stop: ReturnType<typeof vi.fn>;
+    }> = [];
+    native.subscribeRecoveryClear = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<() => void>>((resolve) => {
+          subscriptions.push({ resolve, stop: vi.fn() });
+        }),
+    );
+    const delivery = createSettingsDelivery(native);
+
+    const staleActivation = delivery.activate();
+    const currentActivation = delivery.activate();
+    await vi.waitFor(() => expect(subscriptions).toHaveLength(2));
+    subscriptions[1]!.resolve({
+      ok: true,
+      value: subscriptions[1]!.stop as () => void,
+    });
+    const disposeCurrent = await currentActivation;
+    subscriptions[0]!.resolve({
+      ok: true,
+      value: subscriptions[0]!.stop as () => void,
+    });
+    const disposeStale = await staleActivation;
+
+    disposeStale();
+    expect(subscriptions[0]!.stop).toHaveBeenCalledOnce();
+    expect(await delivery.revealRecoveryKey()).toBe(true);
+
+    disposeCurrent();
+    expect(subscriptions[1]!.stop).toHaveBeenCalledOnce();
+    expect(await delivery.revealRecoveryKey()).toBe(false);
+  });
+
   test("a changed Profile recovery context clears the revealed key", async () => {
     const native = port();
     native.read = vi
