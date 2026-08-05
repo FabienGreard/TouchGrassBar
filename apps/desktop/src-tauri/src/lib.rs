@@ -1,9 +1,13 @@
 #[cfg(debug_assertions)]
 mod dev_instance;
 pub mod lifecycle;
+mod network;
 pub mod sanitized;
 
-use std::{env, time::Instant};
+use std::{
+    env, thread,
+    time::{Duration, Instant},
+};
 
 use lifecycle::{
     BootstrapStateV1, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
@@ -14,7 +18,7 @@ use sanitized::{
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    Position, Rect, Size, State, WebviewWindow,
+    Position, Rect, RunEvent, Size, State, WebviewWindow,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -27,6 +31,7 @@ const ONBOARDING_LABEL: &str = "onboarding";
 const PANEL_WIDTH: f64 = 402.0;
 const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
+const NETWORK_MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
 
@@ -155,6 +160,10 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
         return Ok(());
     }
 
+    if let Some(core) = app.try_state::<NativeCore>() {
+        let _ = core.request_stale_panel_refresh();
+    }
+
     let scale_factor = panel.scale_factor()?;
     let tray = frame_for_rect(tray_rect, scale_factor);
     let monitor = monitor_for_tray(&panel, tray)?;
@@ -253,6 +262,25 @@ fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
         .request_refresh()
         .map_err(str::to_owned)?;
     Ok(())
+}
+
+fn start_network_recovery_monitor(core: NativeCore) -> Result<(), std::io::Error> {
+    thread::Builder::new()
+        .name("network-recovery-monitor".to_owned())
+        .spawn(move || {
+            let mut previous = network::is_reachable();
+            loop {
+                thread::sleep(NETWORK_MONITOR_INTERVAL);
+                let current = network::is_reachable();
+                if previous == Some(false) && current == Some(true) {
+                    let _ = core.request_network_recovery_refresh();
+                }
+                if current.is_some() {
+                    previous = current;
+                }
+            }
+        })
+        .map(|_| ())
 }
 
 fn require_settings(window: &WebviewWindow) -> Result<(), String> {
@@ -360,7 +388,6 @@ pub fn run() {
                 }
             },
         ))
-        .manage(NativeCore::unavailable())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -380,19 +407,25 @@ pub fn run() {
             set_launch_at_login
         ])
         .setup(move |app| {
-            let lifecycle = app
+            let database_path = app
                 .path()
                 .app_data_dir()
                 .ok()
-                .and_then(|directory| {
-                    DesktopLifecycle::open(&directory.join("touchgrassbar.sqlite3")).ok()
-                })
+                .map(|directory| directory.join("touchgrassbar.sqlite3"));
+            let lifecycle = database_path
+                .as_deref()
+                .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
+            let core = database_path
+                .as_deref()
+                .and_then(|path| NativeCore::open(path).ok())
+                .unwrap_or_else(NativeCore::unavailable);
             let show_bootstrap = should_show_bootstrap_on_start(
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,
             );
             app.manage(lifecycle);
+            app.manage(core.clone());
 
             #[cfg(debug_assertions)]
             let development_instance = dev_instance::DevelopmentInstance::from_environment();
@@ -422,10 +455,7 @@ pub fn run() {
                 }
             }
 
-            let revision_notices = app
-                .state::<NativeCore>()
-                .revision_notices()
-                .map_err(std::io::Error::other)?;
+            let revision_notices = core.revision_notices().map_err(std::io::Error::other)?;
             let revision_notice_app = app.handle().clone();
             std::thread::Builder::new()
                 .name("sanitized-state-revision-notices".to_owned())
@@ -435,6 +465,10 @@ pub fn run() {
                             .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
                     }
                 })?;
+            core.start_scheduler().map_err(std::io::Error::other)?;
+            start_network_recovery_monitor(core.clone())?;
+            core.request_launch_refresh()
+                .map_err(std::io::Error::other)?;
 
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
@@ -535,7 +569,13 @@ pub fn run() {
         app.set_dock_visibility(false);
     }
 
-    app.run(|_, _| {});
+    app.run(|app, event| {
+        if matches!(event, RunEvent::Resumed)
+            && let Some(core) = app.try_state::<NativeCore>()
+        {
+            let _ = core.request_wake_refresh();
+        }
+    });
 }
 
 #[cfg(test)]
