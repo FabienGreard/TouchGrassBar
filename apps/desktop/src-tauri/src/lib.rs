@@ -28,6 +28,31 @@ const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
 
+#[derive(Clone, Debug, PartialEq)]
+struct DevelopmentInstance {
+    label: String,
+    tag: String,
+}
+
+#[cfg(debug_assertions)]
+fn bounded_development_value(value: String, limit: usize) -> Option<String> {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let value = value.chars().take(limit).collect::<String>();
+    (!value.is_empty()).then_some(value)
+}
+
+#[cfg(debug_assertions)]
+fn development_instance() -> Option<DevelopmentInstance> {
+    let label = bounded_development_value(env::var("TOUCHGRASS_DEV_INSTANCE_LABEL").ok()?, 36)?;
+    let tag = bounded_development_value(env::var("TOUCHGRASS_DEV_INSTANCE_TAG").ok()?, 8)?;
+    Some(DevelopmentInstance { label, tag })
+}
+
+#[cfg(not(debug_assertions))]
+fn development_instance() -> Option<DevelopmentInstance> {
+    None
+}
+
 #[cfg(target_os = "macos")]
 fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
@@ -392,6 +417,19 @@ pub fn run() {
             );
             app.manage(lifecycle);
 
+            let development_instance = development_instance();
+            if let Some(instance) = development_instance.as_ref() {
+                for (label, title) in [
+                    (PANEL_LABEL, "TouchGrassBar"),
+                    (SETTINGS_LABEL, "TouchGrassBar Settings"),
+                    (ONBOARDING_LABEL, "Welcome to TouchGrassBar"),
+                ] {
+                    if let Some(window) = app.get_webview_window(label) {
+                        window.set_title(&format!("{title} · {}", instance.label))?;
+                    }
+                }
+            }
+
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
                 panel.set_always_on_top(true)?;
@@ -422,15 +460,23 @@ pub fn run() {
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit TouchGrassBar").build(app)?;
+            let quit_label = development_instance.as_ref().map_or_else(
+                || "Quit TouchGrassBar".to_owned(),
+                |instance| format!("Quit TouchGrassBar · {}", instance.tag),
+            );
+            let quit = MenuItemBuilder::with_id("quit", quit_label).build(app)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let menu = MenuBuilder::new(app)
                 .items(&[&refresh, &settings, &profile, &separator, &quit])
                 .build()?;
 
             let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
-            TrayIconBuilder::with_id("touchgrassbar")
-                .tooltip("TouchGrassBar")
+            let tray_tooltip = development_instance.as_ref().map_or_else(
+                || "TouchGrassBar".to_owned(),
+                |instance| format!("TouchGrassBar · {}", instance.label),
+            );
+            let mut tray_builder = TrayIconBuilder::with_id("touchgrassbar")
+                .tooltip(tray_tooltip)
                 .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
@@ -464,8 +510,11 @@ pub fn run() {
                             );
                         }
                     }
-                })
-                .build(app)?;
+                });
+            if let Some(instance) = development_instance.as_ref() {
+                tray_builder = tray_builder.title(&instance.tag);
+            }
+            tray_builder.build(app)?;
 
             if show_bootstrap {
                 show_onboarding(app.handle())?;

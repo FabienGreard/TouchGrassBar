@@ -23,6 +23,17 @@ bun quality
 bun desktop
 ```
 
+`bun desktop` derives a visible development-instance label and color from the
+current worktree and branch. It also selects an isolated localhost port and
+native application identifier so parallel worktrees can run together. Use
+`bun desktop:preview` for the browser-only preview. Override the visible values
+when needed:
+
+```sh
+bun desktop --label "Cache refresh" --accent violet
+bun desktop:preview --label "Cache refresh" --accent violet
+```
+
 All JavaScript and TypeScript dependency management and scripts run through Bun. TypeScript tests use Vitest; native tests use Cargo. Rust is limited to the Tauri native core.
 
 Read [CONTEXT.md](./CONTEXT.md), [the product definition](./docs/product.md), and [the architecture](./docs/architecture.md) before changing domain behavior.

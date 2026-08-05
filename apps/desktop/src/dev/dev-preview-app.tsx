@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { App } from "@/App";
 import "@/dev/dev-preview.css";
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
 import { DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
+import { DevInstanceBadge } from "@/dev/dev-instance-badge";
+import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
+import { currentDevInstance } from "@/dev/dev-instance";
 import { RecoverySheetPreview } from "@/dev/recovery-sheet-preview";
 import {
   currentProfile,
@@ -17,6 +20,7 @@ import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-de
 document.documentElement.dataset.desktopPreview = "true";
 
 function DevPreviewApp() {
+  const [devInstance] = useState(currentDevInstance);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
@@ -32,6 +36,12 @@ function DevPreviewApp() {
       createBrowserSanitizedDesktopStateAdapter(scenario.fixture),
     ),
   );
+
+  useEffect(() => {
+    if (devInstance) {
+      applyDevInstanceDocument(devInstance, scenario.surface);
+    }
+  }, [devInstance, scenario.surface]);
   const hasCurrentPanelPresentation =
     scenario.fixture === "current" || scenario.fixture === "update";
   const panelPresentation = hasCurrentPanelPresentation
@@ -107,6 +117,9 @@ function DevPreviewApp() {
   return (
     <>
       {surface}
+      {devInstance ? (
+        <DevInstanceBadge instance={devInstance} surface={scenario.surface} />
+      ) : null}
       <RecoverySheetPreview
         onOpenChange={setRecoveryOpen}
         open={recoveryOpen}
@@ -114,6 +127,7 @@ function DevPreviewApp() {
       <DevPreviewSwitcher
         activeFixture={scenario.fixture}
         activeSurface={scenario.surface}
+        devInstance={devInstance}
         onboardingCodexPreviewState={
           scenario.surface === "onboarding"
             ? scenario.onboarding.codexState

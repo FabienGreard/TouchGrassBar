@@ -1,0 +1,25 @@
+html[data-dev-instance] body::before {
+  position: fixed;
+  z-index: 60;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: var(--dev-instance-accent);
+  content: "";
+  pointer-events: none;
+}
+
+html[data-desktop-preview][data-dev-instance]
+  [data-dev-instance-surface="panel"] {
+  top: 36px;
+  right: calc(50% - 149px);
+}
+
+html[data-desktop-preview][data-dev-instance]
+  [data-dev-instance-surface="settings"],
+html[data-desktop-preview][data-dev-instance]
+  [data-dev-instance-surface="onboarding"] {
+  top: 40px;
+  right: max(24px, calc(50% - 368px));
+}

@@ -23,6 +23,32 @@ function render(application: ReactNode) {
   root.render(<StrictMode>{application}</StrictMode>);
 }
 
+function renderNativeSurface(application: ReactNode, surface: DesktopSurface) {
+  if (!import.meta.env.DEV) {
+    render(application);
+    return;
+  }
+
+  void Promise.all([
+    import("@/dev/dev-instance"),
+    import("@/dev/dev-instance-badge"),
+    import("@/dev/dev-instance-document"),
+  ]).then(([{ currentDevInstance }, badgeModule, documentModule]) => {
+    const instance = currentDevInstance();
+    if (!instance) {
+      render(application);
+      return;
+    }
+    documentModule.applyDevInstanceDocument(instance, surface);
+    render(
+      <>
+        {application}
+        <badgeModule.DevInstanceBadge instance={instance} surface={surface} />
+      </>,
+    );
+  });
+}
+
 if (hasNativeRuntime) {
   const label = getCurrentWindow().label;
   const surface: DesktopSurface =
@@ -33,11 +59,12 @@ if (hasNativeRuntime) {
     const stateDelivery = createSanitizedDesktopStateDelivery(
       createTauriSanitizedDesktopStateAdapter(),
     );
-    render(
+    renderNativeSurface(
       <App hasNativeRuntime stateDelivery={stateDelivery} surface="panel" />,
+      surface,
     );
   } else {
-    render(<App hasNativeRuntime surface={surface} />);
+    renderNativeSurface(<App hasNativeRuntime surface={surface} />, surface);
   }
 } else if (import.meta.env.DEV) {
   void import("@/dev/dev-preview-app").then(({ DevPreviewApp }) => {
