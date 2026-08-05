@@ -667,6 +667,14 @@ impl DesktopLifecycle {
             .unwrap_or(false)
     }
 
+    pub(crate) fn bootstrap_completion_ready(&self) -> bool {
+        self.record().is_ok_and(|record| {
+            record.bootstrap == BootstrapStatus::Completed
+                && record.profile_provisioning == ProfileProvisioningStatus::Ready
+                && !record.recovery_disclosure_pending
+        })
+    }
+
     pub(crate) fn ready_touch_grass_id(&self) -> Option<String> {
         let record = self.record().ok()?;
         (record.profile_provisioning == ProfileProvisioningStatus::Ready)
@@ -859,6 +867,21 @@ mod tests {
             relaunched.bootstrap_state().profile_provisioning,
             ProfileProvisioningStatus::ProfilePending
         );
+    }
+
+    #[test]
+    fn bootstrap_completion_requires_profile_ready_and_recovery_disclosure() {
+        let database = TestDatabase::new();
+        let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+
+        lifecycle.complete_bootstrap("Fabien").unwrap();
+        assert!(!lifecycle.bootstrap_completion_ready());
+
+        lifecycle.mark_profile_ready("TG-TEST").unwrap();
+        assert!(!lifecycle.bootstrap_completion_ready());
+
+        lifecycle.mark_recovery_disclosed().unwrap();
+        assert!(lifecycle.bootstrap_completion_ready());
     }
 
     #[test]

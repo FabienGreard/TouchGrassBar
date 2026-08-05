@@ -88,6 +88,7 @@ function StepActions({
   displayName,
   onFinish,
   onStepChange,
+  setupState,
   step,
   submissionState,
 }: {
@@ -95,6 +96,7 @@ function StepActions({
   displayName: string;
   onFinish?: ((displayName: string) => void) | undefined;
   onStepChange: (step: OnboardingStep) => void;
+  setupState: OnboardingSetupState;
   step: OnboardingStep;
   submissionState: OnboardingSubmissionState;
 }) {
@@ -102,6 +104,10 @@ function StepActions({
   const previous = onboardingSteps[index - 1]?.key;
   const next = onboardingSteps[index + 1]?.key;
   const actionLabel = onboardingSteps[index]?.actionLabel;
+  const resolvedActionLabel =
+    step === "finish" && setupState === "profile-pending"
+      ? "Retry Profile creation"
+      : actionLabel;
   const validDisplayName =
     displayName.trim().length > 0 && [...displayName.trim()].length <= 40;
   const disabled = next
@@ -128,9 +134,9 @@ function StepActions({
       <div className="flex items-center gap-3">
         <span aria-live="polite" className="text-[9px] text-sheet-muted">
           {submissionState === "failed"
-            ? "Setup could not be saved. Try again."
+            ? "Profile creation could not finish. Try again."
             : submissionState === "submitting"
-              ? "Saving setup…"
+              ? "Creating your Profile…"
               : ""}
         </span>
         <Button
@@ -143,7 +149,7 @@ function StepActions({
         >
           {submissionState === "submitting" && !next
             ? "Finishing…"
-            : actionLabel}
+            : resolvedActionLabel}
         </Button>
       </div>
     </div>
@@ -269,6 +275,7 @@ function OnboardingScreen({
                 displayName={displayName}
                 onFinish={onFinish}
                 onStepChange={changeStep}
+                setupState={resolvedSetupState}
                 step={step}
                 submissionState={submissionState}
               />

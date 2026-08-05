@@ -13,7 +13,7 @@ function setupCopy(state: OnboardingSetupState) {
   if (state === "profile-pending") {
     return {
       detail:
-        "Creation retries automatically while local provider utility stays available.",
+        "Profile creation did not complete. Retry now, or close this window; TouchGrassBar retries automatically.",
       title: "Profile Pending",
     };
   }

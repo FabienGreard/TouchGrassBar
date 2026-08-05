@@ -15,6 +15,21 @@ describe("onboarding screen", () => {
     const unavailableFinishMarkup = renderToStaticMarkup(
       <OnboardingScreen initialStep="finish" />,
     );
+    const pendingFinishMarkup = renderToStaticMarkup(
+      <OnboardingScreen
+        initialStep="finish"
+        onFinish={() => undefined}
+        setupState="profile-pending"
+      />,
+    );
+    const submittingFinishMarkup = renderToStaticMarkup(
+      <OnboardingScreen
+        initialStep="finish"
+        onFinish={() => undefined}
+        setupState="profile-pending"
+        submissionState="submitting"
+      />,
+    );
 
     expect(markup).toContain('data-slot="native-window"');
     expect(markup).toContain("Connect your providers");
@@ -60,6 +75,10 @@ describe("onboarding screen", () => {
     expect(finishMarkup).not.toContain("Restore it");
     expect(finishMarkup).not.toContain("Recover on this Mac");
     expect(finishMarkup).not.toContain("TG-RK-");
+    expect(pendingFinishMarkup).toMatch(
+      /<button[^>]*>Retry Profile creation<\/button>/,
+    );
+    expect(submittingFinishMarkup).toContain("Creating your Profile…");
     expect(markup).toMatch(/<button[^>]*>Continue<\/button>/);
     expect(markup).not.toContain("Confirm your providers.");
   });

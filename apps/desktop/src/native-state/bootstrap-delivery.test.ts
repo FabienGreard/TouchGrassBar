@@ -34,7 +34,7 @@ function port(): BootstrapPort {
 }
 
 describe("bootstrap delivery", () => {
-  test("validates native provider presence and completes as Profile Pending", async () => {
+  test("keeps onboarding visible while Profile creation is Pending", async () => {
     const native = port();
     const delivery = createBootstrapDelivery(native);
 
@@ -47,7 +47,7 @@ describe("bootstrap delivery", () => {
 
     expect(await delivery.complete("  Fabien  ")).toBe(true);
     expect(native.complete).toHaveBeenCalledWith("Fabien");
-    expect(native.hide).toHaveBeenCalledOnce();
+    expect(native.hide).not.toHaveBeenCalled();
     expect(delivery.getSnapshot()).toMatchObject({
       phase: "ready",
       snapshot: {
@@ -56,6 +56,24 @@ describe("bootstrap delivery", () => {
       },
       submitting: false,
     });
+  });
+
+  test("closes onboarding after Profile creation is Ready", async () => {
+    const native = port();
+    native.complete = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        ...bootstrapState,
+        bootstrap: "completed",
+        displayName: "Fabien",
+        profileProvisioning: "ready",
+      },
+    }));
+    const delivery = createBootstrapDelivery(native);
+    await delivery.read();
+
+    expect(await delivery.complete("Fabien")).toBe(true);
+    expect(native.hide).toHaveBeenCalledOnce();
   });
 
   test("coalesces duplicate completion and closes invalid or raw native shapes", async () => {
@@ -83,6 +101,15 @@ describe("bootstrap delivery", () => {
 
   test("fails closed when the completed onboarding surface cannot close", async () => {
     const native = port();
+    native.complete = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        ...bootstrapState,
+        bootstrap: "completed",
+        displayName: "Fabien",
+        profileProvisioning: "ready",
+      },
+    }));
     native.hide = vi.fn(async () => ({
       fault: { code: "surface-unavailable" as const },
       ok: false as const,

@@ -277,6 +277,7 @@ impl ProfileRetryRequest {
 #[derive(Clone)]
 struct ProfileRuntime {
     coordinator: Arc<std::sync::Mutex<profile::ProfileCoordinator>>,
+    core: NativeCore,
     lifecycle: DesktopLifecycle,
     retry: ProfileRetryMailbox,
 }
@@ -292,9 +293,15 @@ impl ProfileRuntime {
         let coordinator = Arc::new(std::sync::Mutex::new(profile::production_coordinator(
             lifecycle, presenter,
         )));
-        let retry_coordinator = Arc::clone(&coordinator);
         let (retry, requests) = ProfileRetryMailbox::new();
         let worker_retry = retry.clone();
+        let runtime = Self {
+            coordinator,
+            core: app.state::<NativeCore>().inner().clone(),
+            lifecycle: runtime_lifecycle,
+            retry,
+        };
+        let worker_runtime = runtime.clone();
         std::thread::Builder::new()
             .name("profile-provisioning-retry".to_owned())
             .spawn(move || {
@@ -309,28 +316,38 @@ impl ProfileRuntime {
                         Err(mpsc::RecvTimeoutError::Timeout) => ProfileRetryRequest::Automatic,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    let Ok(coordinator) = retry_coordinator.lock() else {
-                        eprintln!("touchgrassbar_metric profile_attempt=pending");
-                        continue;
-                    };
-                    let attempt = coordinator.retry_pending(request.audience());
-                    if let Ok(Some(profile)) = &attempt {
-                        let _ = app
-                            .state::<NativeCore>()
-                            .set_profile_outcome(profile.clone());
-                    }
-                    eprintln!("{}", profile_attempt_metric(&attempt));
+                    let _ = worker_runtime.attempt(request.audience());
                 }
             })?;
-        Ok(Self {
-            coordinator,
-            lifecycle: runtime_lifecycle,
-            retry,
-        })
+        Ok(runtime)
     }
 
     fn trigger(&self) {
         self.retry.request(ProfileRetryRequest::Automatic);
+    }
+
+    fn attempt(
+        &self,
+        audience: RecoveryPresentationAudience,
+    ) -> Result<Option<SanitizedProfileOutcome>, String> {
+        let attempt = self
+            .coordinator
+            .lock()
+            .map_err(|_| "Profile Pending".to_owned())?
+            .retry_pending(audience)
+            .map_err(|_| "Profile Pending".to_owned());
+        eprintln!("{}", profile_attempt_metric(&attempt));
+        let profile = attempt?;
+        if let Some(profile) = &profile {
+            self.core
+                .set_profile_outcome(profile.clone())
+                .map_err(str::to_owned)?;
+        }
+        Ok(profile)
+    }
+
+    fn attempt_now(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
+        self.attempt(RecoveryPresentationAudience::EligibleForeground)
     }
 
     fn trigger_from_profile_settings(&self, authorization: SettingsProfileAuthorization) {
@@ -641,20 +658,33 @@ fn get_bootstrap_state(
 }
 
 #[tauri::command]
-fn complete_bootstrap(
+async fn complete_bootstrap(
     window: WebviewWindow,
-    lifecycle: State<'_, DesktopLifecycle>,
-    profile_runtime: State<'_, ProfileRuntime>,
-    core: State<'_, NativeCore>,
+    app: AppHandle,
     display_name: String,
 ) -> Result<BootstrapStateV2, String> {
     require_onboarding(&window)?;
-    let state = lifecycle
-        .complete_bootstrap(&display_name)
-        .map_err(str::to_owned)?;
-    core.set_profile_outcome(SanitizedProfileOutcome::ProfilePending)
-        .map_err(str::to_owned)?;
-    profile_runtime.trigger();
+    let lifecycle = app.state::<DesktopLifecycle>().inner().clone();
+    let current = lifecycle.bootstrap_state();
+    if lifecycle.bootstrap_completion_ready() {
+        return Ok(current);
+    }
+    if current.profile_provisioning != lifecycle::ProfileProvisioningStatus::Ready {
+        lifecycle
+            .complete_bootstrap(&display_name)
+            .map_err(str::to_owned)?;
+        app.state::<NativeCore>()
+            .set_profile_outcome(SanitizedProfileOutcome::ProfilePending)
+            .map_err(str::to_owned)?;
+    }
+    let runtime = app.state::<ProfileRuntime>().inner().clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || runtime.attempt_now()).await;
+    let state = lifecycle.bootstrap_state();
+    if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready
+        && !lifecycle.bootstrap_completion_ready()
+    {
+        return Err("Recovery Key pending".to_owned());
+    }
     Ok(state)
 }
 
