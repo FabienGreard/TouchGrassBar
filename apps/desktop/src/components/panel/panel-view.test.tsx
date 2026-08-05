@@ -63,7 +63,7 @@ describe("panel states", () => {
     expect(markup).not.toContain("— users");
     expect(markup).toContain('data-slot="doomerboard-viewport"');
     expect(markup).toContain("h-[180px]");
-    expect(markup).toContain("Tokenmaxxers");
+    expect(markup).toContain("Friends");
     expect(markup).not.toContain("My Tokenmaxxers");
     expect(markup).toContain("Global");
     expect(markup).toMatch(
@@ -211,8 +211,10 @@ describe("panel states", () => {
   test("offers an honest invitation state for an empty Tokenmaxxers board", () => {
     const markup = renderToStaticMarkup(<TokenmaxxersEmpty />);
 
-    expect(markup).toContain("Your board is waiting");
-    expect(markup).toContain("Add people by TouchGrass ID to compare scores.");
+    expect(markup).toContain("Your leaderboard is lonely");
+    expect(markup).toContain(
+      "Invite friends by TouchGrass ID to compare scores.",
+    );
     expect(markup).toContain("Add a Tokenmaxxer");
     expect(markup).toContain('data-icon-provider="hugeicons"');
     expect(markup).toContain('data-icon-tone="default"');
@@ -231,11 +233,11 @@ describe("panel states", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Tokenmaxxers rankings"');
+    expect(markup).toContain('aria-label="Friends rankings"');
     expect(markup).toContain("TOUCH GRASS?");
     expect(markup).toContain("STILL ONLINE");
     expect(markup).toContain("Fabien");
-    expect(markup).not.toContain("Your board is waiting");
+    expect(markup).not.toContain("Your leaderboard is lonely");
   });
 
   test("does not infer the current Profile from fixture conventions", () => {

@@ -209,7 +209,7 @@ function DoomerboardToolbar({
           onValueChange={(value) => onAudienceChange(value as Audience)}
           value={audience}
         >
-          <SegmentedControlItem value="mine">Tokenmaxxers</SegmentedControlItem>
+          <SegmentedControlItem value="mine">Friends</SegmentedControlItem>
           <SegmentedControlItem value="global">Global</SegmentedControlItem>
         </SegmentedControl>
       </div>
@@ -245,13 +245,13 @@ function TokenmaxxersEmpty({
 }) {
   return (
     <div
-      aria-label="Tokenmaxxers empty"
+      aria-label="Friends empty"
       className="mx-3.5 flex h-full flex-col items-center justify-center rounded-[12px] border border-dashed border-pearl-line bg-pearl-surface px-6 py-3.5 text-center shadow-surface contrast-more:border-pearl-ink"
     >
       <InviteIcon aria-hidden="true" size={20} />
-      <strong className="mt-1.5 text-[10px]">Your board is waiting</strong>
+      <strong className="mt-1.5 text-[10px]">Your leaderboard is lonely</strong>
       <small className="mt-0.5 max-w-[260px] text-[8px] leading-3.5 text-pearl-muted contrast-more:text-pearl-ink">
-        Add people by TouchGrass ID to compare scores.
+        Invite friends by TouchGrass ID to compare scores.
       </small>
       <div className="mt-2">
         <Button onClick={onAddTokenmaxxer} type="button">
@@ -379,9 +379,9 @@ function Doomerboard({
     <section
       aria-label={
         tokenmaxxersMatchSelection
-          ? "Tokenmaxxers rankings"
+          ? "Friends rankings"
           : tokenmaxxersEmpty
-            ? "Tokenmaxxers empty"
+            ? "Friends empty"
             : globalRowsMatchSelection
               ? "Doomerboard rankings"
               : "Doomerboard unavailable"

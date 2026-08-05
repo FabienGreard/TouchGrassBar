@@ -50,7 +50,7 @@ function AddTokenmaxxerDialog({
       >
         <div className="relative px-8 text-center">
           <DialogTitle className="m-0 text-[14px] font-bold">
-            Add a Tokenmaxxer
+            Invite a friend
           </DialogTitle>
           <DialogDescription className="mt-1 mb-0 text-[10px] leading-4 text-pearl-muted contrast-more:text-pearl-ink">
             Enter their TouchGrass ID to add them to your board.
@@ -58,7 +58,7 @@ function AddTokenmaxxerDialog({
           <span className="absolute -top-1 -right-1 text-[16px]">
             <DialogClose asChild>
               <Button
-                aria-label="Close add Tokenmaxxer dialog"
+                aria-label="Close invite friend dialog"
                 size="icon"
                 type="button"
                 variant="ghost"
@@ -102,7 +102,7 @@ function AddTokenmaxxerDialog({
             id="touchgrass-tokenmaxxer-id-help"
           >
             {submitted
-              ? "Tokenmaxxer lookup is not connected yet."
+              ? "Friend lookup is not connected yet."
               : touchGrassId && !valid
                 ? "Use the format TG-ABC123."
                 : "You can find the ID beside their Doomerboard name."}
@@ -114,7 +114,7 @@ function AddTokenmaxxerDialog({
               </Button>
             </DialogClose>
             <Button disabled={!valid} size="default" type="submit">
-              Add Tokenmaxxer
+              Invite friend
             </Button>
           </div>
         </form>
