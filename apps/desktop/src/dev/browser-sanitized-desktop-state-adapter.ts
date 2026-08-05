@@ -3,7 +3,7 @@ import type { BrowserFixtureName } from "@/dev/preview-scenario";
 
 function unavailableFixture(now: Date): unknown {
   return {
-    contractVersion: 1,
+    contractVersion: 2,
     generatedAt: now.toISOString(),
     profile: { status: "not-authorized" },
     providers: [
@@ -50,7 +50,7 @@ function populatedFixture(
   const observedAt = now.toISOString();
 
   return {
-    contractVersion: 1,
+    contractVersion: 2,
     generatedAt: observedAt,
     profile: {
       displayName: "Fabien",

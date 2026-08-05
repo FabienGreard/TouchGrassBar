@@ -9,7 +9,7 @@ import {
 } from "./index";
 
 const unavailableState = {
-  contractVersion: 1,
+  contractVersion: 2,
   generatedAt: "2026-08-03T00:00:00.000Z",
   profile: { status: "not-authorized" },
   revision: "1",
@@ -68,14 +68,14 @@ describe("public contracts", () => {
     ] as const;
     const bootstrap = {
       bootstrap: "completed",
-      contractVersion: 1,
+      contractVersion: 2,
       displayName: "Fabien",
       persistence: "available",
       profileProvisioning: "profile-pending",
       providers,
     } as const;
     const settings = {
-      contractVersion: 1,
+      contractVersion: 2,
       displayName: "Fabien",
       launchAtLogin: { availability: "available", enabled: true },
       profileProvisioning: "profile-pending",
@@ -90,7 +90,7 @@ describe("public contracts", () => {
         .success,
     ).toBe(false);
     expect(
-      settingsStateSchema.safeParse({ ...settings, contractVersion: 2 })
+      settingsStateSchema.safeParse({ ...settings, contractVersion: 3 })
         .success,
     ).toBe(false);
   });
@@ -98,7 +98,7 @@ describe("public contracts", () => {
   test.each([
     [
       "an unknown contract version",
-      { ...unavailableState, contractVersion: 2 },
+      { ...unavailableState, contractVersion: 3 },
     ],
     [
       "raw provider material",

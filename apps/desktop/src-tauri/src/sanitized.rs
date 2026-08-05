@@ -22,7 +22,7 @@ use crate::lifecycle::{
     settings_navigation_schema, settings_state_schema,
 };
 
-pub const CONTRACT_VERSION: u8 = 1;
+pub const CONTRACT_VERSION: u8 = 2;
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
 const READ_MODEL_SCHEMA_VERSION: i64 = 1;
 const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";

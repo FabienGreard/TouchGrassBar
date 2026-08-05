@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::sanitized::{CodingProvider, SanitizedProfileOutcome};
 
-pub const LIFECYCLE_CONTRACT_VERSION: u8 = 1;
+pub const LIFECYCLE_CONTRACT_VERSION: u8 = 2;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
 const DATABASE_SCHEMA_VERSION: i64 = 3;
 const PUBLIC_BACKFILL_WINDOW_DAYS: u8 = 30;

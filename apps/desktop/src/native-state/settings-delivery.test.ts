@@ -6,7 +6,7 @@ import {
 } from "@/native-state/settings-delivery";
 
 const settingsState = {
-  contractVersion: 1,
+  contractVersion: 2,
   displayName: "Fabien",
   launchAtLogin: { availability: "available", enabled: false },
   profileProvisioning: "profile-pending",

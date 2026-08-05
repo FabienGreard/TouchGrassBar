@@ -7,7 +7,7 @@ import {
 
 const bootstrapState = {
   bootstrap: "required",
-  contractVersion: 1,
+  contractVersion: 2,
   displayName: null,
   persistence: "available",
   profileProvisioning: "not-authorized",

@@ -11,7 +11,7 @@ import {
 
 function state(revision: string): SanitizedDesktopState {
   return {
-    contractVersion: 1,
+    contractVersion: 2,
     generatedAt: "2026-08-03T00:00:00.000Z",
     profile: { status: "not-authorized" },
     revision,
