@@ -8,8 +8,11 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
+import type * as auth_touchgrassSignup from "../auth/touchgrassSignup.js";
 import type * as crons from "../crons.js";
 import type * as doomerboards from "../doomerboards.js";
+import type * as http from "../http.js";
 import type * as internal_migrations from "../internal/migrations.js";
 import type * as internal_recompute from "../internal/recompute.js";
 import type * as model_aggregate from "../model/aggregate.js";
@@ -28,8 +31,11 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
+  "auth/touchgrassSignup": typeof auth_touchgrassSignup;
   crons: typeof crons;
   doomerboards: typeof doomerboards;
+  http: typeof http;
   "internal/migrations": typeof internal_migrations;
   "internal/recompute": typeof internal_recompute;
   "model/aggregate": typeof model_aggregate;
@@ -69,8 +75,8 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  betterAuth: import("@convex-dev/better-auth/_generated/component.js").ComponentApi<"betterAuth">;
   doomerboard: import("@convex-dev/aggregate/_generated/component.js").ComponentApi<"doomerboard">;
+  betterAuth: import("@convex-dev/better-auth/_generated/component.js").ComponentApi<"betterAuth">;
   migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
   rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
 };

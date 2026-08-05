@@ -62,6 +62,20 @@ Convex owns public Tokenmaxxer Profiles, Active Mac authority, revisioned Usage 
 
 The backend rejects raw provider material and accepts only validated cumulative daily snapshots from the current Active Mac. Convex calculates all daily totals, combined scores, ranks, and public projections. Global Doomerboards use one namespaced Aggregate component; My Tokenmaxxers uses bounded indexed reads and in-memory sorting. A rate limiter protects synchronization, migrations own repairs, and a daily UTC cron expires rolling windows.
 
+#### Development deployment isolation
+
+Each agent worktree owns one anonymous local Convex deployment. Its backend
+state and generated environment values remain in the ignored `.convex/` and
+`.env.local` files of that worktree. The setup generates a private local Better
+Auth secret and maps the local Convex and Auth site URLs into the native build.
+The local backend process must remain active during native Profile tests.
+
+Default repository development commands never select the personal cloud dev or
+production deployment. A cloud deployment requires an explicit target and
+human authorization. Local success is development evidence only and never
+qualifies as Backend Readiness Evidence. This decision is recorded in
+[ADR 0014](adr/0014-isolate-agent-worktrees-with-local-convex.md).
+
 ### `packages/contracts`
 
 Generated TypeScript types and strict runtime validators only for sanitized Rust-to-React Tauri IPC. Sanitized Rust DTOs are canonical; generation is deterministic and CI fails when checked-in bindings drift. Convex owns and generates its separate API and data-model types.

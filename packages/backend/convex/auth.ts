@@ -10,11 +10,17 @@ import { env } from "./_generated/server";
 import authConfig from "./auth.config";
 import { touchGrassSignup } from "./auth/touchgrassSignup";
 
+declare const process: {
+  env: { readonly CONVEX_SITE_URL?: string };
+};
+
 export const authComponent = createClient<DataModel>(components.betterAuth);
 
-export const createAuth = (ctx: GenericCtx<DataModel>) =>
-  betterAuth({
-    baseURL: env.CONVEX_SITE_URL,
+export const createAuth = (ctx: GenericCtx<DataModel>) => {
+  const convexSiteUrl = process.env.CONVEX_SITE_URL;
+  if (!convexSiteUrl) throw new Error("CONVEX_SITE_URL is unavailable");
+  return betterAuth({
+    baseURL: convexSiteUrl,
     database: authComponent.adapter(ctx),
     disabledPaths: ["/is-username-available"],
     emailAndPassword: {
@@ -42,6 +48,7 @@ export const createAuth = (ctx: GenericCtx<DataModel>) =>
     ],
     secret: env.BETTER_AUTH_SECRET,
   });
+};
 
 export async function requireAuthUser(ctx: GenericCtx<DataModel>) {
   const user = await authComponent.getAuthUser(ctx);

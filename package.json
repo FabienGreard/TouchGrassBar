@@ -17,7 +17,8 @@
     "typecheck": "bunx --bun turbo run typecheck",
     "quality": "bun run contracts:check && bun run quality:code",
     "quality:code": "bun run lint && bun run typecheck && bun run test && bun run build && bun run doctor",
-    "convex:dev": "bunx --bun convex dev",
+    "convex:dev": "bun scripts/convex-local.ts dev",
+    "convex:setup:local": "bun scripts/convex-local.ts setup",
     "convex:codegen": "bunx --bun convex codegen",
     "convex:ai:status": "bunx --bun convex ai-files status",
     "contracts:generate": "bun scripts/generate-native-contract.ts",
@@ -29,9 +30,11 @@
     "desktop:reset-local": "bun scripts/reset-desktop-local.ts",
     "landing": "bun run --cwd apps/landing dev",
     "storybook:ui": "bun run --cwd packages/ui storybook",
-    "storybook:ui:build": "bun run --cwd packages/ui build-storybook"
+    "storybook:ui:build": "bun run --cwd packages/ui build-storybook",
+    "worktree:setup": "bun install --frozen-lockfile && bun run convex:setup:local"
   },
   "devDependencies": {
+    "convex": "1.43.0",
     "oxlint": "1.76.0",
     "react-doctor": "0.9.3",
     "turbo": "2.10.8",

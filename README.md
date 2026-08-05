@@ -18,8 +18,9 @@ TouchGrassBar is an open, playful consumer project. It is not an employee-monito
 Install [Bun](https://bun.sh), the stable Rust toolchain, and the macOS prerequisites for Tauri, then run:
 
 ```sh
-bun install
+bun run worktree:setup
 bun quality
+bun run convex:dev
 bun desktop
 ```
 
@@ -33,6 +34,12 @@ when needed:
 bun desktop --label "Cache refresh" --accent violet
 bun desktop:preview --label "Cache refresh" --accent violet
 ```
+
+Run `bun run convex:dev` and `bun desktop` in separate terminals. The setup
+creates one anonymous local Convex deployment for the current worktree and
+generates worktree-local native backend URLs. It does not use the personal
+cloud dev deployment. The local backend must remain active while Profile or
+social features are tested.
 
 All JavaScript and TypeScript dependency management and scripts run through Bun. TypeScript tests use Vitest; native tests use Cargo. Rust is limited to the Tauri native core.
 

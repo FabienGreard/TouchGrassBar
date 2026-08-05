@@ -1,10 +1,5 @@
 ## Baseline instructions
 
-Always use ASD-STE100 Simplified Technical English.
-
-Always read all applicable `CONTEXT.md` files before you start work. Use the
-ubiquitous language that these files define.
-
 ## Agent skills
 
 ### Issue tracker
@@ -22,6 +17,18 @@ Use the single-context domain documentation layout. See `docs/agents/domain.md`.
 <!-- convex-ai-start -->
 
 This project uses [Convex](https://convex.dev) as its backend.
+
+Agent worktrees must use an anonymous worktree-local Convex deployment. The
+personal cloud dev deployment is not an agent sandbox. Run
+`bun run worktree:setup` when a worktree is created, or run
+`bun run convex:setup:local` after dependencies are installed. Keep
+`bun run convex:dev` active while the native app uses the local backend.
+
+The setup stores isolated state in ignored `.convex/` and `.env.local` files.
+Never copy or commit these files. Never select `dev`, use `--prod`, or run a
+cloud deployment or environment command unless the user explicitly authorizes
+that exact target and action. See the
+[Convex Agent Mode local-backend contract](https://docs.convex.dev/cli/agent-mode#local-backend).
 
 When working on Convex code, **always read
 `packages/backend/convex/_generated/ai/guidelines.md` first** for important guidelines on

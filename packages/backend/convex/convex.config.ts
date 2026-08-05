@@ -8,7 +8,6 @@ import { v } from "convex/values";
 const app = defineApp({
   env: {
     BETTER_AUTH_SECRET: v.string(),
-    CONVEX_SITE_URL: v.string(),
   },
 });
 app.use(aggregate, { name: "doomerboard" });

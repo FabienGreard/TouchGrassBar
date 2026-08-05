@@ -19,11 +19,6 @@ import {
 } from "convex/server";
 
 /**
- * Typesafe environment variables declared in `convex.config.ts`.
- */
-export const env = process.env;
-
-/**
  * Define a query in this Convex app's public API.
  *
  * This function will be allowed to read your Convex database and will be accessible from the client.
@@ -96,3 +91,8 @@ export const internalAction = internalActionGeneric;
  * @returns The wrapped function. Import this function from `convex/http.js` and route it to hook it up.
  */
 export const httpAction = httpActionGeneric;
+
+/**
+ * Typesafe environment variables declared in `convex.config.ts`.
+ */
+export const env = process.env;
