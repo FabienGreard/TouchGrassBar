@@ -4,6 +4,7 @@ import { App } from "@/App";
 import "@/dev/dev-preview.css";
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
 import { DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
+import { RecoverySheetPreview } from "@/dev/recovery-sheet-preview";
 import {
   currentProfile,
   currentDoomerboardRows,
@@ -18,6 +19,7 @@ document.documentElement.dataset.desktopPreview = "true";
 function DevPreviewApp() {
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [profile, setProfile] = useState({
     displayName: "Fabien",
     touchGrassId: "#TG-7K4P9D",
@@ -74,6 +76,7 @@ function DevPreviewApp() {
             onOpenSource: () => undefined,
             onProfileDisplayNameChange: (displayName) =>
               setProfile((current) => ({ ...current, displayName })),
+            onStartRecovery: () => setRecoveryOpen(true),
             pendingDisplayName: profile.displayName,
             profile:
               scenario.settingsProfileState === "identity-pending"
@@ -104,6 +107,10 @@ function DevPreviewApp() {
   return (
     <>
       {surface}
+      <RecoverySheetPreview
+        onOpenChange={setRecoveryOpen}
+        open={recoveryOpen}
+      />
       <DevPreviewSwitcher
         activeFixture={scenario.fixture}
         activeSurface={scenario.surface}

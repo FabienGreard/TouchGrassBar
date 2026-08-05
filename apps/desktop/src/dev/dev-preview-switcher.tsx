@@ -37,6 +37,32 @@ const defaultPreviewPanelState: PreviewPanelState = {
   mode: "minimized",
   position: null,
 };
+const previewPanelStateStorageKey = "touchgrass:dev-preview-panel-state";
+
+function readPreviewPanelState(): PreviewPanelState {
+  if (typeof window === "undefined") return defaultPreviewPanelState;
+
+  try {
+    const stored = JSON.parse(
+      window.sessionStorage.getItem(previewPanelStateStorageKey) ?? "null",
+    ) as Partial<PreviewPanelState> | null;
+    if (!stored || (stored.mode !== "expanded" && stored.mode !== "minimized")) {
+      return defaultPreviewPanelState;
+    }
+    const position = stored.position;
+    if (
+      position !== null &&
+      (!position ||
+        !Number.isFinite(position.left) ||
+        !Number.isFinite(position.top))
+    ) {
+      return defaultPreviewPanelState;
+    }
+    return { mode: stored.mode, position };
+  } catch {
+    return defaultPreviewPanelState;
+  }
+}
 
 function clampPreviewPanelPosition(
   left: number,
@@ -63,9 +89,8 @@ function FixtureSwitcher({
   style,
   ...props
 }: FixtureSwitcherProps) {
-  const [panelState, setPanelState] = useState<PreviewPanelState>(
-    defaultPreviewPanelState,
-  );
+  const [panelState, setPanelState] =
+    useState<PreviewPanelState>(readPreviewPanelState);
   const panelRef = useRef<HTMLElement>(null);
   const dragRef = useRef<{
     height: number;
@@ -104,6 +129,17 @@ function FixtureSwitcher({
       window.removeEventListener("resize", keepPanelInsideViewport);
     };
   }, [panelState.mode]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        previewPanelStateStorageKey,
+        JSON.stringify(panelState),
+      );
+    } catch {
+      // The development control remains usable when storage is unavailable.
+    }
+  }, [panelState]);
 
   function startDragging(event: ReactPointerEvent<HTMLButtonElement>) {
     const bounds = panelRef.current?.getBoundingClientRect();

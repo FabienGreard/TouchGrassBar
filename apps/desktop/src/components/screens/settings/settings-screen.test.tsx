@@ -24,6 +24,9 @@ describe("settings screen", () => {
 
   test("keeps Profile recovery secrets outside React", () => {
     const markup = renderToStaticMarkup(<ProfileSettings />);
+    const developmentMarkup = renderToStaticMarkup(
+      <ProfileSettings onStartRecovery={() => undefined} />,
+    );
 
     expect(markup).toContain("Profile unavailable");
     expect(markup).not.toContain("Fabien");
@@ -40,6 +43,10 @@ describe("settings screen", () => {
     );
     expect(markup).not.toContain("Recover on this Mac");
     expect(markup).not.toContain("TG-RK-");
+    expect(developmentMarkup).toMatch(
+      /<button[^>]*>Enter Recovery Key…<\/button>/,
+    );
+    expect(developmentMarkup).not.toContain('type="password"');
   });
 
   test("presents Identity Pending without inventing a public ID", () => {

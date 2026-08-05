@@ -10,11 +10,13 @@ type SettingsProfile = {
 
 function ProfileSettings({
   onDisplayNameChange,
+  onStartRecovery,
   pendingDisplayName,
   profile = null,
   profileProvisioning = "not-authorized",
 }: {
   onDisplayNameChange?: ((displayName: string) => void) | undefined;
+  onStartRecovery?: (() => void) | undefined;
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
   profileProvisioning?: ProfileProvisioningStatus | undefined;
@@ -70,7 +72,12 @@ function ProfileSettings({
             Enter the Recovery Key stored on your other Mac to restore its
             Profile here.
           </small>
-          <Button className="mt-3" disabled type="button">
+          <Button
+            className="mt-3"
+            disabled={onStartRecovery === undefined}
+            onClick={onStartRecovery}
+            type="button"
+          >
             Enter Recovery Key…
           </Button>
         </div>

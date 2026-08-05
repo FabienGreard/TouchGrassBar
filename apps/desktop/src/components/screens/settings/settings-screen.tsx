@@ -50,6 +50,7 @@ type SettingsScreenProps = {
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
   onOpenSource?: (() => void) | undefined;
   onProfileDisplayNameChange?: ((displayName: string) => void) | undefined;
+  onStartRecovery?: (() => void) | undefined;
   onSectionChange?: ((section: SettingsSection) => void) | undefined;
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
@@ -70,6 +71,7 @@ function SettingsScreen({
   onLaunchAtLoginChange,
   onOpenSource,
   onProfileDisplayNameChange,
+  onStartRecovery,
   onSectionChange,
   pendingDisplayName = null,
   profile = null,
@@ -174,6 +176,7 @@ function SettingsScreen({
           {section === "profile" ? (
             <ProfileSettings
               onDisplayNameChange={onProfileDisplayNameChange}
+              onStartRecovery={onStartRecovery}
               pendingDisplayName={pendingDisplayName}
               profile={profile}
               profileProvisioning={profileProvisioning}
