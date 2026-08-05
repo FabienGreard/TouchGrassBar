@@ -1,7 +1,11 @@
 import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
-import { ensureTokenmaxxer, tokenmaxxerForSubject } from "./model/identity";
+import { requireAuthUser } from "./auth";
+import {
+  ensureTokenmaxxer,
+  tokenmaxxerForAuthUser,
+} from "./model/identity";
 
 const publicTokenmaxxer = v.object({
   displayName: v.string(),
@@ -16,18 +20,26 @@ function cleanDisplayName(displayName: string) {
   return cleaned;
 }
 
+function touchGrassIdForAuthUser(user: { username?: unknown }) {
+  if (
+    typeof user.username !== "string" ||
+    !/^TG-[A-HJ-NP-Z2-9]{6}$/.test(user.username)
+  ) {
+    throw new Error("authenticated Profile has no TouchGrass ID");
+  }
+  return user.username;
+}
+
 export const ensureIdentity = mutation({
   args: { displayName: v.string() },
   returns: publicTokenmaxxer,
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("authentication required");
-    }
+    const authUser = await requireAuthUser(ctx);
     const tokenmaxxer = await ensureTokenmaxxer(
       ctx,
-      identity.subject,
+      authUser.id,
       cleanDisplayName(args.displayName),
+      touchGrassIdForAuthUser(authUser),
     );
     return {
       displayName: tokenmaxxer.displayName,
@@ -40,11 +52,8 @@ export const updateDisplayName = mutation({
   args: { displayName: v.string() },
   returns: publicTokenmaxxer,
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("authentication required");
-    }
-    const tokenmaxxer = await tokenmaxxerForSubject(ctx, identity.subject);
+    const authUser = await requireAuthUser(ctx);
+    const tokenmaxxer = await tokenmaxxerForAuthUser(ctx, authUser.id);
     if (!tokenmaxxer) {
       throw new Error("TouchGrass identity not found");
     }
@@ -72,11 +81,8 @@ export const addToMyTokenmaxxers = mutation({
   args: { touchGrassId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("authentication required");
-    }
-    const owner = await tokenmaxxerForSubject(ctx, identity.subject);
+    const authUser = await requireAuthUser(ctx);
+    const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
     if (!owner) {
       throw new Error("TouchGrass identity not found");
     }
@@ -107,11 +113,8 @@ export const removeFromMyTokenmaxxers = mutation({
   args: { touchGrassId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("authentication required");
-    }
-    const owner = await tokenmaxxerForSubject(ctx, identity.subject);
+    const authUser = await requireAuthUser(ctx);
+    const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
     if (!owner) {
       throw new Error("TouchGrass identity not found");
     }

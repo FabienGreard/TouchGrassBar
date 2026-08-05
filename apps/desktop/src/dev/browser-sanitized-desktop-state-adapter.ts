@@ -5,6 +5,7 @@ function unavailableFixture(now: Date): unknown {
   return {
     contractVersion: 1,
     generatedAt: now.toISOString(),
+    profile: { status: "not-authorized" },
     providers: [
       { availability: "unavailable", provider: "codex", quotaLanes: [] },
       { availability: "unavailable", provider: "claude", quotaLanes: [] },
@@ -51,6 +52,11 @@ function populatedFixture(
   return {
     contractVersion: 1,
     generatedAt: observedAt,
+    profile: {
+      displayName: "Fabien",
+      status: "ready",
+      touchGrassId: "TG-7K4P9D",
+    },
     providers: [
       {
         availability,

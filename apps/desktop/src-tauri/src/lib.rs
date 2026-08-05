@@ -1,11 +1,17 @@
 #[cfg(debug_assertions)]
 mod dev_instance;
+pub mod identity;
 pub mod lifecycle;
 mod network;
 pub mod sanitized;
 
-use std::{env, time::Instant};
+use std::{
+    env,
+    sync::{Arc, mpsc},
+    time::{Duration, Instant},
+};
 
+use identity::{RecoveryPresentation, RecoverySheetPresenter};
 use lifecycle::{
     BootstrapStateV1, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
     SettingsNavigationRequest, SettingsSection, SettingsStateV1,
@@ -31,6 +37,90 @@ const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
+
+#[cfg(target_os = "macos")]
+struct NativeRecoverySheetPresenter {
+    app: AppHandle,
+}
+
+#[cfg(target_os = "macos")]
+impl RecoverySheetPresenter for NativeRecoverySheetPresenter {
+    fn present(&self, presentation: RecoveryPresentation) -> bool {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        if self
+            .app
+            .run_on_main_thread(move || {
+                use objc2::MainThreadMarker;
+                use objc2_app_kit::{NSAlert, NSColor};
+                use objc2_foundation::NSString;
+
+                let Some(main_thread) = MainThreadMarker::new() else {
+                    let _ = sender.send(false);
+                    return;
+                };
+                let alert = NSAlert::new(main_thread);
+                alert.setMessageText(&NSString::from_str("Save your Recovery Key"));
+                alert.setInformativeText(&NSString::from_str(&format!(
+                    "TouchGrass ID\n{}\n\nRecovery Key\n{}\n\nStore this key in a safe place. TouchGrassBar cannot recover it for you.",
+                    presentation.touch_grass_id,
+                    presentation.recovery_key.expose()
+                )));
+                let saved = alert.addButtonWithTitle(&NSString::from_str("I saved my Recovery Key"));
+                let ivory = NSColor::colorWithSRGBRed_green_blue_alpha(
+                    0.992, 0.984, 0.953, 1.0,
+                );
+                let green = NSColor::colorWithSRGBRed_green_blue_alpha(
+                    0.098, 0.455, 0.239, 1.0,
+                );
+                alert.window().setBackgroundColor(Some(&ivory));
+                saved.setContentTintColor(Some(&green));
+                let _ = alert.runModal();
+                let _ = sender.send(true);
+            })
+            .is_err()
+        {
+            return false;
+        }
+        receiver.recv().unwrap_or(false)
+    }
+}
+
+#[derive(Clone)]
+struct IdentityRuntime {
+    retry: mpsc::SyncSender<()>,
+}
+
+impl IdentityRuntime {
+    #[cfg(target_os = "macos")]
+    fn start(lifecycle: DesktopLifecycle, app: AppHandle) -> std::io::Result<Self> {
+        let presenter = Arc::new(NativeRecoverySheetPresenter { app: app.clone() });
+        let coordinator = identity::production_coordinator(lifecycle, presenter);
+        let (retry, requests) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("profile-identity-retry".to_owned())
+            .spawn(move || {
+                while let Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) =
+                    requests.recv_timeout(Duration::from_secs(300))
+                {
+                    let status = match coordinator.retry_pending() {
+                        Ok(profile_changed) => {
+                            if profile_changed {
+                                let _ = app.state::<NativeCore>().invalidate_projection();
+                            }
+                            "complete"
+                        }
+                        Err(_) => "pending",
+                    };
+                    eprintln!("touchgrassbar_metric identity_attempt={status}");
+                }
+            })?;
+        Ok(Self { retry })
+    }
+
+    fn trigger(&self) {
+        let _ = self.retry.try_send(());
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
@@ -239,9 +329,12 @@ fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
+    lifecycle: State<'_, DesktopLifecycle>,
 ) -> Result<SanitizedDesktopStateV1, String> {
     require_panel(&window)?;
-    core.panel_state().map_err(str::to_owned)
+    let mut state = core.panel_state().map_err(str::to_owned)?;
+    state.profile = lifecycle.sanitized_profile_outcome();
+    Ok(state)
 }
 
 #[tauri::command]
@@ -292,6 +385,7 @@ fn get_bootstrap_state(
 fn complete_bootstrap(
     window: WebviewWindow,
     lifecycle: State<'_, DesktopLifecycle>,
+    identity_runtime: State<'_, IdentityRuntime>,
     display_name: String,
 ) -> Result<BootstrapStateV1, String> {
     require_onboarding(&window)?;
@@ -301,6 +395,7 @@ fn complete_bootstrap(
     window
         .hide()
         .map_err(|_| "bootstrap window unavailable".to_owned())?;
+    identity_runtime.trigger();
     Ok(state)
 }
 
@@ -402,7 +497,7 @@ pub fn run() {
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,
             );
-            app.manage(lifecycle);
+            app.manage(lifecycle.clone());
             app.manage(core.clone());
 
             #[cfg(debug_assertions)]
@@ -419,6 +514,9 @@ pub fn run() {
                     }
                 }
             }
+            let identity_runtime = IdentityRuntime::start(lifecycle, app.handle().clone())?;
+            identity_runtime.trigger();
+            app.manage(identity_runtime);
 
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
@@ -522,6 +620,11 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(true) => {
+                if let Some(identity_runtime) = window.app_handle().try_state::<IdentityRuntime>() {
+                    identity_runtime.trigger();
+                }
+            }
             tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {
                 let _ = window.hide();
             }

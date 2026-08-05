@@ -9,11 +9,11 @@ use rusqlite::{Connection, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::Serialize;
 
-use crate::sanitized::CodingProvider;
+use crate::sanitized::{CodingProvider, SanitizedProfileOutcome};
 
 pub const LIFECYCLE_CONTRACT_VERSION: u8 = 1;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
-const DATABASE_SCHEMA_VERSION: i64 = 1;
+const DATABASE_SCHEMA_VERSION: i64 = 2;
 const PUBLIC_BACKFILL_WINDOW_DAYS: u8 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -79,6 +79,7 @@ pub struct BootstrapStateV1 {
     pub profile_provisioning: ProfileProvisioningStatus,
     pub persistence: PersistenceStatus,
     pub display_name: Option<String>,
+    pub touch_grass_id: Option<String>,
     pub providers: [ProviderPresence; 2],
 }
 
@@ -90,6 +91,7 @@ pub struct SettingsStateV1 {
     pub launch_at_login: LaunchAtLoginState,
     pub profile_provisioning: ProfileProvisioningStatus,
     pub display_name: Option<String>,
+    pub touch_grass_id: Option<String>,
     pub providers: [ProviderPresence; 2],
 }
 
@@ -106,6 +108,8 @@ struct LifecycleRecord {
     identity_retry_pending: bool,
     backfill_window_days: Option<u8>,
     display_name: Option<String>,
+    touch_grass_id: Option<String>,
+    recovery_disclosure_pending: bool,
 }
 
 impl LifecycleRecord {
@@ -117,6 +121,8 @@ impl LifecycleRecord {
             identity_retry_pending: false,
             backfill_window_days: None,
             display_name: None,
+            touch_grass_id: None,
+            recovery_disclosure_pending: false,
         }
     }
 }
@@ -156,7 +162,9 @@ impl SqliteLifecycleStore {
                        public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
                        identity_retry_pending INTEGER NOT NULL CHECK (identity_retry_pending IN (0, 1)),
                        backfill_window_days INTEGER CHECK (backfill_window_days = 30),
-                       display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40))
+                       display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40)),
+                       touch_grass_id TEXT,
+                       recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1))
                      );
                      INSERT INTO lifecycle_state (
                        singleton,
@@ -167,7 +175,17 @@ impl SqliteLifecycleStore {
                        backfill_window_days,
                        display_name
                      ) VALUES (1, 0, 'not-authorized', 0, 0, NULL, NULL);
-                     PRAGMA user_version = 1;
+                     PRAGMA user_version = 2;
+                     COMMIT;",
+                )
+                .map_err(|_| "lifecycle persistence unavailable")?;
+        } else if version == 1 {
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     ALTER TABLE lifecycle_state ADD COLUMN touch_grass_id TEXT;
+                     ALTER TABLE lifecycle_state ADD COLUMN recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1));
+                     PRAGMA user_version = 2;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
@@ -188,7 +206,9 @@ impl SqliteLifecycleStore {
                    public_participation_authorized,
                    identity_retry_pending,
                    backfill_window_days,
-                   display_name
+                   display_name,
+                   touch_grass_id,
+                   recovery_disclosure_pending
                  FROM lifecycle_state
                  WHERE singleton = 1",
                 [],
@@ -199,6 +219,8 @@ impl SqliteLifecycleStore {
                     let identity_retry_pending = row.get::<_, i64>(3)?;
                     let backfill_window_days = row.get::<_, Option<u8>>(4)?;
                     let display_name = row.get::<_, Option<String>>(5)?;
+                    let touch_grass_id = row.get::<_, Option<String>>(6)?;
+                    let recovery_disclosure_pending = row.get::<_, i64>(7)?;
                     Ok((
                         bootstrap_completed,
                         profile_provisioning,
@@ -206,6 +228,8 @@ impl SqliteLifecycleStore {
                         identity_retry_pending,
                         backfill_window_days,
                         display_name,
+                        touch_grass_id,
+                        recovery_disclosure_pending,
                     ))
                 },
             )
@@ -229,6 +253,8 @@ impl SqliteLifecycleStore {
             identity_retry_pending: record.3 == 1,
             backfill_window_days: record.4,
             display_name: record.5,
+            touch_grass_id: record.6,
+            recovery_disclosure_pending: record.7 == 1,
         };
 
         let valid = match (result.bootstrap, result.profile_provisioning) {
@@ -237,18 +263,23 @@ impl SqliteLifecycleStore {
                     && !result.identity_retry_pending
                     && result.backfill_window_days.is_none()
                     && result.display_name.is_none()
+                    && result.touch_grass_id.is_none()
+                    && !result.recovery_disclosure_pending
             }
             (BootstrapStatus::Completed, ProfileProvisioningStatus::IdentityPending) => {
                 result.public_participation_authorized
                     && result.identity_retry_pending
                     && result.backfill_window_days == Some(PUBLIC_BACKFILL_WINDOW_DAYS)
                     && result.display_name.is_some()
+                    && result.touch_grass_id.is_none()
+                    && !result.recovery_disclosure_pending
             }
             (BootstrapStatus::Completed, ProfileProvisioningStatus::Ready) => {
                 result.public_participation_authorized
                     && !result.identity_retry_pending
                     && result.backfill_window_days == Some(PUBLIC_BACKFILL_WINDOW_DAYS)
                     && result.display_name.is_some()
+                    && result.touch_grass_id.is_some()
             }
             _ => false,
         };
@@ -289,6 +320,46 @@ impl SqliteLifecycleStore {
         drop(connection);
         self.read()
     }
+
+    fn mark_identity_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
+        let updated = self
+            .connection
+            .lock()
+            .map_err(|_| "lifecycle persistence unavailable")?
+            .execute(
+                "UPDATE lifecycle_state
+                 SET profile_provisioning = 'ready',
+                     identity_retry_pending = 0,
+                     touch_grass_id = ?1,
+                     recovery_disclosure_pending = 1
+                 WHERE singleton = 1
+                   AND profile_provisioning = 'identity-pending'",
+                [touch_grass_id],
+            )
+            .map_err(|_| "lifecycle persistence unavailable")?;
+        (updated == 1)
+            .then_some(())
+            .ok_or("identity lifecycle unavailable")
+    }
+
+    fn mark_recovery_disclosed(&self) -> Result<(), &'static str> {
+        self.connection
+            .lock()
+            .map_err(|_| "lifecycle persistence unavailable")?
+            .execute(
+                "UPDATE lifecycle_state
+                 SET recovery_disclosure_pending = 0
+                 WHERE singleton = 1 AND profile_provisioning = 'ready'",
+                [],
+            )
+            .map_err(|_| "lifecycle persistence unavailable")?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct IdentityRequest {
+    pub display_name: String,
 }
 
 trait ProviderPresenceDetector: Send + Sync {
@@ -415,6 +486,7 @@ impl DesktopLifecycle {
             profile_provisioning: record.profile_provisioning,
             persistence,
             display_name: record.display_name,
+            touch_grass_id: record.touch_grass_id,
             providers: self.providers(),
         }
     }
@@ -425,6 +497,62 @@ impl DesktopLifecycle {
                 store.complete_bootstrap(display_name)?;
                 Ok(self.bootstrap_state())
             }
+            LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
+        }
+    }
+
+    pub(crate) fn identity_request(&self) -> Option<IdentityRequest> {
+        let record = self.record().ok()?;
+        (record.profile_provisioning == ProfileProvisioningStatus::IdentityPending
+            && record.identity_retry_pending)
+            .then(|| IdentityRequest {
+                display_name: record
+                    .display_name
+                    .expect("pending Profile has a display name"),
+            })
+    }
+
+    pub(crate) fn mark_identity_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
+        match &self.inner.store {
+            LifecycleStore::Persistent(store) => store.mark_identity_ready(touch_grass_id),
+            LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
+        }
+    }
+
+    pub(crate) fn pending_recovery_disclosure(&self) -> bool {
+        self.record()
+            .map(|record| record.recovery_disclosure_pending)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn ready_touch_grass_id(&self) -> Option<String> {
+        let record = self.record().ok()?;
+        (record.profile_provisioning == ProfileProvisioningStatus::Ready)
+            .then_some(record.touch_grass_id)
+            .flatten()
+    }
+
+    pub(crate) fn sanitized_profile_outcome(&self) -> SanitizedProfileOutcome {
+        let Ok(record) = self.record() else {
+            return SanitizedProfileOutcome::NotAuthorized;
+        };
+        match record.profile_provisioning {
+            ProfileProvisioningStatus::NotAuthorized => SanitizedProfileOutcome::NotAuthorized,
+            ProfileProvisioningStatus::IdentityPending => SanitizedProfileOutcome::IdentityPending,
+            ProfileProvisioningStatus::Ready => SanitizedProfileOutcome::Ready {
+                display_name: record
+                    .display_name
+                    .expect("ready Profile has a display name"),
+                touch_grass_id: record
+                    .touch_grass_id
+                    .expect("ready Profile has a TouchGrass ID"),
+            },
+        }
+    }
+
+    pub(crate) fn mark_recovery_disclosed(&self) -> Result<(), &'static str> {
+        match &self.inner.store {
+            LifecycleStore::Persistent(store) => store.mark_recovery_disclosed(),
             LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
         }
     }
@@ -445,6 +573,7 @@ impl DesktopLifecycle {
             launch_at_login,
             profile_provisioning: record.profile_provisioning,
             display_name: record.display_name,
+            touch_grass_id: record.touch_grass_id,
             providers: self.providers(),
         }
     }
