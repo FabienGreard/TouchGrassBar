@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { DevFixtureSwitcher } from "@/dev/dev-preview-switcher";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("development preview switcher", () => {
   test("offers compact panel fixture controls", () => {
@@ -24,5 +26,28 @@ describe("development preview switcher", () => {
     expect(markup).toContain("fixed");
     expect(markup).toContain("bg-menu-glass");
     expect(markup).not.toContain("bg-[#111713e8]");
+  });
+
+  test("restores its expanded state and position after navigation", () => {
+    const getItem = vi.fn(() =>
+      JSON.stringify({
+        mode: "expanded",
+        position: { left: 88, top: 96 },
+      }),
+    );
+    vi.stubGlobal("window", { sessionStorage: { getItem } });
+
+    const markup = renderToStaticMarkup(
+      <DevFixtureSwitcher activeFixture="current" />,
+    );
+
+    expect(getItem).toHaveBeenCalledWith(
+      "touchgrass:dev-preview-panel-state",
+    );
+    expect(markup).toContain('data-state="expanded"');
+    expect(markup).toContain(
+      'style="bottom:auto;left:88px;right:auto;top:96px"',
+    );
+    expect(markup).toContain('aria-label="Minimize development preview"');
   });
 });
