@@ -3,7 +3,6 @@ import {
   Dialog,
   DialogClose,
   DialogContent,
-  DialogDescription,
   DialogTitle,
   Input,
 } from "@touchgrass/ui";
@@ -41,6 +40,7 @@ function AddTokenmaxxerDialog({
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogContent
+        aria-describedby={undefined}
         container={portalContainer}
         onOpenAutoFocus={(event) => {
           event.preventDefault();
@@ -52,9 +52,6 @@ function AddTokenmaxxerDialog({
           <DialogTitle className="m-0 text-[14px] font-bold">
             Invite a friend
           </DialogTitle>
-          <DialogDescription className="mt-1 mb-0 text-[10px] leading-4 text-pearl-muted contrast-more:text-pearl-ink">
-            Enter their TouchGrass ID to add them to your board.
-          </DialogDescription>
           <span className="absolute -top-1 -right-1 text-[16px]">
             <DialogClose asChild>
               <Button
