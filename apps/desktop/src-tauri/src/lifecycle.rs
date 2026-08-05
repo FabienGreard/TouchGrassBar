@@ -13,7 +13,7 @@ use crate::sanitized::{CodingProvider, SanitizedProfileOutcome};
 
 pub const LIFECYCLE_CONTRACT_VERSION: u8 = 2;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
-const DATABASE_SCHEMA_VERSION: i64 = 3;
+const DATABASE_SCHEMA_VERSION: i64 = 4;
 const PUBLIC_BACKFILL_WINDOW_DAYS: u8 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -112,6 +112,10 @@ pub struct SettingsStateV2 {
     pub display_name: Option<String>,
     #[schemars(regex(pattern = r"^[A-F0-9]{3}$"))]
     pub profile_key_id: Option<String>,
+    #[schemars(regex(
+        pattern = r"^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{3}$"
+    ))]
+    pub recovery_key_suffix: Option<String>,
     pub touch_grass_id: Option<String>,
     pub providers: [ProviderPresence; 2],
 }
@@ -196,7 +200,7 @@ impl SqliteLifecycleStore {
                        backfill_window_days,
                        display_name
                      ) VALUES (1, 0, 'not-authorized', 0, 0, NULL, NULL);
-                     PRAGMA user_version = 3;
+                     PRAGMA user_version = 4;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
@@ -243,7 +247,7 @@ impl SqliteLifecycleStore {
                        0
                      FROM lifecycle_state_v1;
                      DROP TABLE lifecycle_state_v1;
-                     PRAGMA user_version = 3;
+                     PRAGMA user_version = 4;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
@@ -290,7 +294,18 @@ impl SqliteLifecycleStore {
                        recovery_disclosure_pending
                      FROM lifecycle_state_v2;
                      DROP TABLE lifecycle_state_v2;
-                     PRAGMA user_version = 3;
+                     PRAGMA user_version = 4;
+                     COMMIT;",
+                )
+                .map_err(|_| "lifecycle persistence unavailable")?;
+        } else if version == 3 {
+            Self::backup_before_migration(connection, path, version)?;
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     UPDATE lifecycle_state
+                     SET recovery_disclosure_pending = 0;
+                     PRAGMA user_version = 4;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
@@ -469,7 +484,7 @@ impl SqliteLifecycleStore {
                  SET profile_provisioning = 'ready',
                      profile_retry_pending = 0,
                      touch_grass_id = ?1,
-                     recovery_disclosure_pending = 1
+                     recovery_disclosure_pending = 0
                  WHERE singleton = 1
                    AND profile_provisioning = 'profile-pending'",
                 [touch_grass_id],
@@ -478,20 +493,6 @@ impl SqliteLifecycleStore {
         (updated == 1)
             .then_some(())
             .ok_or("profile lifecycle unavailable")
-    }
-
-    fn mark_recovery_disclosed(&self) -> Result<(), &'static str> {
-        self.connection
-            .lock()
-            .map_err(|_| "lifecycle persistence unavailable")?
-            .execute(
-                "UPDATE lifecycle_state
-                 SET recovery_disclosure_pending = 0
-                 WHERE singleton = 1 AND profile_provisioning = 'ready'",
-                [],
-            )
-            .map_err(|_| "lifecycle persistence unavailable")?;
-        Ok(())
     }
 }
 
@@ -663,17 +664,10 @@ impl DesktopLifecycle {
         }
     }
 
-    pub(crate) fn pending_recovery_disclosure(&self) -> bool {
-        self.record()
-            .map(|record| record.recovery_disclosure_pending)
-            .unwrap_or(false)
-    }
-
     pub(crate) fn bootstrap_completion_ready(&self) -> bool {
         self.record().is_ok_and(|record| {
             record.bootstrap == BootstrapStatus::Completed
                 && record.profile_provisioning == ProfileProvisioningStatus::Ready
-                && !record.recovery_disclosure_pending
         })
     }
 
@@ -702,13 +696,6 @@ impl DesktopLifecycle {
         }
     }
 
-    pub(crate) fn mark_recovery_disclosed(&self) -> Result<(), &'static str> {
-        match &self.inner.store {
-            LifecycleStore::Persistent(store) => store.mark_recovery_disclosed(),
-            LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
-        }
-    }
-
     pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV2 {
         let record = self
             .record()
@@ -720,6 +707,7 @@ impl DesktopLifecycle {
             profile_provisioning: record.profile_provisioning,
             display_name: record.display_name,
             profile_key_id: None,
+            recovery_key_suffix: None,
             touch_grass_id: record.touch_grass_id,
             providers: self.providers(),
         }
@@ -873,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_completion_requires_profile_ready_and_recovery_disclosure() {
+    fn bootstrap_completion_requires_only_a_ready_profile() {
         let database = TestDatabase::new();
         let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
 
@@ -881,10 +869,8 @@ mod tests {
         assert!(!lifecycle.bootstrap_completion_ready());
 
         lifecycle.mark_profile_ready("TG-TEST").unwrap();
-        assert!(!lifecycle.bootstrap_completion_ready());
-
-        lifecycle.mark_recovery_disclosed().unwrap();
         assert!(lifecycle.bootstrap_completion_ready());
+        assert!(!lifecycle.record().unwrap().recovery_disclosure_pending);
     }
 
     #[test]
@@ -986,6 +972,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(backup_record, ("identity-pending".to_owned(), 1));
+    }
+
+    #[test]
+    fn schema_upgrade_clears_the_retired_onboarding_disclosure() {
+        let database = TestDatabase::new();
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE lifecycle_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   bootstrap_completed INTEGER NOT NULL CHECK (bootstrap_completed IN (0, 1)),
+                   profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'profile-pending', 'ready')),
+                   public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
+                   profile_retry_pending INTEGER NOT NULL CHECK (profile_retry_pending IN (0, 1)),
+                   backfill_window_days INTEGER CHECK (backfill_window_days = 30),
+                   display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40)),
+                   touch_grass_id TEXT,
+                   recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1))
+                 );
+                 INSERT INTO lifecycle_state VALUES (1, 1, 'ready', 1, 0, 30, 'Fabien', 'TG-TEST', 1);
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+
+        assert!(lifecycle.bootstrap_completion_ready());
+        assert!(!lifecycle.record().unwrap().recovery_disclosure_pending);
+        assert!(database.0.with_extension("sqlite3.backup-v3").exists());
     }
 
     #[test]

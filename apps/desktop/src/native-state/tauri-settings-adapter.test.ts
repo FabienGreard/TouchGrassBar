@@ -25,7 +25,6 @@ describe("Tauri Settings adapter", () => {
     await adapter.read();
     await adapter.setLaunchAtLogin(true);
     await adapter.selectSection("profile");
-    await adapter.requestRecoveryDisclosure();
     expect(await adapter.revealRecoveryKey()).toEqual({
       ok: true,
       value: fakeRecoveryKey,
@@ -48,11 +47,6 @@ describe("Tauri Settings adapter", () => {
     );
     expect(bindings.invoke).toHaveBeenNthCalledWith(
       4,
-      "request_recovery_disclosure",
-      undefined,
-    );
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      5,
       "reveal_recovery_key",
       undefined,
     );
@@ -82,10 +76,6 @@ describe("Tauri Settings adapter", () => {
     });
     expect(await adapter.selectSection("profile")).toEqual({
       fault: { code: "settings-section-unavailable" },
-      ok: false,
-    });
-    expect(await adapter.requestRecoveryDisclosure()).toEqual({
-      fault: { code: "recovery-key-unavailable" },
       ok: false,
     });
     expect(await adapter.revealRecoveryKey()).toEqual({

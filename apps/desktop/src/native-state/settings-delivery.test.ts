@@ -28,10 +28,6 @@ function port(): SettingsPort & { navigate: (payload: unknown) => void } {
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
     navigate: (payload) => navigate(payload),
     read: vi.fn(async () => ({ ok: true as const, value: settingsState })),
-    requestRecoveryDisclosure: vi.fn(async () => ({
-      ok: true as const,
-      value: undefined,
-    })),
     revealRecoveryKey: vi.fn(async () => ({
       ok: true as const,
       value: fakeRecoveryKey,
@@ -64,9 +60,6 @@ describe("Settings delivery", () => {
     expect(delivery.getSnapshot()).toMatchObject({
       phase: "ready",
       snapshot: { section: "profile" },
-    });
-    await vi.waitFor(() => {
-      expect(native.requestRecoveryDisclosure).toHaveBeenCalledOnce();
     });
     expect(native.selectSection).not.toHaveBeenCalled();
     native.navigate({ section: "providers", localPath: "/private" });
@@ -182,17 +175,7 @@ describe("Settings delivery", () => {
     await vi.waitFor(() => {
       expect(native.selectSection).toHaveBeenCalledWith("general");
     });
-    expect(native.requestRecoveryDisclosure).not.toHaveBeenCalled();
     expect(native.revealRecoveryKey).not.toHaveBeenCalled();
-
-    native.selectSection = vi.fn(async () => ({
-      ok: true as const,
-      value: undefined,
-    }));
-    delivery.selectSection("profile");
-    await vi.waitFor(() => {
-      expect(native.requestRecoveryDisclosure).toHaveBeenCalledOnce();
-    });
   });
 
   test("preserves the last confirmed toggle when a mutation fails", async () => {

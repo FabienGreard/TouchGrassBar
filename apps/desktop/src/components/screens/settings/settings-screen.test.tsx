@@ -33,6 +33,7 @@ describe("settings screen", () => {
         profile={{
           displayName: "Tester",
           profileKeyId: "A7F",
+          recoveryKeySuffix: "K9m",
           touchGrassId: "TG-234567",
         }}
         profileProvisioning="ready"
@@ -44,6 +45,7 @@ describe("settings screen", () => {
         profile={{
           displayName: "Tester",
           profileKeyId: "A7F",
+          recoveryKeySuffix: "K9m",
           touchGrassId: "TG-234567",
         }}
         profileProvisioning="ready"
@@ -73,13 +75,13 @@ describe("settings screen", () => {
     );
     expect(developmentMarkup).not.toContain('type="password"');
     expect(readyMarkup).toContain("Stored in this Mac’s Keychain.");
-    expect(readyMarkup).toContain('type="password"');
-    expect(readyMarkup).toContain('value="0000000000000"');
-    expect(readyMarkup).toContain("A7F");
+    expect(readyMarkup).toContain('data-slot="input"');
+    expect(readyMarkup).toContain('value="••••••••••••K9m"');
+    expect(readyMarkup).not.toContain("A7F");
     expect(readyMarkup).toMatch(
       /<button[^>]*data-variant="ghost"[^>]*>View<\/button>/,
     );
-    expect(readyMarkup).not.toContain("TG-RK-");
+    expect(readyMarkup).not.toContain("2".repeat(48));
     expect(revealedMarkup).toContain('type="text"');
     expect(revealedMarkup).toContain(`value="${"2".repeat(48)}"`);
     expect(revealedMarkup).toMatch(

@@ -1,12 +1,17 @@
-import { Button, ProfileCard } from "@touchgrass/ui";
+import { Button, Input, ProfileCard } from "@touchgrass/ui";
 import type { ProfileProvisioningStatus } from "@touchgrass/contracts";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { ProfileEditor } from "./profile-editor";
+import {
+  focusAndSelectRecoveryInput,
+  maskRecoveryKeySuffix,
+} from "./recovery-key-input";
 
 type SettingsProfile = {
   displayName: string;
   profileKeyId: string | null;
+  recoveryKeySuffix: string | null;
   touchGrassId: string;
 };
 
@@ -33,6 +38,7 @@ function ProfileSettings({
 }) {
   const pendingName = pendingDisplayName?.trim() || "Your Profile";
   const pendingInitial = pendingName.slice(0, 1).toUpperCase();
+  const recoveryInput = useRef<HTMLInputElement>(null);
   const recoveryKeyVisible = recoveryKey !== null;
   const recoveryKeyUnavailable =
     revealingRecoveryKey ||
@@ -42,6 +48,7 @@ function ProfileSettings({
 
   useEffect(() => {
     if (recoveryKey === null || onHideRecoveryKey === undefined) return;
+    focusAndSelectRecoveryInput(recoveryInput.current);
     const hide = () => onHideRecoveryKey();
     window.addEventListener("resize", hide);
     window.addEventListener("scroll", hide, true);
@@ -119,29 +126,25 @@ function ProfileSettings({
               <small className="mt-0.5 block text-[9px] text-sheet-muted">
                 Stored in this Mac’s Keychain.
               </small>
-              <div
-                aria-disabled={recoveryKeyUnavailable}
-                className="mt-3 flex h-9 items-center rounded-[8px] border border-input bg-white px-3 shadow-control aria-disabled:opacity-50 contrast-more:border-pearl-ink"
-                data-slot="masked-recovery-key"
-              >
-                <input
+              <div className="relative mt-3" data-slot="masked-recovery-key">
+                <Input
                   aria-label="Recovery Key"
                   autoComplete="off"
-                  className="min-w-0 flex-1 border-0 bg-transparent p-0 font-mono text-[10px] text-sheet-ink outline-none"
+                  className="h-12 rounded-[12px] pr-[72px] font-mono tracking-[0.06em]"
+                  disabled={recoveryKeyUnavailable}
                   readOnly
+                  ref={recoveryInput}
                   spellCheck={false}
-                  type={recoveryKeyVisible ? "text" : "password"}
-                  value={recoveryKey ?? "0000000000000"}
+                  type="text"
+                  value={
+                    recoveryKey ??
+                    maskRecoveryKeySuffix(profile.recoveryKeySuffix)
+                  }
                 />
-                {recoveryKeyVisible ? null : (
-                  <span className="ml-1.5 tracking-[0.08em] text-sheet-ink">
-                    {profile.profileKeyId}
-                  </span>
-                )}
                 <Button
                   aria-expanded={recoveryKeyVisible}
                   aria-label={`${recoveryKeyVisible ? "Hide" : "View"} Recovery Key`}
-                  className="ml-auto"
+                  className="absolute top-1/2 right-2 -translate-y-1/2"
                   disabled={recoveryKeyUnavailable}
                   onClick={toggleRecoveryKey}
                   size="quiet"

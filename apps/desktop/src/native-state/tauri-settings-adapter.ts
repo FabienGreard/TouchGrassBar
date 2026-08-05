@@ -58,14 +58,6 @@ function createTauriSettingsAdapter(
         "get_settings_state",
         "settings-state-unavailable",
       ),
-    requestRecoveryDisclosure: async () => {
-      const outcome = await closedInvoke(
-        bindings,
-        "request_recovery_disclosure",
-        "recovery-key-unavailable",
-      );
-      return outcome.ok ? { ok: true, value: undefined } : outcome;
-    },
     revealRecoveryKey: async () => {
       const outcome = await closedInvoke(
         bindings,

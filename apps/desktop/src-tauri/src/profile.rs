@@ -131,6 +131,22 @@ fn profile_key_id(key: &Secret) -> String {
     id
 }
 
+fn recovery_key_suffix(key: &Secret) -> String {
+    key.expose()
+        .chars()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+pub(crate) struct ProfileKeyMetadata {
+    pub(crate) id: String,
+    pub(crate) recovery_key_suffix: String,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProfileError(&'static str);
 
@@ -233,17 +249,24 @@ impl SecretCustody for MacKeychain {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn production_profile_key_id(lifecycle: &DesktopLifecycle) -> Option<String> {
+pub(crate) fn production_profile_key_metadata(
+    lifecycle: &DesktopLifecycle,
+) -> Option<ProfileKeyMetadata> {
     lifecycle.ready_touch_grass_id()?;
     MacKeychain
         .read(SecretKind::RecoveryKey)
         .ok()
         .flatten()
-        .map(|key| profile_key_id(&key))
+        .map(|key| ProfileKeyMetadata {
+            id: profile_key_id(&key),
+            recovery_key_suffix: recovery_key_suffix(&key),
+        })
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn production_profile_key_id(_lifecycle: &DesktopLifecycle) -> Option<String> {
+pub(crate) fn production_profile_key_metadata(
+    _lifecycle: &DesktopLifecycle,
+) -> Option<ProfileKeyMetadata> {
     None
 }
 
@@ -310,34 +333,10 @@ fn profile_mutation_payload(display_name: String) -> BTreeMap<String, Value> {
     BTreeMap::from([("displayName".to_owned(), Value::String(display_name))])
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct RecoveryPresentation {
-    pub audience: RecoveryPresentationAudience,
-    pub kind: RecoveryPresentationKind,
-    pub touch_grass_id: String,
-    pub recovery_key: Secret,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RecoveryPresentationAudience {
-    EligibleForeground,
-    ProfileSettings(SettingsProfileAuthorization),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RecoveryPresentationKind {
-    InitialDisclosure,
-}
-
-pub(crate) trait RecoverySheetPresenter: Send + Sync {
-    fn present(&self, presentation: RecoveryPresentation) -> bool;
-}
-
 pub(crate) struct ProfileCoordinator {
     lifecycle: DesktopLifecycle,
     custody: Arc<dyn SecretCustody>,
     transport: Arc<dyn ProfileTransport>,
-    presenter: Arc<dyn RecoverySheetPresenter>,
 }
 
 impl ProfileCoordinator {
@@ -345,22 +344,16 @@ impl ProfileCoordinator {
         lifecycle: DesktopLifecycle,
         custody: Arc<dyn SecretCustody>,
         transport: Arc<dyn ProfileTransport>,
-        presenter: Arc<dyn RecoverySheetPresenter>,
     ) -> Self {
         Self {
             lifecycle,
             custody,
             transport,
-            presenter,
         }
     }
 
-    pub(crate) fn retry_pending(
-        &self,
-        audience: RecoveryPresentationAudience,
-    ) -> Result<Option<SanitizedProfileOutcome>, ProfileError> {
+    pub(crate) fn retry_pending(&self) -> Result<Option<SanitizedProfileOutcome>, ProfileError> {
         let Some(request) = self.lifecycle.profile_request() else {
-            self.present_pending_disclosure(audience)?;
             return Ok(None);
         };
 
@@ -415,23 +408,7 @@ impl ProfileCoordinator {
             display_name: request.display_name,
             touch_grass_id: prepared.touch_grass_id,
         };
-        let _ = self.present_pending_disclosure(audience);
         Ok(Some(profile))
-    }
-
-    pub(crate) fn present_pending_disclosure(
-        &self,
-        audience: RecoveryPresentationAudience,
-    ) -> Result<(), ProfileError> {
-        if !self.lifecycle.pending_recovery_disclosure() {
-            return Ok(());
-        }
-        if self.present_recovery_key(RecoveryPresentationKind::InitialDisclosure, audience)? {
-            self.lifecycle
-                .mark_recovery_disclosed()
-                .map_err(ProfileError)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn recovery_key(
@@ -449,27 +426,6 @@ impl ProfileCoordinator {
             .ok_or(ProfileError("Recovery Key unavailable"))
     }
 
-    fn present_recovery_key(
-        &self,
-        kind: RecoveryPresentationKind,
-        audience: RecoveryPresentationAudience,
-    ) -> Result<bool, ProfileError> {
-        let touch_grass_id = self
-            .lifecycle
-            .ready_touch_grass_id()
-            .ok_or(ProfileError("Profile disclosure pending"))?;
-        let recovery_key = self
-            .custody
-            .read(SecretKind::RecoveryKey)?
-            .ok_or(ProfileError("Profile disclosure pending"))?;
-        Ok(self.presenter.present(RecoveryPresentation {
-            audience,
-            kind,
-            touch_grass_id,
-            recovery_key,
-        }))
-    }
-
     fn ensure_secret(&self, kind: SecretKind, length: usize) -> Result<Secret, ProfileError> {
         if let Some(value) = self.custody.read(kind)? {
             return Ok(value);
@@ -481,15 +437,11 @@ impl ProfileCoordinator {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn production_coordinator(
-    lifecycle: DesktopLifecycle,
-    presenter: Arc<dyn RecoverySheetPresenter>,
-) -> ProfileCoordinator {
+pub(crate) fn production_coordinator(lifecycle: DesktopLifecycle) -> ProfileCoordinator {
     ProfileCoordinator::new(
         lifecycle,
         Arc::new(MacKeychain),
         Arc::new(HttpProfileTransport::from_build_configuration()),
-        presenter,
     )
 }
 
@@ -855,32 +807,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakePresenter {
-        available: AtomicBool,
-        last: Mutex<Option<RecoveryPresentation>>,
-    }
-
-    impl FakePresenter {
-        fn set_available(&self, available: bool) {
-            self.available.store(available, Ordering::SeqCst);
-        }
-
-        fn take_last(&self) -> Option<RecoveryPresentation> {
-            self.last.lock().unwrap().take()
-        }
-    }
-
-    impl RecoverySheetPresenter for FakePresenter {
-        fn present(&self, presentation: RecoveryPresentation) -> bool {
-            if !self.available.load(Ordering::SeqCst) {
-                return false;
-            }
-            *self.last.lock().unwrap() = Some(presentation);
-            true
-        }
-    }
-
     struct TestDatabase(PathBuf);
 
     impl TestDatabase {
@@ -910,7 +836,6 @@ mod tests {
         lifecycle: DesktopLifecycle,
         custody: Arc<FakeCustody>,
         transport: Arc<FakeTransport>,
-        presenter: Arc<FakePresenter>,
         coordinator: ProfileCoordinator,
     }
 
@@ -920,19 +845,13 @@ mod tests {
             let lifecycle = DesktopLifecycle::open(&database.0).unwrap();
             let custody = Arc::new(FakeCustody::default());
             let transport = Arc::new(FakeTransport::new());
-            let presenter = Arc::new(FakePresenter::default());
-            let coordinator = ProfileCoordinator::new(
-                lifecycle.clone(),
-                custody.clone(),
-                transport.clone(),
-                presenter.clone(),
-            );
+            let coordinator =
+                ProfileCoordinator::new(lifecycle.clone(), custody.clone(), transport.clone());
             Self {
                 _database: database,
                 lifecycle,
                 custody,
                 transport,
-                presenter,
                 coordinator,
             }
         }
@@ -968,7 +887,7 @@ mod tests {
         fn assert_public_boundary_is_sanitized(&self, boundary: &str) {
             let normalized = boundary.to_lowercase();
             for prohibited in [
-                "recoverykey",
+                "\"recoverykey\":",
                 "password",
                 "cookie",
                 "credential",
@@ -992,13 +911,15 @@ mod tests {
     }
 
     #[test]
-    fn profile_key_id_is_stable_without_exposing_key_characters() {
+    fn profile_key_metadata_is_stable_and_limits_the_visible_suffix() {
         let key = Secret::new("not-a-secret".to_owned());
 
         let key_id = profile_key_id(&key);
+        let suffix = recovery_key_suffix(&key);
 
         assert_eq!(key_id, "52E");
         assert_eq!(key_id, profile_key_id(&key));
+        assert_eq!(suffix, "ret");
         assert!(
             key_id
                 .chars()
@@ -1078,36 +999,14 @@ mod tests {
     }
 
     #[test]
-    fn creation_disclosure_is_native_and_settings_reveal_is_authorized() {
+    fn creation_does_not_disclose_and_settings_reveal_is_authorized() {
         let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
-        fixture.presenter.set_available(false);
-        let outcome = fixture
-            .coordinator
-            .retry_pending(RecoveryPresentationAudience::EligibleForeground)
-            .unwrap();
+        let outcome = fixture.coordinator.retry_pending().unwrap();
         assert!(matches!(
             outcome,
             Some(SanitizedProfileOutcome::Ready { .. })
         ));
-        assert!(fixture.presenter.take_last().is_none());
-        assert!(fixture.lifecycle.pending_recovery_disclosure());
-
-        fixture.presenter.set_available(true);
-        fixture
-            .coordinator
-            .present_pending_disclosure(RecoveryPresentationAudience::EligibleForeground)
-            .unwrap();
-        let presentation = fixture.presenter.take_last().expect("native disclosure");
-        assert_eq!(
-            presentation.kind,
-            RecoveryPresentationKind::InitialDisclosure
-        );
-        assert_eq!(
-            presentation.touch_grass_id,
-            fixture.transport.touch_grass_id()
-        );
-        assert!(!presentation.recovery_key.expose().is_empty());
 
         let state = fixture
             .lifecycle
@@ -1117,8 +1016,6 @@ mod tests {
             state.touch_grass_id.as_deref(),
             Some(fixture.transport.touch_grass_id())
         );
-        assert!(!fixture.lifecycle.pending_recovery_disclosure());
-        assert!(!serialized.contains(presentation.recovery_key.expose()));
 
         fixture
             .lifecycle
@@ -1129,9 +1026,8 @@ mod tests {
             .expect("Profile Settings authorization");
 
         let revealed = fixture.coordinator.recovery_key(authorization).unwrap();
-        assert_eq!(revealed.expose(), presentation.recovery_key.expose());
-        assert!(fixture.presenter.take_last().is_none());
-        assert!(!fixture.lifecycle.pending_recovery_disclosure());
+        assert!(!revealed.expose().is_empty());
+        assert!(!serialized.contains(revealed.expose()));
 
         fixture
             .lifecycle
@@ -1143,10 +1039,7 @@ mod tests {
     fn session_exchange_keeps_the_convex_jwt_in_memory() {
         let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
-        fixture
-            .coordinator
-            .retry_pending(RecoveryPresentationAudience::EligibleForeground)
-            .unwrap();
+        fixture.coordinator.retry_pending().unwrap();
 
         assert_eq!(fixture.transport.exchange_count(), 1);
         assert!(!fixture.custody.contains(SecretKind::ConvexJwt));
@@ -1160,12 +1053,7 @@ mod tests {
         let providers_before = fixture.lifecycle.bootstrap_state().providers;
         fixture.transport.fail_next_attempt();
 
-        assert!(
-            fixture
-                .coordinator
-                .retry_pending(RecoveryPresentationAudience::EligibleForeground)
-                .is_err()
-        );
+        assert!(fixture.coordinator.retry_pending().is_err());
         let pending = fixture.lifecycle.bootstrap_state();
         assert_eq!(
             pending.profile_provisioning,
@@ -1182,10 +1070,7 @@ mod tests {
                 | ProviderPresenceStatus::Unavailable
         )));
 
-        fixture
-            .coordinator
-            .retry_pending(RecoveryPresentationAudience::EligibleForeground)
-            .unwrap();
+        fixture.coordinator.retry_pending().unwrap();
         assert_eq!(
             fixture.lifecycle.bootstrap_state().profile_provisioning,
             ProfileProvisioningStatus::Ready
@@ -1196,10 +1081,7 @@ mod tests {
     fn secret_sentinel_rejects_private_material_from_public_boundaries() {
         let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
-        fixture
-            .coordinator
-            .retry_pending(RecoveryPresentationAudience::EligibleForeground)
-            .unwrap();
+        fixture.coordinator.retry_pending().unwrap();
 
         for boundary in fixture.public_boundaries() {
             fixture.assert_public_boundary_is_sanitized(&boundary);

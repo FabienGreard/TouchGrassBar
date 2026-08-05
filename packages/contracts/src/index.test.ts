@@ -79,6 +79,7 @@ describe("public contracts", () => {
       displayName: "Fabien",
       launchAtLogin: { availability: "available", enabled: true },
       profileKeyId: "A7F",
+      recoveryKeySuffix: "K9m",
       profileProvisioning: "profile-pending",
       providers,
       section: "profile",
@@ -96,6 +97,10 @@ describe("public contracts", () => {
     ).toBe(false);
     expect(
       settingsStateSchema.safeParse({ ...settings, profileKeyId: "actual-key-suffix" })
+        .success,
+    ).toBe(false);
+    expect(
+      settingsStateSchema.safeParse({ ...settings, recoveryKeySuffix: "0-9" })
         .success,
     ).toBe(false);
   });

@@ -20,7 +20,6 @@ type SettingsPortOutcome<Value> =
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
-  requestRecoveryDisclosure: () => Promise<SettingsPortOutcome<void>>;
   revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
   selectSection: (
     section: SettingsSection,
@@ -106,10 +105,7 @@ function createSettingsDelivery(port: SettingsPort) {
         publish({ ...current, recoveryKey: null });
       }
     }
-    sectionSelection =
-      request.data.section === "profile"
-        ? port.requestRecoveryDisclosure().then((outcome) => outcome.ok)
-        : Promise.resolve(true);
+    sectionSelection = Promise.resolve(true);
     if (current.snapshot !== null) {
       publish({
         ...current,
@@ -175,10 +171,7 @@ function createSettingsDelivery(port: SettingsPort) {
       }
       sectionSelection = (async () => {
         const outcome = await port.selectSection(section);
-        if (!outcome.ok || revision !== sectionRevision) return false;
-        if (section !== "profile") return true;
-        const disclosure = await port.requestRecoveryDisclosure();
-        return disclosure.ok;
+        return outcome.ok && revision === sectionRevision;
       })();
       if (current.snapshot === null) {
         return;

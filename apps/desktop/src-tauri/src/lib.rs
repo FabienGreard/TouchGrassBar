@@ -3,8 +3,6 @@ mod dev_instance;
 pub mod lifecycle;
 mod network;
 pub mod profile;
-#[cfg(target_os = "macos")]
-mod recovery_sheet;
 pub mod sanitized;
 
 use std::{
@@ -15,10 +13,8 @@ use std::{
 
 use lifecycle::{
     BootstrapStateV2, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
-    SettingsNavigationRequest, SettingsProfileAuthorization, SettingsSection, SettingsSelection,
-    SettingsStateV2,
+    SettingsNavigationRequest, SettingsProfileAuthorization, SettingsSection, SettingsStateV2,
 };
-use profile::{RecoveryPresentation, RecoveryPresentationAudience, RecoverySheetPresenter};
 use sanitized::{
     NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
     SanitizedDesktopStateV2, SanitizedProfileOutcome,
@@ -41,150 +37,6 @@ const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RecoverySheetWindowState {
-    focused: bool,
-    label: &'static str,
-    visible: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RecoverySheetAuthorization {
-    parent_label: &'static str,
-    settings_authorization: Option<SettingsProfileAuthorization>,
-}
-
-fn recovery_sheet_parent(
-    windows: &[RecoverySheetWindowState],
-    settings_selection: SettingsSelection,
-    audience: RecoveryPresentationAudience,
-) -> Option<RecoverySheetAuthorization> {
-    let eligible = |window: &&RecoverySheetWindowState| match audience {
-        RecoveryPresentationAudience::EligibleForeground => {
-            window.label == ONBOARDING_LABEL
-                || (window.label == SETTINGS_LABEL
-                    && settings_selection.section == SettingsSection::Profile)
-        }
-        RecoveryPresentationAudience::ProfileSettings(_) => {
-            window.label == SETTINGS_LABEL && settings_selection.section == SettingsSection::Profile
-        }
-    };
-    windows
-        .iter()
-        .filter(eligible)
-        .find(|window| window.focused)
-        .or_else(|| {
-            windows
-                .iter()
-                .filter(eligible)
-                .find(|window| window.visible)
-        })
-        .map(|window| RecoverySheetAuthorization {
-            parent_label: window.label,
-            settings_authorization: match (window.label, audience) {
-                (SETTINGS_LABEL, RecoveryPresentationAudience::ProfileSettings(authorization)) => {
-                    Some(authorization)
-                }
-                (SETTINGS_LABEL, RecoveryPresentationAudience::EligibleForeground) => {
-                    SettingsProfileAuthorization::from_selection(settings_selection)
-                }
-                _ => None,
-            },
-        })
-}
-
-fn recovery_sheet_authorization_is_current(
-    authorization: RecoverySheetAuthorization,
-    lifecycle: &DesktopLifecycle,
-) -> bool {
-    match authorization.parent_label {
-        ONBOARDING_LABEL => authorization.settings_authorization.is_none(),
-        SETTINGS_LABEL => authorization
-            .settings_authorization
-            .is_some_and(|selection| lifecycle.is_current_profile_settings(selection)),
-        _ => false,
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct NativeRecoverySheetPresenter {
-    app: AppHandle,
-    lifecycle: DesktopLifecycle,
-}
-
-#[cfg(target_os = "macos")]
-impl RecoverySheetPresenter for NativeRecoverySheetPresenter {
-    fn present(&self, presentation: RecoveryPresentation) -> bool {
-        let windows = [ONBOARDING_LABEL, SETTINGS_LABEL, PANEL_LABEL]
-            .into_iter()
-            .filter_map(|label| self.app.get_webview_window(label))
-            .collect::<Vec<_>>();
-        let window_states = windows
-            .iter()
-            .filter_map(|window| {
-                let label = match window.label() {
-                    ONBOARDING_LABEL => ONBOARDING_LABEL,
-                    SETTINGS_LABEL => SETTINGS_LABEL,
-                    PANEL_LABEL => PANEL_LABEL,
-                    _ => return None,
-                };
-                Some(RecoverySheetWindowState {
-                    focused: window.is_focused().unwrap_or(false),
-                    label,
-                    visible: window.is_visible().unwrap_or(false),
-                })
-            })
-            .collect::<Vec<_>>();
-        let authorization = recovery_sheet_parent(
-            &window_states,
-            self.lifecycle.current_settings_selection(),
-            presentation.audience,
-        );
-        let parent = authorization.and_then(|authorization| {
-            windows
-                .into_iter()
-                .find(|window| window.label() == authorization.parent_label)
-                .map(|window| (window, authorization))
-        });
-        let Some((parent, authorization)) = parent else {
-            return false;
-        };
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let callback_sender = sender.clone();
-        let lifecycle = self.lifecycle.clone();
-        if parent
-            .with_webview(move |webview| {
-                use objc2::MainThreadMarker;
-                use objc2_app_kit::{NSApplication, NSWindow};
-
-                if !recovery_sheet_authorization_is_current(authorization, &lifecycle) {
-                    let _ = sender.send(false);
-                    return;
-                }
-
-                let main_thread = MainThreadMarker::new()
-                    .expect("native sheet callback must run on the main thread");
-                let application = NSApplication::sharedApplication(main_thread);
-                if !application.isActive() {
-                    let _ = sender.send(false);
-                    return;
-                }
-                let parent_window: &NSWindow = unsafe { &*webview.ns_window().cast() };
-                crate::recovery_sheet::begin(
-                    parent_window,
-                    presentation,
-                    callback_sender,
-                    main_thread,
-                );
-            })
-            .is_err()
-        {
-            return false;
-        }
-        receiver.recv().unwrap_or(false)
-    }
-}
-
 pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static str {
     match attempt {
         Ok(_) => "touchgrassbar_metric profile_attempt=complete",
@@ -192,15 +44,9 @@ pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static s
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProfileRetryRequest {
-    Automatic,
-    ProfileSettings(SettingsProfileAuthorization),
-}
-
 #[derive(Clone)]
 struct ProfileRetryMailbox {
-    pending: Arc<Mutex<Option<ProfileRetryRequest>>>,
+    pending: Arc<Mutex<bool>>,
     wake: mpsc::SyncSender<()>,
 }
 
@@ -209,34 +55,25 @@ impl ProfileRetryMailbox {
         let (wake, receiver) = mpsc::sync_channel(1);
         (
             Self {
-                pending: Arc::new(Mutex::new(None)),
+                pending: Arc::new(Mutex::new(false)),
                 wake,
             },
             receiver,
         )
     }
 
-    fn request(&self, request: ProfileRetryRequest) {
+    fn request(&self) {
         let Ok(mut pending) = self.pending.lock() else {
             return;
         };
-        *pending = Some(request);
+        *pending = true;
         let _ = self.wake.try_send(());
     }
 
-    fn take(&self) -> Option<ProfileRetryRequest> {
-        self.pending.lock().ok()?.take()
-    }
-}
-
-impl ProfileRetryRequest {
-    fn audience(self) -> RecoveryPresentationAudience {
-        match self {
-            Self::Automatic => RecoveryPresentationAudience::EligibleForeground,
-            Self::ProfileSettings(authorization) => {
-                RecoveryPresentationAudience::ProfileSettings(authorization)
-            }
-        }
+    fn take(&self) -> bool {
+        self.pending
+            .lock()
+            .is_ok_and(|mut pending| std::mem::take(&mut *pending))
     }
 }
 
@@ -252,12 +89,8 @@ impl ProfileRuntime {
     #[cfg(target_os = "macos")]
     fn start(lifecycle: DesktopLifecycle, app: AppHandle) -> std::io::Result<Self> {
         let runtime_lifecycle = lifecycle.clone();
-        let presenter = Arc::new(NativeRecoverySheetPresenter {
-            app: app.clone(),
-            lifecycle: lifecycle.clone(),
-        });
         let coordinator = Arc::new(std::sync::Mutex::new(profile::production_coordinator(
-            lifecycle, presenter,
+            lifecycle,
         )));
         let (retry, requests) = ProfileRetryMailbox::new();
         let worker_retry = retry.clone();
@@ -272,35 +105,31 @@ impl ProfileRuntime {
             .name("profile-provisioning-retry".to_owned())
             .spawn(move || {
                 loop {
-                    let request = match requests.recv_timeout(Duration::from_secs(300)) {
+                    match requests.recv_timeout(Duration::from_secs(300)) {
                         Ok(()) => {
-                            let Some(request) = worker_retry.take() else {
+                            if !worker_retry.take() {
                                 continue;
-                            };
-                            request
+                            }
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => ProfileRetryRequest::Automatic,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    };
-                    let _ = worker_runtime.attempt(request.audience());
+                    }
+                    let _ = worker_runtime.attempt();
                 }
             })?;
         Ok(runtime)
     }
 
     fn trigger(&self) {
-        self.retry.request(ProfileRetryRequest::Automatic);
+        self.retry.request();
     }
 
-    fn attempt(
-        &self,
-        audience: RecoveryPresentationAudience,
-    ) -> Result<Option<SanitizedProfileOutcome>, String> {
+    fn attempt(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
         let attempt = self
             .coordinator
             .lock()
             .map_err(|_| "Profile Pending".to_owned())?
-            .retry_pending(audience)
+            .retry_pending()
             .map_err(|_| "Profile Pending".to_owned());
         eprintln!("{}", profile_attempt_metric(&attempt));
         let profile = attempt?;
@@ -313,12 +142,7 @@ impl ProfileRuntime {
     }
 
     fn attempt_now(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
-        self.attempt(RecoveryPresentationAudience::EligibleForeground)
-    }
-
-    fn trigger_from_profile_settings(&self, authorization: SettingsProfileAuthorization) {
-        self.retry
-            .request(ProfileRetryRequest::ProfileSettings(authorization));
+        self.attempt()
     }
 
     fn reveal_recovery_key(
@@ -333,8 +157,8 @@ impl ProfileRuntime {
             .map_err(|_| "Recovery Key unavailable".to_owned())
     }
 
-    fn profile_key_id(&self) -> Option<String> {
-        profile::production_profile_key_id(&self.lifecycle)
+    fn profile_key_metadata(&self) -> Option<profile::ProfileKeyMetadata> {
+        profile::production_profile_key_metadata(&self.lifecycle)
     }
 }
 
@@ -452,11 +276,8 @@ enum TrayForegroundDestination {
     Panel,
 }
 
-fn tray_foreground_destination(
-    bootstrap_required: bool,
-    recovery_disclosure_pending: bool,
-) -> TrayForegroundDestination {
-    if bootstrap_required || recovery_disclosure_pending {
+fn tray_foreground_destination(bootstrap_required: bool) -> TrayForegroundDestination {
+    if bootstrap_required {
         TrayForegroundDestination::Onboarding
     } else {
         TrayForegroundDestination::Panel
@@ -464,14 +285,11 @@ fn tray_foreground_destination(
 }
 
 fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
-    let destination =
-        app.try_state::<DesktopLifecycle>()
-            .map_or(TrayForegroundDestination::Panel, |lifecycle| {
-                tray_foreground_destination(
-                    lifecycle.should_show_bootstrap(),
-                    lifecycle.pending_recovery_disclosure(),
-                )
-            });
+    let destination = app
+        .try_state::<DesktopLifecycle>()
+        .map_or(TrayForegroundDestination::Panel, |lifecycle| {
+            tray_foreground_destination(lifecycle.should_show_bootstrap())
+        });
     match destination {
         TrayForegroundDestination::Onboarding => return show_onboarding(app),
         TrayForegroundDestination::Panel => {}
@@ -665,14 +483,17 @@ fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
         .unwrap_or(LaunchAtLoginState::Unavailable)
 }
 
-fn settings_state_with_profile_key_id(
+fn settings_state_with_profile_key_metadata(
     lifecycle: &DesktopLifecycle,
     launch_at_login: LaunchAtLoginState,
     profile_runtime: &ProfileRuntime,
 ) -> SettingsStateV2 {
     let mut state = lifecycle.settings_state(launch_at_login);
     if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready {
-        state.profile_key_id = profile_runtime.profile_key_id();
+        if let Some(metadata) = profile_runtime.profile_key_metadata() {
+            state.profile_key_id = Some(metadata.id);
+            state.recovery_key_suffix = Some(metadata.recovery_key_suffix);
+        }
     }
     state
 }
@@ -685,7 +506,7 @@ fn get_settings_state(
     profile_runtime: State<'_, ProfileRuntime>,
 ) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
-    Ok(settings_state_with_profile_key_id(
+    Ok(settings_state_with_profile_key_metadata(
         &lifecycle,
         launch_at_login_state(&app),
         &profile_runtime,
@@ -711,7 +532,7 @@ fn set_launch_at_login(
     } else {
         LaunchAtLoginState::Unavailable
     };
-    Ok(settings_state_with_profile_key_id(
+    Ok(settings_state_with_profile_key_metadata(
         &lifecycle,
         launch_at_login,
         &profile_runtime,
@@ -726,17 +547,6 @@ fn select_settings_section(
 ) -> Result<(), String> {
     require_settings(&window)?;
     lifecycle.request_settings_section(section);
-    Ok(())
-}
-
-#[tauri::command]
-fn request_recovery_disclosure(
-    window: WebviewWindow,
-    lifecycle: State<'_, DesktopLifecycle>,
-    profile_runtime: State<'_, ProfileRuntime>,
-) -> Result<(), String> {
-    let authorization = require_profile_settings(&window, &lifecycle)?;
-    profile_runtime.trigger_from_profile_settings(authorization);
     Ok(())
 }
 
@@ -792,7 +602,6 @@ pub fn run() {
             hide_panel,
             open_settings,
             request_refresh,
-            request_recovery_disclosure,
             resize_panel,
             reveal_recovery_key,
             select_settings_section,
@@ -1099,177 +908,15 @@ mod tests {
     }
 
     #[test]
-    fn pending_recovery_disclosure_routes_the_next_tray_foreground_to_onboarding() {
+    fn only_incomplete_onboarding_routes_the_tray_to_onboarding() {
         assert_eq!(
-            tray_foreground_destination(false, true),
+            tray_foreground_destination(true),
             TrayForegroundDestination::Onboarding,
         );
         assert_eq!(
-            tray_foreground_destination(true, false),
-            TrayForegroundDestination::Onboarding,
-        );
-        assert_eq!(
-            tray_foreground_destination(false, false),
+            tray_foreground_destination(false),
             TrayForegroundDestination::Panel,
         );
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn recovery_sheet_design_is_compact_and_uses_the_approved_hierarchy() {
-        let initial = crate::recovery_sheet::design(
-            crate::profile::RecoveryPresentationKind::InitialDisclosure,
-        );
-        assert_eq!(initial.size, (440.0, 304.0));
-        assert_eq!(initial.title, "Save your Recovery Key");
-        assert_eq!(initial.button_title, "I saved a copy");
-        assert_eq!(
-            initial.note,
-            "Stored in this Mac’s Keychain. Save a separate copy somewhere secure."
-        );
-        assert_eq!(initial.palette.ivory, [0.992, 0.984, 0.953, 1.0]);
-        assert_eq!(initial.palette.ink, [0.071, 0.071, 0.078, 1.0]);
-        assert_eq!(initial.palette.green, [0.098, 0.455, 0.239, 1.0]);
-    }
-
-    #[test]
-    fn recovery_sheet_parent_is_limited_to_onboarding_and_profile_settings() {
-        let profile_selection = SettingsSelection {
-            section: SettingsSection::Profile,
-            revision: 7,
-        };
-        let profile_authorization = SettingsProfileAuthorization::from_selection(profile_selection)
-            .expect("Profile Settings authorization");
-        let cases = [
-            (
-                "focused onboarding",
-                SettingsSelection {
-                    section: SettingsSection::General,
-                    revision: 6,
-                },
-                vec![RecoverySheetWindowState {
-                    focused: true,
-                    label: ONBOARDING_LABEL,
-                    visible: true,
-                }],
-                Some(RecoverySheetAuthorization {
-                    parent_label: ONBOARDING_LABEL,
-                    settings_authorization: None,
-                }),
-            ),
-            (
-                "focused Profile settings",
-                profile_selection,
-                vec![RecoverySheetWindowState {
-                    focused: true,
-                    label: SETTINGS_LABEL,
-                    visible: true,
-                }],
-                Some(RecoverySheetAuthorization {
-                    parent_label: SETTINGS_LABEL,
-                    settings_authorization: Some(profile_authorization),
-                }),
-            ),
-            (
-                "visible Profile settings",
-                profile_selection,
-                vec![RecoverySheetWindowState {
-                    focused: false,
-                    label: SETTINGS_LABEL,
-                    visible: true,
-                }],
-                Some(RecoverySheetAuthorization {
-                    parent_label: SETTINGS_LABEL,
-                    settings_authorization: Some(profile_authorization),
-                }),
-            ),
-            (
-                "General settings",
-                SettingsSelection {
-                    section: SettingsSection::General,
-                    revision: 8,
-                },
-                vec![RecoverySheetWindowState {
-                    focused: true,
-                    label: SETTINGS_LABEL,
-                    visible: true,
-                }],
-                None,
-            ),
-            (
-                "compact panel",
-                profile_selection,
-                vec![RecoverySheetWindowState {
-                    focused: true,
-                    label: PANEL_LABEL,
-                    visible: true,
-                }],
-                None,
-            ),
-        ];
-
-        for (label, section, windows, expected) in cases {
-            assert_eq!(
-                recovery_sheet_parent(
-                    &windows,
-                    section,
-                    RecoveryPresentationAudience::EligibleForeground,
-                ),
-                expected,
-                "{label}"
-            );
-        }
-
-        let lifecycle = DesktopLifecycle::unavailable();
-        lifecycle.request_settings_section(SettingsSection::Profile);
-        let profile_authorization = lifecycle
-            .authorize_profile_settings()
-            .expect("Profile Settings authorization");
-        let authorization = RecoverySheetAuthorization {
-            parent_label: SETTINGS_LABEL,
-            settings_authorization: Some(profile_authorization),
-        };
-        assert!(recovery_sheet_authorization_is_current(
-            authorization,
-            &lifecycle,
-        ));
-        lifecycle.request_settings_section(SettingsSection::General);
-        assert!(!recovery_sheet_authorization_is_current(
-            authorization,
-            &lifecycle,
-        ));
-        lifecycle.request_settings_section(SettingsSection::Profile);
-        assert!(!recovery_sheet_authorization_is_current(
-            authorization,
-            &lifecycle,
-        ));
-    }
-
-    #[test]
-    fn profile_retry_mailbox_keeps_the_latest_settings_authorization() {
-        let lifecycle = DesktopLifecycle::unavailable();
-        lifecycle.request_settings_section(SettingsSection::Profile);
-        let stale = lifecycle
-            .authorize_profile_settings()
-            .expect("initial Profile Settings authorization");
-        lifecycle.request_settings_section(SettingsSection::General);
-        lifecycle.request_settings_section(SettingsSection::Profile);
-        let current = lifecycle
-            .authorize_profile_settings()
-            .expect("current Profile Settings authorization");
-
-        let (mailbox, receiver) = ProfileRetryMailbox::new();
-        mailbox.request(ProfileRetryRequest::ProfileSettings(stale));
-        mailbox.request(ProfileRetryRequest::ProfileSettings(current));
-
-        receiver.recv().expect("one retry wake");
-        let ProfileRetryRequest::ProfileSettings(authorization) =
-            mailbox.take().expect("latest retry request")
-        else {
-            panic!("Profile Settings retry expected");
-        };
-        assert!(lifecycle.is_current_profile_settings(authorization));
-        assert!(mailbox.take().is_none());
     }
 
     #[test]

@@ -60,6 +60,7 @@ function SettingsCoordinator({
       ? {
           displayName: state.displayName,
           profileKeyId: state.profileKeyId ?? null,
+          recoveryKeySuffix: state.recoveryKeySuffix ?? null,
           touchGrassId: state.touchGrassId,
         }
       : null;

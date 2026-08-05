@@ -26,6 +26,7 @@ function DevPreviewApp() {
   const [profile, setProfile] = useState({
     displayName: "Fabien",
     profileKeyId: "A7F",
+    recoveryKeySuffix: "K9m",
     touchGrassId: "#TG-7K4P9D",
   });
   const [scenario] = useState(() =>
