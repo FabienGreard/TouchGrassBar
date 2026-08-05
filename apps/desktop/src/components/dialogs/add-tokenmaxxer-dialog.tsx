@@ -105,7 +105,7 @@ function AddTokenmaxxerDialog({
               ? "Friend lookup is not connected yet."
               : touchGrassId && !valid
                 ? "Use the format TG-ABC123."
-                : "You can find the ID beside their Doomerboard name."}
+                : "Ask your friend for their TouchGrass ID."}
           </small>
           <div className="mt-3 flex justify-end gap-2">
             <DialogClose asChild>
