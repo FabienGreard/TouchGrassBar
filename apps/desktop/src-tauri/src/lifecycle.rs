@@ -138,13 +138,13 @@ impl SqliteLifecycleStore {
         };
         fs::create_dir_all(parent).map_err(|_| "lifecycle persistence unavailable")?;
         let connection = Connection::open(path).map_err(|_| "lifecycle persistence unavailable")?;
-        Self::migrate(&connection)?;
+        Self::migrate(&connection, path)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
     }
 
-    fn migrate(connection: &Connection) -> Result<(), &'static str> {
+    fn migrate(connection: &Connection, path: &Path) -> Result<(), &'static str> {
         let version = connection
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .map_err(|_| "lifecycle persistence unavailable")?;
@@ -180,6 +180,7 @@ impl SqliteLifecycleStore {
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
         } else if version == 1 {
+            Self::backup_before_migration(connection, path)?;
             connection
                 .execute_batch(
                     "BEGIN IMMEDIATE;
@@ -191,6 +192,35 @@ impl SqliteLifecycleStore {
                 .map_err(|_| "lifecycle persistence unavailable")?;
         }
         Ok(())
+    }
+
+    fn backup_before_migration(connection: &Connection, path: &Path) -> Result<(), &'static str> {
+        let backup_path = path.with_extension("sqlite3.backup-v1");
+        if backup_path.exists() {
+            let backup = Connection::open_with_flags(
+                backup_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .map_err(|_| "lifecycle persistence unavailable")?;
+            let version = backup
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .map_err(|_| "lifecycle persistence unavailable")?;
+            return (version == 1)
+                .then_some(())
+                .ok_or("lifecycle persistence unavailable");
+        }
+
+        let partial_path = path.with_extension("sqlite3.backup-v1.partial");
+        if partial_path.exists() {
+            fs::remove_file(&partial_path).map_err(|_| "lifecycle persistence unavailable")?;
+        }
+        connection
+            .backup(rusqlite::MAIN_DB, &partial_path, None)
+            .map_err(|_| "lifecycle persistence unavailable")?;
+        fs::File::open(&partial_path)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "lifecycle persistence unavailable")?;
+        fs::rename(partial_path, backup_path).map_err(|_| "lifecycle persistence unavailable")
     }
 
     fn read(&self) -> Result<LifecycleRecord, &'static str> {
@@ -632,6 +662,8 @@ mod tests {
             let _ = fs::remove_file(&self.0);
             let _ = fs::remove_file(self.0.with_extension("sqlite3-shm"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3-wal"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v1"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v1.partial"));
         }
     }
 
@@ -689,6 +721,45 @@ mod tests {
         assert_eq!(
             relaunched.bootstrap_state().profile_provisioning,
             ProfileProvisioningStatus::IdentityPending
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_creates_a_local_backup_before_migration() {
+        let database = TestDatabase::new();
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE lifecycle_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   bootstrap_completed INTEGER NOT NULL CHECK (bootstrap_completed IN (0, 1)),
+                   profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'identity-pending', 'ready')),
+                   public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
+                   identity_retry_pending INTEGER NOT NULL CHECK (identity_retry_pending IN (0, 1)),
+                   backfill_window_days INTEGER CHECK (backfill_window_days = 30),
+                   display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40))
+                 );
+                 INSERT INTO lifecycle_state VALUES (1, 0, 'not-authorized', 0, 0, NULL, NULL);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        drop(connection);
+
+        DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+
+        let backup_path = database.0.with_extension("sqlite3.backup-v1");
+        let backup =
+            Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let backup_version = backup
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(backup_version, 1);
+        assert!(
+            !database
+                .0
+                .with_extension("sqlite3.backup-v1.partial")
+                .exists()
         );
     }
 

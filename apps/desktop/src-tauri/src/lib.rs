@@ -15,6 +15,7 @@ use lifecycle::{
 };
 use sanitized::{
     NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RevisionNotice, SanitizedDesktopStateV1,
+    SanitizedProfileOutcome,
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -42,18 +43,37 @@ struct NativeRecoverySheetPresenter {
 #[cfg(target_os = "macos")]
 impl RecoverySheetPresenter for NativeRecoverySheetPresenter {
     fn present(&self, presentation: RecoveryPresentation) -> bool {
+        let parent = [ONBOARDING_LABEL, SETTINGS_LABEL, PANEL_LABEL]
+            .into_iter()
+            .filter_map(|label| self.app.get_webview_window(label))
+            .find(|window| window.is_focused().unwrap_or(false))
+            .or_else(|| {
+                [ONBOARDING_LABEL, SETTINGS_LABEL, PANEL_LABEL]
+                    .into_iter()
+                    .filter_map(|label| self.app.get_webview_window(label))
+                    .find(|window| window.is_visible().unwrap_or(false))
+            });
+        let Some(parent) = parent else {
+            return false;
+        };
         let (sender, receiver) = mpsc::sync_channel(1);
-        if self
-            .app
-            .run_on_main_thread(move || {
+        let callback_sender = sender.clone();
+        if parent
+            .with_webview(move |webview| {
+                use block2::RcBlock;
                 use objc2::MainThreadMarker;
-                use objc2_app_kit::{NSAlert, NSColor};
+                use objc2_app_kit::{
+                    NSAlert, NSApplication, NSColor, NSModalResponse, NSWindow,
+                };
                 use objc2_foundation::NSString;
 
-                let Some(main_thread) = MainThreadMarker::new() else {
+                let main_thread = MainThreadMarker::new()
+                    .expect("native sheet callback must run on the main thread");
+                let application = NSApplication::sharedApplication(main_thread);
+                if !application.isActive() {
                     let _ = sender.send(false);
                     return;
-                };
+                }
                 let alert = NSAlert::new(main_thread);
                 alert.setMessageText(&NSString::from_str("Save your Recovery Key"));
                 alert.setInformativeText(&NSString::from_str(&format!(
@@ -70,14 +90,27 @@ impl RecoverySheetPresenter for NativeRecoverySheetPresenter {
                 );
                 alert.window().setBackgroundColor(Some(&ivory));
                 saved.setContentTintColor(Some(&green));
-                let _ = alert.runModal();
-                let _ = sender.send(true);
+                let completion = RcBlock::new(move |_response: NSModalResponse| {
+                    let _ = callback_sender.send(true);
+                });
+                let parent_window: &NSWindow = unsafe { &*webview.ns_window().cast() };
+                alert.beginSheetModalForWindow_completionHandler(
+                    parent_window,
+                    Some(&completion),
+                );
             })
             .is_err()
         {
             return false;
         }
         receiver.recv().unwrap_or(false)
+    }
+}
+
+pub(crate) fn identity_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static str {
+    match attempt {
+        Ok(_) => "touchgrassbar_metric identity_attempt=complete",
+        Err(_) => "touchgrassbar_metric identity_attempt=pending",
     }
 }
 
@@ -98,16 +131,13 @@ impl IdentityRuntime {
                 while let Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) =
                     requests.recv_timeout(Duration::from_secs(300))
                 {
-                    let status = match coordinator.retry_pending() {
-                        Ok(profile_changed) => {
-                            if profile_changed {
-                                let _ = app.state::<NativeCore>().invalidate_projection();
-                            }
-                            "complete"
-                        }
-                        Err(_) => "pending",
-                    };
-                    eprintln!("touchgrassbar_metric identity_attempt={status}");
+                    let attempt = coordinator.retry_pending();
+                    if let Ok(Some(profile)) = &attempt {
+                        let _ = app
+                            .state::<NativeCore>()
+                            .set_profile_outcome(profile.clone());
+                    }
+                    eprintln!("{}", identity_attempt_metric(&attempt));
                 }
             })?;
         Ok(Self { retry })
@@ -322,12 +352,9 @@ fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
-    lifecycle: State<'_, DesktopLifecycle>,
 ) -> Result<SanitizedDesktopStateV1, String> {
     require_panel(&window)?;
-    let mut state = core.panel_state().map_err(str::to_owned)?;
-    state.profile = lifecycle.sanitized_profile_outcome();
-    Ok(state)
+    core.panel_state().map_err(str::to_owned)
 }
 
 #[tauri::command]
@@ -378,11 +405,14 @@ fn complete_bootstrap(
     window: WebviewWindow,
     lifecycle: State<'_, DesktopLifecycle>,
     identity_runtime: State<'_, IdentityRuntime>,
+    core: State<'_, NativeCore>,
     display_name: String,
 ) -> Result<BootstrapStateV1, String> {
     require_onboarding(&window)?;
     let state = lifecycle
         .complete_bootstrap(&display_name)
+        .map_err(str::to_owned)?;
+    core.set_profile_outcome(SanitizedProfileOutcome::IdentityPending)
         .map_err(str::to_owned)?;
     window
         .hide()
@@ -486,6 +516,9 @@ pub fn run() {
                 launched_in_background,
             );
             app.manage(lifecycle.clone());
+            app.state::<NativeCore>()
+                .set_profile_outcome(lifecycle.sanitized_profile_outcome())
+                .map_err(std::io::Error::other)?;
             let identity_runtime = IdentityRuntime::start(lifecycle, app.handle().clone())?;
             identity_runtime.trigger();
             app.manage(identity_runtime);
