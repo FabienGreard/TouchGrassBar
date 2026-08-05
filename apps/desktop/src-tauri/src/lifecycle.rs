@@ -73,7 +73,7 @@ pub struct ProviderPresence {
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BootstrapStateV1 {
+pub struct BootstrapStateV2 {
     pub contract_version: u8,
     pub bootstrap: BootstrapStatus,
     pub profile_provisioning: ProfileProvisioningStatus,
@@ -85,7 +85,7 @@ pub struct BootstrapStateV1 {
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SettingsStateV1 {
+pub struct SettingsStateV2 {
     pub contract_version: u8,
     pub section: SettingsSection,
     pub launch_at_login: LaunchAtLoginState,
@@ -592,12 +592,12 @@ impl DesktopLifecycle {
             .unwrap_or(true)
     }
 
-    pub fn bootstrap_state(&self) -> BootstrapStateV1 {
+    pub fn bootstrap_state(&self) -> BootstrapStateV2 {
         let (record, persistence) = self
             .record()
             .map(|record| (record, PersistenceStatus::Available))
             .unwrap_or_else(|_| (LifecycleRecord::required(), PersistenceStatus::Unavailable));
-        BootstrapStateV1 {
+        BootstrapStateV2 {
             contract_version: LIFECYCLE_CONTRACT_VERSION,
             bootstrap: record.bootstrap,
             profile_provisioning: record.profile_provisioning,
@@ -608,7 +608,7 @@ impl DesktopLifecycle {
         }
     }
 
-    pub fn complete_bootstrap(&self, display_name: &str) -> Result<BootstrapStateV1, &'static str> {
+    pub fn complete_bootstrap(&self, display_name: &str) -> Result<BootstrapStateV2, &'static str> {
         match &self.inner.store {
             LifecycleStore::Persistent(store) => {
                 store.complete_bootstrap(display_name)?;
@@ -674,7 +674,7 @@ impl DesktopLifecycle {
         }
     }
 
-    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV1 {
+    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV2 {
         let record = self
             .record()
             .unwrap_or_else(|_| LifecycleRecord::required());
@@ -684,7 +684,7 @@ impl DesktopLifecycle {
             .lock()
             .map(|section| *section)
             .unwrap_or(SettingsSection::General);
-        SettingsStateV1 {
+        SettingsStateV2 {
             contract_version: LIFECYCLE_CONTRACT_VERSION,
             section,
             launch_at_login,
@@ -703,11 +703,11 @@ impl DesktopLifecycle {
 }
 
 pub fn bootstrap_state_schema() -> Schema {
-    schema_for!(BootstrapStateV1)
+    schema_for!(BootstrapStateV2)
 }
 
 pub fn settings_state_schema() -> Schema {
-    schema_for!(SettingsStateV1)
+    schema_for!(SettingsStateV2)
 }
 
 pub fn settings_navigation_schema() -> Schema {

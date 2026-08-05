@@ -54,6 +54,35 @@ describe("Settings delivery", () => {
     expect(delivery.getSnapshot().snapshot?.section).toBe("profile");
   });
 
+  test("refreshes the hidden Settings snapshot when native navigation activates it", async () => {
+    const native = port();
+    vi.mocked(native.read)
+      .mockResolvedValueOnce({
+        ok: true as const,
+        value: {
+          ...settingsState,
+          displayName: undefined,
+          profileProvisioning: "not-authorized",
+        },
+      })
+      .mockResolvedValueOnce({ ok: true as const, value: settingsState });
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    native.navigate({ section: "profile" });
+
+    await vi.waitFor(() => {
+      expect(delivery.getSnapshot()).toMatchObject({
+        phase: "ready",
+        snapshot: {
+          displayName: "Fabien",
+          profileProvisioning: "profile-pending",
+          section: "profile",
+        },
+      });
+    });
+  });
+
   test("commits launch-at-login only after the native confirmation", async () => {
     const native = port();
     const delivery = createSettingsDelivery(native);

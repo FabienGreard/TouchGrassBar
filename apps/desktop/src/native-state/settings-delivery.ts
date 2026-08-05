@@ -78,13 +78,13 @@ function createSettingsDelivery(port: SettingsPort) {
     const request = settingsNavigationRequestSchema.safeParse(payload);
     if (!request.success) return;
     selectedSection = request.data.section;
-    if (current.snapshot === null) {
-      return;
+    if (current.snapshot !== null) {
+      publish({
+        ...current,
+        snapshot: { ...current.snapshot, section: request.data.section },
+      });
     }
-    publish({
-      ...current,
-      snapshot: { ...current.snapshot, section: request.data.section },
-    });
+    void read();
   };
 
   return {

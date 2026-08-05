@@ -472,6 +472,7 @@ impl ProfileTransport for HttpProfileTransport {
         let response = self
             .client
             .post(self.endpoint(PREPARE_PATH)?)
+            .json(&serde_json::json!({}))
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
             .map_err(|_| ProfileError("Profile creation pending"))?
@@ -587,12 +588,15 @@ impl ProfileTransport for HttpProfileTransport {
 mod tests {
     use std::{
         fs,
+        io::{Read, Write},
+        net::TcpListener,
         path::PathBuf,
         process,
         sync::{
             Mutex,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         },
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -602,6 +606,8 @@ mod tests {
     };
 
     use super::*;
+
+    static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
 
     #[derive(Default)]
     struct FakeCustody(Mutex<BTreeMap<SecretKind, Secret>>);
@@ -790,8 +796,9 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             Self(std::env::temp_dir().join(format!(
-                "touchgrassbar-profile-{}-{timestamp}.sqlite3",
-                process::id()
+                "touchgrassbar-profile-{}-{timestamp}-{}.sqlite3",
+                process::id(),
+                NEXT_DATABASE.fetch_add(1, Ordering::Relaxed)
             )))
         }
     }
@@ -888,6 +895,46 @@ mod tests {
                 assert!(!boundary.contains(&value), "public secret value");
             }
         }
+    }
+
+    #[test]
+    fn prepare_sends_json_to_the_better_auth_http_route() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let request_length = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..request_length]);
+            let sends_json = request
+                .to_ascii_lowercase()
+                .contains("content-type: application/json");
+            let (status, body) = if sends_json {
+                (
+                    "200 OK",
+                    r#"{"expiresAt":4102444800000,"touchGrassId":"TG-234567","signupProof":"proof"}"#,
+                )
+            } else {
+                ("415 Unsupported Media Type", r#"{"error":"json required"}"#)
+            };
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let auth_site_url = Box::leak(format!("http://{address}").into_boxed_str());
+        let transport = HttpProfileTransport {
+            auth_site_url: Some(auth_site_url),
+            convex_url: None,
+            client: reqwest::blocking::Client::new(),
+        };
+
+        let prepared = transport.prepare().expect("prepare JSON request");
+        server.join().unwrap();
+
+        assert_eq!(prepared.touch_grass_id, "TG-234567");
     }
 
     #[test]

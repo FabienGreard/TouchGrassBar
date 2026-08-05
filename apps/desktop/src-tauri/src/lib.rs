@@ -12,13 +12,13 @@ use std::{
 };
 
 use lifecycle::{
-    BootstrapStateV1, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
-    SettingsNavigationRequest, SettingsSection, SettingsStateV1,
+    BootstrapStateV2, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
+    SettingsNavigationRequest, SettingsSection, SettingsStateV2,
 };
 use profile::{RecoveryPresentation, RecoverySheetPresenter};
 use sanitized::{
     NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
-    SanitizedDesktopStateV1, SanitizedProfileOutcome,
+    SanitizedDesktopStateV2, SanitizedProfileOutcome,
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -358,7 +358,7 @@ fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
-) -> Result<SanitizedDesktopStateV1, String> {
+) -> Result<SanitizedDesktopStateV2, String> {
     require_panel(&window)?;
     core.panel_state().map_err(str::to_owned)
 }
@@ -402,7 +402,7 @@ fn require_settings_or_onboarding(window: &WebviewWindow) -> Result<(), String> 
 fn get_bootstrap_state(
     window: WebviewWindow,
     lifecycle: State<'_, DesktopLifecycle>,
-) -> Result<BootstrapStateV1, String> {
+) -> Result<BootstrapStateV2, String> {
     require_onboarding(&window)?;
     Ok(lifecycle.bootstrap_state())
 }
@@ -414,7 +414,7 @@ fn complete_bootstrap(
     profile_runtime: State<'_, ProfileRuntime>,
     core: State<'_, NativeCore>,
     display_name: String,
-) -> Result<BootstrapStateV1, String> {
+) -> Result<BootstrapStateV2, String> {
     require_onboarding(&window)?;
     let state = lifecycle
         .complete_bootstrap(&display_name)
@@ -440,7 +440,7 @@ fn get_settings_state(
     window: WebviewWindow,
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
-) -> Result<SettingsStateV1, String> {
+) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
     Ok(lifecycle.settings_state(launch_at_login_state(&app)))
 }
@@ -451,7 +451,7 @@ fn set_launch_at_login(
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
     enabled: bool,
-) -> Result<SettingsStateV1, String> {
+) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
     let result = if enabled {
         app.autolaunch().enable()
