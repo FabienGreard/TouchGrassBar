@@ -478,6 +478,10 @@ async fn complete_bootstrap(
 }
 
 fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
+    #[cfg(debug_assertions)]
+    if dev_instance::DevelopmentInstance::from_environment().is_some() {
+        return LaunchAtLoginState::Unavailable;
+    }
     app.autolaunch()
         .is_enabled()
         .map(|enabled| LaunchAtLoginState::Available { enabled })
@@ -520,6 +524,14 @@ fn set_launch_at_login(
     enabled: bool,
 ) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
+    #[cfg(debug_assertions)]
+    if dev_instance::DevelopmentInstance::from_environment().is_some() {
+        return Ok(settings_state_with_recovery_key_suffix(
+            &lifecycle,
+            LaunchAtLoginState::Unavailable,
+            &profile_runtime,
+        ));
+    }
     let result = if enabled {
         app.autolaunch().enable()
     } else {
@@ -571,7 +583,36 @@ fn hide_surface(window: WebviewWindow) -> Result<(), String> {
 pub fn run() {
     let process_started_at = Instant::now();
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
-    let mut app = tauri::Builder::default()
+    #[cfg(debug_assertions)]
+    let development_instance = dev_instance::DevelopmentInstance::from_environment();
+    let builder = tauri::Builder::default();
+    #[cfg(debug_assertions)]
+    let builder = if development_instance.is_none() {
+        builder
+            .plugin(tauri_plugin_single_instance::init(
+                |app, arguments, _working_directory| {
+                    let background_request =
+                        arguments.iter().any(|argument| argument == "--background");
+                    if !background_request
+                        && app
+                            .try_state::<DesktopLifecycle>()
+                            .is_some_and(|lifecycle| lifecycle.should_show_bootstrap())
+                    {
+                        let _ = show_onboarding(app);
+                    }
+                },
+            ))
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_autostart::init(
+                MacosLauncher::LaunchAgent,
+                Some(vec!["--background"]),
+            ))
+    } else {
+        builder.plugin(tauri_plugin_process::init())
+    };
+    #[cfg(not(debug_assertions))]
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(
             |app, arguments, _working_directory| {
                 let background_request =
@@ -590,7 +631,8 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
-        ))
+        ));
+    let mut app = builder
         .invoke_handler(tauri::generate_handler![
             complete_bootstrap,
             get_bootstrap_state,
@@ -606,11 +648,22 @@ pub fn run() {
             set_launch_at_login
         ])
         .setup(move |app| {
-            let database_path = app
-                .path()
-                .app_data_dir()
-                .ok()
-                .map(|directory| directory.join("touchgrassbar.sqlite3"));
+            #[cfg(debug_assertions)]
+            let database_directory = development_instance.as_ref().map_or_else(
+                || app.path().app_data_dir(),
+                |instance| {
+                    app.path()
+                        .data_dir()
+                        .map(|directory| directory.join(instance.namespace()))
+                },
+            );
+            #[cfg(not(debug_assertions))]
+            let database_directory = app.path().app_data_dir();
+            let database_path = database_directory.ok().and_then(|directory| {
+                std::fs::create_dir_all(&directory)
+                    .ok()
+                    .map(|()| directory.join("touchgrassbar.sqlite3"))
+            });
             let lifecycle = database_path
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
@@ -630,8 +683,6 @@ pub fn run() {
                 .set_profile_outcome(lifecycle.sanitized_profile_outcome())
                 .map_err(std::io::Error::other)?;
 
-            #[cfg(debug_assertions)]
-            let development_instance = dev_instance::DevelopmentInstance::from_environment();
             #[cfg(debug_assertions)]
             if let Some(instance) = development_instance.as_ref() {
                 for (label, title) in [

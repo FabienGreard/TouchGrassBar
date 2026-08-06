@@ -1,6 +1,9 @@
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   closeSync,
+  copyFileSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -12,11 +15,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
-  devAccents,
   resolveDevInstance,
-  type DevAccent,
   type DevInstance,
 } from "../apps/desktop/src/dev/dev-instance";
+import {
+  developmentEntitlements,
+  signingTeamIdentifier,
+} from "../apps/desktop/src/dev/dev-signing";
+import { developmentTarget } from "./development-environment";
+import { activeDevelopmentRunnerProcessId } from "./development-runner-lease";
+import { resolveDevelopmentSigningConfiguration } from "./macos-development-signing";
 
 const workspaceRoot = resolve(import.meta.dir, "..");
 const desktopRoot = join(workspaceRoot, "apps", "desktop");
@@ -26,63 +34,30 @@ const generatedConfigDirectory = join(
   ".dev-instance",
 );
 const generatedConfigPath = join(generatedConfigDirectory, "tauri.conf.json");
+const generatedEntitlementsPath = join(
+  generatedConfigDirectory,
+  "entitlements.plist",
+);
+const generatedInfoPlistPath = join(generatedConfigDirectory, "Info.plist");
 const generatedConfigArgument = join(
   "src-tauri",
   ".dev-instance",
   "tauri.conf.json",
 );
 const portLockDirectory = join(tmpdir(), "touchgrassbar-dev-ports");
+const signedRunnerPath = join(workspaceRoot, "scripts", "run-signed-macos-dev.ts");
+const profileServiceEnvironmentNames = ["CONVEX_SITE_URL", "CONVEX_URL"] as const;
 
-type RunnerOptions = {
-  accent?: string | undefined;
-  browserOnly: boolean;
-  label?: string | undefined;
-};
-
-function printHelp() {
-  console.log(`Run an isolated TouchGrassBar development instance.
-
-Usage:
-  bun run desktop [--label <name>] [--accent <color>]
-  bun run desktop:preview [--label <name>] [--accent <color>]
-
-Options:
-  --label    Override the branch-derived visible name.
-  --accent   Use one of: ${devAccents.join(", ")}.
-  --browser  Start only the browser preview.
-  --help     Show this help.`);
-}
-
-function argumentValue(argumentsList: string[], index: number, option: string) {
-  const value = argumentsList[index + 1];
-  if (!value || value.startsWith("--")) {
-    throw new Error(`${option} requires a value.`);
-  }
-  return value;
-}
-
-function parseOptions(argumentsList: string[]): RunnerOptions | null {
-  const options: RunnerOptions = { browserOnly: false };
-  for (let index = 0; index < argumentsList.length; index += 1) {
-    const argument = argumentsList[index];
-    if (argument === "--help") return null;
-    if (argument === "--browser") {
-      options.browserOnly = true;
-      continue;
-    }
-    if (argument === "--label") {
-      options.label = argumentValue(argumentsList, index, argument);
-      index += 1;
-      continue;
-    }
-    if (argument === "--accent") {
-      options.accent = argumentValue(argumentsList, index, argument);
-      index += 1;
-      continue;
-    }
-    throw new Error(`Unknown argument: ${argument ?? ""}`);
-  }
-  return options;
+function requireProfileServiceEnvironment(
+  environment: Record<string, string | undefined>,
+) {
+  const missing = profileServiceEnvironmentNames.filter(
+    (name) => !environment[name]?.trim(),
+  );
+  if (missing.length === 0) return;
+  throw new Error(
+    `Desktop Profile services are not configured (${missing.join(", ")}). Run \`bun setup\` before \`bun dev\`.`,
+  );
 }
 
 function gitText(argumentsList: string[]) {
@@ -115,6 +90,12 @@ function processIsRunning(processId: number) {
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function requireNoDevelopmentRunner() {
+  if (activeDevelopmentRunnerProcessId() !== null) {
+    throw new Error("Stop the active `bun dev` command before building a bundle.");
   }
 }
 
@@ -190,18 +171,28 @@ function devCsp(port: number) {
   ].join("; ");
 }
 
-async function writeTauriConfig(instance: DevInstance) {
+async function writeTauriConfig(instance: DevInstance, bundle: boolean) {
   mkdirSync(generatedConfigDirectory, { recursive: true });
   await Bun.write(
     generatedConfigPath,
     `${JSON.stringify(
       {
         app: { security: { devCsp: devCsp(instance.port) } },
+        ...(bundle
+          ? {
+              bundle: {
+                macOS: {
+                  entitlements: ".dev-instance/entitlements.plist",
+                },
+                targets: ["app"],
+              },
+            }
+          : {}),
         build: {
-          beforeDevCommand: `bun run dev -- --port ${instance.port}`,
+          beforeDevCommand: `bun run dev:web -- --port ${instance.port}`,
           devUrl: `http://127.0.0.1:${instance.port}`,
         },
-        identifier: instance.identifier,
+        identifier: instance.bundleIdentifier,
         productName: instance.productName,
       },
       null,
@@ -210,62 +201,310 @@ async function writeTauriConfig(instance: DevInstance) {
   );
 }
 
-function printInstance(instance: DevInstance, browserOnly: boolean) {
+async function writeDevelopmentEntitlements(
+  instance: DevInstance,
+  signingIdentity: string,
+) {
+  await Bun.write(
+    generatedEntitlementsPath,
+    developmentEntitlements({
+      bundleIdentifier: instance.bundleIdentifier,
+      teamIdentifier: signingTeamIdentifier(signingIdentity),
+    }),
+  );
+}
+
+function escapedPlistValue(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+async function writeDevelopmentInfoPlist(instance: DevInstance) {
+  const bundleIdentifier = escapedPlistValue(instance.bundleIdentifier);
+  const productName = escapedPlistValue(instance.productName);
+  await Bun.write(
+    generatedInfoPlistPath,
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>${productName}</string>
+  <key>CFBundleExecutable</key>
+  <string>touchgrassbar</string>
+  <key>CFBundleIdentifier</key>
+  <string>${bundleIdentifier}</string>
+  <key>CFBundleName</key>
+  <string>${productName}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>
+`,
+  );
+}
+
+function printInstance(instance: DevInstance, bundle: boolean) {
   console.log(`Development instance: ${instance.label}`);
   console.log(`Accent: ${instance.accent}`);
-  console.log(`URL: http://127.0.0.1:${instance.port}`);
-  console.log(browserOnly ? "Surface: browser preview" : "Surface: native app");
+  if (bundle) {
+    console.log("Surface: signed application bundle");
+  } else {
+    console.log(`Browser preview: http://127.0.0.1:${instance.port}`);
+    console.log("Surface: native app and browser preview");
+  }
+}
+
+function signDevelopmentBundle(
+  appPath: string,
+  signingIdentity: string,
+  provisioningProfile: string,
+) {
+  const contentsPath = join(appPath, "Contents");
+  const embeddedProfilePath = join(contentsPath, "embedded.provisionprofile");
+  const helperPath = join(contentsPath, "MacOS", "export_native_contract");
+  copyFileSync(provisioningProfile, embeddedProfilePath);
+  chmodSync(embeddedProfilePath, 0o644);
+  if (existsSync(helperPath)) {
+    execFileSync(
+      "/usr/bin/codesign",
+      [
+        "--force",
+        "--options",
+        "runtime",
+        "--timestamp=none",
+        "--sign",
+        signingIdentity,
+        helperPath,
+      ],
+      { stdio: "inherit" },
+    );
+  }
+  execFileSync(
+    "/usr/bin/codesign",
+    [
+      "--force",
+      "--options",
+      "runtime",
+      "--timestamp=none",
+      "--generate-entitlement-der",
+      "--entitlements",
+      generatedEntitlementsPath,
+      "--sign",
+      signingIdentity,
+      appPath,
+    ],
+    { stdio: "inherit" },
+  );
+  execFileSync(
+    "/usr/bin/codesign",
+    ["--verify", "--deep", "--strict", appPath],
+    { stdio: "inherit" },
+  );
+}
+
+async function buildDevelopmentBundle(
+  instance: DevInstance,
+  environment: Record<string, string | undefined>,
+  signingIdentity: string,
+  provisioningProfile: string,
+  openBundle: boolean,
+) {
+  const child = Bun.spawn(
+    [
+      "bun",
+      "run",
+      "tauri",
+      "build",
+      "--bundles",
+      "app",
+      "--config",
+      generatedConfigArgument,
+    ],
+    {
+      cwd: desktopRoot,
+      env: environment,
+      stdin: "inherit",
+      stderr: "inherit",
+      stdout: "inherit",
+    },
+  );
+  if ((await child.exited) !== 0) {
+    throw new Error("The development application bundle could not be built.");
+  }
+  const appPath = join(
+    desktopRoot,
+    "src-tauri",
+    "target",
+    "release",
+    "bundle",
+    "macos",
+    `${instance.productName}.app`,
+  );
+  if (!existsSync(appPath)) {
+    throw new Error("The development application bundle was not created.");
+  }
+  signDevelopmentBundle(appPath, signingIdentity, provisioningProfile);
+  console.log("Development bundle signature and Keychain access: verified");
+  if (!openBundle) return 0;
+  const opened = Bun.spawn(["/usr/bin/open", "-n", "-W", appPath], {
+    env: environment,
+    stdin: "ignore",
+    stderr: "inherit",
+    stdout: "inherit",
+  });
+  return opened.exited;
+}
+
+function convexCommand(argumentsList: string[]) {
+  return [
+    "bun",
+    "run",
+    "--cwd",
+    "packages/backend",
+    "convex",
+    ...argumentsList,
+  ];
+}
+
+async function prepareBundleBackend(
+  target: ReturnType<typeof developmentTarget>,
+) {
+  if (target === "cloud development") {
+    const result = Bun.spawnSync(
+      convexCommand(["dev", "--once", "--tail-logs", "disable"]),
+      {
+        cwd: workspaceRoot,
+        env: process.env,
+        stderr: "inherit",
+        stdout: "inherit",
+      },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error("The cloud development backend could not be prepared.");
+    }
+    return null;
+  }
+
+  const backend = Bun.spawn(convexCommand(["dev", "--tail-logs", "disable"]), {
+    cwd: workspaceRoot,
+    env: process.env,
+    stdin: "ignore",
+    stderr: "inherit",
+    stdout: "inherit",
+  });
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 60_000) {
+    const probe = Bun.spawnSync(convexCommand(["env", "list", "--names-only"]), {
+      cwd: workspaceRoot,
+      env: process.env,
+      stderr: "ignore",
+      stdout: "ignore",
+    });
+    if (probe.exitCode === 0) return backend;
+    if (backend.exitCode !== null) {
+      throw new Error("The local Convex backend stopped before bundle launch.");
+    }
+    await Bun.sleep(500);
+  }
+  backend.kill();
+  await backend.exited;
+  throw new Error("The local Convex backend did not become ready.");
 }
 
 async function main() {
-  const options = parseOptions(Bun.argv.slice(2));
-  if (!options) {
-    printHelp();
-    return;
-  }
+  const argumentsList = process.argv.slice(2);
+  const argumentsSet = new Set(argumentsList);
+  const bundle = argumentsSet.has("--bundle");
+  const openBundle = !argumentsSet.has("--no-open");
   if (
-    options.accent !== undefined &&
-    !devAccents.includes(options.accent as DevAccent)
+    argumentsSet.size !== argumentsList.length ||
+    [...argumentsSet].some(
+      (argument) => argument !== "--bundle" && argument !== "--no-open",
+    ) ||
+    (argumentsSet.has("--no-open") && !bundle)
   ) {
-    throw new Error(`--accent must be one of: ${devAccents.join(", ")}.`);
+    throw new Error(`Unknown argument(s): ${argumentsList.join(", ")}`);
   }
-
+  requireProfileServiceEnvironment(Bun.env);
+  const target = developmentTarget(Bun.env);
+  if (bundle) requireNoDevelopmentRunner();
   const branch = gitText(["branch", "--show-current"]);
   const worktreeSeed = gitText(["rev-parse", "--show-toplevel"]);
   const requested = resolveDevInstance({
-    accent: options.accent ?? Bun.env.TOUCHGRASS_DEV_ACCENT,
-    branch: branch || `detached-${gitText(["rev-parse", "--short", "HEAD"])}`,
-    label: options.label ?? Bun.env.TOUCHGRASS_DEV_LABEL,
+    accent: Bun.env.TOUCHGRASS_DEV_ACCENT,
+    branch:
+      branch || `detached-${gitText(["rev-parse", "--short", "HEAD"])}`,
+    label: Bun.env.TOUCHGRASS_DEV_LABEL,
     worktreeSeed,
   });
-  const portLease = await availablePort(requested.port);
-  process.once("exit", portLease.release);
-  const instance = { ...requested, port: portLease.port };
+  const portLease = bundle ? null : await availablePort(requested.port);
+  if (portLease) process.once("exit", portLease.release);
+  const instance = { ...requested, port: portLease?.port ?? requested.port };
+  const { identity: signingIdentity, provisioningProfile } =
+    resolveDevelopmentSigningConfiguration(
+      instance.bundleIdentifier,
+      Bun.env,
+    );
   const serializedInstance = JSON.stringify(instance);
+  const appBundlePath = join(
+    generatedConfigDirectory,
+    "TouchGrassBar Dev.app",
+  );
   const environment = {
     ...Bun.env,
+    CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: signedRunnerPath,
+    TOUCHGRASS_DEV_APP_BUNDLE_PATH: appBundlePath,
+    TOUCHGRASS_DEV_BUNDLE_IDENTIFIER: instance.bundleIdentifier,
+    TOUCHGRASS_DEV_ENTITLEMENTS_PATH: generatedEntitlementsPath,
+    TOUCHGRASS_DEV_INFO_PLIST_PATH: generatedInfoPlistPath,
     TOUCHGRASS_DEV_INSTANCE_LABEL: instance.label,
     TOUCHGRASS_DEV_INSTANCE_TAG: instance.tag,
+    TOUCHGRASS_DEV_KEYCHAIN_SERVICE: instance.namespace,
+    TOUCHGRASS_DEV_NAMESPACE: instance.namespace,
+    TOUCHGRASS_DEV_PROVISIONING_PROFILE: provisioningProfile,
+    TOUCHGRASS_DEV_SIGNING_IDENTITY: signingIdentity,
     VITE_TOUCHGRASS_DEV_INSTANCE: serializedInstance,
   };
 
   try {
-    printInstance(instance, options.browserOnly);
-    if (options.browserOnly) {
-      const child = Bun.spawn(
-        ["bun", "run", "dev", "--", "--port", String(instance.port)],
-        {
-          cwd: desktopRoot,
-          env: environment,
-          stderr: "inherit",
-          stdout: "inherit",
-        },
-      );
-      process.exitCode = await child.exited;
+    printInstance(instance, bundle);
+    console.log(`Convex target: ${target}`);
+    await writeTauriConfig(instance, bundle);
+    await writeDevelopmentEntitlements(instance, signingIdentity);
+    await writeDevelopmentInfoPlist(instance);
+    if (bundle) {
+      const backend = openBundle ? await prepareBundleBackend(target) : null;
+      try {
+        process.exitCode = await buildDevelopmentBundle(
+          instance,
+          environment,
+          signingIdentity,
+          provisioningProfile,
+          openBundle,
+        );
+      } finally {
+        if (backend?.exitCode === null) {
+          backend.kill();
+          await backend.exited;
+        }
+      }
       return;
     }
-
-    await writeTauriConfig(instance);
     const child = Bun.spawn(
       ["bun", "run", "tauri", "dev", "--config", generatedConfigArgument],
       {
@@ -277,7 +516,7 @@ async function main() {
     );
     process.exitCode = await child.exited;
   } finally {
-    portLease.release();
+    portLease?.release();
   }
 }
 

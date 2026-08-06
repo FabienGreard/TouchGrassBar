@@ -45,12 +45,16 @@ controls, and preview-only styling. The development entry point is dynamically
 loaded by `main.tsx`; production modules never import from `dev`. The dependency
 direction is `dev` → desktop product modules → `packages/ui`.
 
-The root desktop development runner derives one bounded display identity from
-the current branch and worktree. It supplies that identity only through
-development environment values and an ignored Tauri configuration overlay.
-Parallel worktrees receive separate localhost ports, Tauri identifiers, and
-local application data locations. Production configuration, product modules,
-and Sanitized Desktop State do not contain the development identity.
+The root development runner starts the selected Convex backend, desktop, and
+landing tasks in one owned process group. Package commands delegate to scoped
+root commands. The desktop task derives one bounded display identity from the
+current branch and worktree. It supplies that identity only through development
+environment values and an ignored Tauri configuration overlay. The same Vite
+server serves the native WebView and browser preview. Parallel worktrees receive
+separate desktop localhost ports, runtime namespaces, and local application data
+locations. They share the stable development bundle identifier required by the
+development signing profile. Production configuration, product modules, and
+Sanitized Desktop State do not contain the development identity.
 
 ### `apps/landing`
 
@@ -64,17 +68,18 @@ The backend rejects raw provider material and accepts only validated cumulative 
 
 #### Development deployment isolation
 
-Each agent worktree owns one anonymous local Convex deployment. Its backend
-state and generated environment values remain in the ignored `.convex/` and
-`.env.local` files of that worktree. The setup generates a private local Better
-Auth secret and maps the local Convex and Auth site URLs into the native build.
-The local backend process must remain active during native Profile tests.
+Each worktree owns its ignored `.convex/` state and root `.env.local`. The
+standard `CONVEX_DEPLOYMENT`, `CONVEX_URL`, and `CONVEX_SITE_URL` values select
+the backend used by every development command. Setup creates an anonymous local
+deployment and private Better Auth secret only when no deployment is selected.
+It does not replace a developer's explicit cloud development selection. The
+development runner keeps a selected local backend active during native Profile
+tests. Startup never rewrites the selected environment.
 
-Default repository development commands never select the personal cloud dev or
-production deployment. A cloud deployment requires an explicit target and
-human authorization. Local success is development evidence only and never
-qualifies as Backend Readiness Evidence. This decision is recorded in
-[ADR 0014](adr/0014-isolate-agent-worktrees-with-local-convex.md).
+Default repository setup selects local development. Cloud development and
+production require an explicit Convex CLI command and human authorization.
+Local success is development evidence only and never qualifies as Backend
+Readiness Evidence. This decision is recorded in [ADR 0014](adr/0014-isolate-agent-worktrees-with-local-convex.md).
 
 ### `packages/contracts`
 

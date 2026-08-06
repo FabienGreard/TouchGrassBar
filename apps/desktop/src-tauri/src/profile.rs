@@ -452,9 +452,8 @@ pub(crate) struct HttpProfileTransport {
 impl HttpProfileTransport {
     pub(crate) fn from_build_configuration() -> Self {
         Self {
-            auth_site_url: option_env!("TOUCHGRASS_AUTH_SITE_URL")
-                .filter(|value| !value.is_empty()),
-            convex_url: option_env!("TOUCHGRASS_CONVEX_URL").filter(|value| !value.is_empty()),
+            auth_site_url: option_env!("CONVEX_SITE_URL").filter(|value| !value.is_empty()),
+            convex_url: option_env!("CONVEX_URL").filter(|value| !value.is_empty()),
             client: reqwest::blocking::Client::new(),
         }
     }

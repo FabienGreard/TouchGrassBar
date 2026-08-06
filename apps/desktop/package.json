@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "build": "bunx --bun vite build",
-    "dev": "bunx --bun vite",
+    "bundle": "bun run --cwd ../.. desktop:bundle",
+    "dev": "bun run --cwd ../.. dev:desktop",
+    "dev:web": "bunx --bun vite",
     "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src vite.config.ts",
     "tauri": "bunx --bun tauri",
     "test": "bunx vitest run",

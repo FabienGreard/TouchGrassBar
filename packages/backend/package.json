@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "build": "bun run typecheck",
-    "dev": "bun run --cwd ../.. convex:dev",
+    "convex": "bun ../../scripts/run-convex.ts",
+    "dev": "bun run --cwd ../.. dev:backend",
+    "dashboard": "bun run --cwd ../.. backend:dashboard",
     "codegen": "bun run --cwd ../.. convex:codegen",
     "lint": "bunx --bun oxlint -c ../tooling/oxlint.json convex",
     "test": "bunx vitest run",

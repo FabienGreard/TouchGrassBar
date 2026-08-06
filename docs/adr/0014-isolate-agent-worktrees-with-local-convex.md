@@ -17,3 +17,19 @@ It gives each worktree isolated data and functions without a Convex login or
 deploy key. Local backends have no public URL and must remain active during app
 tests, so webhook and production-readiness evidence still require separate
 cloud environments and authority.
+
+Apple security identity and worktree state are separate concerns. All local
+worktrees use the shared Dev app identity `app.touchgrass.bar.dev` and the
+installed Dev provisioning profile. The development launcher builds a real
+`.app`, embeds that profile, signs the complete bundle, and verifies the bundle
+before it starts the executable. This gives the app the entitlement context that
+the Data Protection Keychain requires. Production uses the separate
+`app.touchgrass.bar` identity and its release signing process.
+
+The shared Dev app identity does not mean shared application data. Each
+worktree derives one stable local namespace from its path. The namespace
+selects that worktree's SQLite directory, non-synchronizing Data Protection
+Keychain service, Convex deployment, browser-preview port, and visible Dev
+label. Dev mode also disables the production single-instance, updater, and
+launch-at-login plugins so parallel worktrees do not block each other. A
+worktree must not add a new Apple bundle identity only to isolate local state.
