@@ -193,6 +193,12 @@ describe("panel states", () => {
     expect(markup).toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-quota-tone="codex"/g)).toHaveLength(2);
     expect(markup.match(/data-quota-tone="claude"/g)).toHaveLength(2);
+    expect(markup).toContain(
+      'aria-label="Codex quota current, 74 percent remaining"',
+    );
+    expect(markup).toContain(
+      'aria-label="5-hour limit quota current, 62 percent remaining"',
+    );
     expect(markup).toContain('data-quota-value="74"');
     expect(markup).toContain('data-quota-value="18"');
     expect(markup).toContain("--quota-codex-low");
@@ -206,6 +212,31 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
     expect(markup).not.toContain("Doomerboard unavailable");
     expect(markup).not.toContain("My Tokenmaxxers");
+  });
+
+  test("announces stale Quota Lanes without hiding their last valid values", async () => {
+    const staleState = await deliveredBrowserFixture("stale");
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={staleState}
+      />,
+    );
+
+    expect(markup).toContain('data-provider-availability="stale"');
+    expect(markup).toContain(
+      'aria-label="Codex quota stale, 74 percent remaining"',
+    );
+    expect(markup).toContain(
+      'aria-label="5-hour limit quota stale, 62 percent remaining"',
+    );
+    expect(markup).toContain("Weekly limit · resets Mon 08:00 · stale");
+    expect(markup).toContain("5-hour limit · resets 14:40 · stale");
+    expect(markup).toContain('data-quota-value="74"');
+    expect(markup).toContain('data-quota-value="62"');
   });
 
   test("offers an honest invitation state for an empty Tokenmaxxers board", () => {
