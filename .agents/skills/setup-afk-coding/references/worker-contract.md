@@ -15,13 +15,13 @@ Establish the contract before editing:
 5. Re-fetch the issue, native blockers, claim, branches, and PRs. Stop with precise evidence if another worker owns it or eligibility changed.
 6. Fetch the current default branch and create `agent/issue-<number>-<branch-slug>` from its remote head.
 
-Before editing, inspect existing coverage and publish the Testing Contract's Proof Budget as a Codex commentary update. Implement the acceptance criteria using only that budget. Keep credentials, sessions, recovery material, provider content, raw logs, and private paths out of code, commands, evidence, and GitHub.
+Before editing, map required behavior to the smallest proof and publish the Testing Contract's Proof Budget as a Codex commentary update. Implement the acceptance criteria within that budget. Keep credentials, sessions, recovery material, provider content, raw logs, and private paths out of code, commands, evidence, and GitHub.
 
 Push the owned branch and open a draft PR against the default branch as soon as the change is coherent enough to review. Put `Closes #<number>` in the body. Include a summary, acceptance-criteria checklist, Proof Budget, commands run, visual evidence when relevant, privacy/security notes, risks, and remaining manual verification.
 
 Reach review handoff:
 1. Rebase on the latest remote default branch when needed, using force-with-lease after rebasing a pushed branch.
-2. Run the Proof Budget's focused checks and affected-package gate. Run local root quality, visual, native-contract, Convex, or Rust gates only when the Embedded Testing Contract selects them; hosted CI supplies the full exact-head integration gate.
+2. Run the Proof Budget commands. Each extra local gate must catch a distinct named failure; required hosted CI supplies the full exact-head integration gate.
 3. Read and follow .agents/skills/code-review/SKILL.md against the remote default branch. Resolve every actionable Standards and Spec finding caused by the change.
 4. Push the exact verified commit and wait for hosted checks to reach a terminal state. Repair PR-caused failures and repeat affected verification.
 5. Confirm required checks pass, the PR is conflict-free, and no actionable finding or required evidence remains.

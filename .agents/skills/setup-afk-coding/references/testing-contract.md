@@ -1,80 +1,75 @@
 # Minimum Sufficient Proof
 
-Use a closed-world test scope. Derive proof only from ticket acceptance criteria, a confirmed bug reproduction, a named ADR/domain invariant, or an explicit privacy, authorization, destructive-action, migration, concurrency, persistence, or compatibility boundary. Record other plausible behavior as follow-up work instead of expanding this PR.
+Use ticket-shaped proof. Derive required behavior only from ticket acceptance criteria, a confirmed bug reproduction, a named ADR or domain invariant, or an explicit privacy, authorization, destructive-action, migration, concurrency, persistence, or compatibility boundary. A changed file, package, language, or framework does not select a test or gate by itself.
 
-The default budget is zero new tests. Add a test only when existing evidence is insufficient and the proposed test:
+The default budget is zero new tests and one focused local proof. Add evidence only for a distinct named failure that the current budget cannot catch. `Review only` and `No test change required` are valid results.
 
-1. names its requirement or invariant provenance;
-2. would fail when that behavior regresses;
-3. exercises the nearest stable public seam;
-4. catches a distinct failure not already covered;
-5. is the smallest sufficient proof.
+## 1. Map required behavior
 
-`No test change required` is a valid and preferred result when existing proof or the type system is sufficient.
+Read the ticket and the tests nearest to the changed public seam. Group acceptance criteria that describe the same observable behavior. For each behavior, identify its source, the failure that matters, existing evidence, and the smallest proof that can catch that failure. Stop when all required behavior is mapped; leave the rest of the test tree unexplored.
 
-## 1. Inspect before proposing
+Treat framework and library behavior as established unless the application changes it. Treat a focused test that exercises several criteria as one proof.
 
-Search the changed public seam and its directly related tests, fixtures, helpers, type-level guarantees, and CI checks. Run or read the narrow existing proof when its relevance is uncertain. Stop searching as soon as every acceptance criterion is mapped; leave unrelated test-tree inventory outside this PR. Treat framework/library behavior as established unless the application wraps or changes it.
-
-Completion criterion: every acceptance criterion is mapped to existing proof, a specific proof gap, or non-test evidence; no criterion is mapped twice without two distinct risks.
+Completion criterion: every required behavior maps to one named failure and one proof; no proof exists only because a file, package, language, or framework changed.
 
 ## 2. Publish the Proof Budget
 
-Before editing code or tests, publish this table in a Codex commentary update and later copy it into the draft PR:
+Before editing, publish this compact table in a Codex commentary update. Copy it into the draft PR.
 
 ```markdown
 ## Proof Budget
 
-| Requirement or invariant | Provenance | Existing proof | New proof | Command |
-| --- | --- | --- | --- | --- |
-| AC-1 | issue AC-1 | `<test>` | none | `<focused command>` |
-| AC-2 | issue AC-2 | none | one behavioral test | `<focused command>` |
+| Required behavior | Source | Failure | Smallest proof |
+| --- | --- | --- | --- |
+| <behavior> | <issue AC, reproduction, ADR, or invariant> | <observable regression> | <existing test and command, new test and command, or review only> |
 
-Maximum new tests: <count, initially zero>
-Affected-package gate: <command or none>
-Special gates: <visual/native-contract/Convex/Rust/none>
-Explicitly excluded: <irrelevant suites>
+New tests: <0 by default>
+Extra local gates: <none, or command — distinct failure caught>
 ```
 
-Set `Maximum new tests` to the number of distinct uncovered behaviors, not the number of examples or permutations. Reduce the budget when existing proof is discovered. Increase it only when newly found authoritative requirements add distinct uncovered behavior; cite that source in the table before writing the test.
+One proof can cover several rows. Use review-only proof when the diff directly proves the requirement, such as documentation, copy, a static value, safe deletion, or declarative configuration. Add a test only when it:
 
-Completion criterion: every planned test has one provenance row and every excluded suite is named.
+1. has authoritative provenance;
+2. fails for the named regression;
+3. uses the nearest stable public seam;
+4. catches a failure that no budgeted proof catches; and
+5. is the smallest proof for that failure.
 
-## 3. Select the narrowest evidence
+Completion criterion: every command catches a named failure, and no two commands prove the same failure.
 
-Use one primary proof per distinct behavior:
+## 3. Match evidence to failure
 
-| Changed surface | Local evidence |
-| --- | --- |
-| Desktop TypeScript logic | Focused Vitest file/test plus desktop typecheck |
-| Visible desktop UI | Semantic component proof; visual regression only for intentional pixel changes |
-| Rust core | Focused Cargo module/test; final fmt/clippy/test only when Rust changed |
-| Native TypeScript/Rust boundary | Contract check plus focused proof on each changed side |
-| Convex backend | Focused `convex-test`, backend typecheck, and only provenance-backed negative authorization/privacy cases |
-| Landing | Astro check/build; desktop visual and Rust suites are outside this surface |
-| Docs or workflow only | Relevant syntax/config validation; application suites require a changed application path |
+Select the failure first. Then select the narrowest evidence:
 
-Prefer one parameterized test only when each row is an authoritative required case. Prefer a stronger existing integration proof over duplicating the same risk at unit and end-to-end layers. When a new proof fully supersedes an older proof in the same owned seam, remove the redundant proof and explain the replacement; leave unrelated redundancy as follow-up work.
+- For a runtime behavior regression, use one focused behavioral test at the nearest stable public seam.
+- For a type, compile, build, or generated-contract failure that the focused proof does not exercise, use the narrowest command that reaches that path.
+- For a changed serialization or native boundary, use one contract proof at that boundary. Add proof on both sides only when each side can fail independently.
+- For a changed authorization or privacy rule, use the public backend seam and cover the allowed and refused outcomes that the rule names.
+- For a changed migration, destructive action, persistence, concurrency, or compatibility rule, use one focused special proof for that rule.
+- For a required pixel, device, or physical outcome, use the smallest observable evidence and name any human verification boundary.
+- For documentation, workflow, or configuration, use a focused parser or validation command when malformed structure is the named risk; otherwise use review-only proof.
 
-Completion criterion: each distinct risk has exactly one primary layer unless the Proof Budget explains why separate layers catch separate failures.
+Language and package determine how to run selected evidence. They do not increase the evidence count.
 
-## 4. Execute a bounded ladder
+Completion criterion: the budget contains the smallest set of independent proofs that can catch every named failure.
 
-1. When the Proof Budget adds or changes a test, prove it red for the intended reason before implementation and green afterward. With zero test changes, run only the narrow existing proof named in the budget.
-2. Run the affected-package test/typecheck gate once after implementation when the budget names one.
-3. Run only special gates named in the Proof Budget.
-4. Push the exact head and use hosted CI as repository-wide integration proof.
+## 4. Execute the bounded proof
 
-Run local root `bun quality` only for cross-package, tooling, contract-generation, or release-sensitive changes, or when hosted CI cannot provide exact-head proof. The hosted `Bun and Rust quality` check is the normal full-suite gate for localized work.
+1. When the budget adds or changes a test, prove it red for the named reason before implementation and green afterward.
+2. Run each focused proof once after implementation.
+3. Run an extra local gate only when its Proof Budget entry names a failure that the focused proof cannot catch.
+4. Push the exact verified head and use required hosted checks as repository-wide integration proof.
 
-Retry a suspected flaky command once without code changes. When the failure reproduces on the clean base or lies outside the owned change, attach comparative evidence, add `agent:blocked` to both the issue and draft PR, and stop rather than modifying unrelated code or tests.
+The required hosted check is the normal full-suite gate. Use local root `bun quality` only to diagnose a hosted failure or when hosted checks cannot run for the PR.
 
-Completion criterion: every Proof Budget command has one terminal result, and repository-wide proof is tied to the exact PR head.
+Retry a suspected flaky command once without code changes. When a failure reproduces on the clean base or lies outside the owned change, attach comparative evidence, add `agent:blocked` to both the issue and draft PR, and stop.
+
+Completion criterion: every budgeted command and required hosted check has one terminal result tied to the exact PR head.
 
 ## 5. Stop at sufficiency
 
-Stop creating, expanding, parameterizing, or strengthening tests as soon as every Proof Budget row has sufficient evidence. Record newly imagined edge cases as follow-up suggestions with their missing provenance.
+Stop when every Proof Budget row has sufficient evidence. Leave speculative edge cases without authoritative provenance outside the worker output.
 
-Before handoff, remove tests added by this worker that lack provenance, duplicate an existing risk, assert private implementation details, mock the subject under test, or only increase coverage counts. Inspect every intentional snapshot diff; retain it only when the ticket requires the visual change.
+Before handoff, remove worker-authored tests that lack provenance, duplicate a budgeted failure, assert private implementation details, mock the subject under test, or only increase coverage counts. Retain a snapshot change only when the ticket requires that visual result.
 
-Completion criterion: every added or changed test traces to one Proof Budget row, and no worker-authored test remains outside the approved budget.
+Completion criterion: every added or changed test traces to one Proof Budget row, and every Proof Budget row is necessary for a distinct required failure.
