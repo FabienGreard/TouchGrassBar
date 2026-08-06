@@ -35,7 +35,7 @@ Completion criterion: all four labels exist with the intended meanings, and bran
 Build the prompt from this header followed by the three full contracts; preserve the source text instead of paraphrasing it:
 
 ```text
-afk-coding-contract: v2
+afk-coding-contract: v3
 contract-sha256: <computed hash>
 orchestrator-reasoning: medium
 worker-reasoning: xhigh
