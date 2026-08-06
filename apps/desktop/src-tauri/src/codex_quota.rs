@@ -19,6 +19,7 @@ use crate::sanitized::{
 
 const INITIALIZE_REQUEST_ID: i64 = 1;
 const DEFAULT_LIMIT_ID: &str = "codex";
+const IGNORED_CODEX_LIMIT_NAME: &str = "GPT-5.3-Codex-Spark";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct UsedPercent(u8);
@@ -72,6 +73,7 @@ struct RateLimitBucket {
 #[derive(Clone, Debug, PartialEq)]
 struct CodexQuotaObservation {
     buckets: BTreeMap<String, RateLimitBucket>,
+    ignored_limit_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,11 +133,8 @@ impl CodexQuotaObservation {
             Some(snapshots) => snapshots,
             None => BTreeMap::from([(DEFAULT_LIMIT_ID.to_owned(), response.rate_limits)]),
         };
-        if !snapshots.contains_key(DEFAULT_LIMIT_ID) {
-            return Err(());
-        }
-
         let mut buckets = BTreeMap::new();
+        let mut ignored_limit_ids = BTreeSet::new();
         for (limit_id, snapshot) in snapshots {
             if snapshot
                 .limit_id
@@ -144,11 +143,26 @@ impl CodexQuotaObservation {
             {
                 return Err(());
             }
-            let require_two_windows = limit_id == DEFAULT_LIMIT_ID;
-            let bucket = complete_bucket(snapshot, require_two_windows)?;
-            buckets.insert(limit_id, bucket);
+            if snapshot
+                .limit_name
+                .as_deref()
+                .is_some_and(is_ignored_codex_limit)
+            {
+                debug_event("quota_ignored class=codex_spark");
+                ignored_limit_ids.insert(limit_id);
+                continue;
+            }
+            if let Some(bucket) = complete_bucket(snapshot)? {
+                buckets.insert(limit_id, bucket);
+            }
         }
-        Ok(Self { buckets })
+        if buckets.is_empty() && ignored_limit_ids.is_empty() {
+            return Err(());
+        }
+        Ok(Self {
+            buckets,
+            ignored_limit_ids,
+        })
     }
 
     fn merge_sparse(&mut self, payload: &str) -> Result<bool, ()> {
@@ -160,6 +174,20 @@ impl CodexQuotaObservation {
             .limit_id
             .clone()
             .unwrap_or_else(|| DEFAULT_LIMIT_ID.to_owned());
+        if notification
+            .rate_limits
+            .limit_name
+            .as_deref()
+            .is_some_and(is_ignored_codex_limit)
+        {
+            self.ignored_limit_ids.insert(limit_id);
+            debug_event("quota_update_ignored class=codex_spark");
+            return Ok(false);
+        }
+        if self.ignored_limit_ids.contains(&limit_id) {
+            debug_event("quota_update_ignored class=codex_spark");
+            return Ok(false);
+        }
         let current = self.buckets.get_mut(&limit_id).ok_or(())?;
         let mut changed = false;
         if let Some(name) = notification.rate_limits.limit_name {
@@ -167,28 +195,24 @@ impl CodexQuotaObservation {
             changed = true;
         }
         if let Some(primary) = notification.rate_limits.primary {
-            merge_window(current.primary.as_mut().ok_or(())?, primary)?;
-            changed = true;
+            changed |= update_window(&mut current.primary, primary)?;
         }
         if let Some(secondary) = notification.rate_limits.secondary {
-            merge_window(current.secondary.as_mut().ok_or(())?, secondary)?;
-            changed = true;
+            changed |= update_window(&mut current.secondary, secondary)?;
         }
         Ok(changed)
     }
 
     fn sanitized_snapshot(&self, observed_at: OffsetDateTime) -> Result<ProviderSnapshot, ()> {
         let mut quota_lanes = Vec::new();
-        if let Some(bucket) = self.buckets.get(DEFAULT_LIMIT_ID) {
-            append_bucket_lanes(&mut quota_lanes, DEFAULT_LIMIT_ID, bucket)?;
-        }
-        for (limit_id, bucket) in &self.buckets {
-            if limit_id != DEFAULT_LIMIT_ID {
-                append_bucket_lanes(&mut quota_lanes, limit_id, bucket)?;
-            }
+        for (limit_id, bucket) in self.ordered_buckets() {
+            append_bucket_lanes(&mut quota_lanes, limit_id, bucket)?;
         }
         if quota_lanes.is_empty() {
-            return Err(());
+            return Ok(ProviderSnapshot::Unavailable {
+                provider: CodingProvider::Codex,
+                quota_lanes: [],
+            });
         }
         Ok(ProviderSnapshot::Current {
             provider: CodingProvider::Codex,
@@ -196,18 +220,26 @@ impl CodexQuotaObservation {
             quota_lanes,
         })
     }
+
+    fn ordered_buckets(&self) -> impl Iterator<Item = (&str, &RateLimitBucket)> {
+        self.buckets
+            .get(DEFAULT_LIMIT_ID)
+            .map(|bucket| (DEFAULT_LIMIT_ID, bucket))
+            .into_iter()
+            .chain(
+                self.buckets
+                    .iter()
+                    .filter(|(limit_id, _)| limit_id.as_str() != DEFAULT_LIMIT_ID)
+                    .map(|(limit_id, bucket)| (limit_id.as_str(), bucket)),
+            )
+    }
 }
 
-fn complete_bucket(
-    snapshot: RawRateLimitSnapshot,
-    require_two_windows: bool,
-) -> Result<RateLimitBucket, ()> {
+fn complete_bucket(snapshot: RawRateLimitSnapshot) -> Result<Option<RateLimitBucket>, ()> {
     let primary = snapshot.primary.map(complete_window).transpose()?;
     let secondary = snapshot.secondary.map(complete_window).transpose()?;
-    if (require_two_windows && (primary.is_none() || secondary.is_none()))
-        || (primary.is_none() && secondary.is_none())
-    {
-        return Err(());
+    if primary.is_none() && secondary.is_none() {
+        return Ok(None);
     }
     let name = snapshot
         .limit_name
@@ -221,11 +253,11 @@ fn complete_bucket(
         snapshot.rate_limit_reached_type,
         snapshot.spend_control_reached,
     );
-    Ok(RateLimitBucket {
+    Ok(Some(RateLimitBucket {
         name,
         primary,
         secondary,
-    })
+    }))
 }
 
 fn validate_sparse_snapshot(snapshot: &RawRateLimitSnapshot) -> Result<(), ()> {
@@ -251,7 +283,17 @@ fn validate_sparse_snapshot(snapshot: &RawRateLimitSnapshot) -> Result<(), ()> {
 }
 
 fn nonempty_name(name: String) -> Result<Option<String>, ()> {
-    (!name.trim().is_empty()).then_some(Some(name)).ok_or(())
+    let name = normalized_limit_name(&name);
+    let name = name.chars().take(64).collect::<String>();
+    (!name.is_empty()).then_some(Some(name)).ok_or(())
+}
+
+fn normalized_limit_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_ignored_codex_limit(name: &str) -> bool {
+    normalized_limit_name(name) == IGNORED_CODEX_LIMIT_NAME
 }
 
 fn complete_window(window: RawRateLimitWindow) -> Result<RateLimitWindow, ()> {
@@ -273,6 +315,21 @@ fn merge_window(current: &mut RateLimitWindow, update: RawRateLimitWindow) -> Re
     Ok(())
 }
 
+fn update_window(
+    current: &mut Option<RateLimitWindow>,
+    update: RawRateLimitWindow,
+) -> Result<bool, ()> {
+    if let Some(current) = current {
+        merge_window(current, update)?;
+        return Ok(true);
+    }
+    if update.resets_at.is_none() || update.window_duration_mins.is_none() {
+        return Ok(false);
+    }
+    *current = Some(complete_window(update)?);
+    Ok(true)
+}
+
 fn window_label(duration: WindowDurationMinutes) -> String {
     match duration.0 {
         300 => "5-hour limit".to_owned(),
@@ -289,14 +346,28 @@ fn append_bucket_lanes(
     bucket: &RateLimitBucket,
 ) -> Result<(), ()> {
     for window in [&bucket.primary, &bucket.secondary].into_iter().flatten() {
-        let mut label = window_label(window.duration);
-        if limit_id != DEFAULT_LIMIT_ID {
-            let bucket_label = bucket.name.as_deref().unwrap_or(limit_id);
-            label = format!("{bucket_label} {label}");
-        }
-        lanes.push(sanitized_lane(window, label)?);
+        lanes.push(sanitized_lane(
+            window,
+            sanitized_lane_label(limit_id, bucket, window),
+        )?);
     }
     Ok(())
+}
+
+fn sanitized_lane_label(
+    limit_id: &str,
+    bucket: &RateLimitBucket,
+    window: &RateLimitWindow,
+) -> String {
+    let window_label = window_label(window.duration);
+    if limit_id == DEFAULT_LIMIT_ID {
+        window_label
+    } else {
+        format!(
+            "{} {window_label}",
+            bucket.name.as_deref().unwrap_or("Additional")
+        )
+    }
 }
 
 fn sanitized_lane(window: &RateLimitWindow, label: String) -> Result<QuotaLane, ()> {
@@ -315,6 +386,49 @@ fn sanitized_lane(window: &RateLimitWindow, label: String) -> Result<QuotaLane, 
 fn format_time(now: OffsetDateTime) -> Result<String, ()> {
     now.format(&Rfc3339).map_err(|_| ())
 }
+
+#[cfg(debug_assertions)]
+fn debug_event(event: &str) {
+    eprintln!("[TouchGrassBar][codex-quota] {event}");
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_event(_event: &str) {}
+
+#[cfg(debug_assertions)]
+fn debug_observation_summary(observation: &CodexQuotaObservation) -> String {
+    let mut labels = Vec::new();
+    for (limit_id, bucket) in observation.ordered_buckets() {
+        append_debug_labels(&mut labels, limit_id, bucket);
+    }
+    let lanes = labels
+        .into_iter()
+        .enumerate()
+        .map(|(index, label)| format!("lane-{}={label:?}", index + 1))
+        .collect::<Vec<_>>();
+    format!("lane_count={} {}", lanes.len(), lanes.join(" "))
+}
+
+#[cfg(debug_assertions)]
+fn append_debug_labels(labels: &mut Vec<String>, limit_id: &str, bucket: &RateLimitBucket) {
+    labels.extend(
+        [&bucket.primary, &bucket.secondary]
+            .into_iter()
+            .flatten()
+            .map(|window| sanitized_lane_label(limit_id, bucket, window)),
+    );
+}
+
+#[cfg(debug_assertions)]
+fn debug_observation(observation: &CodexQuotaObservation) {
+    eprintln!(
+        "[TouchGrassBar][codex-quota] full_read_received {}",
+        debug_observation_summary(observation)
+    );
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_observation(_observation: &CodexQuotaObservation) {}
 
 pub(crate) struct CodexQuotaRefreshAdapter {
     clock: Arc<dyn Clock>,
@@ -345,18 +459,26 @@ impl SnapshotRefreshAdapter for CodexQuotaRefreshAdapter {
         mut cached: SanitizedDesktopStateV2,
         attempt: &RefreshAttempt,
     ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
+        debug_event("refresh_started");
         let mut session_guard = self
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if session_guard.is_none() {
-            let executable = resolve_codex_executable().ok_or(RefreshFailure::SourceUnavailable)?;
+            let Some(executable) = resolve_codex_executable() else {
+                debug_event("refresh_failed stage=executable_not_found");
+                return Err(RefreshFailure::SourceUnavailable);
+            };
             let trigger = self
                 .refresh_trigger
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
-            *session_guard = Some(CodexAppServerSession::start(&executable, attempt, trigger)?);
+            let session =
+                CodexAppServerSession::start(&executable, attempt, trigger).inspect_err(|_| {
+                    debug_event("refresh_failed stage=session_start");
+                })?;
+            *session_guard = Some(session);
         }
         let result = session_guard
             .as_mut()
@@ -365,13 +487,18 @@ impl SnapshotRefreshAdapter for CodexQuotaRefreshAdapter {
         let observation = match result {
             Ok(observation) => observation,
             Err(error) => {
+                debug_event("refresh_failed stage=full_read");
                 session_guard.take();
                 return Err(error);
             }
         };
         cached.providers[0] = observation
             .sanitized_snapshot(self.clock.now())
-            .map_err(|_| RefreshFailure::SourceUnavailable)?;
+            .map_err(|_| {
+                debug_event("refresh_failed stage=sanitized_projection");
+                RefreshFailure::SourceUnavailable
+            })?;
+        debug_event("refresh_completed");
         Ok(Some(cached))
     }
 }
@@ -433,6 +560,7 @@ impl CodexAppServerSession {
                         == Some("account/rateLimits/updated".to_owned())
                     && let Some(trigger) = &trigger
                 {
+                    debug_event("provider_notification_received");
                     trigger();
                 }
                 if sender.send(line).is_err() {
@@ -461,6 +589,7 @@ impl CodexAppServerSession {
         }))?;
         session.wait_for_response(INITIALIZE_REQUEST_ID, attempt)?;
         session.send(json!({"method": "initialized", "params": {}}))?;
+        debug_event("session_initialized");
         Ok(session)
     }
 
@@ -468,12 +597,7 @@ impl CodexAppServerSession {
         &mut self,
         attempt: &RefreshAttempt,
     ) -> Result<CodexQuotaObservation, RefreshFailure> {
-        if self.drain_sparse_notifications()? {
-            return self
-                .observation
-                .clone()
-                .ok_or(RefreshFailure::SourceUnavailable);
-        }
+        let _ = self.drain_sparse_notifications()?;
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
         self.send(json!({
@@ -500,6 +624,7 @@ impl CodexAppServerSession {
                 serde_json::to_string(payload).map_err(|_| RefreshFailure::SourceUnavailable)?;
             let observation = CodexQuotaObservation::from_full_read(&payload)
                 .map_err(|_| RefreshFailure::SourceUnavailable)?;
+            debug_observation(&observation);
             self.observation = Some(observation.clone());
             return Ok(observation);
         }
@@ -679,6 +804,34 @@ mod tests {
         )
     }
 
+    fn weekly_only_fixture() -> String {
+        format!(
+            r#"{{
+              "rateLimits": {{
+                "limitId": "codex",
+                "primary": {{
+                  "usedPercent": 82,
+                  "windowDurationMins": 10080,
+                  "resetsAt": {SECONDARY_RESET}
+                }},
+                "secondary": null
+              }},
+              "rateLimitsByLimitId": {{
+                "codex": {{
+                  "limitId": "codex",
+                  "primary": {{
+                    "usedPercent": 82,
+                    "windowDurationMins": 10080,
+                    "resetsAt": {SECONDARY_RESET}
+                  }},
+                  "secondary": null
+                }}
+              }},
+              "rateLimitResetCredits": null
+            }}"#,
+        )
+    }
+
     fn observed_at() -> OffsetDateTime {
         OffsetDateTime::parse(OBSERVED_AT, &Rfc3339).expect("valid observation time")
     }
@@ -714,6 +867,21 @@ mod tests {
     }
 
     #[test]
+    fn full_read_accepts_the_provider_returned_lane_count_and_window_identity() {
+        let snapshot = CodexQuotaObservation::from_full_read(&weekly_only_fixture())
+            .unwrap()
+            .sanitized_snapshot(observed_at())
+            .unwrap();
+
+        let ProviderSnapshot::Current { quota_lanes, .. } = snapshot else {
+            panic!("expected current snapshot");
+        };
+        assert_eq!(quota_lanes.len(), 1);
+        assert_eq!(quota_lanes[0].label, "Weekly limit");
+        assert_eq!(quota_lanes[0].remaining, Some(18.0));
+    }
+
+    #[test]
     fn full_read_keeps_each_active_limit_bucket_and_provider_name() {
         let fixture = full_fixture().replace(
             "\"rateLimitsByLimitId\": null",
@@ -745,6 +913,97 @@ mod tests {
     }
 
     #[test]
+    fn full_read_ignores_the_exact_codex_spark_quota() {
+        let fixture = full_fixture().replace(
+            "\"rateLimitsByLimitId\": null",
+            &format!(
+                r#""rateLimitsByLimitId": {{
+                  "codex": {{
+                    "limitId": "codex",
+                    "primary": {{"usedPercent": 26, "windowDurationMins": 300, "resetsAt": {PRIMARY_RESET}}},
+                    "secondary": {{"usedPercent": 82, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }},
+                  "spark": {{
+                    "limitId": "spark",
+                    "limitName": "GPT-5.3-Codex-Spark",
+                    "primary": {{"usedPercent": 50, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }}
+                }}"#,
+            ),
+        );
+        let snapshot = CodexQuotaObservation::from_full_read(&fixture)
+            .unwrap()
+            .sanitized_snapshot(observed_at())
+            .unwrap();
+        let ProviderSnapshot::Current { quota_lanes, .. } = snapshot else {
+            panic!("expected current snapshot");
+        };
+
+        assert_eq!(quota_lanes.len(), 2);
+        assert_eq!(quota_lanes[0].label, "5-hour limit");
+        assert_eq!(quota_lanes[1].label, "Weekly limit");
+    }
+
+    #[test]
+    fn full_read_with_only_the_ignored_spark_quota_is_unavailable() {
+        let fixture = full_fixture().replace(
+            "\"rateLimitsByLimitId\": null",
+            &format!(
+                r#""rateLimitsByLimitId": {{
+                  "spark": {{
+                    "limitId": "spark",
+                    "limitName": "GPT-5.3-Codex-Spark",
+                    "primary": {{"usedPercent": 50, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }}
+                }}"#,
+            ),
+        );
+        let snapshot = CodexQuotaObservation::from_full_read(&fixture)
+            .unwrap()
+            .sanitized_snapshot(observed_at())
+            .unwrap();
+
+        assert_eq!(
+            snapshot,
+            ProviderSnapshot::Unavailable {
+                provider: CodingProvider::Codex,
+                quota_lanes: [],
+            }
+        );
+    }
+
+    #[test]
+    fn sparse_update_for_an_ignored_spark_quota_is_also_ignored() {
+        let fixture = full_fixture().replace(
+            "\"rateLimitsByLimitId\": null",
+            &format!(
+                r#""rateLimitsByLimitId": {{
+                  "codex": {{
+                    "limitId": "codex",
+                    "primary": {{"usedPercent": 26, "windowDurationMins": 300, "resetsAt": {PRIMARY_RESET}}},
+                    "secondary": {{"usedPercent": 82, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }},
+                  "spark": {{
+                    "limitId": "spark",
+                    "limitName": "GPT-5.3-Codex-Spark",
+                    "primary": {{"usedPercent": 50, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }}
+                }}"#,
+            ),
+        );
+        let mut observation = CodexQuotaObservation::from_full_read(&fixture).unwrap();
+        let update = r#"{
+          "rateLimits": {
+            "limitId": "spark",
+            "primary": { "usedPercent": 60 }
+          }
+        }"#;
+
+        assert!(!observation.merge_sparse(update).unwrap());
+        assert_eq!(observation.buckets.len(), 1);
+    }
+
+    #[test]
     fn sparse_update_requires_a_full_observation_and_preserves_missing_fields() {
         let sparse = r#"{
           "rateLimits": {
@@ -766,17 +1025,50 @@ mod tests {
     }
 
     #[test]
-    fn sparse_update_cannot_create_an_unknown_limit_or_window() {
-        let unknown_limit = r#"{"rateLimits":{"limitId":"new","primary":{"usedPercent":40}}}"#;
-        let unknown_window = full_fixture().replace(
-            &format!(
-                "\"primary\": {{\n                  \"usedPercent\": 26,\n                  \"windowDurationMins\": 300,\n                  \"resetsAt\": {PRIMARY_RESET}\n                }}",
-            ),
-            "\"primary\": null",
+    fn complete_sparse_window_can_add_a_new_lane_to_an_initialized_snapshot() {
+        let mut observation =
+            CodexQuotaObservation::from_full_read(&weekly_only_fixture()).unwrap();
+        let update = format!(
+            r#"{{
+              "rateLimits": {{
+                "limitId": "codex",
+                "secondary": {{
+                  "usedPercent": 26,
+                  "windowDurationMins": 300,
+                  "resetsAt": {PRIMARY_RESET}
+                }}
+              }}
+            }}"#,
         );
-        let mut observation = CodexQuotaObservation::from_full_read(&full_fixture()).unwrap();
+
+        assert!(observation.merge_sparse(&update).unwrap());
+        let snapshot = observation.sanitized_snapshot(observed_at()).unwrap();
+        let ProviderSnapshot::Current { quota_lanes, .. } = snapshot else {
+            panic!("expected current snapshot");
+        };
+        assert_eq!(quota_lanes.len(), 2);
+        assert_eq!(quota_lanes[0].label, "Weekly limit");
+        assert_eq!(quota_lanes[1].label, "5-hour limit");
+    }
+
+    #[test]
+    fn sparse_update_cannot_create_an_unknown_limit_or_incomplete_window() {
+        let unknown_limit = r#"{"rateLimits":{"limitId":"new","primary":{"usedPercent":40}}}"#;
+        let incomplete_window =
+            r#"{"rateLimits":{"limitId":"codex","secondary":{"usedPercent":40}}}"#;
+        let mut observation =
+            CodexQuotaObservation::from_full_read(&weekly_only_fixture()).unwrap();
+
         assert!(observation.merge_sparse(unknown_limit).is_err());
-        assert!(CodexQuotaObservation::from_full_read(&unknown_window).is_err());
+        assert!(!observation.merge_sparse(incomplete_window).unwrap());
+        assert!(
+            observation
+                .buckets
+                .get(DEFAULT_LIMIT_ID)
+                .unwrap()
+                .secondary
+                .is_none()
+        );
     }
 
     #[test]
@@ -809,6 +1101,24 @@ mod tests {
             "localPath",
         ] {
             assert!(!output.contains(prohibited), "leaked {prohibited}");
+        }
+    }
+
+    #[test]
+    fn debug_summary_contains_only_lane_count_and_safe_lane_labels() {
+        let observation = CodexQuotaObservation::from_full_read(&weekly_only_fixture()).unwrap();
+        let summary = debug_observation_summary(&observation);
+
+        assert_eq!(summary, "lane_count=1 lane-1=\"Weekly limit\"");
+        for prohibited in [
+            "codex",
+            "usedPercent",
+            "resetsAt",
+            "10080",
+            "82",
+            OBSERVED_AT,
+        ] {
+            assert!(!summary.contains(prohibited), "leaked {prohibited}");
         }
     }
 

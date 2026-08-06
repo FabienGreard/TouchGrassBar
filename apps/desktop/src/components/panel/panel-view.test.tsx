@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
 import type { BrowserFixtureName } from "@/dev/preview-scenario";
@@ -13,11 +13,30 @@ import {
 } from "@/dev/panel-fixtures";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
+function localDateTime(iso: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    month: "short",
+    weekday: "short",
+  }).format(new Date(iso));
+}
+
+function localTime(iso: string) {
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+  }).format(new Date(iso));
+}
+
 async function deliveredBrowserFixture(name: BrowserFixtureName) {
   const delivery = createSanitizedDesktopStateDelivery(
     createBrowserSanitizedDesktopStateAdapter(
       name,
-      () => new Date("2026-08-03T00:00:00.000Z"),
+      () => new Date("2026-08-06T13:45:00.000Z"),
     ),
   );
 
@@ -38,6 +57,15 @@ async function deliveredBrowserFixture(name: BrowserFixtureName) {
 }
 
 describe("panel states", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-06T13:45:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test("presents the unavailable panel without fake data", async () => {
     const unavailableState = await deliveredBrowserFixture("unavailable");
     const markup = renderToStaticMarkup(
@@ -187,9 +215,18 @@ describe("panel states", () => {
     expect(markup).toContain("width:34%");
     expect(markup).toContain("width:64%");
     expect(markup).toContain("width:100%");
-    expect(markup).toContain("Weekly limit · resets Mon 08:00");
-    expect(markup).toContain("5-hour limit · resets 14:40");
-    expect(markup).toContain("5-hour limit · resets 18:20");
+    expect(markup).toContain(
+      `Weekly limit · 4d 10h left · ${localDateTime("2026-08-10T23:45:00.000Z")}`,
+    );
+    expect(markup).toContain(
+      `5-hour limit · resets ${localTime("2026-08-06T18:40:00.000Z")}`,
+    );
+    expect(markup).toContain(
+      `Weekly limit · 6d 13h left · ${localDateTime("2026-08-13T03:00:00.000Z")}`,
+    );
+    expect(markup).toContain(
+      `5-hour limit · resets ${localTime("2026-08-06T18:20:00.000Z")}`,
+    );
     expect(markup).toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-quota-tone="codex"/g)).toHaveLength(2);
     expect(markup.match(/data-quota-tone="claude"/g)).toHaveLength(2);
@@ -233,8 +270,12 @@ describe("panel states", () => {
     expect(markup).toContain(
       'aria-label="5-hour limit quota stale, 62 percent remaining"',
     );
-    expect(markup).toContain("Weekly limit · resets Mon 08:00 · stale");
-    expect(markup).toContain("5-hour limit · resets 14:40 · stale");
+    expect(markup).toContain(
+      `Weekly limit · 4d 10h left · ${localDateTime("2026-08-10T23:45:00.000Z")} · stale`,
+    );
+    expect(markup).toContain(
+      `5-hour limit · resets ${localTime("2026-08-06T18:40:00.000Z")} · stale`,
+    );
     expect(markup).toContain('data-quota-value="74"');
     expect(markup).toContain('data-quota-value="62"');
   });
