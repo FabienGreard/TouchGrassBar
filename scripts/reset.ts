@@ -295,26 +295,6 @@ function clearConvexSelection() {
   for (const name of managedNames) delete process.env[name];
 }
 
-async function runClean() {
-  if (dryRun) {
-    const result = Bun.spawnSync(["bun", "scripts/clean.ts", "--dry-run"], {
-      cwd: workspaceRoot,
-      env: process.env,
-      stderr: "inherit",
-      stdout: "inherit",
-    });
-    if (result.exitCode !== 0) throw new Error("Build cleanup failed.");
-    return;
-  }
-  const result = Bun.spawnSync(["bun", "scripts/clean.ts"], {
-    cwd: workspaceRoot,
-    env: process.env,
-    stderr: "inherit",
-    stdout: "inherit",
-  });
-  if (result.exitCode !== 0) throw new Error("Build cleanup failed.");
-}
-
 async function prepareFreshLocalEnvironment() {
   if (dryRun) return;
   const child = Bun.spawn(["bun", "scripts/setup.ts"], {
@@ -358,10 +338,11 @@ if (release) {
 } else {
   const namespace = developmentNamespace();
   console.log("Reset target: all development state in this worktree.");
-  console.log("Remote Convex deployments and production state will be preserved.");
+  console.log(
+    "Build output, caches, remote Convex deployments, and production state will be preserved.",
+  );
   await stopDevelopmentRunner();
   await stopApp(developmentBundleProcessIds(), "packaged development app");
-  await runClean();
   removeTargets([
     ...desktopTargets(namespace),
     ...desktopTargets("app.touchgrass.bar.dev"),

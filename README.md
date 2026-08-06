@@ -86,14 +86,15 @@ bun reset:bundle
 bun reset:release
 ```
 
-`clean` removes only build output and caches. `reset` removes all development
-state in the worktree, then creates a fresh local setup. It preserves every
-remote Convex deployment and all production state. The command starts the reset
-without a confirmation prompt. `reset:bundle` removes only the packaged
-development app data and shared development Keychain items. It preserves the
-built app and local Convex data. `reset:release` removes only the release app
-data and release Keychain items on this Mac. It requires strong confirmation
-and never deletes the production Convex database.
+`clean` removes only build output and caches. Reset commands never clean build
+output or caches. `reset` removes all development state in the worktree, then
+creates a fresh local setup. It preserves every remote Convex deployment and
+all production state. The command starts the reset without a confirmation
+prompt. `reset:bundle` removes only the packaged development app data and shared
+development Keychain items. It preserves the built app and local Convex data.
+`reset:release` removes only the release app data and release Keychain items on
+this Mac. It requires strong confirmation and never deletes the production
+Convex database.
 
 All JavaScript and TypeScript dependency management and scripts run through Bun. TypeScript tests use Vitest; native tests use Cargo. Rust is limited to the Tauri native core.
 
