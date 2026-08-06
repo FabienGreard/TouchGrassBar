@@ -2,6 +2,7 @@
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import {
@@ -10,17 +11,37 @@ import {
   readLocalDevelopmentEnvironment,
   workspaceRoot,
 } from "./development-environment";
+import { convexCommandEnvironment } from "./convex-command-environment";
 
 const convexCli = resolve(
   workspaceRoot,
   "packages/backend/node_modules/convex/bin/main.js",
 );
-const waitTimeoutMs = 60_000;
-
 type CommandResult = {
   exitCode: number;
+  stderr: string;
   stdout: string;
 };
+
+function failureMessage(message: string, result: CommandResult) {
+  const ansiEscape = new RegExp(
+    `${String.fromCodePoint(27)}\\[[0-?]*[ -/]*[@-~]`,
+    "g",
+  );
+  const diagnostic = result.stderr
+    .replace(ansiEscape, "")
+    .replaceAll(workspaceRoot, "<workspace>")
+    .replaceAll(homedir(), "<home>")
+    .replace(
+      /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY))=\S+/g,
+      "$1=<redacted>",
+    )
+    .trim()
+    .split(/\r?\n/)
+    .slice(-8)
+    .join("\n");
+  return diagnostic ? `${message}\nConvex reported:\n${diagnostic}` : message;
+}
 
 function convexArguments(argumentsList: string[]) {
   return [process.execPath, convexCli, ...argumentsList];
@@ -67,7 +88,13 @@ async function runCaptured(
 ): Promise<CommandResult> {
   const child = Bun.spawn(convexArguments(argumentsList), {
     cwd: workspaceRoot,
-    env: options.environment ?? process.env,
+    env:
+      options.environment ??
+      convexCommandEnvironment(
+        argumentsList,
+        process.env,
+        readLocalDevelopmentEnvironment(),
+      ),
     stdin: options.input === undefined ? "ignore" : "pipe",
     stderr: "pipe",
     stdout: "pipe",
@@ -79,8 +106,11 @@ async function runCaptured(
   const stdout = new Response(child.stdout).text();
   const stderr = new Response(child.stderr).text();
   const exitCode = await child.exited;
-  await stderr;
-  return { exitCode, stdout: await stdout };
+  return {
+    exitCode,
+    stderr: await stderr,
+    stdout: await stdout,
+  };
 }
 
 async function installDependencies() {
@@ -116,64 +146,38 @@ async function provisionLocalDeployment() {
     ["dev", "--once", "--tail-logs", "disable"],
     { environment: anonymousLocalEnvironment() },
   );
-  if (result.exitCode !== 0 || !existsSync(localEnvironmentPath)) {
-    throw new Error("Local Convex setup failed.");
+  if (!existsSync(localEnvironmentPath)) {
+    throw new Error(failureMessage("Local Convex setup failed.", result));
   }
-}
-
-async function waitForLocalBackend(
-  backend: ReturnType<typeof Bun.spawn>,
-) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < waitTimeoutMs) {
-    const result = await runCaptured(["env", "list", "--names-only"]);
-    if (result.exitCode === 0) return result.stdout;
-    if (backend.exitCode !== null) {
-      throw new Error("The local Convex backend stopped during setup.");
-    }
-    await Bun.sleep(500);
+  const environment = readLocalDevelopmentEnvironment();
+  if (
+    !environment.CONVEX_DEPLOYMENT?.trim() ||
+    !environment.CONVEX_SITE_URL?.trim() ||
+    !environment.CONVEX_URL?.trim() ||
+    developmentTarget(environment) !== "local"
+  ) {
+    throw new Error(failureMessage("Local Convex setup failed.", result));
   }
-  throw new Error("The local Convex backend did not become ready.");
 }
 
 async function ensureLocalBetterAuthSecret() {
-  const backend = Bun.spawn(
-    convexArguments([
-      "dev",
-      "--codegen",
-      "disable",
-      "--tail-logs",
-      "disable",
-      "--typecheck",
-      "disable",
-    ]),
-    {
-      cwd: workspaceRoot,
-      env: process.env,
-      stdin: "ignore",
-      stderr: "pipe",
-      stdout: "pipe",
-    },
-  );
-  const stdout = new Response(backend.stdout).text();
-  const stderr = new Response(backend.stderr).text();
-  try {
-    const names = await waitForLocalBackend(backend);
-    if (!names.split(/\r?\n/).includes("BETTER_AUTH_SECRET")) {
-      const secret = randomBytes(48).toString("base64url");
-      const result = await runCaptured(
-        ["env", "set", "BETTER_AUTH_SECRET"],
-        { input: `${secret}\n` },
+  const listed = await runCaptured(["env", "list", "--names-only"]);
+  if (listed.exitCode !== 0) {
+    throw new Error(
+      failureMessage("The local Convex environment could not be read.", listed),
+    );
+  }
+  if (!listed.stdout.split(/\r?\n/).includes("BETTER_AUTH_SECRET")) {
+    const secret = randomBytes(48).toString("base64url");
+    const result = await runCaptured(
+      ["env", "set", "BETTER_AUTH_SECRET"],
+      { input: `${secret}\n` },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(
+        failureMessage("The local Better Auth secret could not be set.", result),
       );
-      if (result.exitCode !== 0) {
-        throw new Error("The local Better Auth secret could not be set.");
-      }
     }
-  } finally {
-    backend.kill();
-    await backend.exited;
-    await stdout;
-    await stderr;
   }
 }
 
@@ -185,7 +189,12 @@ async function pushSelectedBackend() {
     "disable",
   ]);
   if (result.exitCode !== 0) {
-    throw new Error("The selected Convex backend could not be prepared.");
+    throw new Error(
+      failureMessage(
+        "The selected Convex backend could not be prepared.",
+        result,
+      ),
+    );
   }
 }
 

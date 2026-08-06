@@ -87,9 +87,10 @@ bun reset:prod
 
 `clean` removes only build output and caches. `reset` removes all development
 state in the worktree, then creates a fresh local setup. It preserves every
-remote Convex deployment and all production state. `reset:prod` removes only
-the production app data and production Keychain items on this Mac. It requires
-strong confirmation and never deletes the production Convex database.
+remote Convex deployment and all production state. The command starts the reset
+without a confirmation prompt. `reset:prod` removes only the production app
+data and production Keychain items on this Mac. It requires strong confirmation
+and never deletes the production Convex database.
 
 All JavaScript and TypeScript dependency management and scripts run through Bun. TypeScript tests use Vitest; native tests use Cargo. Rust is limited to the Tauri native core.
 

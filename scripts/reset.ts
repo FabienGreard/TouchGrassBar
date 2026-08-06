@@ -33,7 +33,6 @@ const argumentsSet = new Set(process.argv.slice(2));
 const supportedArguments = new Set([
   "--dry-run",
   "--production",
-  "--yes",
 ]);
 const unknownArguments = [...argumentsSet].filter(
   (argument) => !supportedArguments.has(argument),
@@ -44,10 +43,6 @@ if (unknownArguments.length > 0) {
 
 const dryRun = argumentsSet.has("--dry-run");
 const production = argumentsSet.has("--production");
-const assumeYes = argumentsSet.has("--yes");
-if (production && assumeYes) {
-  throw new Error("Production reset does not accept --yes.");
-}
 if (process.platform !== "darwin") {
   throw new Error("TouchGrassBar reset currently supports macOS only.");
 }
@@ -191,13 +186,13 @@ async function stopProductionApp() {
 }
 
 async function confirmReset() {
-  if (dryRun || (!production && assumeYes)) return;
+  if (dryRun) return;
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("Interactive confirmation is required for reset.");
+    throw new Error("Interactive confirmation is required for production reset.");
   }
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const expected = production ? "RESET PRODUCTION" : "RESET DEVELOPMENT";
+    const expected = "RESET PRODUCTION";
     const answer = await prompt.question(`Type ${expected} to continue: `);
     if (answer !== expected) throw new Error("Reset cancelled.");
   } finally {
@@ -328,7 +323,6 @@ if (production) {
   const namespace = developmentNamespace();
   console.log("Reset target: all development state in this worktree.");
   console.log("Remote Convex deployments and production state will be preserved.");
-  await confirmReset();
   await stopDevelopmentRunner();
   await runClean();
   removeTargets([
