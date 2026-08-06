@@ -12,6 +12,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
+use crate::codex_usage::{
+    AccountUsageObservation, parse_account_usage, project_usage_periods, scan_local_usage,
+};
 use crate::sanitized::{
     Clock, CodingProvider, ProviderSnapshot, QuotaLane, RefreshAttempt, RefreshFailure,
     RefreshTrigger, SanitizedDesktopStateV2, SnapshotRefreshAdapter,
@@ -432,14 +435,16 @@ fn debug_observation(_observation: &CodexQuotaObservation) {}
 
 pub(crate) struct CodexQuotaRefreshAdapter {
     clock: Arc<dyn Clock>,
+    database_path: Option<PathBuf>,
     session: Mutex<Option<CodexAppServerSession>>,
     refresh_trigger: Mutex<Option<RefreshTrigger>>,
 }
 
 impl CodexQuotaRefreshAdapter {
-    pub(crate) fn production(clock: Arc<dyn Clock>) -> Self {
+    pub(crate) fn production(clock: Arc<dyn Clock>, database_path: Option<PathBuf>) -> Self {
         Self {
             clock,
+            database_path,
             session: Mutex::new(None),
             refresh_trigger: Mutex::new(None),
         }
@@ -489,6 +494,16 @@ impl SnapshotRefreshAdapter for CodexQuotaRefreshAdapter {
             Err(error) => {
                 debug_event("refresh_failed stage=full_read");
                 session_guard.take();
+                let observed_at = self.clock.now();
+                attempt.remaining()?;
+                let local_usage = scan_local_usage(self.database_path.as_deref(), observed_at);
+                attempt.remaining()?;
+                if let Some(local_usage) = local_usage {
+                    cached.usage.codex =
+                        project_usage_periods(None, Some(&local_usage), observed_at);
+                    debug_event("usage_projection_completed source=local_only");
+                    return Ok(Some(cached));
+                }
                 return Err(error);
             }
         };
@@ -498,6 +513,23 @@ impl SnapshotRefreshAdapter for CodexQuotaRefreshAdapter {
                 debug_event("refresh_failed stage=sanitized_projection");
                 RefreshFailure::SourceUnavailable
             })?;
+        let account_usage = session_guard
+            .as_mut()
+            .ok_or(RefreshFailure::SourceUnavailable)?
+            .read_usage_observation(attempt)
+            .inspect_err(|_| debug_event("usage_account_unavailable"))
+            .ok();
+        let observed_at = self.clock.now();
+        attempt.remaining()?;
+        let local_usage = scan_local_usage(self.database_path.as_deref(), observed_at);
+        attempt.remaining()?;
+        if account_usage.is_some() || local_usage.is_some() {
+            cached.usage.codex =
+                project_usage_periods(account_usage.as_ref(), local_usage.as_ref(), observed_at);
+            debug_event("usage_projection_completed");
+        } else {
+            debug_event("usage_projection_preserved");
+        }
         debug_event("refresh_completed");
         Ok(Some(cached))
     }
@@ -646,6 +678,38 @@ impl CodexAppServerSession {
                 }
                 Err(mpsc::TryRecvError::Empty) => return Ok(updated),
             }
+        }
+    }
+
+    fn read_usage_observation(
+        &mut self,
+        attempt: &RefreshAttempt,
+    ) -> Result<AccountUsageObservation, RefreshFailure> {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        self.send(json!({
+            "method": "account/usage/read",
+            "id": request_id,
+            "params": null
+        }))?;
+        loop {
+            let message = self.receive(attempt)?;
+            if is_sparse_notification(&message) {
+                self.merge_notification(&message)?;
+                continue;
+            }
+            if message.get("id").and_then(Value::as_i64) != Some(request_id) {
+                continue;
+            }
+            if message.get("error").is_some() {
+                return Err(RefreshFailure::SourceUnavailable);
+            }
+            let payload = message
+                .get("result")
+                .ok_or(RefreshFailure::SourceUnavailable)?;
+            let payload =
+                serde_json::to_string(payload).map_err(|_| RefreshFailure::SourceUnavailable)?;
+            return parse_account_usage(&payload).map_err(|_| RefreshFailure::SourceUnavailable);
         }
     }
 

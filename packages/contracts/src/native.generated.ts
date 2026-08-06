@@ -2,13 +2,14 @@
 import * as z from "zod";
 
 export const BOOTSTRAP_CONTRACT_VERSION = 2 as const;
-export const CONTRACT_VERSION = 2 as const;
+export const CONTRACT_VERSION = 3 as const;
 export const PANEL_ADD_TOKENMAXXER_EVENT = "panel-add-tokenmaxxer-requested" as const;
 export const REVISION_NOTICE_EVENT = "sanitized-desktop-state-revision" as const;
 export const SETTINGS_CONTRACT_VERSION = 2 as const;
 export const SETTINGS_NAVIGATION_EVENT = "settings-navigation-requested" as const;
 export const SETTINGS_RECOVERY_CLEAR_EVENT = "settings-recovery-clear-requested" as const;
 
+export const apiEquivalentCostQualitySchema = z.enum(["reconciled","modeled","local-only"]);
 export const bootstrapStatusSchema = z.enum(["required","completed"]);
 export const codingProviderSchema = z.enum(["codex","claude"]);
 export const launchAtLoginStateSchema = z.discriminatedUnion("availability", [z.object({ enabled: z.boolean(), availability: z.literal("available") }).strict(), z.object({ availability: z.literal("unavailable") }).strict()]);
@@ -22,18 +23,32 @@ export const sanitizedProfileOutcomeSchema = z.discriminatedUnion("status", [z.o
 export const settingsSectionSchema = z.enum(["general","providers","profile"]);
 export const syncStatusSchema = z.enum(["synced","pending","stale","unavailable"]);
 export const syncStateSchema = z.object({ status: syncStatusSchema, lastSuccessfulAt: z.string().datetime().nullable().optional() }).strict();
+export const usageScanStatusSchema = z.enum(["complete","indexing","unavailable"]);
 export const usageEvidenceBasisSchema = z.enum(["provider-reported","locally-derived"]);
 export const usageCoverageSchema = z.enum(["complete","partial"]);
-export const usageTotalSchema = z.discriminatedUnion("availability", [z.object({ availability: z.literal("unavailable") }).strict(), z.object({ evidenceBasis: usageEvidenceBasisSchema, coverage: usageCoverageSchema, observedAt: z.string().datetime(), observedTokens: z.number().int().nonnegative(), apiEquivalentCostUsd: z.number().nonnegative().nullable().optional(), availability: z.literal("current") }).strict(), z.object({ evidenceBasis: usageEvidenceBasisSchema, coverage: usageCoverageSchema, observedAt: z.string().datetime(), observedTokens: z.number().int().nonnegative(), apiEquivalentCostUsd: z.number().nonnegative().nullable().optional(), availability: z.literal("stale") }).strict()]);
-export const usagePeriodsSchema = z.object({ today: usageTotalSchema, sevenDays: usageTotalSchema, thirtyDays: usageTotalSchema }).strict();
+export const usageTotalSchema = z.discriminatedUnion("availability", [z.object({ availability: z.literal("unavailable") }).strict(), z.object({ evidenceBasis: usageEvidenceBasisSchema, coverage: usageCoverageSchema, observedAt: z.string().datetime(), observedTokens: z.number().int().nonnegative(), apiEquivalentCostUsd: z.number().nonnegative().nullable().optional(), trendPercent: z.number().nullable().optional(), apiEquivalentCostBasis: z.string().min(1).max(64).nullable().optional(), apiEquivalentCostQuality: apiEquivalentCostQualitySchema.nullable().optional(), apiEquivalentCostCoveragePercent: z.number().nonnegative().max(100).nullable().optional(), availability: z.literal("current") }).strict(), z.object({ evidenceBasis: usageEvidenceBasisSchema, coverage: usageCoverageSchema, observedAt: z.string().datetime(), observedTokens: z.number().int().nonnegative(), apiEquivalentCostUsd: z.number().nonnegative().nullable().optional(), trendPercent: z.number().nullable().optional(), apiEquivalentCostBasis: z.string().min(1).max(64).nullable().optional(), apiEquivalentCostQuality: apiEquivalentCostQualitySchema.nullable().optional(), apiEquivalentCostCoveragePercent: z.number().nonnegative().max(100).nullable().optional(), availability: z.literal("stale") }).strict()]).superRefine((value, context) => {
+  if (value.availability === "unavailable") return;
+  const cost = value.apiEquivalentCostUsd;
+  const basis = value.apiEquivalentCostBasis;
+  const quality = value.apiEquivalentCostQuality;
+  const coverage = value.apiEquivalentCostCoveragePercent;
+  const noCost = cost == null && basis == null && quality == null && coverage == null;
+  const modeled = cost != null && basis != null && quality === "modeled" && coverage != null;
+  const fixedQuality = cost != null && basis != null && (quality === "reconciled" || quality === "local-only") && coverage == null;
+  if (!noCost && !modeled && !fixedQuality) {
+    context.addIssue({ code: "custom", message: "invalid API-equivalent cost state" });
+  }
+});
+export const usagePeriodsSchema = z.object({ scanStatus: usageScanStatusSchema, today: usageTotalSchema, sevenDays: usageTotalSchema, thirtyDays: usageTotalSchema }).strict();
 export const usageByProviderSchema = z.object({ codex: usagePeriodsSchema, claude: usagePeriodsSchema }).strict();
 export const bootstrapStateSchema = z.object({ contractVersion: z.literal(2), bootstrap: bootstrapStatusSchema, profileProvisioning: profileProvisioningStatusSchema, persistence: persistenceStatusSchema, displayName: z.string().nullable().optional(), touchGrassId: z.string().nullable().optional(), providers: z.tuple([providerPresenceSchema, providerPresenceSchema]) }).strict();
-export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal(2), generatedAt: z.string().datetime(), revision: z.string().regex(/^[1-9]\d*$/), providers: z.tuple([providerSnapshotSchema, providerSnapshotSchema]), usage: usageByProviderSchema, sync: syncStateSchema, profile: sanitizedProfileOutcomeSchema }).strict();
+export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal(3), generatedAt: z.string().datetime(), revision: z.string().regex(/^[1-9]\d*$/), providers: z.tuple([providerSnapshotSchema, providerSnapshotSchema]), usage: usageByProviderSchema, sync: syncStateSchema, profile: sanitizedProfileOutcomeSchema }).strict();
 export const refreshReceiptSchema = z.object({ accepted: z.boolean() }).strict();
 export const revisionNoticeSchema = z.object({ revision: z.string().regex(/^[1-9]\d*$/) }).strict();
 export const settingsNavigationRequestSchema = z.object({ section: settingsSectionSchema }).strict();
 export const settingsStateSchema = z.object({ contractVersion: z.literal(2), section: settingsSectionSchema, launchAtLogin: launchAtLoginStateSchema, profileProvisioning: profileProvisioningStatusSchema, displayName: z.string().nullable().optional(), recoveryKeySuffix: z.string().regex(new RegExp("^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{3}$")).nullable().optional(), touchGrassId: z.string().nullable().optional(), providers: z.tuple([providerPresenceSchema, providerPresenceSchema]) }).strict();
 
+export type ApiEquivalentCostQuality = z.infer<typeof apiEquivalentCostQualitySchema>;
 export type BootstrapStatus = z.infer<typeof bootstrapStatusSchema>;
 export type CodingProvider = z.infer<typeof codingProviderSchema>;
 export type LaunchAtLoginState = z.infer<typeof launchAtLoginStateSchema>;
@@ -47,6 +62,7 @@ export type SanitizedProfileOutcome = z.infer<typeof sanitizedProfileOutcomeSche
 export type SettingsSection = z.infer<typeof settingsSectionSchema>;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type SyncState = z.infer<typeof syncStateSchema>;
+export type UsageScanStatus = z.infer<typeof usageScanStatusSchema>;
 export type UsageEvidenceBasis = z.infer<typeof usageEvidenceBasisSchema>;
 export type UsageCoverage = z.infer<typeof usageCoverageSchema>;
 export type UsageTotal = z.infer<typeof usageTotalSchema>;

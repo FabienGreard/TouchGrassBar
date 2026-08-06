@@ -251,6 +251,65 @@ describe("panel states", () => {
     expect(markup).not.toContain("My Tokenmaxxers");
   });
 
+  test("derives shared usage trends, gauges, evidence, and pricing basis from native state", async () => {
+    const currentState = await deliveredBrowserFixture("current");
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={currentState}
+      />,
+    );
+
+    expect(markup).toContain("-8%");
+    expect(markup).toContain("Down 8 percent from the previous day");
+    expect(markup).toContain("+14%");
+    expect(markup).toContain("+22%");
+    expect(markup).toContain("Provider reported · Complete");
+    expect(markup).toContain("≈ $38.61 · Reconciled");
+    expect(markup).toContain(
+      "Price basis: openai-standard-2026-08-06-v1",
+    );
+    expect(markup).toContain("width:4%");
+    expect(markup).toContain("width:25%");
+    expect(markup).toContain("width:100%");
+  });
+
+  test("shows modeled cost coverage while the private index continues", async () => {
+    const currentState = await deliveredBrowserFixture("current");
+    currentState.usage.codex.scanStatus = "indexing";
+    const today = currentState.usage.codex.today;
+    if (today.availability === "unavailable") throw new Error("fixture unavailable");
+    today.apiEquivalentCostQuality = "modeled";
+    today.apiEquivalentCostCoveragePercent = 80;
+    const sevenDays = currentState.usage.codex.sevenDays;
+    const thirtyDays = currentState.usage.codex.thirtyDays;
+    if (
+      sevenDays.availability === "unavailable" ||
+      thirtyDays.availability === "unavailable"
+    )
+      throw new Error("fixture unavailable");
+    sevenDays.apiEquivalentCostQuality = "local-only";
+    sevenDays.apiEquivalentCostCoveragePercent = null;
+    thirtyDays.apiEquivalentCostQuality = null;
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={currentState}
+      />,
+    );
+
+    expect(markup).toContain("≈ $38.61 · Modeled 80%");
+    expect(markup).toContain("≈ $214.96 · Local only");
+    expect(markup).toContain("API equivalent unavailable");
+    expect(markup).toContain("Provider reported · Complete · Indexing");
+  });
+
   test("announces stale Quota Lanes without hiding their last valid values", async () => {
     const staleState = await deliveredBrowserFixture("stale");
     const markup = renderToStaticMarkup(

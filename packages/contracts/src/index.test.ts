@@ -9,7 +9,7 @@ import {
 } from "./index";
 
 const unavailableState = {
-  contractVersion: 2,
+  contractVersion: 3,
   generatedAt: "2026-08-03T00:00:00.000Z",
   profile: { status: "not-authorized" },
   revision: "1",
@@ -20,11 +20,13 @@ const unavailableState = {
   sync: { lastSuccessfulAt: null, status: "unavailable" },
   usage: {
     claude: {
+      scanStatus: "unavailable",
       thirtyDays: { availability: "unavailable" },
       sevenDays: { availability: "unavailable" },
       today: { availability: "unavailable" },
     },
     codex: {
+      scanStatus: "unavailable",
       thirtyDays: { availability: "unavailable" },
       sevenDays: { availability: "unavailable" },
       today: { availability: "unavailable" },
@@ -47,6 +49,27 @@ describe("public contracts", () => {
       unavailableState,
     );
     expect(JSON.stringify(unavailableState)).not.toContain("observedTokens");
+  });
+
+  test("rejects partial API-equivalent cost metadata", () => {
+    const invalid = {
+      ...unavailableState,
+      usage: {
+        ...unavailableState.usage,
+        codex: {
+          ...unavailableState.usage.codex,
+          today: {
+            apiEquivalentCostUsd: 1,
+            availability: "current",
+            coverage: "complete",
+            evidenceBasis: "provider-reported",
+            observedAt: "2026-08-03T00:00:00.000Z",
+            observedTokens: 100,
+          },
+        },
+      },
+    };
+    expect(sanitizedDesktopStateSchema.safeParse(invalid).success).toBe(false);
   });
 
   test("accepts only the Rust-owned refresh acknowledgement shape", () => {
@@ -103,7 +126,7 @@ describe("public contracts", () => {
   test.each([
     [
       "an unknown contract version",
-      { ...unavailableState, contractVersion: 3 },
+      { ...unavailableState, contractVersion: 2 },
     ],
     [
       "raw provider material",

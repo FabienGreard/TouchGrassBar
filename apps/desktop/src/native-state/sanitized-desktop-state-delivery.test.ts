@@ -11,7 +11,7 @@ import {
 
 function state(revision: string): SanitizedDesktopState {
   return {
-    contractVersion: 2,
+    contractVersion: 3,
     generatedAt: "2026-08-03T00:00:00.000Z",
     profile: { status: "not-authorized" },
     revision,
@@ -22,11 +22,13 @@ function state(revision: string): SanitizedDesktopState {
     sync: { lastSuccessfulAt: null, status: "unavailable" },
     usage: {
       claude: {
+        scanStatus: "unavailable",
         thirtyDays: { availability: "unavailable" },
         sevenDays: { availability: "unavailable" },
         today: { availability: "unavailable" },
       },
       codex: {
+        scanStatus: "unavailable",
         thirtyDays: { availability: "unavailable" },
         sevenDays: { availability: "unavailable" },
         today: { availability: "unavailable" },

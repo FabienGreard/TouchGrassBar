@@ -1,4 +1,5 @@
 mod codex_quota;
+mod codex_usage;
 #[cfg(debug_assertions)]
 mod dev_instance;
 pub mod lifecycle;

@@ -3,7 +3,7 @@ import type { BrowserFixtureName } from "@/dev/preview-scenario";
 
 function unavailableFixture(now: Date): unknown {
   return {
-    contractVersion: 2,
+    contractVersion: 3,
     generatedAt: now.toISOString(),
     profile: { status: "not-authorized" },
     providers: [
@@ -14,11 +14,13 @@ function unavailableFixture(now: Date): unknown {
     sync: { lastSuccessfulAt: null, status: "unavailable" },
     usage: {
       claude: {
+        scanStatus: "unavailable",
         sevenDays: { availability: "unavailable" },
         thirtyDays: { availability: "unavailable" },
         today: { availability: "unavailable" },
       },
       codex: {
+        scanStatus: "unavailable",
         sevenDays: { availability: "unavailable" },
         thirtyDays: { availability: "unavailable" },
         today: { availability: "unavailable" },
@@ -32,14 +34,19 @@ function observedUsage(
   observedAt: string,
   observedTokens: number,
   apiEquivalentCostUsd: number,
+  trendPercent: number,
 ) {
   return {
+    apiEquivalentCostBasis: "openai-standard-2026-08-06-v1",
+    apiEquivalentCostCoveragePercent: null,
+    apiEquivalentCostQuality: "reconciled",
     apiEquivalentCostUsd,
     availability,
     coverage: "complete",
     evidenceBasis: "provider-reported",
     observedAt,
     observedTokens,
+    trendPercent,
   };
 }
 
@@ -52,7 +59,7 @@ function populatedFixture(
     new Date(now.getTime() + minutes * 60_000).toISOString();
 
   return {
-    contractVersion: 2,
+    contractVersion: 3,
     generatedAt: observedAt,
     profile: {
       displayName: "Fabien",
@@ -110,19 +117,34 @@ function populatedFixture(
     },
     usage: {
       claude: {
+        scanStatus: "unavailable",
         sevenDays: { availability: "unavailable" },
         thirtyDays: { availability: "unavailable" },
         today: { availability: "unavailable" },
       },
       codex: {
-        sevenDays: observedUsage(availability, observedAt, 71_400_000, 214.96),
+        scanStatus: "complete",
+        sevenDays: observedUsage(
+          availability,
+          observedAt,
+          71_400_000,
+          214.96,
+          14,
+        ),
         thirtyDays: observedUsage(
           availability,
           observedAt,
           284_600_000,
           856.73,
+          22,
         ),
-        today: observedUsage(availability, observedAt, 12_800_000, 38.61),
+        today: observedUsage(
+          availability,
+          observedAt,
+          12_800_000,
+          38.61,
+          -8,
+        ),
       },
     },
   };

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "basis": "openai-standard-2026-08-06-v1",
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "aliases": [],
+      "periods": [
+        {
+          "effectiveFrom": "2026-04-24",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 5.0,
+          "cachedInputUsdPerMillion": 0.5,
+          "cacheWriteUsdPerMillion": null,
+          "outputUsdPerMillion": 30.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.6-sol",
+      "aliases": ["gpt-5.6"],
+      "periods": [
+        {
+          "effectiveFrom": "2026-06-26",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 5.0,
+          "cachedInputUsdPerMillion": 0.5,
+          "cacheWriteUsdPerMillion": 6.25,
+          "outputUsdPerMillion": 30.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.6-terra",
+      "aliases": [],
+      "periods": [
+        {
+          "effectiveFrom": "2026-06-26",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 2.5,
+          "cachedInputUsdPerMillion": 0.25,
+          "cacheWriteUsdPerMillion": 3.125,
+          "outputUsdPerMillion": 15.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          }
+        }
+      ]
+    },
+    {
+      "name": "gpt-5.6-luna",
+      "aliases": [],
+      "periods": [
+        {
+          "effectiveFrom": "2026-06-26",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 1.0,
+          "cachedInputUsdPerMillion": 0.1,
+          "cacheWriteUsdPerMillion": 1.25,
+          "outputUsdPerMillion": 6.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          }
+        }
+      ]
+    }
+  ]
+}

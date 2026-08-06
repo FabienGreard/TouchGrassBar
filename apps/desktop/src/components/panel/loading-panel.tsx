@@ -18,6 +18,7 @@ const loadingProviders = [
 ] as const satisfies readonly ProviderSnapshot[];
 
 const loadingUsage = {
+  scanStatus: "unavailable",
   sevenDays: { availability: "unavailable" },
   thirtyDays: { availability: "unavailable" },
   today: { availability: "unavailable" },

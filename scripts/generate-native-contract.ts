@@ -9,7 +9,9 @@ type JsonSchema = {
   maximum?: number;
   minItems?: number;
   minimum?: number;
+  maxLength?: number;
   minLength?: number;
+  anyOf?: JsonSchema[];
   oneOf?: JsonSchema[];
   pattern?: string;
   properties?: Record<string, JsonSchema>;
@@ -77,7 +79,16 @@ function render(node: JsonSchema, fieldName = ""): string {
   if (node.$ref) return refName(node.$ref);
   if ("const" in node) return `z.literal(${JSON.stringify(node.const)})`;
   if (node.enum) return `z.enum(${JSON.stringify(node.enum)})`;
+  if (node.anyOf) {
+    const nonNull = node.anyOf.filter((variant) => variant.type !== "null");
+    if (nonNull.length === 1 && nonNull.length !== node.anyOf.length)
+      return `${render(nonNull[0]!, fieldName)}.nullable()`;
+    return `z.union([${node.anyOf.map((variant) => render(variant)).join(", ")}])`;
+  }
   if (node.oneOf) {
+    const nonNull = node.oneOf.filter((variant) => variant.type !== "null");
+    if (nonNull.length === 1 && nonNull.length !== node.oneOf.length)
+      return `${render(nonNull[0]!, fieldName)}.nullable()`;
     const discriminator = node.oneOf
       .map(
         (variant) =>
@@ -123,6 +134,9 @@ function render(node: JsonSchema, fieldName = ""): string {
     ) {
       expression += ".nonnegative()";
     }
+    if (node.minimum !== undefined && node.minimum > 0)
+      expression += `.min(${node.minimum})`;
+    if (node.maximum !== undefined) expression += `.max(${node.maximum})`;
     return expression;
   }
   if (node.type === "boolean") return "z.boolean()";
@@ -131,11 +145,30 @@ function render(node: JsonSchema, fieldName = ""): string {
     if (fieldName.endsWith("At")) return "z.string().datetime()";
     let expression = "z.string()";
     if (node.minLength !== undefined) expression += `.min(${node.minLength})`;
+    if (node.maxLength !== undefined) expression += `.max(${node.maxLength})`;
     if (node.pattern !== undefined)
       expression += `.regex(new RegExp(${JSON.stringify(node.pattern)}))`;
     return expression;
   }
   return "z.unknown()";
+}
+
+function renderDefinition(name: string, node: JsonSchema): string {
+  const expression = render(node);
+  if (name !== "UsageTotal") return expression;
+  return `${expression}.superRefine((value, context) => {
+  if (value.availability === "unavailable") return;
+  const cost = value.apiEquivalentCostUsd;
+  const basis = value.apiEquivalentCostBasis;
+  const quality = value.apiEquivalentCostQuality;
+  const coverage = value.apiEquivalentCostCoveragePercent;
+  const noCost = cost == null && basis == null && quality == null && coverage == null;
+  const modeled = cost != null && basis != null && quality === "modeled" && coverage != null;
+  const fixedQuality = cost != null && basis != null && (quality === "reconciled" || quality === "local-only") && coverage == null;
+  if (!noCost && !modeled && !fixedQuality) {
+    context.addIssue({ code: "custom", message: "invalid API-equivalent cost state" });
+  }
+})`;
 }
 
 function dependencies(node: JsonSchema): Set<string> {
@@ -180,7 +213,7 @@ export const SETTINGS_CONTRACT_VERSION = ${JSON.stringify(contract.settingsContr
 export const SETTINGS_NAVIGATION_EVENT = ${JSON.stringify(contract.settingsNavigationEvent)} as const;
 export const SETTINGS_RECOVERY_CLEAR_EVENT = ${JSON.stringify(contract.settingsRecoveryClearEvent)} as const;
 
-${ordered.map((name) => `export const ${schemaName(name)} = ${render(definitions[name]!)};`).join("\n")}
+${ordered.map((name) => `export const ${schemaName(name)} = ${renderDefinition(name, definitions[name]!)};`).join("\n")}
 export const bootstrapStateSchema = ${render({ ...bootstrapStateSchema, properties: { ...bootstrapStateSchema.properties, contractVersion: { const: contract.bootstrapContractVersion } } })};
 export const sanitizedDesktopStateSchema = ${render({ ...schema, properties: { ...schema.properties, contractVersion: { const: contract.contractVersion } } })};
 export const refreshReceiptSchema = ${render(refreshReceiptSchema)};

@@ -23,10 +23,10 @@ use crate::lifecycle::{
     bootstrap_state_schema, settings_navigation_schema, settings_state_schema,
 };
 
-pub const CONTRACT_VERSION: u8 = 2;
+pub const CONTRACT_VERSION: u8 = 3;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
-const READ_MODEL_SCHEMA_VERSION: i64 = 2;
+const READ_MODEL_SCHEMA_VERSION: i64 = 3;
 const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
@@ -115,6 +115,7 @@ pub struct UsageByProvider {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsagePeriods {
+    pub scan_status: UsageScanStatus,
     pub today: UsageTotal,
     pub seven_days: UsageTotal,
     pub thirty_days: UsageTotal,
@@ -135,6 +136,16 @@ pub enum UsageTotal {
         observed_at: String,
         observed_tokens: u64,
         api_equivalent_cost_usd: Option<f64>,
+        #[serde(default)]
+        trend_percent: Option<f64>,
+        #[serde(default)]
+        #[schemars(length(min = 1, max = 64))]
+        api_equivalent_cost_basis: Option<String>,
+        #[serde(default)]
+        api_equivalent_cost_quality: Option<ApiEquivalentCostQuality>,
+        #[serde(default)]
+        #[schemars(range(min = 0.0, max = 100.0))]
+        api_equivalent_cost_coverage_percent: Option<f64>,
     },
     Stale {
         evidence_basis: UsageEvidenceBasis,
@@ -142,6 +153,16 @@ pub enum UsageTotal {
         observed_at: String,
         observed_tokens: u64,
         api_equivalent_cost_usd: Option<f64>,
+        #[serde(default)]
+        trend_percent: Option<f64>,
+        #[serde(default)]
+        #[schemars(length(min = 1, max = 64))]
+        api_equivalent_cost_basis: Option<String>,
+        #[serde(default)]
+        api_equivalent_cost_quality: Option<ApiEquivalentCostQuality>,
+        #[serde(default)]
+        #[schemars(range(min = 0.0, max = 100.0))]
+        api_equivalent_cost_coverage_percent: Option<f64>,
     },
 }
 
@@ -159,6 +180,22 @@ pub enum UsageEvidenceBasis {
 pub enum UsageCoverage {
     Complete,
     Partial,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApiEquivalentCostQuality {
+    Reconciled,
+    Modeled,
+    LocalOnly,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageScanStatus {
+    Complete,
+    Indexing,
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -313,7 +350,7 @@ impl SqliteReadModelStore {
 
         backup_read_model_before_migration(connection, path, version)?;
 
-        let (snapshot, revision) = if version == 1 {
+        let (snapshot, revision) = if version == 1 || version == 2 {
             let (revision, snapshot_json) = connection
                 .query_row(
                     "SELECT revision, snapshot_json
@@ -325,10 +362,22 @@ impl SqliteReadModelStore {
                 .map_err(|_| "native state persistence unavailable")?;
             let mut snapshot_value: Value = serde_json::from_str(&snapshot_json)
                 .map_err(|_| "native state persistence unavailable")?;
-            snapshot_value
+            let snapshot_object = snapshot_value
                 .as_object_mut()
-                .ok_or("native state persistence unavailable")?
-                .insert("profile".to_owned(), json!({ "status": "not-authorized" }));
+                .ok_or("native state persistence unavailable")?;
+            if version == 1 {
+                snapshot_object.insert("profile".to_owned(), json!({ "status": "not-authorized" }));
+            }
+            if let Some(usage) = snapshot_value
+                .get_mut("usage")
+                .and_then(Value::as_object_mut)
+            {
+                for provider in ["codex", "claude"] {
+                    if let Some(periods) = usage.get_mut(provider).and_then(Value::as_object_mut) {
+                        periods.insert("scanStatus".to_owned(), json!("unavailable"));
+                    }
+                }
+            }
             let mut snapshot: SanitizedDesktopStateV2 = serde_json::from_value(snapshot_value)
                 .map_err(|_| "native state persistence unavailable")?;
             snapshot.contract_version = CONTRACT_VERSION;
@@ -343,11 +392,11 @@ impl SqliteReadModelStore {
         let transaction = connection
             .transaction()
             .map_err(|_| "native state persistence unavailable")?;
-        if version == 1 {
+        if version > 0 {
             transaction
                 .execute_batch(
                     "ALTER TABLE sanitized_desktop_state
-                       RENAME TO sanitized_desktop_state_v1;",
+                       RENAME TO sanitized_desktop_state_previous;",
                 )
                 .map_err(|_| "native state persistence unavailable")?;
         }
@@ -359,8 +408,8 @@ impl SqliteReadModelStore {
                  );
                  CREATE TABLE sanitized_desktop_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   schema_version INTEGER NOT NULL CHECK (schema_version = 2),
-                   contract_version INTEGER NOT NULL CHECK (contract_version = 2),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 3),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 3),
                    revision TEXT NOT NULL CHECK (
                      length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
                    ),
@@ -381,9 +430,9 @@ impl SqliteReadModelStore {
                 ],
             )
             .map_err(|_| "native state persistence unavailable")?;
-        if version == 1 {
+        if version > 0 {
             transaction
-                .execute_batch("DROP TABLE sanitized_desktop_state_v1;")
+                .execute_batch("DROP TABLE sanitized_desktop_state_previous;")
                 .map_err(|_| "native state persistence unavailable")?;
         }
         transaction
@@ -1061,7 +1110,10 @@ impl NativeCore {
         Self::open_with(
             path,
             Arc::clone(&clock),
-            Arc::new(CodexQuotaRefreshAdapter::production(clock)),
+            Arc::new(CodexQuotaRefreshAdapter::production(
+                clock,
+                Some(path.to_path_buf()),
+            )),
         )
     }
 
@@ -1099,7 +1151,10 @@ impl NativeCore {
 
     pub fn unavailable() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let refresh_adapter = Arc::new(CodexQuotaRefreshAdapter::production(Arc::clone(&clock)));
+        let refresh_adapter = Arc::new(CodexQuotaRefreshAdapter::production(
+            Arc::clone(&clock),
+            None,
+        ));
         let core = Self::with_components(
             unavailable_state_at(1, clock.now()),
             ReadModelStore::Memory,
@@ -1458,6 +1513,10 @@ impl UsageTotal {
                 observed_at,
                 observed_tokens,
                 api_equivalent_cost_usd,
+                trend_percent,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
             } if timestamp_is_due(observed_at, now) => (
                 Self::Stale {
                     evidence_basis: *evidence_basis,
@@ -1465,6 +1524,10 @@ impl UsageTotal {
                     observed_at: observed_at.clone(),
                     observed_tokens: *observed_tokens,
                     api_equivalent_cost_usd: *api_equivalent_cost_usd,
+                    trend_percent: *trend_percent,
+                    api_equivalent_cost_basis: api_equivalent_cost_basis.clone(),
+                    api_equivalent_cost_quality: *api_equivalent_cost_quality,
+                    api_equivalent_cost_coverage_percent: *api_equivalent_cost_coverage_percent,
                 },
                 true,
             ),
@@ -1503,6 +1566,7 @@ fn transition_periods_at(periods: &UsagePeriods, now: OffsetDateTime) -> (UsageP
     let (thirty_days, thirty_days_changed) = periods.thirty_days.transition_at(now);
     (
         UsagePeriods {
+            scan_status: periods.scan_status,
             today,
             seven_days,
             thirty_days,
@@ -1572,11 +1636,78 @@ fn validate_snapshot(snapshot: &SanitizedDesktopStateV2) -> Result<(), &'static 
     {
         return Err("native state unavailable");
     }
+    for usage in [
+        &snapshot.usage.codex.today,
+        &snapshot.usage.codex.seven_days,
+        &snapshot.usage.codex.thirty_days,
+        &snapshot.usage.claude.today,
+        &snapshot.usage.claude.seven_days,
+        &snapshot.usage.claude.thirty_days,
+    ] {
+        validate_usage_total(usage)?;
+    }
     Ok(())
+}
+
+fn validate_usage_total(usage: &UsageTotal) -> Result<(), &'static str> {
+    let (UsageTotal::Current {
+        observed_at,
+        api_equivalent_cost_usd,
+        trend_percent,
+        api_equivalent_cost_basis,
+        api_equivalent_cost_quality,
+        api_equivalent_cost_coverage_percent,
+        ..
+    }
+    | UsageTotal::Stale {
+        observed_at,
+        api_equivalent_cost_usd,
+        trend_percent,
+        api_equivalent_cost_basis,
+        api_equivalent_cost_quality,
+        api_equivalent_cost_coverage_percent,
+        ..
+    }) = usage
+    else {
+        return Ok(());
+    };
+    if OffsetDateTime::parse(observed_at, &Rfc3339).is_err()
+        || trend_percent.is_some_and(|value| !value.is_finite())
+    {
+        return Err("native state unavailable");
+    }
+    match (
+        api_equivalent_cost_usd,
+        api_equivalent_cost_basis,
+        api_equivalent_cost_quality,
+        api_equivalent_cost_coverage_percent,
+    ) {
+        (None, None, None, None) => Ok(()),
+        (Some(cost), Some(_), Some(ApiEquivalentCostQuality::Modeled), Some(coverage))
+            if cost.is_finite()
+                && *cost >= 0.0
+                && coverage.is_finite()
+                && (0.0..=100.0).contains(coverage) =>
+        {
+            Ok(())
+        }
+        (Some(cost), Some(_), Some(quality), None)
+            if cost.is_finite()
+                && *cost >= 0.0
+                && matches!(
+                    quality,
+                    ApiEquivalentCostQuality::Reconciled | ApiEquivalentCostQuality::LocalOnly
+                ) =>
+        {
+            Ok(())
+        }
+        _ => Err("native state unavailable"),
+    }
 }
 
 fn unavailable_periods() -> UsagePeriods {
     UsagePeriods {
+        scan_status: UsageScanStatus::Unavailable,
         today: UsageTotal::Unavailable,
         seven_days: UsageTotal::Unavailable,
         thirty_days: UsageTotal::Unavailable,
@@ -1873,12 +2004,17 @@ mod tests {
             ],
             usage: UsageByProvider {
                 codex: UsagePeriods {
+                    scan_status: UsageScanStatus::Unavailable,
                     today: UsageTotal::Current {
                         evidence_basis: UsageEvidenceBasis::ProviderReported,
                         coverage: UsageCoverage::Complete,
                         observed_at: observed_at.clone(),
                         observed_tokens,
                         api_equivalent_cost_usd: None,
+                        trend_percent: None,
+                        api_equivalent_cost_basis: None,
+                        api_equivalent_cost_quality: None,
+                        api_equivalent_cost_coverage_percent: None,
                     },
                     seven_days: UsageTotal::Unavailable,
                     thirty_days: UsageTotal::Unavailable,
@@ -2262,6 +2398,80 @@ mod tests {
             fs::read(older_backup).unwrap(),
             b"existing version-zero backup"
         );
+    }
+
+    #[test]
+    fn migrates_v2_cache_without_resetting_the_sanitized_snapshot() {
+        let database = TestDatabase::new();
+        let mut legacy = serde_json::to_value(observed_state(test_time(), 42)).unwrap();
+        legacy["contractVersion"] = json!(2);
+        for provider in ["codex", "claude"] {
+            legacy["usage"][provider]
+                .as_object_mut()
+                .unwrap()
+                .remove("scanStatus");
+        }
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL CHECK (version >= 1)
+                 );
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 2),
+                   revision TEXT NOT NULL,
+                   snapshot_json TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO touchgrassbar_schema_versions (module, version) VALUES (?1, 2)",
+                [READ_MODEL_SCHEMA_MODULE],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sanitized_desktop_state (
+                   singleton, schema_version, contract_version, revision, snapshot_json
+                 ) VALUES (1, 2, 2, '1', ?1)",
+                [legacy.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let migrated = core.panel_state().unwrap();
+        assert_eq!(migrated.revision, "1");
+        assert!(matches!(
+            migrated.usage.codex.today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        assert_eq!(
+            migrated.usage.codex.scan_status,
+            UsageScanStatus::Unavailable
+        );
+        let connection = Connection::open(&database.0).unwrap();
+        let version: i64 = connection
+            .query_row(
+                "SELECT schema_version FROM sanitized_desktop_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, READ_MODEL_SCHEMA_VERSION);
+        assert!(read_model_backup_path(&database.0, 2).is_file());
     }
 
     #[test]
