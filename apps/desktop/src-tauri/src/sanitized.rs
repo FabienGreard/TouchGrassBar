@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
+use crate::codex_quota::CodexQuotaRefreshAdapter;
 use crate::lifecycle::{
     LIFECYCLE_CONTRACT_VERSION, SETTINGS_NAVIGATION_EVENT, SETTINGS_RECOVERY_CLEAR_EVENT,
     bootstrap_state_schema, settings_navigation_schema, settings_state_schema,
@@ -189,16 +190,15 @@ pub struct RefreshReceipt {
 }
 
 #[derive(Clone)]
-struct RefreshAttempt {
+pub(crate) struct RefreshAttempt {
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RefreshFailure {
+pub(crate) enum RefreshFailure {
     Cancelled,
     DeadlineExceeded,
-    #[cfg(test)]
     SourceUnavailable,
 }
 
@@ -210,11 +210,11 @@ impl RefreshAttempt {
         }
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
 
-    fn remaining(&self) -> Result<Duration, RefreshFailure> {
+    pub(crate) fn remaining(&self) -> Result<Duration, RefreshFailure> {
         if self.is_cancelled() {
             return Err(RefreshFailure::Cancelled);
         }
@@ -227,7 +227,9 @@ impl RefreshAttempt {
     }
 }
 
-trait SnapshotRefreshAdapter: Send + Sync {
+pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
+    fn install_refresh_trigger(&self, _trigger: RefreshTrigger) {}
+
     /// Production adapters must bound each blocking operation by
     /// `attempt.remaining()` and stop when cancellation is observed. This
     /// keeps application shutdown bounded.
@@ -238,8 +240,10 @@ trait SnapshotRefreshAdapter: Send + Sync {
     ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure>;
 }
 
+#[cfg(test)]
 struct CachedProjectionRefreshAdapter;
 
+#[cfg(test)]
 impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     fn refresh(
         &self,
@@ -253,9 +257,11 @@ impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     }
 }
 
-trait Clock: Send + Sync {
+pub(crate) trait Clock: Send + Sync {
     fn now(&self) -> OffsetDateTime;
 }
+
+pub(crate) type RefreshTrigger = Arc<dyn Fn() + Send + Sync>;
 
 struct SystemClock;
 
@@ -470,6 +476,7 @@ pub enum RefreshSource {
     Wake,
     NetworkRecovery,
     Schedule,
+    ProviderNotification,
 }
 
 impl RefreshSource {
@@ -481,6 +488,7 @@ impl RefreshSource {
             Self::Wake => 1 << 3,
             Self::NetworkRecovery => 1 << 4,
             Self::Schedule => 1 << 5,
+            Self::ProviderNotification => 1 << 6,
         }
     }
 }
@@ -503,6 +511,7 @@ impl RefreshSources {
             RefreshSource::Manual,
             RefreshSource::Wake,
             RefreshSource::NetworkRecovery,
+            RefreshSource::ProviderNotification,
         ]
         .into_iter()
         .any(|source| self.contains(source))
@@ -729,6 +738,11 @@ impl RefreshCoordinator {
             wake,
         });
         let cancelled = Arc::new(AtomicBool::new(false));
+        let trigger_inbox = Arc::clone(&inbox);
+        refresh_adapter.install_refresh_trigger(Arc::new(move || {
+            trigger_inbox.record(RefreshSource::ProviderNotification);
+            let _ = trigger_inbox.wake.try_send(());
+        }));
         let worker = CoordinatorWorker::new(
             projection,
             store,
@@ -866,9 +880,15 @@ impl CoordinatorWorker {
 
             self.inbox.in_flight.store(true, Ordering::Release);
             let result = self.refresh_once();
-            // A request that races with admission joins this active attempt.
-            self.inbox.take_sources();
+            // User requests that race with admission join this active attempt.
+            // A provider notification can arrive after the full read, so keep
+            // that source pending for a follow-up merge.
+            let joined_sources = self.inbox.take_sources();
             while wake_receiver.try_recv().is_ok() {}
+            if joined_sources.contains(RefreshSource::ProviderNotification) {
+                self.inbox.record(RefreshSource::ProviderNotification);
+                let _ = self.inbox.wake.try_send(());
+            }
             let notice = match result {
                 RefreshRunResult::Completed { failed, notice } => {
                     self.record_refresh_result(failed, self.clock.now());
@@ -919,7 +939,7 @@ impl CoordinatorWorker {
     }
 
     fn refresh_once(&mut self) -> RefreshRunResult {
-        let cached = match self.projection.snapshot() {
+        let mut cached = match self.projection.snapshot() {
             Ok(cached) => cached,
             Err(_) => {
                 return RefreshRunResult::Completed {
@@ -928,6 +948,33 @@ impl CoordinatorWorker {
                 };
             }
         };
+        let mut pre_refresh_failed = false;
+        if let Some(transitioned) = transition_snapshot_at(&cached, self.clock.now()) {
+            let transition = self
+                .store
+                .lock()
+                .map_err(|_| "native state unavailable")
+                .and_then(|mut store| {
+                    self.projection.commit_refreshed_snapshot(
+                        &mut store,
+                        transitioned,
+                        self.clock.now(),
+                    )
+                });
+            match transition {
+                Ok(outcome) => {
+                    pre_refresh_failed = outcome.persistence_failed;
+                    if let Some(notice) = outcome.notice {
+                        self.subscribers.publish(notice);
+                    }
+                    match self.projection.snapshot() {
+                        Ok(transitioned) => cached = transitioned,
+                        Err(_) => pre_refresh_failed = true,
+                    }
+                }
+                Err(_) => pre_refresh_failed = true,
+            }
+        }
         let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled));
         let observation = catch_unwind(AssertUnwindSafe(|| {
             self.refresh_adapter.refresh(cached.clone(), &attempt)
@@ -961,7 +1008,8 @@ impl CoordinatorWorker {
                     .commit_refreshed_snapshot(&mut store, candidate, completed_at)
             })
             .transpose();
-        let failed = source_failed
+        let failed = pre_refresh_failed
+            || source_failed
             || commit_result.is_err()
             || commit_result
                 .as_ref()
@@ -1009,10 +1057,11 @@ pub struct NativeCore {
 
 impl NativeCore {
     pub fn open(path: &Path) -> Result<Self, &'static str> {
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         Self::open_with(
             path,
-            Arc::new(SystemClock),
-            Arc::new(CachedProjectionRefreshAdapter),
+            Arc::clone(&clock),
+            Arc::new(CodexQuotaRefreshAdapter::production(clock)),
         )
     }
 
@@ -1050,14 +1099,26 @@ impl NativeCore {
 
     pub fn unavailable() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let refresh_adapter = Arc::new(CodexQuotaRefreshAdapter::production(Arc::clone(&clock)));
         let core = Self::with_components(
             unavailable_state_at(1, clock.now()),
             ReadModelStore::Memory,
             clock,
-            Arc::new(CachedProjectionRefreshAdapter),
+            refresh_adapter,
         );
         let _ = core.request_refresh(RefreshSource::Launch);
         core
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_unavailable() -> Self {
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        Self::with_components(
+            unavailable_state_at(1, clock.now()),
+            ReadModelStore::Memory,
+            clock,
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
     }
 
     #[cfg(test)]
@@ -1659,7 +1720,9 @@ mod tests {
     struct ScriptedRefreshSource {
         responses: Mutex<VecDeque<Result<Option<SanitizedDesktopStateV2>, RefreshFailure>>>,
         runs: AtomicUsize,
-        first_refresh_gate: Option<Arc<RefreshGate>>,
+        completed: AtomicUsize,
+        refresh_gate: Option<(usize, Arc<RefreshGate>)>,
+        refresh_trigger: Mutex<Option<RefreshTrigger>>,
         clock: Option<Arc<FixtureClock>>,
         elapsed: Mutex<VecDeque<Duration>>,
     }
@@ -1685,14 +1748,21 @@ mod tests {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
                 runs: AtomicUsize::new(0),
-                first_refresh_gate: None,
+                completed: AtomicUsize::new(0),
+                refresh_gate: None,
+                refresh_trigger: Mutex::new(None),
                 clock: None,
                 elapsed: Mutex::new(VecDeque::new()),
             }
         }
 
         fn with_first_refresh_gate(mut self, gate: Arc<RefreshGate>) -> Self {
-            self.first_refresh_gate = Some(gate);
+            self.refresh_gate = Some((0, gate));
+            self
+        }
+
+        fn with_refresh_gate(mut self, run: usize, gate: Arc<RefreshGate>) -> Self {
+            self.refresh_gate = Some((run, gate));
             self
         }
 
@@ -1705,9 +1775,21 @@ mod tests {
             self.elapsed = Mutex::new(elapsed.into_iter().collect());
             self
         }
+
+        fn notify(&self) {
+            self.refresh_trigger
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("refresh trigger installed")();
+        }
     }
 
     impl SnapshotRefreshAdapter for ScriptedRefreshSource {
+        fn install_refresh_trigger(&self, trigger: RefreshTrigger) {
+            *self.refresh_trigger.lock().unwrap() = Some(trigger);
+        }
+
         fn refresh(
             &self,
             _cached: SanitizedDesktopStateV2,
@@ -1715,8 +1797,8 @@ mod tests {
         ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
             attempt.remaining()?;
             let run = self.runs.fetch_add(1, Ordering::SeqCst);
-            if run == 0
-                && let Some(gate) = &self.first_refresh_gate
+            if let Some((blocked_run, gate)) = &self.refresh_gate
+                && run == *blocked_run
             {
                 gate.started.wait();
                 gate.release.wait();
@@ -1727,11 +1809,39 @@ mod tests {
             {
                 clock.advance(elapsed);
             }
-            self.responses
+            let response = self
+                .responses
                 .lock()
                 .unwrap()
                 .pop_front()
-                .unwrap_or(Ok(None))
+                .unwrap_or(Ok(None));
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            response
+        }
+    }
+
+    fn wait_for_completed_runs(source: &ScriptedRefreshSource, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while source.completed.load(Ordering::SeqCst) < expected {
+            assert!(Instant::now() < deadline, "refresh did not complete");
+            thread::yield_now();
+        }
+    }
+
+    fn wait_for_idle(core: &NativeCore) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while core
+            .inner
+            .coordinator
+            .inbox
+            .in_flight
+            .load(Ordering::Acquire)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "refresh coordinator did not become idle"
+            );
+            thread::yield_now();
         }
     }
 
@@ -2190,9 +2300,29 @@ mod tests {
         let clock = Arc::new(FixtureClock::new(test_time()));
         let launch_gate = Arc::new(RefreshGate::new());
         let source = Arc::new(
-            ScriptedRefreshSource::new(
-                (1..=6).map(|tokens| Ok(Some(observed_state(test_time(), tokens)))),
-            )
+            ScriptedRefreshSource::new([
+                Ok(Some(observed_state(test_time(), 1))),
+                Ok(Some(observed_state(
+                    test_time() + time::Duration::minutes(5),
+                    2,
+                ))),
+                Ok(Some(observed_state(
+                    test_time() + time::Duration::minutes(5),
+                    3,
+                ))),
+                Ok(Some(observed_state(
+                    test_time() + time::Duration::minutes(5),
+                    4,
+                ))),
+                Ok(Some(observed_state(
+                    test_time() + time::Duration::minutes(5),
+                    5,
+                ))),
+                Ok(Some(observed_state(
+                    test_time() + time::Duration::minutes(10),
+                    6,
+                ))),
+            ])
             .with_first_refresh_gate(Arc::clone(&launch_gate)),
         );
         let core = NativeCore::open_with(&database.0, clock.clone(), source.clone()).unwrap();
@@ -2221,6 +2351,14 @@ mod tests {
                 .revision,
             "3"
         );
+        assert_eq!(
+            notices
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            "4"
+        );
+        wait_for_completed_runs(&source, 2);
 
         assert!(
             core.request_refresh(RefreshSource::Manual)
@@ -2232,16 +2370,18 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap()
                 .revision,
-            "4"
+            "5"
         );
+        wait_for_completed_runs(&source, 3);
         assert!(core.request_refresh(RefreshSource::Wake).unwrap().accepted);
         assert_eq!(
             notices
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap()
                 .revision,
-            "5"
+            "6"
         );
+        wait_for_completed_runs(&source, 4);
         assert!(
             core.request_refresh(RefreshSource::NetworkRecovery)
                 .unwrap()
@@ -2252,8 +2392,9 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap()
                 .revision,
-            "6"
+            "7"
         );
+        wait_for_completed_runs(&source, 5);
 
         clock.advance(REFRESH_INTERVAL - Duration::from_secs(1));
         assert!(
@@ -2273,9 +2414,62 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .unwrap()
                 .revision,
-            "7"
+            "8"
         );
+        assert_eq!(
+            notices
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            "9"
+        );
+        wait_for_completed_runs(&source, 6);
         assert_eq!(source.runs.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn provider_notification_requests_a_sanitized_refresh() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(test_time(), 1))),
+            Ok(Some(observed_state(
+                test_time() + time::Duration::seconds(1),
+                2,
+            ))),
+        ]));
+        let core =
+            NativeCore::open_without_launch(&database.0, clock.clone(), source.clone()).unwrap();
+        let notices = core.revision_notices().unwrap();
+
+        core.request_refresh(RefreshSource::Launch).unwrap();
+        assert_eq!(
+            notices
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            "2"
+        );
+        wait_for_completed_runs(&source, 1);
+        wait_for_idle(&core);
+
+        clock.advance(Duration::from_secs(1));
+        source.notify();
+        assert_eq!(
+            notices
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            "3"
+        );
+        assert!(matches!(
+            core.panel_state().unwrap().usage.codex.today,
+            UsageTotal::Current {
+                observed_tokens: 2,
+                ..
+            }
+        ));
+        assert_eq!(source.runs.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -2334,6 +2528,8 @@ mod tests {
             }
         ));
         assert_eq!(stale.sync.status, SyncStatus::Unavailable);
+        wait_for_completed_runs(&source, 2);
+        wait_for_idle(&core);
 
         assert!(
             core.request_refresh(RefreshSource::NetworkRecovery)
@@ -2366,6 +2562,44 @@ mod tests {
             SyncStatus::Unavailable
         );
         assert_eq!(source.runs.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn freshness_transitions_before_a_provider_read_can_block() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let gate = Arc::new(RefreshGate::new());
+        let source = Arc::new(
+            ScriptedRefreshSource::new([
+                Ok(Some(observed_state(test_time(), 42))),
+                Err(RefreshFailure::SourceUnavailable),
+            ])
+            .with_refresh_gate(1, Arc::clone(&gate)),
+        );
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        let notices = core.revision_notices().unwrap();
+
+        core.request_refresh(RefreshSource::Launch).unwrap();
+        assert_eq!(
+            notices
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .revision,
+            "2"
+        );
+        clock.advance(REFRESH_INTERVAL);
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        gate.started.wait();
+
+        let transition_notice = notices.recv_timeout(Duration::from_millis(100));
+        let state_during_refresh = core.panel_state().unwrap();
+        gate.release.wait();
+
+        assert_eq!(transition_notice.unwrap().revision, "3");
+        assert!(matches!(
+            state_during_refresh.providers[0],
+            ProviderSnapshot::Stale { .. }
+        ));
     }
 
     #[test]

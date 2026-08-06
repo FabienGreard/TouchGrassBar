@@ -11,13 +11,17 @@ function quotaPercentage(lane: QuotaLane | null | undefined) {
   return Math.max(0, Math.min(100, (lane.remaining / lane.allowance) * 100));
 }
 
-function quotaLabel(lane: QuotaLane | null) {
+function quotaLabel(
+  lane: QuotaLane | null,
+  availability: ProviderSnapshot["availability"],
+) {
   if (!lane) return "Quota snapshot unavailable";
-  if (!lane.resetAt) return lane.label;
+  const freshness = availability === "stale" ? " · stale" : "";
+  if (!lane.resetAt) return `${lane.label}${freshness}`;
 
   const resetAt = new Date(lane.resetAt);
   if (Number.isNaN(resetAt.getTime()))
-    return `${lane.label} · resets ${lane.resetAt}`;
+    return `${lane.label} · resets ${lane.resetAt}${freshness}`;
 
   const hours = resetAt.getUTCHours().toString().padStart(2, "0");
   const minutes = resetAt.getUTCMinutes().toString().padStart(2, "0");
@@ -27,7 +31,19 @@ function quotaLabel(lane: QuotaLane | null) {
   ];
   const resetLabel = /week/i.test(lane.label) ? `${weekday} ${time}` : time;
 
-  return `${lane.label} · resets ${resetLabel}`;
+  return `${lane.label} · resets ${resetLabel}${freshness}`;
+}
+
+function quotaAriaLabel(
+  label: string,
+  availability: ProviderSnapshot["availability"],
+  percentage: number | null,
+) {
+  return `${label} quota ${
+    percentage === null
+      ? "unavailable"
+      : `${availability}, ${Math.round(percentage)} percent remaining`
+  }`;
 }
 
 function orderedQuotaLanes(provider: ProviderSnapshot) {
@@ -44,9 +60,11 @@ function orderedQuotaLanes(provider: ProviderSnapshot) {
 
 function ProviderQuotaLane({
   lane,
+  availability,
   provider,
 }: {
   lane: QuotaLane;
+  availability: ProviderSnapshot["availability"];
   provider: ProviderSnapshot["provider"];
 }) {
   const percentage = quotaPercentage(lane);
@@ -57,7 +75,7 @@ function ProviderQuotaLane({
       data-slot="provider-quota-lane"
     >
       <small className="truncate text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
-        {quotaLabel(lane)}
+        {quotaLabel(lane, availability)}
       </small>
       <strong
         className={
@@ -70,11 +88,11 @@ function ProviderQuotaLane({
       </strong>
       <div className="col-span-2">
         <QuotaProgress
-          aria-label={
-            percentage === null
-              ? `${lane.label} quota unavailable`
-              : `${lane.label} ${Math.round(percentage)} percent remaining`
-          }
+          aria-label={quotaAriaLabel(
+            lane.label,
+            availability,
+            percentage,
+          )}
           provider={provider}
           size="secondary"
           value={percentage}
@@ -106,11 +124,15 @@ function ProviderCard({ provider }: { provider: ProviderSnapshot }) {
             {label}
           </strong>
           <small className="truncate text-[10px] text-pearl-muted contrast-more:text-pearl-ink">
-            {quotaLabel(primaryLane)}
+            {quotaLabel(primaryLane, provider.availability)}
           </small>
         </span>
         <strong
-          aria-label={`${label} quota ${percentage === null ? "unavailable" : `${Math.round(percentage)} percent remaining`}`}
+          aria-label={quotaAriaLabel(
+            label,
+            provider.availability,
+            percentage,
+          )}
           className={
             percentage === null
               ? "text-[21px] text-usage-unavailable"
@@ -123,17 +145,18 @@ function ProviderCard({ provider }: { provider: ProviderSnapshot }) {
 
       <div className="mt-3">
         <QuotaProgress
-          aria-label={
-            percentage === null
-              ? `${label} quota unavailable`
-              : `${Math.round(percentage)} percent remaining`
-          }
+          aria-label={quotaAriaLabel(
+            label,
+            provider.availability,
+            percentage,
+          )}
           provider={provider.provider}
           value={percentage}
         />
       </div>
       {secondaryLanes.map((lane) => (
         <ProviderQuotaLane
+          availability={provider.availability}
           key={lane.label}
           lane={lane}
           provider={provider.provider}
