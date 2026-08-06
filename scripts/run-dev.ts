@@ -29,14 +29,7 @@ const target =
 claimDevelopmentRunnerLease();
 
 const backend: ChildSpecification = {
-  argumentsList: [
-    "bun",
-    "run",
-    "--cwd",
-    "packages/backend",
-    "convex",
-    "dev",
-  ],
+  argumentsList: ["bun", "scripts/run-convex.ts", "dev"],
   cwd: workspaceRoot,
   label: "backend",
 };

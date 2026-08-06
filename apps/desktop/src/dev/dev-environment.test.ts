@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 import { convexCommandEnvironment } from "../../../../scripts/convex-command-environment";
+import { coordinatedProcessExitCode } from "../../../../scripts/coordinated-process-exit";
 
 type TurboConfiguration = {
   tasks?: {
@@ -23,6 +24,13 @@ type WorkspacePackage = {
 };
 
 describe("desktop development environment", () => {
+  test("treats only coordinated process signals as a clean shutdown", () => {
+    expect(coordinatedProcessExitCode(143, "SIGTERM")).toBe(0);
+    expect(coordinatedProcessExitCode(130, "SIGINT")).toBe(0);
+    expect(coordinatedProcessExitCode(143, null)).toBe(143);
+    expect(coordinatedProcessExitCode(1, "SIGTERM")).toBe(1);
+  });
+
   test("uses anonymous agent mode only for the selected local backend", () => {
     const selectedLocal = {
       CONVEX_DEPLOYMENT: "anonymous:anonymous-agent",

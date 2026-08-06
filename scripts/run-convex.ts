@@ -3,6 +3,10 @@
 import { resolve } from "node:path";
 
 import { convexCommandEnvironment } from "./convex-command-environment";
+import {
+  coordinatedProcessExitCode,
+  type CoordinatedSignal,
+} from "./coordinated-process-exit";
 import { readLocalDevelopmentEnvironment } from "./development-environment";
 
 const workspaceRoot = resolve(import.meta.dir, "..");
@@ -28,8 +32,16 @@ const child = Bun.spawn(
   },
 );
 
+let stoppingSignal: CoordinatedSignal | null = null;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => child.kill(signal));
+  process.on(signal, () => {
+    if (stoppingSignal !== null) return;
+    stoppingSignal = signal;
+    if (child.exitCode === null) child.kill(signal);
+  });
 }
 
-process.exitCode = await child.exited;
+process.exitCode = coordinatedProcessExitCode(
+  await child.exited,
+  stoppingSignal,
+);
