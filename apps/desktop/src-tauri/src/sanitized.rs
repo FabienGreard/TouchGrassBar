@@ -18,13 +18,14 @@ use serde_json::{Value, json};
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::lifecycle::{
-    LIFECYCLE_CONTRACT_VERSION, SETTINGS_NAVIGATION_EVENT, bootstrap_state_schema,
-    settings_navigation_schema, settings_state_schema,
+    LIFECYCLE_CONTRACT_VERSION, SETTINGS_NAVIGATION_EVENT, SETTINGS_RECOVERY_CLEAR_EVENT,
+    bootstrap_state_schema, settings_navigation_schema, settings_state_schema,
 };
 
-pub const CONTRACT_VERSION: u8 = 1;
+pub const CONTRACT_VERSION: u8 = 2;
+pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
-const READ_MODEL_SCHEMA_VERSION: i64 = 1;
+const READ_MODEL_SCHEMA_VERSION: i64 = 2;
 const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
@@ -34,13 +35,29 @@ const NETWORK_RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SanitizedDesktopStateV1 {
+pub struct SanitizedDesktopStateV2 {
     pub contract_version: u8,
     pub generated_at: String,
     pub revision: String,
     pub providers: [ProviderSnapshot; 2],
     pub usage: UsageByProvider,
     pub sync: SyncState,
+    pub profile: SanitizedProfileOutcome,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    tag = "status"
+)]
+pub enum SanitizedProfileOutcome {
+    NotAuthorized,
+    ProfilePending,
+    Ready {
+        display_name: String,
+        touch_grass_id: String,
+    },
 }
 
 #[allow(dead_code)]
@@ -216,9 +233,9 @@ trait SnapshotRefreshAdapter: Send + Sync {
     /// keeps application shutdown bounded.
     fn refresh(
         &self,
-        cached: SanitizedDesktopStateV1,
+        cached: SanitizedDesktopStateV2,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure>;
+    ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure>;
 }
 
 struct CachedProjectionRefreshAdapter;
@@ -226,9 +243,9 @@ struct CachedProjectionRefreshAdapter;
 impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     fn refresh(
         &self,
-        _cached: SanitizedDesktopStateV1,
+        _cached: SanitizedDesktopStateV2,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+    ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
         attempt.remaining()?;
         // Provider observation is not wired yet. An unchanged cached projection
         // does not create a false revision or notice.
@@ -255,8 +272,8 @@ struct SqliteReadModelStore {
 impl SqliteReadModelStore {
     fn open(
         path: &Path,
-        initial: &SanitizedDesktopStateV1,
-    ) -> Result<(Self, SanitizedDesktopStateV1), &'static str> {
+        initial: &SanitizedDesktopStateV2,
+    ) -> Result<(Self, SanitizedDesktopStateV2), &'static str> {
         let Some(parent) = path.parent() else {
             return Err("native state persistence unavailable");
         };
@@ -277,31 +294,9 @@ impl SqliteReadModelStore {
     fn migrate(
         connection: &mut Connection,
         path: &Path,
-        initial: &SanitizedDesktopStateV1,
+        initial: &SanitizedDesktopStateV2,
     ) -> Result<(), &'static str> {
-        let schema_table_exists = connection
-            .query_row(
-                "SELECT EXISTS(
-                   SELECT 1 FROM sqlite_master
-                   WHERE type = 'table' AND name = 'touchgrassbar_schema_versions'
-                 )",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|_| "native state persistence unavailable")?;
-        let version = if schema_table_exists {
-            connection
-                .query_row(
-                    "SELECT version FROM touchgrassbar_schema_versions WHERE module = ?1",
-                    [READ_MODEL_SCHEMA_MODULE],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(|_| "native state persistence unavailable")?
-                .unwrap_or(0)
-        } else {
-            0
-        };
+        let version = read_model_schema_version(connection)?;
 
         if version > READ_MODEL_SCHEMA_VERSION {
             return Err("native state persistence unavailable");
@@ -310,18 +305,46 @@ impl SqliteReadModelStore {
             return Ok(());
         }
 
-        let backup_path = read_model_backup_path(path);
-        if !backup_path.exists() {
-            connection
-                .backup(rusqlite::MAIN_DB, &backup_path, None)
-                .map_err(|_| "native state persistence unavailable")?;
-        }
+        backup_read_model_before_migration(connection, path, version)?;
 
+        let (snapshot, revision) = if version == 1 {
+            let (revision, snapshot_json) = connection
+                .query_row(
+                    "SELECT revision, snapshot_json
+                     FROM sanitized_desktop_state
+                     WHERE singleton = 1",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+            let mut snapshot_value: Value = serde_json::from_str(&snapshot_json)
+                .map_err(|_| "native state persistence unavailable")?;
+            snapshot_value
+                .as_object_mut()
+                .ok_or("native state persistence unavailable")?
+                .insert("profile".to_owned(), json!({ "status": "not-authorized" }));
+            let mut snapshot: SanitizedDesktopStateV2 = serde_json::from_value(snapshot_value)
+                .map_err(|_| "native state persistence unavailable")?;
+            snapshot.contract_version = CONTRACT_VERSION;
+            snapshot.revision.clone_from(&revision);
+            validate_snapshot(&snapshot)?;
+            (snapshot, revision)
+        } else {
+            (initial.clone(), initial.revision.clone())
+        };
         let snapshot_json =
-            serde_json::to_string(initial).map_err(|_| "native state persistence unavailable")?;
+            serde_json::to_string(&snapshot).map_err(|_| "native state persistence unavailable")?;
         let transaction = connection
             .transaction()
             .map_err(|_| "native state persistence unavailable")?;
+        if version == 1 {
+            transaction
+                .execute_batch(
+                    "ALTER TABLE sanitized_desktop_state
+                       RENAME TO sanitized_desktop_state_v1;",
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+        }
         transaction
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS touchgrassbar_schema_versions (
@@ -330,8 +353,8 @@ impl SqliteReadModelStore {
                  );
                  CREATE TABLE sanitized_desktop_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
-                   contract_version INTEGER NOT NULL CHECK (contract_version = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 2),
                    revision TEXT NOT NULL CHECK (
                      length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
                    ),
@@ -347,11 +370,16 @@ impl SqliteReadModelStore {
                 params![
                     READ_MODEL_SCHEMA_VERSION,
                     CONTRACT_VERSION,
-                    initial.revision,
+                    revision,
                     snapshot_json
                 ],
             )
             .map_err(|_| "native state persistence unavailable")?;
+        if version == 1 {
+            transaction
+                .execute_batch("DROP TABLE sanitized_desktop_state_v1;")
+                .map_err(|_| "native state persistence unavailable")?;
+        }
         transaction
             .execute(
                 "INSERT INTO touchgrassbar_schema_versions (module, version)
@@ -365,7 +393,7 @@ impl SqliteReadModelStore {
             .map_err(|_| "native state persistence unavailable")
     }
 
-    fn read_from(connection: &Connection) -> Result<SanitizedDesktopStateV1, &'static str> {
+    fn read_from(connection: &Connection) -> Result<SanitizedDesktopStateV2, &'static str> {
         let (schema_version, contract_version, revision, snapshot_json) = connection
             .query_row(
                 "SELECT schema_version, contract_version, revision, snapshot_json
@@ -385,7 +413,7 @@ impl SqliteReadModelStore {
         if schema_version != READ_MODEL_SCHEMA_VERSION || contract_version != CONTRACT_VERSION {
             return Err("native state persistence unavailable");
         }
-        let snapshot: SanitizedDesktopStateV1 = serde_json::from_str(&snapshot_json)
+        let snapshot: SanitizedDesktopStateV2 = serde_json::from_str(&snapshot_json)
             .map_err(|_| "native state persistence unavailable")?;
         validate_snapshot(&snapshot)?;
         if snapshot.revision != revision {
@@ -394,7 +422,7 @@ impl SqliteReadModelStore {
         Ok(snapshot)
     }
 
-    fn commit(&mut self, state: &SanitizedDesktopStateV1) -> Result<(), &'static str> {
+    fn commit(&mut self, state: &SanitizedDesktopStateV2) -> Result<(), &'static str> {
         validate_snapshot(state)?;
         let snapshot_json =
             serde_json::to_string(state).map_err(|_| "native state persistence unavailable")?;
@@ -482,7 +510,7 @@ impl RefreshSources {
 }
 
 struct CachedProjection {
-    state: Mutex<SanitizedDesktopStateV1>,
+    state: Mutex<SanitizedDesktopStateV2>,
 }
 
 #[derive(Default)]
@@ -496,13 +524,13 @@ struct RevisionSubscribers {
 }
 
 impl CachedProjection {
-    fn new(state: SanitizedDesktopStateV1) -> Self {
+    fn new(state: SanitizedDesktopStateV2) -> Self {
         Self {
             state: Mutex::new(state),
         }
     }
 
-    fn snapshot(&self) -> Result<SanitizedDesktopStateV1, &'static str> {
+    fn snapshot(&self) -> Result<SanitizedDesktopStateV2, &'static str> {
         self.state
             .lock()
             .map(|state| state.clone())
@@ -512,10 +540,39 @@ impl CachedProjection {
     fn commit_refreshed_snapshot(
         &self,
         store: &mut ReadModelStore,
-        mut refreshed: SanitizedDesktopStateV1,
+        mut refreshed: SanitizedDesktopStateV2,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         let cached = self.snapshot()?;
+        refreshed.profile.clone_from(&cached.profile);
+        self.commit_snapshot(store, refreshed, cached, now)
+    }
+
+    fn commit_profile_outcome(
+        &self,
+        store: &mut ReadModelStore,
+        profile: SanitizedProfileOutcome,
+        now: OffsetDateTime,
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
+        let cached = self.snapshot()?;
+        if cached.profile == profile {
+            return Ok(SnapshotCommitOutcome {
+                notice: None,
+                persistence_failed: false,
+            });
+        }
+        let mut refreshed = cached.clone();
+        refreshed.profile = profile;
+        self.commit_snapshot(store, refreshed, cached, now)
+    }
+
+    fn commit_snapshot(
+        &self,
+        store: &mut ReadModelStore,
+        mut refreshed: SanitizedDesktopStateV2,
+        cached: SanitizedDesktopStateV2,
+        now: OffsetDateTime,
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
@@ -659,7 +716,7 @@ struct RefreshCoordinator {
 impl RefreshCoordinator {
     fn start(
         projection: Arc<CachedProjection>,
-        store: ReadModelStore,
+        store: Arc<Mutex<ReadModelStore>>,
         subscribers: Arc<RevisionSubscribers>,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
@@ -738,7 +795,7 @@ enum RefreshRunResult {
 
 struct CoordinatorWorker {
     projection: Arc<CachedProjection>,
-    store: ReadModelStore,
+    store: Arc<Mutex<ReadModelStore>>,
     subscribers: Arc<RevisionSubscribers>,
     clock: Arc<dyn Clock>,
     refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
@@ -754,7 +811,7 @@ struct CoordinatorWorker {
 impl CoordinatorWorker {
     fn new(
         projection: Arc<CachedProjection>,
-        store: ReadModelStore,
+        store: Arc<Mutex<ReadModelStore>>,
         subscribers: Arc<RevisionSubscribers>,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
@@ -899,8 +956,9 @@ impl CoordinatorWorker {
 
         let commit_result = candidate
             .map(|candidate| {
+                let mut store = self.store.lock().map_err(|_| "native state unavailable")?;
                 self.projection
-                    .commit_refreshed_snapshot(&mut self.store, candidate, completed_at)
+                    .commit_refreshed_snapshot(&mut store, candidate, completed_at)
             })
             .transpose();
         let failed = source_failed
@@ -938,8 +996,10 @@ impl CoordinatorWorker {
 
 struct NativeCoreInner {
     projection: Arc<CachedProjection>,
+    store: Arc<Mutex<ReadModelStore>>,
     subscribers: Arc<RevisionSubscribers>,
     coordinator: RefreshCoordinator,
+    clock: Arc<dyn Clock>,
 }
 
 #[derive(Clone)]
@@ -1012,7 +1072,7 @@ impl NativeCore {
     }
 
     fn with_components(
-        state: SanitizedDesktopStateV1,
+        state: SanitizedDesktopStateV2,
         store: ReadModelStore,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
@@ -1032,24 +1092,47 @@ impl NativeCore {
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     ) -> Self {
         let subscribers = Arc::new(RevisionSubscribers::new());
+        let store = Arc::new(Mutex::new(store));
         let coordinator = RefreshCoordinator::start(
             Arc::clone(&projection),
-            store,
+            Arc::clone(&store),
             Arc::clone(&subscribers),
-            clock,
+            Arc::clone(&clock),
             refresh_adapter,
         );
         Self {
             inner: Arc::new(NativeCoreInner {
                 projection,
+                store,
                 subscribers,
                 coordinator,
+                clock,
             }),
         }
     }
 
-    pub fn panel_state(&self) -> Result<SanitizedDesktopStateV1, &'static str> {
+    pub fn panel_state(&self) -> Result<SanitizedDesktopStateV2, &'static str> {
         self.inner.projection.snapshot()
+    }
+
+    pub fn set_profile_outcome(
+        &self,
+        profile: SanitizedProfileOutcome,
+    ) -> Result<(), &'static str> {
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let outcome = self.inner.projection.commit_profile_outcome(
+            &mut store,
+            profile,
+            self.inner.clock.now(),
+        )?;
+        if let Some(notice) = outcome.notice {
+            self.inner.subscribers.publish(notice);
+        }
+        Ok(())
     }
 
     pub fn revision_notices(&self) -> Result<Receiver<RevisionNotice>, &'static str> {
@@ -1065,8 +1148,96 @@ impl NativeCore {
     }
 }
 
-fn read_model_backup_path(path: &Path) -> PathBuf {
-    path.with_extension("sqlite3.read-model-v0.backup")
+fn read_model_backup_path(path: &Path, source_version: i64) -> PathBuf {
+    path.with_extension(format!("sqlite3.read-model-v{source_version}.backup"))
+}
+
+fn read_model_backup_partial_path(path: &Path, source_version: i64) -> PathBuf {
+    path.with_extension(format!(
+        "sqlite3.read-model-v{source_version}.backup.partial"
+    ))
+}
+
+fn read_model_schema_version(connection: &Connection) -> Result<i64, &'static str> {
+    let schema_table_exists = connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'touchgrassbar_schema_versions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|_| "native state persistence unavailable")?;
+    if !schema_table_exists {
+        return Ok(0);
+    }
+    connection
+        .query_row(
+            "SELECT version FROM touchgrassbar_schema_versions WHERE module = ?1",
+            [READ_MODEL_SCHEMA_MODULE],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|version| version.unwrap_or(0))
+        .map_err(|_| "native state persistence unavailable")
+}
+
+fn read_model_backup_is_valid(
+    connection: &Connection,
+    source_version: i64,
+) -> Result<bool, &'static str> {
+    if read_model_schema_version(connection)? != source_version {
+        return Ok(false);
+    }
+    if source_version == 0 {
+        return Ok(true);
+    }
+    let stored_versions = connection
+        .query_row(
+            "SELECT schema_version, contract_version
+             FROM sanitized_desktop_state
+             WHERE singleton = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(|_| "native state persistence unavailable")?;
+    Ok(stored_versions == (source_version, source_version))
+}
+
+fn backup_read_model_before_migration(
+    connection: &Connection,
+    path: &Path,
+    source_version: i64,
+) -> Result<(), &'static str> {
+    let backup_path = read_model_backup_path(path, source_version);
+    if backup_path.exists() {
+        let backup =
+            Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|_| "native state persistence unavailable")?;
+        return read_model_backup_is_valid(&backup, source_version)?
+            .then_some(())
+            .ok_or("native state persistence unavailable");
+    }
+
+    let partial_path = read_model_backup_partial_path(path, source_version);
+    if partial_path.exists() {
+        fs::remove_file(&partial_path).map_err(|_| "native state persistence unavailable")?;
+    }
+    connection
+        .backup(rusqlite::MAIN_DB, &partial_path, None)
+        .map_err(|_| "native state persistence unavailable")?;
+    fs::File::open(&partial_path)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "native state persistence unavailable")?;
+    let backup =
+        Connection::open_with_flags(&partial_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| "native state persistence unavailable")?;
+    if !read_model_backup_is_valid(&backup, source_version)? {
+        return Err("native state persistence unavailable");
+    }
+    drop(backup);
+    fs::rename(partial_path, backup_path).map_err(|_| "native state persistence unavailable")
 }
 
 fn wait_until(now: OffsetDateTime, deadline: OffsetDateTime) -> Duration {
@@ -1248,7 +1419,7 @@ impl UsageTotal {
     }
 }
 
-fn snapshot_needs_refresh(snapshot: &SanitizedDesktopStateV1, now: OffsetDateTime) -> bool {
+fn snapshot_needs_refresh(snapshot: &SanitizedDesktopStateV2, now: OffsetDateTime) -> bool {
     snapshot
         .providers
         .iter()
@@ -1280,9 +1451,9 @@ fn transition_periods_at(periods: &UsagePeriods, now: OffsetDateTime) -> (UsageP
 }
 
 fn transition_snapshot_at(
-    snapshot: &SanitizedDesktopStateV1,
+    snapshot: &SanitizedDesktopStateV2,
     now: OffsetDateTime,
-) -> Option<SanitizedDesktopStateV1> {
+) -> Option<SanitizedDesktopStateV2> {
     let (codex, codex_changed) = snapshot.providers[0].transition_at(now);
     let (claude, claude_changed) = snapshot.providers[1].transition_at(now);
     let (codex_usage, codex_usage_changed) = transition_periods_at(&snapshot.usage.codex, now);
@@ -1298,7 +1469,7 @@ fn transition_snapshot_at(
     })
 }
 
-fn next_refresh_at(snapshot: &SanitizedDesktopStateV1, now: OffsetDateTime) -> OffsetDateTime {
+fn next_refresh_at(snapshot: &SanitizedDesktopStateV2, now: OffsetDateTime) -> OffsetDateTime {
     let provider_deadline = snapshot
         .providers
         .iter()
@@ -1323,7 +1494,7 @@ fn next_refresh_at(snapshot: &SanitizedDesktopStateV1, now: OffsetDateTime) -> O
         .min(now + to_time_duration(REFRESH_INTERVAL))
 }
 
-fn validate_snapshot(snapshot: &SanitizedDesktopStateV1) -> Result<(), &'static str> {
+fn validate_snapshot(snapshot: &SanitizedDesktopStateV2) -> Result<(), &'static str> {
     if snapshot.contract_version != CONTRACT_VERSION
         || snapshot.revision.parse::<u64>().is_err()
         || OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339).is_err()
@@ -1356,12 +1527,12 @@ fn format_time(now: OffsetDateTime) -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
 
-pub fn unavailable_state(revision: u64) -> SanitizedDesktopStateV1 {
+pub fn unavailable_state(revision: u64) -> SanitizedDesktopStateV2 {
     unavailable_state_at(revision, OffsetDateTime::now_utc())
 }
 
-fn unavailable_state_at(revision: u64, now: OffsetDateTime) -> SanitizedDesktopStateV1 {
-    SanitizedDesktopStateV1 {
+fn unavailable_state_at(revision: u64, now: OffsetDateTime) -> SanitizedDesktopStateV2 {
+    SanitizedDesktopStateV2 {
         contract_version: CONTRACT_VERSION,
         generated_at: format_time(now),
         revision: revision.max(1).to_string(),
@@ -1383,11 +1554,12 @@ fn unavailable_state_at(revision: u64, now: OffsetDateTime) -> SanitizedDesktopS
             status: SyncStatus::Unavailable,
             last_successful_at: None,
         },
+        profile: SanitizedProfileOutcome::NotAuthorized,
     }
 }
 
 pub fn native_contract_schema() -> Schema {
-    schema_for!(SanitizedDesktopStateV1)
+    schema_for!(SanitizedDesktopStateV2)
 }
 
 pub fn native_contract_export() -> Value {
@@ -1395,12 +1567,14 @@ pub fn native_contract_export() -> Value {
         "bootstrapContractVersion": LIFECYCLE_CONTRACT_VERSION,
         "bootstrapStateSchema": bootstrap_state_schema(),
         "contractVersion": CONTRACT_VERSION,
+        "panelAddTokenmaxxerEvent": PANEL_ADD_TOKENMAXXER_EVENT,
         "refreshReceiptSchema": schema_for!(RefreshReceipt),
         "revisionNoticeEvent": REVISION_NOTICE_EVENT,
         "revisionNoticeSchema": schema_for!(RevisionNotice),
         "settingsContractVersion": LIFECYCLE_CONTRACT_VERSION,
         "settingsNavigationEvent": SETTINGS_NAVIGATION_EVENT,
         "settingsNavigationSchema": settings_navigation_schema(),
+        "settingsRecoveryClearEvent": SETTINGS_RECOVERY_CLEAR_EVENT,
         "settingsStateSchema": settings_state_schema(),
         "stateSchema": native_contract_schema(),
     })
@@ -1449,7 +1623,10 @@ mod tests {
                 self.0.clone(),
                 self.0.with_extension("sqlite3-shm"),
                 self.0.with_extension("sqlite3-wal"),
-                read_model_backup_path(&self.0),
+                read_model_backup_path(&self.0, 0),
+                read_model_backup_partial_path(&self.0, 0),
+                read_model_backup_path(&self.0, 1),
+                read_model_backup_partial_path(&self.0, 1),
             ] {
                 let _ = fs::remove_file(path);
             }
@@ -1480,7 +1657,7 @@ mod tests {
     }
 
     struct ScriptedRefreshSource {
-        responses: Mutex<VecDeque<Result<Option<SanitizedDesktopStateV1>, RefreshFailure>>>,
+        responses: Mutex<VecDeque<Result<Option<SanitizedDesktopStateV2>, RefreshFailure>>>,
         runs: AtomicUsize,
         first_refresh_gate: Option<Arc<RefreshGate>>,
         clock: Option<Arc<FixtureClock>>,
@@ -1503,7 +1680,7 @@ mod tests {
 
     impl ScriptedRefreshSource {
         fn new(
-            responses: impl IntoIterator<Item = Result<Option<SanitizedDesktopStateV1>, RefreshFailure>>,
+            responses: impl IntoIterator<Item = Result<Option<SanitizedDesktopStateV2>, RefreshFailure>>,
         ) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
@@ -1533,9 +1710,9 @@ mod tests {
     impl SnapshotRefreshAdapter for ScriptedRefreshSource {
         fn refresh(
             &self,
-            _cached: SanitizedDesktopStateV1,
+            _cached: SanitizedDesktopStateV2,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+        ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
             attempt.remaining()?;
             let run = self.runs.fetch_add(1, Ordering::SeqCst);
             if run == 0
@@ -1561,9 +1738,9 @@ mod tests {
     fn observed_state(
         observed_at: OffsetDateTime,
         observed_tokens: u64,
-    ) -> SanitizedDesktopStateV1 {
+    ) -> SanitizedDesktopStateV2 {
         let observed_at = format_time(observed_at);
-        SanitizedDesktopStateV1 {
+        SanitizedDesktopStateV2 {
             contract_version: CONTRACT_VERSION,
             generated_at: observed_at.clone(),
             revision: "1".to_owned(),
@@ -1602,6 +1779,7 @@ mod tests {
                 status: SyncStatus::Unavailable,
                 last_successful_at: None,
             },
+            profile: SanitizedProfileOutcome::NotAuthorized,
         }
     }
 
@@ -1684,9 +1862,9 @@ mod tests {
     impl SnapshotRefreshAdapter for BlockingRefreshSource {
         fn refresh(
             &self,
-            _cached: SanitizedDesktopStateV1,
+            _cached: SanitizedDesktopStateV2,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+        ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
             attempt.remaining()?;
             self.runs.fetch_add(1, Ordering::SeqCst);
             self.started.wait();
@@ -1745,9 +1923,9 @@ mod tests {
     impl SnapshotRefreshAdapter for ShutdownRefreshSource {
         fn refresh(
             &self,
-            _cached: SanitizedDesktopStateV1,
+            _cached: SanitizedDesktopStateV2,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV1>, RefreshFailure> {
+        ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
             self.started.wait();
             while !attempt.is_cancelled() {
                 std::thread::yield_now();
@@ -1862,6 +2040,121 @@ mod tests {
     }
 
     #[test]
+    fn migrates_contract_v1_cache_without_losing_provider_state() {
+        let database = TestDatabase::new();
+        let mut legacy = serde_json::to_value(observed_state(test_time(), 42)).unwrap();
+        legacy["contractVersion"] = json!(1);
+        legacy.as_object_mut().unwrap().remove("profile");
+        let legacy_json = serde_json::to_string(&legacy).unwrap();
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL CHECK (version >= 1)
+                 );
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 1),
+                   revision TEXT NOT NULL,
+                   snapshot_json TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO touchgrassbar_schema_versions (module, version)
+                 VALUES (?1, 1)",
+                [READ_MODEL_SCHEMA_MODULE],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sanitized_desktop_state (
+                   singleton, schema_version, contract_version, revision, snapshot_json
+                 ) VALUES (1, 1, 1, '1', ?1)",
+                [legacy_json],
+            )
+            .unwrap();
+        drop(connection);
+        let older_backup = read_model_backup_path(&database.0, 0);
+        fs::write(&older_backup, b"existing version-zero backup").unwrap();
+        let migration_backup = read_model_backup_path(&database.0, 1);
+        fs::write(&migration_backup, b"incomplete version-one backup").unwrap();
+
+        assert!(
+            NativeCore::open_without_launch(
+                &database.0,
+                Arc::new(FixtureClock::new(test_time())),
+                Arc::new(CachedProjectionRefreshAdapter),
+            )
+            .is_err()
+        );
+        let source = Connection::open(&database.0).unwrap();
+        let source_versions = source
+            .query_row(
+                "SELECT schema_version, contract_version
+                 FROM sanitized_desktop_state
+                 WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u8>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source_versions, (1, 1));
+        drop(source);
+        fs::remove_file(&migration_backup).unwrap();
+        let partial_backup = read_model_backup_partial_path(&database.0, 1);
+        fs::write(&partial_backup, b"interrupted version-one backup").unwrap();
+
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let restored = core.panel_state().unwrap();
+
+        assert_eq!(restored.contract_version, CONTRACT_VERSION);
+        assert_eq!(restored.profile, SanitizedProfileOutcome::NotAuthorized);
+        assert!(matches!(
+            restored.usage.codex.today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        let connection = Connection::open(&database.0).unwrap();
+        let versions = connection
+            .query_row(
+                "SELECT schema_version, contract_version
+                 FROM sanitized_desktop_state
+                 WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u8>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(versions, (READ_MODEL_SCHEMA_VERSION, CONTRACT_VERSION));
+        assert!(migration_backup.is_file());
+        assert!(!partial_backup.exists());
+        let backup = Connection::open(migration_backup).unwrap();
+        let backup_versions = backup
+            .query_row(
+                "SELECT schema_version, contract_version
+                 FROM sanitized_desktop_state
+                 WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, u8>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(backup_versions, (1, 1));
+        assert_eq!(
+            fs::read(older_backup).unwrap(),
+            b"existing version-zero backup"
+        );
+    }
+
+    #[test]
     fn migration_failure_preserves_the_existing_database_and_backup() {
         let database = TestDatabase::new();
         let connection = Connection::open(&database.0).unwrap();
@@ -1888,7 +2181,7 @@ mod tests {
             .query_row("SELECT value FROM migration_sentinel", [], |row| row.get(0))
             .unwrap();
         assert_eq!(sentinel, "keep");
-        assert!(read_model_backup_path(&database.0).is_file());
+        assert!(read_model_backup_path(&database.0, 0).is_file());
     }
 
     #[test]

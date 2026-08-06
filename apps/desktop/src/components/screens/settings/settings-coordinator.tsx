@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { providerAccessStateFromPresence } from "@/components/coding-provider-access-state";
 import { createNativeWindowKeyboardHandler } from "@/components/screens/native-window-keyboard";
+import { bindRecoveryKeyClearEvents } from "@/components/screens/settings/recovery-key-input";
 import { SettingsScreen } from "@/components/screens/settings/settings-screen";
 import { createSettingsDelivery } from "@/native-state/settings-delivery";
 import { createTauriSettingsAdapter } from "@/native-state/tauri-settings-adapter";
@@ -34,8 +35,17 @@ function SettingsCoordinator({
     return () => {
       disposed = true;
       stop();
+      void delivery.hideRecoveryKey();
     };
   }, [delivery]);
+
+  useEffect(
+    () =>
+      bindRecoveryKeyClearEvents(window, () => {
+        void delivery.hideRecoveryKey();
+      }),
+    [delivery],
+  );
 
   useEffect(() => {
     const handler = createNativeWindowKeyboardHandler({
@@ -52,6 +62,16 @@ function SettingsCoordinator({
       ? state.launchAtLogin.enabled
       : null;
   const providers = state?.providers;
+  const profile =
+    state?.profileProvisioning === "ready" &&
+    typeof state.displayName === "string" &&
+    typeof state.touchGrassId === "string"
+      ? {
+          displayName: state.displayName,
+          recoveryKeySuffix: state.recoveryKeySuffix ?? null,
+          touchGrassId: state.touchGrassId,
+        }
+      : null;
 
   return (
     <SettingsScreen
@@ -66,10 +86,19 @@ function SettingsCoordinator({
       onLaunchAtLoginChange={(enabled) => {
         void delivery.setLaunchAtLogin(enabled);
       }}
+      onHideRecoveryKey={() => {
+        void delivery.hideRecoveryKey();
+      }}
+      onRevealRecoveryKey={() => {
+        void delivery.revealRecoveryKey();
+      }}
       onSectionChange={delivery.selectSection}
       pendingDisplayName={state?.displayName}
+      profile={profile}
       profileProvisioning={state?.profileProvisioning}
       providerState={providerAccessStateFromPresence(providers, "claude")}
+      recoveryKey={view.recoveryKey}
+      revealingRecoveryKey={view.revealingRecoveryKey}
       section={state?.section}
     />
   );

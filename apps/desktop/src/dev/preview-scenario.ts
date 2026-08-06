@@ -12,8 +12,8 @@ type BrowserFixtureName =
   "current" | "loading" | "stale" | "update" | "unavailable";
 
 type OnboardingSetupPreviewState =
-  "identity-pending" | "ready" | "required" | "unavailable";
-type SettingsProfilePreviewState = "identity-pending" | "saved";
+  "profile-pending" | "ready" | "required" | "unavailable";
+type SettingsProfilePreviewState = "profile-pending" | "saved";
 
 type DevPreviewScenario = {
   fixture: BrowserFixtureName;
@@ -62,7 +62,7 @@ function resolveOnboardingSetupState(
   params: URLSearchParams,
 ): OnboardingSetupPreviewState {
   const candidate = params.get("setupState");
-  return candidate === "identity-pending" ||
+  return candidate === "profile-pending" ||
     candidate === "required" ||
     candidate === "unavailable"
     ? candidate
@@ -79,8 +79,8 @@ function resolveSurface(params: URLSearchParams): DesktopSurface {
 function resolveSettingsProfileState(
   params: URLSearchParams,
 ): SettingsProfilePreviewState {
-  return params.get("profileState") === "identity-pending"
-    ? "identity-pending"
+  return params.get("profileState") === "profile-pending"
+    ? "profile-pending"
     : "saved";
 }
 

@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "build": "bun run typecheck",
-    "dev": "bun run --cwd ../.. convex:dev",
+    "convex": "bun ../../scripts/run-convex.ts",
+    "dev": "bun run --cwd ../.. dev:backend",
+    "dashboard": "bun run --cwd ../.. backend:dashboard",
     "codegen": "bun run --cwd ../.. convex:codegen",
     "lint": "bunx --bun oxlint -c ../tooling/oxlint.json convex",
     "test": "bunx vitest run",
@@ -22,6 +24,9 @@
     "convex": "1.43.0"
   },
   "devDependencies": {
-    "typescript": "7.0.2"
+    "@edge-runtime/vm": "5.0.0",
+    "convex-test": "0.0.51",
+    "typescript": "7.0.2",
+    "vite": "8.2.0"
   }
 }

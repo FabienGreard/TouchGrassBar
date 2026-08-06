@@ -1,17 +1,19 @@
 import { Button, Input, ProfileCard } from "@touchgrass/ui";
 import { useState } from "react";
 
+import { useCopyText } from "@/components/use-copy-text";
+
 type ProfileEditorProps = {
   className?: string;
   displayName: string;
   onDisplayNameChange?: ((displayName: string) => void) | undefined;
-  onCopyTouchGrassId?: (() => void) | undefined;
   touchGrassId: string;
 };
 
 function ProfileEditor(props: ProfileEditorProps) {
   const [editing, setEditing] = useState(false);
   const [draftDisplayName, setDraftDisplayName] = useState(props.displayName);
+  const { copyStatus, copyText } = useCopyText(props.touchGrassId);
   const initialLetter =
     props.displayName.trim().slice(0, 1).toUpperCase() || "?";
 
@@ -98,21 +100,37 @@ function ProfileEditor(props: ProfileEditorProps) {
         )
       }
       touchGrassId={
-        <strong className="mt-1 block font-mono text-[10px]">
-          {props.touchGrassId}
-        </strong>
-      }
-      touchGrassIdAction={
-        props.onCopyTouchGrassId === undefined ? undefined : (
+        <span className="mt-0.5 inline-flex min-w-0 items-center gap-1.5">
           <Button
-            onClick={props.onCopyTouchGrassId}
+            aria-label={`Copy TouchGrass ID ${props.touchGrassId}`}
+            className="-ml-1.5 max-w-full font-mono text-[10px] font-bold text-sheet-ink"
+            data-copy-status={copyStatus}
+            onClick={() => void copyText()}
             size="quiet"
+            title={
+              copyStatus === "copied"
+                ? "Copied"
+                : copyStatus === "unavailable"
+                  ? "Copy unavailable"
+                  : "Copy TouchGrass ID"
+            }
             type="button"
             variant="ghost"
           >
-            Copy ID
+            <span className="truncate">{props.touchGrassId}</span>
           </Button>
-        )
+          <span
+            aria-live="polite"
+            className="font-mono text-[8px] text-sheet-ink"
+            data-copy-feedback={copyStatus}
+          >
+            {copyStatus === "copied"
+              ? "Copied"
+              : copyStatus === "unavailable"
+                ? "Unavailable"
+                : ""}
+          </span>
+        </span>
       }
       touchGrassIdDescription="Your permanent public ID."
     />

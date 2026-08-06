@@ -1,7 +1,7 @@
 import type { GenericId } from "convex/values";
 
 import type { MutationCtx } from "../_generated/server";
-import { resolveActiveDevice, tokenmaxxerForSubject } from "./identity";
+import { resolveActiveDevice, tokenmaxxerForAuthUser } from "./profile";
 import { rateLimiter } from "./rateLimits";
 import { recomputeScores } from "./scores";
 import {
@@ -50,7 +50,7 @@ async function upsertDailyUsage(
 
 export async function applyUsageSnapshots(
   ctx: MutationCtx,
-  authSubject: string,
+  authUserId: string,
   installationId: string,
   snapshots: UsageSnapshot[],
 ) {
@@ -63,13 +63,13 @@ export async function applyUsageSnapshots(
 
   await rateLimiter.limit(ctx, "syncDailyUsage", {
     count: snapshots.length,
-    key: authSubject,
+    key: authUserId,
     throws: true,
   });
 
-  const tokenmaxxer = await tokenmaxxerForSubject(ctx, authSubject);
+  const tokenmaxxer = await tokenmaxxerForAuthUser(ctx, authUserId);
   if (!tokenmaxxer) {
-    throw new Error("create a TouchGrass identity before synchronizing usage");
+    throw new Error("create a TouchGrass Profile before synchronizing usage");
   }
   const device = await resolveActiveDevice(ctx, tokenmaxxer._id, installationId);
   const buckets = await ctx.db

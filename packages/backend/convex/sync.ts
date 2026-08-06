@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 
 import { mutation } from "./_generated/server";
+import { requireAuthUser } from "./auth";
 import { applyUsageSnapshots } from "./model/sync";
 import {
   scoreScopeValidator,
@@ -25,10 +26,12 @@ export const dailyUsage = mutation({
     overview: v.array(overviewRow),
   }),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("authentication required");
-    }
-    return applyUsageSnapshots(ctx, identity.subject, args.installationId, args.snapshots);
+    const authUser = await requireAuthUser(ctx);
+    return applyUsageSnapshots(
+      ctx,
+      authUser.id,
+      args.installationId,
+      args.snapshots,
+    );
   },
 });

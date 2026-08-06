@@ -18,8 +18,8 @@
   "scripts": {
     "build": "bun run typecheck",
     "build-storybook": "storybook build",
+    "dev": "bun run --cwd ../.. dev:ui",
     "lint": "bunx --bun oxlint -c ../tooling/oxlint.json src",
-    "storybook": "storybook dev -p 6006 --no-open",
     "typecheck": "bunx --bun tsc --noEmit"
   },
   "peerDependencies": {

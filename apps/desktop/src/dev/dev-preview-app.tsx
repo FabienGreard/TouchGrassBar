@@ -25,6 +25,7 @@ function DevPreviewApp() {
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [profile, setProfile] = useState({
     displayName: "Fabien",
+    recoveryKeySuffix: "K9m",
     touchGrassId: "#TG-7K4P9D",
   });
   const [scenario] = useState(() =>
@@ -88,12 +89,12 @@ function DevPreviewApp() {
             onStartRecovery: () => setRecoveryOpen(true),
             pendingDisplayName: profile.displayName,
             profile:
-              scenario.settingsProfileState === "identity-pending"
+              scenario.settingsProfileState === "profile-pending"
                 ? null
                 : profile,
             profileProvisioning:
-              scenario.settingsProfileState === "identity-pending"
-                ? "identity-pending"
+              scenario.settingsProfileState === "profile-pending"
+                ? "profile-pending"
                 : "ready",
             providerState: scenario.settingsProviderState,
           }}

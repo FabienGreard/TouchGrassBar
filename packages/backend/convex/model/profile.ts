@@ -2,58 +2,49 @@ import type { GenericId } from "convex/values";
 
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 
-const PUBLIC_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function randomPublicId() {
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
-  const suffix = [...bytes]
-    .map((byte) => PUBLIC_ID_ALPHABET[byte % PUBLIC_ID_ALPHABET.length])
-    .join("");
-  return `TG-${suffix}`;
-}
-
-export async function tokenmaxxerForSubject(
+export async function tokenmaxxerForAuthUser(
   ctx: QueryCtx | MutationCtx,
-  authSubject: string,
+  authUserId: string,
 ) {
   return ctx.db
     .query("tokenmaxxers")
-    .withIndex("by_auth_subject", (q) => q.eq("authSubject", authSubject))
+    .withIndex("by_auth_subject", (q) => q.eq("authSubject", authUserId))
     .unique();
 }
 
 export async function ensureTokenmaxxer(
   ctx: MutationCtx,
-  authSubject: string,
+  authUserId: string,
   displayName: string,
+  publicId: string,
 ) {
-  const existing = await tokenmaxxerForSubject(ctx, authSubject);
+  const existing = await tokenmaxxerForAuthUser(ctx, authUserId);
   if (existing) {
+    if (existing.publicId !== publicId) {
+      throw new Error("TouchGrass Profile does not match the authenticated Profile");
+    }
     return existing;
   }
 
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const publicId = randomPublicId();
-    const collision = await ctx.db
-      .query("tokenmaxxers")
-      .withIndex("by_public_id", (q) => q.eq("publicId", publicId))
-      .unique();
-    if (!collision) {
-      const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
-        authSubject,
-        createdAt: Date.now(),
-        displayName,
-        publicId,
-      });
-      const created = await ctx.db.get(tokenmaxxerId);
-      if (!created) {
-        throw new Error("failed to create Tokenmaxxer");
-      }
-      return created;
-    }
+  const collision = await ctx.db
+    .query("tokenmaxxers")
+    .withIndex("by_public_id", (q) => q.eq("publicId", publicId))
+    .unique();
+  if (collision) {
+    throw new Error("TouchGrass Profile is unavailable");
   }
 
-  throw new Error("could not allocate a TouchGrass ID");
+  const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+    authSubject: authUserId,
+    createdAt: Date.now(),
+    displayName,
+    publicId,
+  });
+  const created = await ctx.db.get(tokenmaxxerId);
+  if (!created) {
+    throw new Error("failed to create Tokenmaxxer");
+  }
+  return created;
 }
 
 export async function resolveActiveDevice(

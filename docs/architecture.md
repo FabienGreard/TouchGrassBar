@@ -28,7 +28,7 @@ React owns:
 - Loading, stale, unavailable, and error presentation
 - User intent delivered to Rust through narrow Tauri commands
 
-React cannot read provider source material, credentials, cookies, raw logs, local paths, Convex session material, or local storage. It receives versioned Sanitized Desktop State and bounded view data. Release WebViews are network-dark; development may allow only the localhost Vite/HMR connection.
+React cannot read provider source material, cookies, raw logs, local paths, Convex session material, or local storage. Credentials remain native-owned, except that Profile Settings may receive the Recovery Key through one narrow command after the Tokenmaxxer selects **View**. It receives versioned Sanitized Desktop State and bounded view data for all other presentation. Release WebViews are network-dark; development may allow only the localhost Vite/HMR connection.
 
 #### Desktop React module layout
 
@@ -45,12 +45,16 @@ controls, and preview-only styling. The development entry point is dynamically
 loaded by `main.tsx`; production modules never import from `dev`. The dependency
 direction is `dev` → desktop product modules → `packages/ui`.
 
-The root desktop development runner derives one bounded display identity from
-the current branch and worktree. It supplies that identity only through
-development environment values and an ignored Tauri configuration overlay.
-Parallel worktrees receive separate localhost ports, Tauri identifiers, and
-local application data locations. Production configuration, product modules,
-and Sanitized Desktop State do not contain the development identity.
+The root development runner starts the selected Convex backend, desktop, and
+landing tasks in one owned process group. Package commands delegate to scoped
+root commands. The desktop task derives one bounded display identity from the
+current branch and worktree. It supplies that identity only through development
+environment values and an ignored Tauri configuration overlay. The same Vite
+server serves the native WebView and browser preview. Parallel worktrees receive
+separate desktop localhost ports, runtime namespaces, and local application data
+locations. They share the stable development bundle identifier required by the
+development signing profile. Production configuration, product modules, and
+Sanitized Desktop State do not contain the development identity.
 
 ### `apps/landing`
 
@@ -61,6 +65,21 @@ An Astro and Tailwind CSS static marketing and distribution site. It has no auth
 Convex owns public Tokenmaxxer Profiles, Active Mac authority, revisioned Usage Buckets, server-derived daily usage, materialized scores, My Tokenmaxxers, and Doomerboard projections. Better Auth owns generated-credential hashing and sessions.
 
 The backend rejects raw provider material and accepts only validated cumulative daily snapshots from the current Active Mac. Convex calculates all daily totals, combined scores, ranks, and public projections. Global Doomerboards use one namespaced Aggregate component; My Tokenmaxxers uses bounded indexed reads and in-memory sorting. A rate limiter protects synchronization, migrations own repairs, and a daily UTC cron expires rolling windows.
+
+#### Development deployment isolation
+
+Each worktree owns its ignored `.convex/` state and root `.env.local`. The
+standard `CONVEX_DEPLOYMENT`, `CONVEX_URL`, and `CONVEX_SITE_URL` values select
+the backend used by every development command. Setup creates an anonymous local
+deployment and private Better Auth secret only when no deployment is selected.
+It does not replace a developer's explicit cloud development selection. The
+development runner keeps a selected local backend active during native Profile
+tests. Startup never rewrites the selected environment.
+
+Default repository setup selects local development. Cloud development and
+production require an explicit Convex CLI command and human authorization.
+Local success is development evidence only and never qualifies as Backend
+Readiness Evidence. This decision is recorded in [ADR 0014](adr/0014-isolate-agent-worktrees-with-local-convex.md).
 
 ### `packages/contracts`
 
@@ -81,8 +100,8 @@ Shared strict TypeScript and Oxlint configuration.
 ## Trust boundaries
 
 1. Rust reads local provider sources and immediately reduces them into private parser metadata, sanitized Quota Snapshots, and Daily Usage Aggregates.
-2. Only DTOs in the sanitized contract may serialize across Tauri IPC. Privileged provider and authentication types are separate and non-serializable through commands.
-3. React sends narrow typed intents and receives Sanitized Desktop State or bounded sanitized views; it has no generic transport command or direct provider, filesystem, Keychain, or network access.
+2. DTOs in the sanitized contract and the deliberate Profile Settings Recovery Key reveal may serialize across Tauri IPC. Privileged provider and other authentication types are separate and non-serializable through commands.
+3. React sends narrow typed intents and receives Sanitized Desktop State, bounded sanitized views, or the Recovery Key after the explicit **View** action. It has no generic transport command or direct provider, filesystem, Keychain, or network access.
 4. Rust synchronizes only validated cumulative Usage Snapshots through the official Convex Rust client.
 5. Convex validates the live Profile and Active Mac generation, then updates Daily Usage, scores, and Aggregate projections transactionally.
 6. Rust sanitizes Convex results before React receives them.
@@ -101,7 +120,7 @@ Production WebViews deny arbitrary HTTP and WebSocket egress through CSP and rec
 
 ## Local persistence
 
-Rust owns one transactional SQLite database in Application Support. It separates private parser checkpoints and deduplication metadata, sanitized provider/read-model state, effective-dated pricing versions, and a synchronization outbox. Raw provider content is never copied into the database. The Recovery Key, Better Auth session, and opaque installation credential are separate non-synchronizing Keychain items. Provider credentials remain in provider-owned storage and exist in TouchGrassBar memory only while needed. Profile creation, recovery, and key reveal use native secure sheets that return only sanitized outcomes to React.
+Rust owns one transactional SQLite database in Application Support. It separates private parser checkpoints and deduplication metadata, sanitized provider/read-model state, effective-dated pricing versions, and a synchronization outbox. Raw provider content is never copied into the database. The Recovery Key, Better Auth session, and opaque installation credential are separate non-synchronizing Keychain items. Provider credentials remain in provider-owned storage and exist in TouchGrassBar memory only while needed. Profile creation stores the Recovery Key without displaying it. Settings State may contain only its real final three characters for the masked field. Profile Settings may request the full stored Recovery Key through one narrow command and hold it in React memory only while the inline field is visible. After reveal, an explicit Copy action may place the key on the macOS clipboard, which remains outside TouchGrassBar's clearing guarantees. This exception is recorded in [ADR 0015](adr/0015-allow-a-deliberate-recovery-key-reveal-in-react.md).
 
 The native core retains 60 UTC Ranking Days of local aggregates and deduplication metadata. Pricing versions remain while referenced. A Quota Lane may be cached as stale only until its reset, after which its allowance and remaining value are unavailable. Profile creation queues at most the approved 30-day aggregate backfill.
 

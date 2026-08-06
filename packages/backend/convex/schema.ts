@@ -7,6 +7,23 @@ const scoreWindow = v.union(v.literal(1), v.literal(7), v.literal(30));
 const coverage = v.union(v.literal("complete"), v.literal("partial"));
 
 export default defineSchema({
+  signupProofs: defineTable({
+    expiresAt: v.number(),
+    nonceDigest: v.string(),
+    touchGrassId: v.string(),
+  }).index("by_nonce_digest", ["nonceDigest"]),
+
+  recoveryKeyAttemptReservations: defineTable({
+    expiresAt: v.number(),
+    ipKey: v.string(),
+    touchGrassIdKey: v.string(),
+  })
+    .index("by_ip_key_and_expires_at", ["ipKey", "expiresAt"])
+    .index("by_touch_grass_id_key_and_expires_at", [
+      "touchGrassIdKey",
+      "expiresAt",
+    ]),
+
   tokenmaxxers: defineTable({
     activeDeviceId: v.optional(v.id("devices")),
     authSubject: v.string(),

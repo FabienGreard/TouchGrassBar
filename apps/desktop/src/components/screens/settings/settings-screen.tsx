@@ -50,12 +50,16 @@ type SettingsScreenProps = {
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
   onOpenSource?: (() => void) | undefined;
   onProfileDisplayNameChange?: ((displayName: string) => void) | undefined;
+  onHideRecoveryKey?: (() => void) | undefined;
+  onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
   onSectionChange?: ((section: SettingsSection) => void) | undefined;
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
   profileProvisioning?: ProfileProvisioningStatus | undefined;
   providerState?: CodingProviderAccessState | undefined;
+  recoveryKey?: string | null | undefined;
+  revealingRecoveryKey?: boolean | undefined;
   section?: SettingsSection | undefined;
 };
 
@@ -71,12 +75,16 @@ function SettingsScreen({
   onLaunchAtLoginChange,
   onOpenSource,
   onProfileDisplayNameChange,
+  onHideRecoveryKey,
+  onRevealRecoveryKey,
   onStartRecovery,
   onSectionChange,
   pendingDisplayName = null,
   profile = null,
   profileProvisioning = "not-authorized",
   providerState = "unavailable",
+  recoveryKey = null,
+  revealingRecoveryKey = false,
   section: controlledSection,
 }: SettingsScreenProps) {
   const [localSection, setLocalSection] = useState<SettingsSection>(() =>
@@ -176,10 +184,14 @@ function SettingsScreen({
           {section === "profile" ? (
             <ProfileSettings
               onDisplayNameChange={onProfileDisplayNameChange}
+              onHideRecoveryKey={onHideRecoveryKey}
+              onRevealRecoveryKey={onRevealRecoveryKey}
               onStartRecovery={onStartRecovery}
               pendingDisplayName={pendingDisplayName}
               profile={profile}
               profileProvisioning={profileProvisioning}
+              recoveryKey={recoveryKey}
+              revealingRecoveryKey={revealingRecoveryKey}
             />
           ) : null}
         </div>

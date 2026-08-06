@@ -9,6 +9,11 @@ import {
 } from "@touchgrass/ui";
 import { useId, useRef, useState } from "react";
 
+import {
+  focusAndSelectRecoveryInput,
+  RECOVERY_KEY_PLACEHOLDER,
+} from "@/components/screens/settings/recovery-key-input";
+
 type RecoverySheetPreviewProps = {
   onOpenChange: (open: boolean) => void;
   open: boolean;
@@ -38,7 +43,7 @@ function RecoverySheetPreview({
         data-dev-only="recovery-sheet-preview"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
-          inputRef.current?.focus();
+          focusAndSelectRecoveryInput(inputRef.current);
         }}
       >
         <div className="relative px-8 text-center">
@@ -77,13 +82,15 @@ function RecoverySheetPreview({
             <Input
               aria-describedby={helpId}
               autoComplete="off"
+              autoFocus
               className="mt-1.5 font-mono tracking-[0.06em] uppercase"
               id={inputId}
               onChange={(event) => {
                 setRecoveryKey(event.target.value);
                 setSubmitted(false);
               }}
-              placeholder="TG-RK-••••-••••-••••"
+              onFocus={(event) => event.currentTarget.select()}
+              placeholder={RECOVERY_KEY_PLACEHOLDER}
               ref={inputRef}
               spellCheck={false}
               type="password"

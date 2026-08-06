@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "bunx --bun astro build",
-    "dev": "bunx --bun astro dev",
+    "dev": "bun run --cwd ../.. dev:landing",
     "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src astro.config.ts",
     "test": "bun -e \"process.exit(0)\"",
     "typecheck": "bunx --bun astro check"

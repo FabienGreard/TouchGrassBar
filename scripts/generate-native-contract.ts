@@ -11,6 +11,7 @@ type JsonSchema = {
   minimum?: number;
   minLength?: number;
   oneOf?: JsonSchema[];
+  pattern?: string;
   properties?: Record<string, JsonSchema>;
   required?: string[];
   title?: string;
@@ -21,12 +22,14 @@ type NativeContractExport = {
   bootstrapContractVersion: number;
   bootstrapStateSchema: JsonSchema;
   contractVersion: number;
+  panelAddTokenmaxxerEvent: string;
   refreshReceiptSchema: JsonSchema;
   revisionNoticeEvent: string;
   revisionNoticeSchema: JsonSchema;
   settingsContractVersion: number;
   settingsNavigationEvent: string;
   settingsNavigationSchema: JsonSchema;
+  settingsRecoveryClearEvent: string;
   settingsStateSchema: JsonSchema;
   stateSchema: JsonSchema;
 };
@@ -128,6 +131,8 @@ function render(node: JsonSchema, fieldName = ""): string {
     if (fieldName.endsWith("At")) return "z.string().datetime()";
     let expression = "z.string()";
     if (node.minLength !== undefined) expression += `.min(${node.minLength})`;
+    if (node.pattern !== undefined)
+      expression += `.regex(new RegExp(${JSON.stringify(node.pattern)}))`;
     return expression;
   }
   return "z.unknown()";
@@ -169,9 +174,11 @@ import * as z from "zod";
 
 export const BOOTSTRAP_CONTRACT_VERSION = ${JSON.stringify(contract.bootstrapContractVersion)} as const;
 export const CONTRACT_VERSION = ${JSON.stringify(contract.contractVersion)} as const;
+export const PANEL_ADD_TOKENMAXXER_EVENT = ${JSON.stringify(contract.panelAddTokenmaxxerEvent)} as const;
 export const REVISION_NOTICE_EVENT = ${JSON.stringify(contract.revisionNoticeEvent)} as const;
 export const SETTINGS_CONTRACT_VERSION = ${JSON.stringify(contract.settingsContractVersion)} as const;
 export const SETTINGS_NAVIGATION_EVENT = ${JSON.stringify(contract.settingsNavigationEvent)} as const;
+export const SETTINGS_RECOVERY_CLEAR_EVENT = ${JSON.stringify(contract.settingsRecoveryClearEvent)} as const;
 
 ${ordered.map((name) => `export const ${schemaName(name)} = ${render(definitions[name]!)};`).join("\n")}
 export const bootstrapStateSchema = ${render({ ...bootstrapStateSchema, properties: { ...bootstrapStateSchema.properties, contractVersion: { const: contract.bootstrapContractVersion } } })};

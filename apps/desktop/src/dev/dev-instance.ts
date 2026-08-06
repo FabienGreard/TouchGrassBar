@@ -11,9 +11,10 @@ type DevAccent = (typeof devAccents)[number];
 
 type DevInstance = {
   accent: DevAccent;
-  identifier: string;
+  bundleIdentifier: string;
   instanceKey: string;
   label: string;
+  namespace: string;
   port: number;
   productName: string;
   tag: string;
@@ -102,9 +103,10 @@ function resolveDevInstance({
 
   return {
     accent: resolvedAccent,
-    identifier: `app.touchgrass.bar.dev.w${instanceKey}`,
+    bundleIdentifier: "app.touchgrass.bar.dev",
     instanceKey,
     label: requestedLabel || presentation.label,
+    namespace: `app.touchgrass.bar.dev.w${instanceKey}`,
     port: resolvedPort,
     productName: `TouchGrassBar Dev ${tag} ${instanceKey.slice(0, 4)}`,
     tag,
@@ -119,7 +121,9 @@ function parseDevInstance(value: string | undefined): DevInstance | null {
       typeof candidate.instanceKey !== "string" ||
       typeof candidate.label !== "string" ||
       typeof candidate.tag !== "string" ||
-      typeof candidate.identifier !== "string" ||
+      candidate.bundleIdentifier !== "app.touchgrass.bar.dev" ||
+      typeof candidate.namespace !== "string" ||
+      !/^app\.touchgrass\.bar\.dev\.w[a-z0-9]+$/.test(candidate.namespace) ||
       typeof candidate.productName !== "string" ||
       typeof candidate.port !== "number" ||
       !devAccents.includes(candidate.accent as DevAccent)

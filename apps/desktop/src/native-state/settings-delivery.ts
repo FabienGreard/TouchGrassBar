@@ -8,6 +8,9 @@ import {
 type SettingsPortFaultCode =
   | "launch-at-login-unavailable"
   | "navigation-stream-unavailable"
+  | "recovery-clear-stream-unavailable"
+  | "recovery-key-unavailable"
+  | "settings-section-unavailable"
   | "settings-state-unavailable"
   | "surface-unavailable";
 
@@ -18,32 +21,60 @@ type SettingsPortOutcome<Value> =
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
+  revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
+  selectSection: (
+    section: SettingsSection,
+  ) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
   subscribeNavigation: (
     receive: (payload: unknown) => void,
+  ) => Promise<SettingsPortOutcome<() => void>>;
+  subscribeRecoveryClear: (
+    receive: () => void,
   ) => Promise<SettingsPortOutcome<() => void>>;
 };
 
 type SettingsDeliverySnapshot = {
   phase: "degraded" | "loading" | "ready";
+  recoveryKey: string | null;
+  revealingRecoveryKey: boolean;
   savingLaunchAtLogin: boolean;
   snapshot: SettingsState | null;
 };
 
 function createSettingsDelivery(port: SettingsPort) {
+  let activationRevision = 0;
   let current: SettingsDeliverySnapshot = {
     phase: "loading",
+    recoveryKey: null,
+    revealingRecoveryKey: false,
     savingLaunchAtLogin: false,
     snapshot: null,
   };
   let readInFlight: Promise<void> | null = null;
+  let recoveryClearAvailable = false;
+  let revealInFlight: Promise<boolean> | null = null;
+  let recoveryRevision = 0;
   let saveInFlight: Promise<boolean> | null = null;
+  let sectionSelection = Promise.resolve(true);
+  let sectionRevision = 0;
   let selectedSection: SettingsSection | null = null;
   const listeners = new Set<() => void>();
 
   const publish = (next: SettingsDeliverySnapshot) => {
     current = next;
     for (const listener of listeners) listener();
+  };
+
+  const clearRecoveryKey = () => {
+    recoveryRevision += 1;
+    if (current.recoveryKey !== null || current.revealingRecoveryKey) {
+      publish({
+        ...current,
+        recoveryKey: null,
+        revealingRecoveryKey: false,
+      });
+    }
   };
 
   const accept = (value: unknown, savingLaunchAtLogin = false) => {
@@ -54,8 +85,37 @@ function createSettingsDelivery(port: SettingsPort) {
     }
     const section = selectedSection ?? parsed.data.section;
     selectedSection = section;
-    const snapshot = { ...parsed.data, section };
-    publish({ phase: "ready", savingLaunchAtLogin, snapshot });
+    const snapshot = {
+      ...parsed.data,
+      recoveryKeySuffix: recoveryClearAvailable
+        ? parsed.data.recoveryKeySuffix
+        : null,
+      section,
+    };
+    const previousRecoveryContext =
+      current.snapshot?.profileProvisioning === "ready"
+        ? [
+            current.snapshot.touchGrassId,
+            current.snapshot.recoveryKeySuffix,
+          ].join(":")
+        : null;
+    const nextRecoveryContext =
+      snapshot.profileProvisioning === "ready"
+        ? [snapshot.touchGrassId, snapshot.recoveryKeySuffix].join(":")
+        : null;
+    if (
+      current.snapshot !== null &&
+      previousRecoveryContext !== nextRecoveryContext
+    ) {
+      clearRecoveryKey();
+    }
+    publish({
+      phase: "ready",
+      recoveryKey: current.recoveryKey,
+      revealingRecoveryKey: current.revealingRecoveryKey,
+      savingLaunchAtLogin,
+      snapshot,
+    });
     return true;
   };
 
@@ -77,29 +137,98 @@ function createSettingsDelivery(port: SettingsPort) {
   const receiveNavigation = (payload: unknown) => {
     const request = settingsNavigationRequestSchema.safeParse(payload);
     if (!request.success) return;
+    sectionRevision += 1;
     selectedSection = request.data.section;
-    if (current.snapshot === null) {
-      return;
+    if (request.data.section !== "profile") {
+      clearRecoveryKey();
     }
-    publish({
-      ...current,
-      snapshot: { ...current.snapshot, section: request.data.section },
-    });
+    sectionSelection = Promise.resolve(true);
+    if (current.snapshot !== null) {
+      publish({
+        ...current,
+        snapshot: { ...current.snapshot, section: request.data.section },
+      });
+    }
+    void read();
   };
 
   return {
     async activate() {
-      const subscription = await port.subscribeNavigation(receiveNavigation);
+      const revision = ++activationRevision;
+      const [navigation, recoveryClear] = await Promise.all([
+        port.subscribeNavigation(receiveNavigation),
+        port.subscribeRecoveryClear(clearRecoveryKey),
+      ]);
+      const stopSubscriptions = () => {
+        if (navigation.ok) navigation.value();
+        if (recoveryClear.ok) recoveryClear.value();
+      };
+      if (revision !== activationRevision) {
+        stopSubscriptions();
+        return () => undefined;
+      }
+      recoveryClearAvailable = recoveryClear.ok;
       await read();
-      return subscription.ok ? subscription.value : () => undefined;
+      if (revision !== activationRevision) {
+        stopSubscriptions();
+        return () => undefined;
+      }
+      if (!recoveryClearAvailable) {
+        publish({ ...current, phase: "degraded" });
+      }
+      return () => {
+        if (revision === activationRevision) {
+          activationRevision += 1;
+          recoveryClearAvailable = false;
+          clearRecoveryKey();
+        }
+        stopSubscriptions();
+      };
     },
     getSnapshot: () => current,
     hide: async () => {
+      clearRecoveryKey();
       await port.hide();
     },
+    async hideRecoveryKey() {
+      clearRecoveryKey();
+      return true;
+    },
     read,
+    revealRecoveryKey() {
+      if (!recoveryClearAvailable) return Promise.resolve(false);
+      if (revealInFlight !== null) return revealInFlight;
+      const revision = ++recoveryRevision;
+      publish({ ...current, revealingRecoveryKey: true });
+      revealInFlight = (async () => {
+        if (!(await sectionSelection)) {
+          publish({ ...current, revealingRecoveryKey: false });
+          return false;
+        }
+        const outcome = await port.revealRecoveryKey();
+        const recoveryKey =
+          outcome.ok && revision === recoveryRevision ? outcome.value : null;
+        publish({
+          ...current,
+          recoveryKey,
+          revealingRecoveryKey: false,
+        });
+        return recoveryKey !== null;
+      })().finally(() => {
+        revealInFlight = null;
+      });
+      return revealInFlight;
+    },
     selectSection(section: SettingsSection) {
+      const revision = ++sectionRevision;
       selectedSection = section;
+      if (section !== "profile") {
+        clearRecoveryKey();
+      }
+      sectionSelection = (async () => {
+        const outcome = await port.selectSection(section);
+        return outcome.ok && revision === sectionRevision;
+      })();
       if (current.snapshot === null) {
         return;
       }

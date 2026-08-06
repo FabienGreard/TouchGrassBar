@@ -22,24 +22,49 @@ describe("settings screen", () => {
     expect(markup).not.toContain("Control the spiral.");
   });
 
-  test("keeps Profile recovery secrets outside React", () => {
+  test("keeps the Recovery Key hidden until the deliberate reveal", () => {
     const markup = renderToStaticMarkup(<ProfileSettings />);
     const developmentMarkup = renderToStaticMarkup(
       <ProfileSettings onStartRecovery={() => undefined} />,
+    );
+    const readyMarkup = renderToStaticMarkup(
+      <ProfileSettings
+        onRevealRecoveryKey={() => undefined}
+        profile={{
+          displayName: "Tester",
+          recoveryKeySuffix: "K9m",
+          touchGrassId: "TG-234567",
+        }}
+        profileProvisioning="ready"
+      />,
+    );
+    const revealedMarkup = renderToStaticMarkup(
+      <ProfileSettings
+        onHideRecoveryKey={() => undefined}
+        profile={{
+          displayName: "Tester",
+          recoveryKeySuffix: "K9m",
+          touchGrassId: "TG-234567",
+        }}
+        profileProvisioning="ready"
+        recoveryKey={"2".repeat(48)}
+      />,
     );
 
     expect(markup).toContain("Profile unavailable");
     expect(markup).not.toContain("Fabien");
     expect(markup).not.toContain("#TG-7K4P9D");
-    expect(markup).toContain("Profile security");
-    expect(markup).toContain(
-      "Recovery and key access require a secure macOS sheet",
-    );
+    expect(markup).not.toContain("Profile security");
+    expect(markup).toMatch(/<h2[^>]*>Recovery<\/h2>/);
+    expect(markup).toContain("Manage recovery for this Profile.");
+    expect(markup).toContain("Recovery Key unavailable");
+    expect(markup).not.toContain("Stored in this Mac’s Keychain.");
+    expect(markup).not.toContain("local macOS Keychain");
     expect(markup).not.toContain('type="password"');
-    expect(markup).not.toContain("Reveal recovery key");
+    expect(markup).not.toContain('data-slot="masked-recovery-key"');
     expect(markup).toContain("Recover from another Mac");
     expect(markup).toMatch(
-      /<button[^>]*disabled=""[^>]*>Enter Recovery Key…<\/button>/,
+      /<button[^>]*data-variant="primary"[^>]*disabled=""[^>]*>Enter Recovery Key…<\/button>/,
     );
     expect(markup).not.toContain("Recover on this Mac");
     expect(markup).not.toContain("TG-RK-");
@@ -47,18 +72,48 @@ describe("settings screen", () => {
       /<button[^>]*>Enter Recovery Key…<\/button>/,
     );
     expect(developmentMarkup).not.toContain('type="password"');
+    expect(readyMarkup).toContain("Stored in this Mac’s Keychain.");
+    expect(readyMarkup).toContain(
+      'aria-label="Copy TouchGrass ID TG-234567"',
+    );
+    expect(readyMarkup).toContain('data-copy-status="idle"');
+    expect(readyMarkup).toContain('data-copy-feedback="idle"');
+    expect(readyMarkup).not.toContain(">Copy ID<");
+    expect(readyMarkup).toContain('data-slot="input"');
+    expect(readyMarkup).toContain('data-slot="masked-recovery-key"');
+    expect(readyMarkup).toContain('value="••••••••••••K9m"');
+    expect(readyMarkup).toMatch(
+      /<button[^>]*data-variant="ghost"[^>]*>View<\/button>/,
+    );
+    expect(readyMarkup).not.toContain('aria-label="Copy Recovery Key"');
+    expect(readyMarkup).not.toContain("2".repeat(48));
+    expect(revealedMarkup).toContain('data-slot="revealed-recovery-key"');
+    expect(revealedMarkup).toContain("<textarea");
+    expect(revealedMarkup).toContain('autofocus=""');
+    expect(revealedMarkup).toContain('rows="2"');
+    expect(revealedMarkup).toContain('wrap="soft"');
+    expect(revealedMarkup).toContain("whitespace-pre-wrap break-all");
+    expect(revealedMarkup).toContain(
+      `>${"2".repeat(48)}</textarea>`,
+    );
+    expect(revealedMarkup).toContain('aria-label="Copy Recovery Key"');
+    expect(revealedMarkup).toContain('data-copy-status="idle"');
+    expect(revealedMarkup).toContain('data-copy-feedback="idle"');
+    expect(revealedMarkup).toMatch(
+      /<button[^>]*data-variant="ghost"[^>]*>Hide<\/button>/,
+    );
   });
 
-  test("presents Identity Pending without inventing a public ID", () => {
+  test("presents Profile Pending without inventing a public ID", () => {
     const markup = renderToStaticMarkup(
       <ProfileSettings
         pendingDisplayName="Fabien"
-        profileProvisioning="identity-pending"
+        profileProvisioning="profile-pending"
       />,
     );
 
-    expect(markup).toContain('data-profile-state="identity-pending"');
-    expect(markup).toContain("Identity Pending");
+    expect(markup).toContain('data-profile-state="profile-pending"');
+    expect(markup).toContain("Profile Pending");
     expect(markup).toContain(">Fabien<");
     expect(markup).toContain(
       "Assigned automatically when Profile services are available.",

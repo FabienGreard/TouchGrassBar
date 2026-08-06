@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { SETTINGS_NAVIGATION_EVENT } from "@touchgrass/contracts";
+import {
+  SETTINGS_NAVIGATION_EVENT,
+  SETTINGS_RECOVERY_CLEAR_EVENT,
+} from "@touchgrass/contracts";
 
 import type {
   SettingsPort,
@@ -23,6 +26,9 @@ const defaultBindings: TauriSettingsBindings = {
   invoke: (command, payload) => invoke<unknown>(command, payload),
   listen: (event, receive) => listen<unknown>(event, receive),
 };
+
+const recoveryKeyPattern =
+  /^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{48}$/;
 
 async function closedInvoke(
   bindings: TauriSettingsBindings,
@@ -55,6 +61,33 @@ function createTauriSettingsAdapter(
         "get_settings_state",
         "settings-state-unavailable",
       ),
+    revealRecoveryKey: async () => {
+      const outcome = await closedInvoke(
+        bindings,
+        "reveal_recovery_key",
+        "recovery-key-unavailable",
+      );
+      if (
+        !outcome.ok ||
+        typeof outcome.value !== "string" ||
+        !recoveryKeyPattern.test(outcome.value)
+      ) {
+        return {
+          fault: { code: "recovery-key-unavailable" },
+          ok: false,
+        };
+      }
+      return { ok: true, value: outcome.value };
+    },
+    selectSection: async (section) => {
+      const outcome = await closedInvoke(
+        bindings,
+        "select_settings_section",
+        "settings-section-unavailable",
+        { section },
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
     setLaunchAtLogin: (enabled) =>
       closedInvoke(
         bindings,
@@ -72,6 +105,20 @@ function createTauriSettingsAdapter(
       } catch {
         return {
           fault: { code: "navigation-stream-unavailable" },
+          ok: false,
+        };
+      }
+    },
+    subscribeRecoveryClear: async (receive) => {
+      try {
+        const stop = await bindings.listen(
+          SETTINGS_RECOVERY_CLEAR_EVENT,
+          () => receive(),
+        );
+        return { ok: true, value: stop };
+      } catch {
+        return {
+          fault: { code: "recovery-clear-stream-unavailable" },
           ok: false,
         };
       }

@@ -2,17 +2,27 @@
 mod dev_instance;
 pub mod lifecycle;
 mod network;
+pub mod profile;
 pub mod sanitized;
 
-use std::{env, time::Instant};
+use std::{
+    env,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
+};
 
 use lifecycle::{
-    BootstrapStateV1, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
-    SettingsNavigationRequest, SettingsSection, SettingsStateV1,
+    BootstrapStateV2, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
+    SETTINGS_RECOVERY_CLEAR_EVENT, SettingsNavigationRequest, SettingsProfileAuthorization,
+    SettingsSection, SettingsStateV2,
 };
 use sanitized::{
-    NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
-    SanitizedDesktopStateV1,
+    NativeCore, PANEL_ADD_TOKENMAXXER_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
+    RevisionNotice, SanitizedDesktopStateV2, SanitizedProfileOutcome,
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -31,6 +41,136 @@ const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
+
+#[derive(Default)]
+struct PanelActionState {
+    add_tokenmaxxer_pending: AtomicBool,
+}
+
+pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static str {
+    match attempt {
+        Ok(_) => "touchgrassbar_metric profile_attempt=complete",
+        Err(_) => "touchgrassbar_metric profile_attempt=pending",
+    }
+}
+
+#[derive(Clone)]
+struct ProfileRetryMailbox {
+    pending: Arc<Mutex<bool>>,
+    wake: mpsc::SyncSender<()>,
+}
+
+impl ProfileRetryMailbox {
+    fn new() -> (Self, mpsc::Receiver<()>) {
+        let (wake, receiver) = mpsc::sync_channel(1);
+        (
+            Self {
+                pending: Arc::new(Mutex::new(false)),
+                wake,
+            },
+            receiver,
+        )
+    }
+
+    fn request(&self) {
+        let Ok(mut pending) = self.pending.lock() else {
+            return;
+        };
+        *pending = true;
+        let _ = self.wake.try_send(());
+    }
+
+    fn take(&self) -> bool {
+        self.pending
+            .lock()
+            .is_ok_and(|mut pending| std::mem::take(&mut *pending))
+    }
+}
+
+#[derive(Clone)]
+struct ProfileRuntime {
+    coordinator: Arc<std::sync::Mutex<profile::ProfileCoordinator>>,
+    core: NativeCore,
+    lifecycle: DesktopLifecycle,
+    retry: ProfileRetryMailbox,
+}
+
+impl ProfileRuntime {
+    #[cfg(target_os = "macos")]
+    fn start(lifecycle: DesktopLifecycle, app: AppHandle) -> std::io::Result<Self> {
+        let runtime_lifecycle = lifecycle.clone();
+        let coordinator = Arc::new(std::sync::Mutex::new(profile::production_coordinator(
+            lifecycle,
+        )));
+        let (retry, requests) = ProfileRetryMailbox::new();
+        let worker_retry = retry.clone();
+        let runtime = Self {
+            coordinator,
+            core: app.state::<NativeCore>().inner().clone(),
+            lifecycle: runtime_lifecycle,
+            retry,
+        };
+        let worker_runtime = runtime.clone();
+        std::thread::Builder::new()
+            .name("profile-provisioning-retry".to_owned())
+            .spawn(move || {
+                loop {
+                    match requests.recv_timeout(Duration::from_secs(300)) {
+                        Ok(()) => {
+                            if !worker_retry.take() {
+                                continue;
+                            }
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                    let _ = worker_runtime.attempt();
+                }
+            })?;
+        Ok(runtime)
+    }
+
+    fn trigger(&self) {
+        self.retry.request();
+    }
+
+    fn attempt(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
+        let attempt = self
+            .coordinator
+            .lock()
+            .map_err(|_| "Profile Pending".to_owned())?
+            .retry_pending()
+            .map_err(|_| "Profile Pending".to_owned());
+        eprintln!("{}", profile_attempt_metric(&attempt));
+        let profile = attempt?;
+        if let Some(profile) = &profile {
+            self.core
+                .set_profile_outcome(profile.clone())
+                .map_err(str::to_owned)?;
+        }
+        Ok(profile)
+    }
+
+    fn attempt_now(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
+        self.attempt()
+    }
+
+    fn reveal_recovery_key(
+        &self,
+        authorization: SettingsProfileAuthorization,
+    ) -> Result<String, String> {
+        self.coordinator
+            .lock()
+            .map_err(|_| "Recovery Key unavailable".to_owned())?
+            .recovery_key(authorization)
+            .map(|key| key.expose().to_owned())
+            .map_err(|_| "Recovery Key unavailable".to_owned())
+    }
+
+    fn recovery_key_suffix(&self) -> Option<String> {
+        profile::production_recovery_key_suffix(&self.lifecycle)
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
@@ -140,22 +280,37 @@ fn monitor_for_tray(window: &WebviewWindow, tray: Frame) -> tauri::Result<Frame>
     })
 }
 
-fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
-    if app
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrayForegroundDestination {
+    Onboarding,
+    Panel,
+}
+
+fn tray_foreground_destination(bootstrap_required: bool) -> TrayForegroundDestination {
+    if bootstrap_required {
+        TrayForegroundDestination::Onboarding
+    } else {
+        TrayForegroundDestination::Panel
+    }
+}
+
+fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
+    let destination = app
         .try_state::<DesktopLifecycle>()
-        .is_some_and(|lifecycle| lifecycle.should_show_bootstrap())
-    {
-        return show_onboarding(app);
+        .map_or(TrayForegroundDestination::Panel, |lifecycle| {
+            tray_foreground_destination(lifecycle.should_show_bootstrap())
+        });
+    match destination {
+        TrayForegroundDestination::Onboarding => {
+            show_onboarding(app)?;
+            return Ok(false);
+        }
+        TrayForegroundDestination::Panel => {}
     }
 
     let Some(panel) = app.get_webview_window(PANEL_LABEL) else {
-        return Ok(());
+        return Ok(false);
     };
-
-    if panel.is_visible()? {
-        panel.hide()?;
-        return Ok(());
-    }
 
     let scale_factor = panel.scale_factor()?;
     let tray = frame_for_rect(tray_rect, scale_factor);
@@ -167,6 +322,43 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
     if let Some(core) = app.try_state::<NativeCore>() {
         let _ = core.request_refresh(RefreshSource::StalePanelOpen);
     }
+    Ok(true)
+}
+
+fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
+    let destination = app
+        .try_state::<DesktopLifecycle>()
+        .map_or(TrayForegroundDestination::Panel, |lifecycle| {
+            tray_foreground_destination(lifecycle.should_show_bootstrap())
+        });
+    if destination == TrayForegroundDestination::Panel
+        && let Some(panel) = app.get_webview_window(PANEL_LABEL)
+        && panel.is_visible()?
+    {
+        panel.hide()?;
+        return Ok(());
+    }
+
+    show_panel(app, tray_rect)?;
+    Ok(())
+}
+
+fn show_panel_add_tokenmaxxer(app: &AppHandle) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id("touchgrassbar") else {
+        return Ok(());
+    };
+    let Some(tray_rect) = tray.rect()? else {
+        return Ok(());
+    };
+    if show_panel(app, tray_rect)? {
+        let Some(actions) = app.try_state::<PanelActionState>() else {
+            return Ok(());
+        };
+        actions
+            .add_tokenmaxxer_pending
+            .store(true, Ordering::Release);
+        app.emit(PANEL_ADD_TOKENMAXXER_EVENT, ())?;
+    }
     Ok(())
 }
 
@@ -177,6 +369,17 @@ fn hide_panel(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
         panel.hide().map_err(|_| "panel unavailable".to_owned())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+fn take_panel_add_tokenmaxxer_request(
+    window: WebviewWindow,
+    actions: State<'_, PanelActionState>,
+) -> Result<bool, String> {
+    require_panel(&window)?;
+    Ok(actions
+        .add_tokenmaxxer_pending
+        .swap(false, Ordering::AcqRel))
 }
 
 fn show_onboarding(app: &AppHandle) -> tauri::Result<()> {
@@ -239,7 +442,7 @@ fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
-) -> Result<SanitizedDesktopStateV1, String> {
+) -> Result<SanitizedDesktopStateV2, String> {
     require_panel(&window)?;
     core.panel_state().map_err(str::to_owned)
 }
@@ -279,36 +482,77 @@ fn require_settings_or_onboarding(window: &WebviewWindow) -> Result<(), String> 
         .ok_or_else(|| "command unavailable for this window".to_owned())
 }
 
+fn require_profile_settings(
+    window: &WebviewWindow,
+    lifecycle: &DesktopLifecycle,
+) -> Result<SettingsProfileAuthorization, String> {
+    require_settings(window)?;
+    lifecycle
+        .authorize_profile_settings()
+        .ok_or_else(|| "command unavailable for this section".to_owned())
+}
+
 #[tauri::command]
 fn get_bootstrap_state(
     window: WebviewWindow,
     lifecycle: State<'_, DesktopLifecycle>,
-) -> Result<BootstrapStateV1, String> {
+) -> Result<BootstrapStateV2, String> {
     require_onboarding(&window)?;
     Ok(lifecycle.bootstrap_state())
 }
 
 #[tauri::command]
-fn complete_bootstrap(
+async fn complete_bootstrap(
     window: WebviewWindow,
-    lifecycle: State<'_, DesktopLifecycle>,
+    app: AppHandle,
     display_name: String,
-) -> Result<BootstrapStateV1, String> {
+) -> Result<BootstrapStateV2, String> {
     require_onboarding(&window)?;
-    let state = lifecycle
-        .complete_bootstrap(&display_name)
-        .map_err(str::to_owned)?;
-    window
-        .hide()
-        .map_err(|_| "bootstrap window unavailable".to_owned())?;
+    let lifecycle = app.state::<DesktopLifecycle>().inner().clone();
+    let current = lifecycle.bootstrap_state();
+    if lifecycle.bootstrap_completion_ready() {
+        return Ok(current);
+    }
+    if current.profile_provisioning != lifecycle::ProfileProvisioningStatus::Ready {
+        lifecycle
+            .complete_bootstrap(&display_name)
+            .map_err(str::to_owned)?;
+        app.state::<NativeCore>()
+            .set_profile_outcome(SanitizedProfileOutcome::ProfilePending)
+            .map_err(str::to_owned)?;
+    }
+    let runtime = app.state::<ProfileRuntime>().inner().clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || runtime.attempt_now()).await;
+    let state = lifecycle.bootstrap_state();
+    if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready
+        && !lifecycle.bootstrap_completion_ready()
+    {
+        return Err("Recovery Key pending".to_owned());
+    }
     Ok(state)
 }
 
 fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
+    #[cfg(debug_assertions)]
+    if dev_instance::DevelopmentInstance::from_environment().is_some() {
+        return LaunchAtLoginState::Unavailable;
+    }
     app.autolaunch()
         .is_enabled()
         .map(|enabled| LaunchAtLoginState::Available { enabled })
         .unwrap_or(LaunchAtLoginState::Unavailable)
+}
+
+fn settings_state_with_recovery_key_suffix(
+    lifecycle: &DesktopLifecycle,
+    launch_at_login: LaunchAtLoginState,
+    profile_runtime: &ProfileRuntime,
+) -> SettingsStateV2 {
+    let mut state = lifecycle.settings_state(launch_at_login);
+    if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready {
+        state.recovery_key_suffix = profile_runtime.recovery_key_suffix();
+    }
+    state
 }
 
 #[tauri::command]
@@ -316,9 +560,14 @@ fn get_settings_state(
     window: WebviewWindow,
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
-) -> Result<SettingsStateV1, String> {
+    profile_runtime: State<'_, ProfileRuntime>,
+) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
-    Ok(lifecycle.settings_state(launch_at_login_state(&app)))
+    Ok(settings_state_with_recovery_key_suffix(
+        &lifecycle,
+        launch_at_login_state(&app),
+        &profile_runtime,
+    ))
 }
 
 #[tauri::command]
@@ -326,9 +575,18 @@ fn set_launch_at_login(
     window: WebviewWindow,
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
+    profile_runtime: State<'_, ProfileRuntime>,
     enabled: bool,
-) -> Result<SettingsStateV1, String> {
+) -> Result<SettingsStateV2, String> {
     require_settings(&window)?;
+    #[cfg(debug_assertions)]
+    if dev_instance::DevelopmentInstance::from_environment().is_some() {
+        return Ok(settings_state_with_recovery_key_suffix(
+            &lifecycle,
+            LaunchAtLoginState::Unavailable,
+            &profile_runtime,
+        ));
+    }
     let result = if enabled {
         app.autolaunch().enable()
     } else {
@@ -339,7 +597,35 @@ fn set_launch_at_login(
     } else {
         LaunchAtLoginState::Unavailable
     };
-    Ok(lifecycle.settings_state(launch_at_login))
+    Ok(settings_state_with_recovery_key_suffix(
+        &lifecycle,
+        launch_at_login,
+        &profile_runtime,
+    ))
+}
+
+#[tauri::command]
+fn select_settings_section(
+    window: WebviewWindow,
+    lifecycle: State<'_, DesktopLifecycle>,
+    section: SettingsSection,
+) -> Result<(), String> {
+    require_settings(&window)?;
+    lifecycle.request_settings_section(section);
+    Ok(())
+}
+
+#[tauri::command]
+async fn reveal_recovery_key(
+    window: WebviewWindow,
+    lifecycle: State<'_, DesktopLifecycle>,
+    profile_runtime: State<'_, ProfileRuntime>,
+) -> Result<String, String> {
+    let authorization = require_profile_settings(&window, &lifecycle)?;
+    let runtime = profile_runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.reveal_recovery_key(authorization))
+        .await
+        .map_err(|_| "Recovery Key unavailable".to_owned())?
 }
 
 #[tauri::command]
@@ -352,7 +638,36 @@ fn hide_surface(window: WebviewWindow) -> Result<(), String> {
 pub fn run() {
     let process_started_at = Instant::now();
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
-    let mut app = tauri::Builder::default()
+    #[cfg(debug_assertions)]
+    let development_instance = dev_instance::DevelopmentInstance::from_environment();
+    let builder = tauri::Builder::default();
+    #[cfg(debug_assertions)]
+    let builder = if development_instance.is_none() {
+        builder
+            .plugin(tauri_plugin_single_instance::init(
+                |app, arguments, _working_directory| {
+                    let background_request =
+                        arguments.iter().any(|argument| argument == "--background");
+                    if !background_request
+                        && app
+                            .try_state::<DesktopLifecycle>()
+                            .is_some_and(|lifecycle| lifecycle.should_show_bootstrap())
+                    {
+                        let _ = show_onboarding(app);
+                    }
+                },
+            ))
+            .plugin(tauri_plugin_process::init())
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_autostart::init(
+                MacosLauncher::LaunchAgent,
+                Some(vec!["--background"]),
+            ))
+    } else {
+        builder.plugin(tauri_plugin_process::init())
+    };
+    #[cfg(not(debug_assertions))]
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(
             |app, arguments, _working_directory| {
                 let background_request =
@@ -371,7 +686,8 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
-        ))
+        ));
+    let mut app = builder
         .invoke_handler(tauri::generate_handler![
             complete_bootstrap,
             get_bootstrap_state,
@@ -382,14 +698,28 @@ pub fn run() {
             open_settings,
             request_refresh,
             resize_panel,
-            set_launch_at_login
+            reveal_recovery_key,
+            select_settings_section,
+            set_launch_at_login,
+            take_panel_add_tokenmaxxer_request
         ])
         .setup(move |app| {
-            let database_path = app
-                .path()
-                .app_data_dir()
-                .ok()
-                .map(|directory| directory.join("touchgrassbar.sqlite3"));
+            #[cfg(debug_assertions)]
+            let database_directory = development_instance.as_ref().map_or_else(
+                || app.path().app_data_dir(),
+                |instance| {
+                    app.path()
+                        .data_dir()
+                        .map(|directory| directory.join(instance.namespace()))
+                },
+            );
+            #[cfg(not(debug_assertions))]
+            let database_directory = app.path().app_data_dir();
+            let database_path = database_directory.ok().and_then(|directory| {
+                std::fs::create_dir_all(&directory)
+                    .ok()
+                    .map(|()| directory.join("touchgrassbar.sqlite3"))
+            });
             let lifecycle = database_path
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
@@ -402,11 +732,14 @@ pub fn run() {
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,
             );
-            app.manage(lifecycle);
+            app.manage(lifecycle.clone());
             app.manage(core.clone());
+            app.manage(PanelActionState::default());
 
-            #[cfg(debug_assertions)]
-            let development_instance = dev_instance::DevelopmentInstance::from_environment();
+            app.state::<NativeCore>()
+                .set_profile_outcome(lifecycle.sanitized_profile_outcome())
+                .map_err(std::io::Error::other)?;
+
             #[cfg(debug_assertions)]
             if let Some(instance) = development_instance.as_ref() {
                 for (label, title) in [
@@ -419,6 +752,9 @@ pub fn run() {
                     }
                 }
             }
+            let profile_runtime = ProfileRuntime::start(lifecycle, app.handle().clone())?;
+            profile_runtime.trigger();
+            app.manage(profile_runtime);
 
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
@@ -443,9 +779,10 @@ pub fn run() {
                             .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
                     }
                 })?;
-            let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
+            let refresh = MenuItemBuilder::with_id("refresh", "Force sync").build(app)?;
+            let add_tokenmaxxer =
+                MenuItemBuilder::with_id("add_tokenmaxxer", "Add a Tokenmaxxer…").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
-            let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
             #[cfg(debug_assertions)]
             let quit_label = development_instance.as_ref().map_or_else(
                 || "Quit TouchGrassBar".to_owned(),
@@ -456,7 +793,7 @@ pub fn run() {
             let quit = MenuItemBuilder::with_id("quit", quit_label).build(app)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&refresh, &settings, &profile, &separator, &quit])
+                .items(&[&refresh, &add_tokenmaxxer, &settings, &separator, &quit])
                 .build()?;
 
             let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
@@ -477,11 +814,11 @@ pub fn run() {
                     "refresh" => {
                         let _ = request_native_refresh(app);
                     }
+                    "add_tokenmaxxer" => {
+                        let _ = show_panel_add_tokenmaxxer(app);
+                    }
                     "settings" => {
                         let _ = show_settings(app, SettingsSection::General);
-                    }
-                    "profile" => {
-                        let _ = show_settings(app, SettingsSection::Profile);
                     }
                     "quit" => app.exit(0),
                     _ => {}
@@ -522,13 +859,24 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(true) => {
+                if let Some(profile_runtime) = window.app_handle().try_state::<ProfileRuntime>() {
+                    profile_runtime.trigger();
+                }
+            }
             tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {
                 let _ = window.hide();
+            }
+            tauri::WindowEvent::Focused(false) if window.label() == SETTINGS_LABEL => {
+                let _ = window.emit(SETTINGS_RECOVERY_CLEAR_EVENT, ());
             }
             tauri::WindowEvent::CloseRequested { api, .. }
                 if matches!(window.label(), SETTINGS_LABEL | ONBOARDING_LABEL) =>
             {
                 api.prevent_close();
+                if window.label() == SETTINGS_LABEL {
+                    let _ = window.emit(SETTINGS_RECOVERY_CLEAR_EVENT, ());
+                }
                 let _ = window.hide();
             }
             _ => {}
@@ -670,6 +1018,18 @@ mod tests {
         assert!(!should_show_bootstrap_on_start(true, true));
         assert!(!should_show_bootstrap_on_start(false, false));
         assert!(!should_show_bootstrap_on_start(false, true));
+    }
+
+    #[test]
+    fn only_incomplete_onboarding_routes_the_tray_to_onboarding() {
+        assert_eq!(
+            tray_foreground_destination(true),
+            TrayForegroundDestination::Onboarding,
+        );
+        assert_eq!(
+            tray_foreground_destination(false),
+            TrayForegroundDestination::Panel,
+        );
     }
 
     #[test]

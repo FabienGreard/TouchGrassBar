@@ -1,8 +1,9 @@
 import { v } from "convex/values";
 
 import { query } from "./_generated/server";
+import { requireAuthUser } from "./auth";
 import { globalDoomerboard } from "./model/aggregate";
-import { tokenmaxxerForSubject } from "./model/identity";
+import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
   boardKey,
   scoreScopeValidator,
@@ -68,11 +69,8 @@ export const myTokenmaxxers = query({
   },
   returns: v.array(doomerboardRow),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      throw new Error("authentication required");
-    }
-    const owner = await tokenmaxxerForSubject(ctx, identity.subject);
+    const authUser = await requireAuthUser(ctx);
+    const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
     if (!owner) {
       return [];
     }

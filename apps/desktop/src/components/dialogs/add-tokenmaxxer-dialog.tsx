@@ -50,7 +50,7 @@ function AddTokenmaxxerDialog({
       >
         <div className="relative px-8 text-center">
           <DialogTitle className="m-0 text-[14px] font-bold">
-            Invite a friend
+            Add a Tokenmaxxer
           </DialogTitle>
           <span className="absolute -top-1 -right-1 text-[16px]">
             <DialogClose asChild>
