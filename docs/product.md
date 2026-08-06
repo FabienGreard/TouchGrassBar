@@ -40,7 +40,7 @@ Doomerboard periods use UTC boundaries. “Today” is the current UTC day; 7-da
 
 ## Provider limits
 
-TouchGrassBar mirrors every active limit reported by Codex or Claude using that provider's own lanes, labels, units, remaining values, and reset times. It does not collapse or convert those provider-native values.
+TouchGrassBar mirrors each supported active limit reported by Codex or Claude using that provider's own lanes, labels, units, remaining values, and reset times. It does not collapse or convert those provider-native values. The Codex `GPT-5.3-Codex-Spark` weekly limit is excluded because it is model-specific. The Codex provider card shows the account weekly limit and the account five-hour limit when Codex reports them.
 
 For an at-a-glance summary, Provider Quota Headroom is the lowest remaining percentage among one provider's active Quota Lanes. A lane that genuinely does not exist is ignored, but an active lane without a calculable remaining percentage makes that provider's headroom unavailable rather than allowing another lane to overstate it. Overall Quota Headroom is the equal-weighted mean of the calculable Codex and Claude headroom values: Codex at 8% and Claude at 60% produce 34%. A still-valid stale value remains in the calculation and makes the overall result stale. An unavailable configured provider is excluded and makes the result incomplete rather than contributing zero; if no provider has calculable headroom, Overall Quota Headroom is unavailable. This index does not sum allowances, estimate remaining tokens, or replace the underlying Quota Lanes.
 

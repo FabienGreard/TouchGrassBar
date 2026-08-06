@@ -1,6 +1,21 @@
 import type { ProviderSnapshot, QuotaLane } from "@touchgrass/contracts";
 import { ProviderMark, QuotaProgress } from "@touchgrass/ui";
 
+const localResetTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  hourCycle: "h23",
+  minute: "2-digit",
+});
+
+const localResetDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  hour: "2-digit",
+  hourCycle: "h23",
+  minute: "2-digit",
+  month: "short",
+  weekday: "short",
+});
+
 function quotaPercentage(lane: QuotaLane | null | undefined) {
   if (
     !lane?.allowance ||
@@ -23,15 +38,29 @@ function quotaLabel(
   if (Number.isNaN(resetAt.getTime()))
     return `${lane.label} · resets ${lane.resetAt}${freshness}`;
 
-  const hours = resetAt.getUTCHours().toString().padStart(2, "0");
-  const minutes = resetAt.getUTCMinutes().toString().padStart(2, "0");
-  const time = `${hours}:${minutes}`;
-  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][
-    resetAt.getUTCDay()
-  ];
-  const resetLabel = /week/i.test(lane.label) ? `${weekday} ${time}` : time;
+  const remainingMilliseconds = Math.max(
+    0,
+    resetAt.getTime() - Date.now(),
+  );
+  const totalMinutes = Math.floor(remainingMilliseconds / 60_000);
+  const totalHours = Math.floor(totalMinutes / 60);
+  const days = Math.floor(totalHours / 24);
+  const hoursLeft = totalHours % 24;
+  const minutesLeft = totalMinutes % 60;
+  const timeLeft =
+    days > 0
+      ? `${days}d ${hoursLeft}h`
+      : totalHours > 0
+        ? `${totalHours}h ${minutesLeft}m`
+        : `${minutesLeft}m`;
 
-  return `${lane.label} · resets ${resetLabel}${freshness}`;
+  const time = localResetTimeFormatter.format(resetAt);
+  if (!/week/i.test(lane.label))
+    return `${lane.label} · resets ${time}${freshness}`;
+
+  const exactReset = localResetDateFormatter.format(resetAt);
+
+  return `${lane.label} · ${timeLeft} left · ${exactReset}${freshness}`;
 }
 
 function quotaAriaLabel(

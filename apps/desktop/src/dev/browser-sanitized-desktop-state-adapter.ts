@@ -48,6 +48,8 @@ function populatedFixture(
   now: Date,
 ): unknown {
   const observedAt = now.toISOString();
+  const resetAfter = (minutes: number) =>
+    new Date(now.getTime() + minutes * 60_000).toISOString();
 
   return {
     contractVersion: 2,
@@ -67,14 +69,14 @@ function populatedFixture(
             allowance: 100,
             label: "Weekly limit",
             remaining: 74,
-            resetAt: "2026-08-03T08:00:00.000Z",
+            resetAt: resetAfter((4 * 24 + 10) * 60),
             unit: "percent",
           },
           {
             allowance: 100,
             label: "5-hour limit",
             remaining: 62,
-            resetAt: "2026-08-03T14:40:00.000Z",
+            resetAt: resetAfter(4 * 60 + 55),
             unit: "percent",
           },
         ],
@@ -88,14 +90,14 @@ function populatedFixture(
             allowance: 100,
             label: "Weekly limit",
             remaining: 18,
-            resetAt: "2026-08-06T03:00:00.000Z",
+            resetAt: resetAfter((6 * 24 + 13) * 60 + 15),
             unit: "percent",
           },
           {
             allowance: 100,
             label: "5-hour limit",
             remaining: 43,
-            resetAt: "2026-08-03T18:20:00.000Z",
+            resetAt: resetAfter(4 * 60 + 35),
             unit: "percent",
           },
         ],
