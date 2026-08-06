@@ -31,8 +31,9 @@ type CleanupTarget = {
 
 const argumentsSet = new Set(process.argv.slice(2));
 const supportedArguments = new Set([
+  "--bundle",
   "--dry-run",
-  "--production",
+  "--release",
 ]);
 const unknownArguments = [...argumentsSet].filter(
   (argument) => !supportedArguments.has(argument),
@@ -42,7 +43,11 @@ if (unknownArguments.length > 0) {
 }
 
 const dryRun = argumentsSet.has("--dry-run");
-const production = argumentsSet.has("--production");
+const bundle = argumentsSet.has("--bundle");
+const release = argumentsSet.has("--release");
+if (bundle && release) {
+  throw new Error("Bundle and release reset targets cannot be combined.");
+}
 if (process.platform !== "darwin") {
   throw new Error("TouchGrassBar reset currently supports macOS only.");
 }
@@ -128,11 +133,21 @@ async function stopDevelopmentRunner() {
   if (existsSync(developmentRunnerPath)) unlinkSync(developmentRunnerPath);
 }
 
-function productionProcessIds() {
+function processIdsForPaths(paths: string[]) {
   const output = execFileSync("/bin/ps", ["-axo", "pid=,command="], {
     encoding: "utf8",
   });
-  const productionPaths = [
+  return output.split(/\r?\n/).flatMap((line) => {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(line);
+    if (!match || !paths.some((path) => match[2]!.includes(path))) {
+      return [];
+    }
+    return [Number(match[1])];
+  });
+}
+
+function releaseProcessIds() {
+  return processIdsForPaths([
     "/Applications/TouchGrassBar.app/Contents/MacOS/touchgrassbar",
     join(
       userHome,
@@ -156,20 +171,27 @@ function productionProcessIds() {
       "MacOS",
       "touchgrassbar",
     ),
-  ];
-  return output.split(/\r?\n/).flatMap((line) => {
-    const match = /^\s*(\d+)\s+(.+)$/.exec(line);
-    if (!match || !productionPaths.some((path) => match[2]!.includes(path))) {
-      return [];
-    }
-    return [Number(match[1])];
-  });
+  ]);
 }
 
-async function stopProductionApp() {
-  const processIds = productionProcessIds();
+function developmentBundleProcessIds() {
+  return processIdsForPaths([
+    join(
+      workspaceRoot,
+      "apps",
+      "desktop",
+      "src-tauri",
+      "target",
+      "release",
+      "bundle",
+      "macos",
+    ),
+  ]);
+}
+
+async function stopApp(processIds: number[], description: string) {
   if (dryRun && processIds.length > 0) {
-    console.log("[dry-run] running production app");
+    console.log(`[dry-run] running ${description}`);
     return;
   }
   for (const processId of processIds) process.kill(processId, "SIGTERM");
@@ -181,18 +203,18 @@ async function stopProductionApp() {
     await Bun.sleep(100);
   }
   if (processIds.some(processIsRunning)) {
-    throw new Error("The production app did not stop.");
+    throw new Error(`The ${description} did not stop.`);
   }
 }
 
-async function confirmReset() {
+async function confirmReleaseReset() {
   if (dryRun) return;
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error("Interactive confirmation is required for production reset.");
+    throw new Error("Interactive confirmation is required for release reset.");
   }
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const expected = "RESET PRODUCTION";
+    const expected = "RESET RELEASE";
     const answer = await prompt.question(`Type ${expected} to continue: `);
     if (answer !== expected) throw new Error("Reset cancelled.");
   } finally {
@@ -307,26 +329,42 @@ async function prepareFreshLocalEnvironment() {
   }
 }
 
-if (production) {
-  console.log("Reset target: production app data on this Mac.");
+if (release) {
+  console.log("Reset target: release app data on this Mac.");
   console.log("Remote production Convex data will be preserved.");
-  await confirmReset();
-  await stopProductionApp();
+  await confirmReleaseReset();
+  await stopApp(releaseProcessIds(), "release app");
   removeTargets(desktopTargets("app.touchgrass.bar"));
   resetKeychain("app.touchgrass.bar.profile");
   console.log(
     dryRun
-      ? "Production reset dry run complete. No state was changed."
-      : "Production app state on this Mac was reset.",
+      ? "Release reset dry run complete. No state was changed."
+      : "Release app state on this Mac was reset.",
+  );
+} else if (bundle) {
+  const namespace = developmentNamespace();
+  console.log("Reset target: packaged development app state in this worktree.");
+  console.log(
+    "Build output, local Convex data, remote deployments, and release state will be preserved.",
+  );
+  await stopApp(developmentBundleProcessIds(), "packaged development app");
+  removeTargets(desktopTargets("app.touchgrass.bar.dev"));
+  resetKeychain(namespace);
+  console.log(
+    dryRun
+      ? "Bundle reset dry run complete. No state was changed."
+      : "Packaged development app state was reset.",
   );
 } else {
   const namespace = developmentNamespace();
   console.log("Reset target: all development state in this worktree.");
   console.log("Remote Convex deployments and production state will be preserved.");
   await stopDevelopmentRunner();
+  await stopApp(developmentBundleProcessIds(), "packaged development app");
   await runClean();
   removeTargets([
     ...desktopTargets(namespace),
+    ...desktopTargets("app.touchgrass.bar.dev"),
     {
       description: "worktree-local Convex data",
       path: join(workspaceRoot, ".convex"),

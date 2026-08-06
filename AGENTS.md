@@ -27,7 +27,7 @@ This keeps each worktree local and prevents an ordinary start command from
 changing a shared cloud deployment. See the [Convex Agent Mode local-backend
 guide](https://docs.convex.dev/cli/agent-mode#local-backend). Use local Convex
 by default. Never select cloud development, run `convex:prod`, or run
-`reset:prod` unless the user explicitly authorizes that target and action.
+`reset:release` unless the user explicitly authorizes that target and action.
 Never commit `.env.local`, `.convex/`, credentials, signing material, sessions,
 or recovery material.
 

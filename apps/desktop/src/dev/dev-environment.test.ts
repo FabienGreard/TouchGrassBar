@@ -92,6 +92,14 @@ describe("desktop development environment", () => {
     expect(packageManifest.scripts?.["convex:prod"]).toContain(
       "packages/backend convex deploy",
     );
+    expect(packageManifest.scripts?.reset).toBe("bun scripts/reset.ts");
+    expect(packageManifest.scripts?.["reset:bundle"]).toBe(
+      "bun scripts/reset.ts --bundle",
+    );
+    expect(packageManifest.scripts?.["reset:release"]).toBe(
+      "bun scripts/reset.ts --release",
+    );
+    expect(packageManifest.scripts?.["reset:prod"]).toBeUndefined();
     expect(packageManifest.scripts?.["worktree:setup"]).toBeUndefined();
     expect(packageManifest.scripts?.prod).toBeUndefined();
     expect(desktopManifest.scripts?.dev).toBe(
