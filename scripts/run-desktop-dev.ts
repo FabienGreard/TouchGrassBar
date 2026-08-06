@@ -322,7 +322,6 @@ async function buildDevelopmentBundle(
   environment: Record<string, string | undefined>,
   signingIdentity: string,
   provisioningProfile: string,
-  openBundle: boolean,
 ) {
   const child = Bun.spawn(
     [
@@ -360,83 +359,17 @@ async function buildDevelopmentBundle(
   }
   signDevelopmentBundle(appPath, signingIdentity, provisioningProfile);
   console.log("Development bundle signature and Keychain access: verified");
-  if (!openBundle) return 0;
-  const opened = Bun.spawn(["/usr/bin/open", "-n", "-W", appPath], {
-    env: environment,
-    stdin: "ignore",
-    stderr: "inherit",
-    stdout: "inherit",
-  });
-  return opened.exited;
-}
-
-function convexCommand(argumentsList: string[]) {
-  return [
-    "bun",
-    "run",
-    "--cwd",
-    "packages/backend",
-    "convex",
-    ...argumentsList,
-  ];
-}
-
-async function prepareBundleBackend(
-  target: ReturnType<typeof developmentTarget>,
-) {
-  if (target === "cloud development") {
-    const result = Bun.spawnSync(
-      convexCommand(["dev", "--once", "--tail-logs", "disable"]),
-      {
-        cwd: workspaceRoot,
-        env: process.env,
-        stderr: "inherit",
-        stdout: "inherit",
-      },
-    );
-    if (result.exitCode !== 0) {
-      throw new Error("The cloud development backend could not be prepared.");
-    }
-    return null;
-  }
-
-  const backend = Bun.spawn(convexCommand(["dev", "--tail-logs", "disable"]), {
-    cwd: workspaceRoot,
-    env: process.env,
-    stdin: "ignore",
-    stderr: "inherit",
-    stdout: "inherit",
-  });
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < 60_000) {
-    const probe = Bun.spawnSync(convexCommand(["env", "list", "--names-only"]), {
-      cwd: workspaceRoot,
-      env: process.env,
-      stderr: "ignore",
-      stdout: "ignore",
-    });
-    if (probe.exitCode === 0) return backend;
-    if (backend.exitCode !== null) {
-      throw new Error("The local Convex backend stopped before bundle launch.");
-    }
-    await Bun.sleep(500);
-  }
-  backend.kill();
-  await backend.exited;
-  throw new Error("The local Convex backend did not become ready.");
+  console.log(`Development bundle: ${appPath}`);
+  return 0;
 }
 
 async function main() {
   const argumentsList = process.argv.slice(2);
   const argumentsSet = new Set(argumentsList);
   const bundle = argumentsSet.has("--bundle");
-  const openBundle = !argumentsSet.has("--no-open");
   if (
     argumentsSet.size !== argumentsList.length ||
-    [...argumentsSet].some(
-      (argument) => argument !== "--bundle" && argument !== "--no-open",
-    ) ||
-    (argumentsSet.has("--no-open") && !bundle)
+    [...argumentsSet].some((argument) => argument !== "--bundle")
   ) {
     throw new Error(`Unknown argument(s): ${argumentsList.join(", ")}`);
   }
@@ -488,21 +421,12 @@ async function main() {
     await writeDevelopmentEntitlements(instance, signingIdentity);
     await writeDevelopmentInfoPlist(instance);
     if (bundle) {
-      const backend = openBundle ? await prepareBundleBackend(target) : null;
-      try {
-        process.exitCode = await buildDevelopmentBundle(
-          instance,
-          environment,
-          signingIdentity,
-          provisioningProfile,
-          openBundle,
-        );
-      } finally {
-        if (backend?.exitCode === null) {
-          backend.kill();
-          await backend.exited;
-        }
-      }
+      process.exitCode = await buildDevelopmentBundle(
+        instance,
+        environment,
+        signingIdentity,
+        provisioningProfile,
+      );
       return;
     }
     const child = Bun.spawn(

@@ -61,7 +61,7 @@ environment file is required.
 authority. The backend package also exposes `convex` as a direct Convex CLI
 passthrough, like the desktop package exposes `tauri`.
 
-Build and open a real signed development application bundle with no Vite
+Build a real signed development application bundle with no Vite or Convex
 server:
 
 ```sh
