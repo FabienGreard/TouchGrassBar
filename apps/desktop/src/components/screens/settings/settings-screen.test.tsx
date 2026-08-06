@@ -80,14 +80,25 @@ describe("settings screen", () => {
     expect(readyMarkup).toContain('data-copy-feedback="idle"');
     expect(readyMarkup).not.toContain(">Copy ID<");
     expect(readyMarkup).toContain('data-slot="input"');
+    expect(readyMarkup).toContain('data-slot="masked-recovery-key"');
     expect(readyMarkup).toContain('value="••••••••••••K9m"');
     expect(readyMarkup).toMatch(
       /<button[^>]*data-variant="ghost"[^>]*>View<\/button>/,
     );
+    expect(readyMarkup).not.toContain('aria-label="Copy Recovery Key"');
     expect(readyMarkup).not.toContain("2".repeat(48));
-    expect(revealedMarkup).toContain('type="text"');
+    expect(revealedMarkup).toContain('data-slot="revealed-recovery-key"');
+    expect(revealedMarkup).toContain("<textarea");
     expect(revealedMarkup).toContain('autofocus=""');
-    expect(revealedMarkup).toContain(`value="${"2".repeat(48)}"`);
+    expect(revealedMarkup).toContain('rows="2"');
+    expect(revealedMarkup).toContain('wrap="soft"');
+    expect(revealedMarkup).toContain("whitespace-pre-wrap break-all");
+    expect(revealedMarkup).toContain(
+      `>${"2".repeat(48)}</textarea>`,
+    );
+    expect(revealedMarkup).toContain('aria-label="Copy Recovery Key"');
+    expect(revealedMarkup).toContain('data-copy-status="idle"');
+    expect(revealedMarkup).toContain('data-copy-feedback="idle"');
     expect(revealedMarkup).toMatch(
       /<button[^>]*data-variant="ghost"[^>]*>Hide<\/button>/,
     );

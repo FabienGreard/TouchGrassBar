@@ -2,6 +2,8 @@ import { Button, Input, ProfileCard } from "@touchgrass/ui";
 import type { ProfileProvisioningStatus } from "@touchgrass/contracts";
 import { useEffect, useRef } from "react";
 
+import { useCopyText } from "@/components/use-copy-text";
+
 import { ProfileEditor } from "./profile-editor";
 import {
   focusAndSelectRecoveryInput,
@@ -37,8 +39,9 @@ function ProfileSettings({
 }) {
   const pendingName = pendingDisplayName?.trim() || "Your Profile";
   const pendingInitial = pendingName.slice(0, 1).toUpperCase();
-  const recoveryInput = useRef<HTMLInputElement>(null);
+  const recoveryInput = useRef<HTMLTextAreaElement>(null);
   const recoveryKeyVisible = recoveryKey !== null;
+  const { copyStatus, copyText } = useCopyText(recoveryKey ?? "");
   const recoveryKeyUnavailable =
     revealingRecoveryKey ||
     (recoveryKeyVisible
@@ -119,40 +122,91 @@ function ProfileSettings({
               <small className="mt-0.5 block text-[9px] text-sheet-muted">
                 Stored in this Mac’s Keychain.
               </small>
-              <div className="relative mt-3" data-slot="masked-recovery-key">
-                <Input
-                  aria-label="Recovery Key"
-                  autoComplete="off"
-                  autoFocus={recoveryKeyVisible}
-                  className="h-12 rounded-[12px] pr-[72px] font-mono tracking-[0.06em]"
-                  disabled={recoveryKeyUnavailable}
-                  onFocus={(event) => event.currentTarget.select()}
-                  readOnly
-                  ref={recoveryInput}
-                  spellCheck={false}
-                  type="text"
-                  value={
-                    recoveryKey ??
-                    maskRecoveryKeySuffix(profile.recoveryKeySuffix)
-                  }
-                />
-                <Button
-                  aria-expanded={recoveryKeyVisible}
-                  aria-label={`${recoveryKeyVisible ? "Hide" : "View"} Recovery Key`}
-                  className="absolute top-1/2 right-2 -translate-y-1/2"
-                  disabled={recoveryKeyUnavailable}
-                  onClick={toggleRecoveryKey}
-                  size="quiet"
-                  type="button"
-                  variant="ghost"
+              {recoveryKeyVisible ? (
+                <div
+                  className="mt-3 rounded-[12px] border border-input bg-white shadow-control transition-[border-color,box-shadow] focus-within:border-pearl-focus focus-within:ring-3 focus-within:ring-pearl-focus/25 contrast-more:border-pearl-ink"
+                  data-slot="revealed-recovery-key"
                 >
-                  {revealingRecoveryKey
-                    ? "Opening…"
-                    : recoveryKeyVisible
-                      ? "Hide"
-                      : "View"}
-                </Button>
-              </div>
+                  <textarea
+                    aria-label="Recovery Key"
+                    autoComplete="off"
+                    autoFocus
+                    className="block min-h-14 w-full resize-none overflow-hidden whitespace-pre-wrap break-all border-0 bg-transparent px-4 pt-3 pb-1 font-mono text-[11px] leading-5 tracking-[0.04em] text-sheet-ink outline-none"
+                    disabled={recoveryKeyUnavailable}
+                    onFocus={(event) => event.currentTarget.select()}
+                    readOnly
+                    ref={recoveryInput}
+                    rows={2}
+                    spellCheck={false}
+                    value={recoveryKey}
+                    wrap="soft"
+                  />
+                  <div className="flex min-h-7 items-center justify-end gap-1.5 px-2 pb-2">
+                    <span
+                      aria-live="polite"
+                      className="text-[8px] text-sheet-muted"
+                      data-copy-feedback={copyStatus}
+                    >
+                      {copyStatus === "copied"
+                        ? "Copied"
+                        : copyStatus === "unavailable"
+                          ? "Copy unavailable"
+                          : ""}
+                    </span>
+                    <Button
+                      aria-label="Copy Recovery Key"
+                      data-copy-status={copyStatus}
+                      disabled={recoveryKeyUnavailable}
+                      onClick={() => void copyText()}
+                      size="quiet"
+                      type="button"
+                      variant="ghost"
+                    >
+                      Copy
+                    </Button>
+                    <Button
+                      aria-expanded
+                      aria-label="Hide Recovery Key"
+                      disabled={recoveryKeyUnavailable}
+                      onClick={toggleRecoveryKey}
+                      size="quiet"
+                      type="button"
+                      variant="ghost"
+                    >
+                      Hide
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className="relative mt-3"
+                  data-slot="masked-recovery-key"
+                >
+                  <Input
+                    aria-label="Recovery Key"
+                    autoComplete="off"
+                    className="h-12 rounded-[12px] pr-[72px] font-mono tracking-[0.06em]"
+                    disabled={recoveryKeyUnavailable}
+                    onFocus={(event) => event.currentTarget.select()}
+                    readOnly
+                    spellCheck={false}
+                    type="text"
+                    value={maskRecoveryKeySuffix(profile.recoveryKeySuffix)}
+                  />
+                  <Button
+                    aria-expanded={false}
+                    aria-label="View Recovery Key"
+                    className="absolute top-1/2 right-2 -translate-y-1/2"
+                    disabled={recoveryKeyUnavailable}
+                    onClick={toggleRecoveryKey}
+                    size="quiet"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {revealingRecoveryKey ? "Opening…" : "View"}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
           <div className="flex items-center justify-between gap-6 border-t border-sheet-line pt-4">
