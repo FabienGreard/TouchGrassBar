@@ -22,6 +22,7 @@ type NativeContractExport = {
   bootstrapContractVersion: number;
   bootstrapStateSchema: JsonSchema;
   contractVersion: number;
+  panelInviteEvent: string;
   refreshReceiptSchema: JsonSchema;
   revisionNoticeEvent: string;
   revisionNoticeSchema: JsonSchema;
@@ -173,6 +174,7 @@ import * as z from "zod";
 
 export const BOOTSTRAP_CONTRACT_VERSION = ${JSON.stringify(contract.bootstrapContractVersion)} as const;
 export const CONTRACT_VERSION = ${JSON.stringify(contract.contractVersion)} as const;
+export const PANEL_INVITE_EVENT = ${JSON.stringify(contract.panelInviteEvent)} as const;
 export const REVISION_NOTICE_EVENT = ${JSON.stringify(contract.revisionNoticeEvent)} as const;
 export const SETTINGS_CONTRACT_VERSION = ${JSON.stringify(contract.settingsContractVersion)} as const;
 export const SETTINGS_NAVIGATION_EVENT = ${JSON.stringify(contract.settingsNavigationEvent)} as const;

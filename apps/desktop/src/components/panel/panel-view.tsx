@@ -1,6 +1,6 @@
 import type { SanitizedDesktopState } from "@touchgrass/contracts";
 import { PanelShell } from "@touchgrass/ui";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 
 import { AddTokenmaxxerDialog } from "@/components/dialogs/add-tokenmaxxer-dialog";
 import {
@@ -17,10 +17,12 @@ import {
 } from "@/components/panel/usage-overview";
 
 type PanelViewProps = {
+  addTokenmaxxerOpen?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
   error: boolean;
   nativeGlass?: boolean;
+  onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
   onRefresh: () => void;
   onSettings: () => void;
   onUpdate?: (() => void) | undefined;
@@ -32,10 +34,12 @@ type PanelViewProps = {
 };
 
 function PanelView({
+  addTokenmaxxerOpen = false,
   currentProfile,
   doomerboardRows,
   error,
   nativeGlass = false,
+  onAddTokenmaxxerOpenChange = () => undefined,
   onRefresh,
   onSettings,
   onUpdate = () => undefined,
@@ -45,7 +49,6 @@ function PanelView({
   updateAvailable = false,
   usagePresentation,
 }: PanelViewProps) {
-  const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
   const panelContainerRef = useRef<HTMLElement>(null);
 
   return (
@@ -53,7 +56,7 @@ function PanelView({
       <PanelShell glass={nativeGlass} ref={panelContainerRef}>
         <PanelHeader
           error={error}
-          onAddTokenmaxxer={() => setAddTokenmaxxerOpen(true)}
+          onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
           onRefresh={onRefresh}
           onSettings={onSettings}
           onUpdate={onUpdate}
@@ -90,7 +93,7 @@ function PanelView({
             />
             <Doomerboard
               currentProfile={currentProfile}
-              onAddTokenmaxxer={() => setAddTokenmaxxerOpen(true)}
+              onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
               rows={doomerboardRows}
               tokenmaxxerRows={tokenmaxxerRows}
             />
@@ -98,7 +101,7 @@ function PanelView({
         )}
       </PanelShell>
       <AddTokenmaxxerDialog
-        onOpenChange={setAddTokenmaxxerOpen}
+        onOpenChange={onAddTokenmaxxerOpenChange}
         open={addTokenmaxxerOpen}
         portalContainer={panelContainerRef.current}
       />

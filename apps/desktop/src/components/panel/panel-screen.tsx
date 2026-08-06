@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
+import { subscribeToPanelInvite } from "@/components/panel/panel-invite";
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
+import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
 type PanelPresentation = Pick<
@@ -25,11 +26,31 @@ function PanelScreen({
   presentation = {},
   stateDelivery,
 }: PanelScreenProps) {
+  const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
   const deliveryView = useSyncExternalStore(
     stateDelivery.subscribe,
     stateDelivery.getSnapshot,
     stateDelivery.getSnapshot,
   );
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return undefined;
+
+    let active = true;
+    let stop: (() => void) | undefined;
+    void subscribeToPanelInvite(() => {
+      if (active) setAddTokenmaxxerOpen(true);
+    }).then((stopListening) => {
+      if (active) stop = stopListening;
+      else stopListening();
+    });
+
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, [hasNativeRuntime]);
+
   useEffect(() => {
     const onKeyDown = createPanelKeyboardHandler({
       dispatch: (command) => void invoke(command),
@@ -76,10 +97,12 @@ function PanelScreen({
 
   return (
     <PanelView
+      addTokenmaxxerOpen={addTokenmaxxerOpen}
       currentProfile={currentProfile}
       doomerboardRows={presentation.doomerboardRows}
       error={deliveryView.phase === "degraded"}
       nativeGlass
+      onAddTokenmaxxerOpenChange={setAddTokenmaxxerOpen}
       onRefresh={() => {
         void stateDelivery.requestRefresh();
       }}

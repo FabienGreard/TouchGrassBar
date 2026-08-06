@@ -3,6 +3,7 @@ import * as z from "zod";
 
 export const BOOTSTRAP_CONTRACT_VERSION = 2 as const;
 export const CONTRACT_VERSION = 2 as const;
+export const PANEL_INVITE_EVENT = "panel-invite-requested" as const;
 export const REVISION_NOTICE_EVENT = "sanitized-desktop-state-revision" as const;
 export const SETTINGS_CONTRACT_VERSION = 2 as const;
 export const SETTINGS_NAVIGATION_EVENT = "settings-navigation-requested" as const;

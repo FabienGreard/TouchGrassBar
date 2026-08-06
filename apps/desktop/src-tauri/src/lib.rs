@@ -17,8 +17,8 @@ use lifecycle::{
     SettingsSection, SettingsStateV2,
 };
 use sanitized::{
-    NativeCore, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource, RevisionNotice,
-    SanitizedDesktopStateV2, SanitizedProfileOutcome,
+    NativeCore, PANEL_INVITE_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
+    RevisionNotice, SanitizedDesktopStateV2, SanitizedProfileOutcome,
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -285,25 +285,23 @@ fn tray_foreground_destination(bootstrap_required: bool) -> TrayForegroundDestin
     }
 }
 
-fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
+fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
     let destination = app
         .try_state::<DesktopLifecycle>()
         .map_or(TrayForegroundDestination::Panel, |lifecycle| {
             tray_foreground_destination(lifecycle.should_show_bootstrap())
         });
     match destination {
-        TrayForegroundDestination::Onboarding => return show_onboarding(app),
+        TrayForegroundDestination::Onboarding => {
+            show_onboarding(app)?;
+            return Ok(false);
+        }
         TrayForegroundDestination::Panel => {}
     }
 
     let Some(panel) = app.get_webview_window(PANEL_LABEL) else {
-        return Ok(());
+        return Ok(false);
     };
-
-    if panel.is_visible()? {
-        panel.hide()?;
-        return Ok(());
-    }
 
     let scale_factor = panel.scale_factor()?;
     let tray = frame_for_rect(tray_rect, scale_factor);
@@ -314,6 +312,37 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
     panel.set_focus()?;
     if let Some(core) = app.try_state::<NativeCore>() {
         let _ = core.request_refresh(RefreshSource::StalePanelOpen);
+    }
+    Ok(true)
+}
+
+fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
+    let destination = app
+        .try_state::<DesktopLifecycle>()
+        .map_or(TrayForegroundDestination::Panel, |lifecycle| {
+            tray_foreground_destination(lifecycle.should_show_bootstrap())
+        });
+    if destination == TrayForegroundDestination::Panel
+        && let Some(panel) = app.get_webview_window(PANEL_LABEL)
+        && panel.is_visible()?
+    {
+        panel.hide()?;
+        return Ok(());
+    }
+
+    show_panel(app, tray_rect)?;
+    Ok(())
+}
+
+fn show_panel_invite(app: &AppHandle) -> tauri::Result<()> {
+    let Some(tray) = app.tray_by_id("touchgrassbar") else {
+        return Ok(());
+    };
+    let Some(tray_rect) = tray.rect()? else {
+        return Ok(());
+    };
+    if show_panel(app, tray_rect)? {
+        app.emit(PANEL_INVITE_EVENT, ())?;
     }
     Ok(())
 }
@@ -722,9 +751,9 @@ pub fn run() {
                             .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
                     }
                 })?;
-            let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
+            let refresh = MenuItemBuilder::with_id("refresh", "Force sync").build(app)?;
+            let invite = MenuItemBuilder::with_id("invite", "Invite a friend").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
-            let profile = MenuItemBuilder::with_id("profile", "Profile & Recovery…").build(app)?;
             #[cfg(debug_assertions)]
             let quit_label = development_instance.as_ref().map_or_else(
                 || "Quit TouchGrassBar".to_owned(),
@@ -735,7 +764,7 @@ pub fn run() {
             let quit = MenuItemBuilder::with_id("quit", quit_label).build(app)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&refresh, &settings, &profile, &separator, &quit])
+                .items(&[&refresh, &invite, &settings, &separator, &quit])
                 .build()?;
 
             let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
@@ -756,11 +785,11 @@ pub fn run() {
                     "refresh" => {
                         let _ = request_native_refresh(app);
                     }
+                    "invite" => {
+                        let _ = show_panel_invite(app);
+                    }
                     "settings" => {
                         let _ = show_settings(app, SettingsSection::General);
-                    }
-                    "profile" => {
-                        let _ = show_settings(app, SettingsSection::Profile);
                     }
                     "quit" => app.exit(0),
                     _ => {}
