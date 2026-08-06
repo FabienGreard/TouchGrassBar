@@ -7,7 +7,11 @@ pub mod sanitized;
 
 use std::{
     env,
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -17,7 +21,7 @@ use lifecycle::{
     SettingsSection, SettingsStateV2,
 };
 use sanitized::{
-    NativeCore, PANEL_INVITE_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
+    NativeCore, PANEL_ADD_TOKENMAXXER_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
     RevisionNotice, SanitizedDesktopStateV2, SanitizedProfileOutcome,
 };
 use tauri::{
@@ -37,6 +41,11 @@ const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
+
+#[derive(Default)]
+struct PanelActionState {
+    add_tokenmaxxer_pending: AtomicBool,
+}
 
 pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static str {
     match attempt {
@@ -334,7 +343,7 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
     Ok(())
 }
 
-fn show_panel_invite(app: &AppHandle) -> tauri::Result<()> {
+fn show_panel_add_tokenmaxxer(app: &AppHandle) -> tauri::Result<()> {
     let Some(tray) = app.tray_by_id("touchgrassbar") else {
         return Ok(());
     };
@@ -342,7 +351,13 @@ fn show_panel_invite(app: &AppHandle) -> tauri::Result<()> {
         return Ok(());
     };
     if show_panel(app, tray_rect)? {
-        app.emit(PANEL_INVITE_EVENT, ())?;
+        let Some(actions) = app.try_state::<PanelActionState>() else {
+            return Ok(());
+        };
+        actions
+            .add_tokenmaxxer_pending
+            .store(true, Ordering::Release);
+        app.emit(PANEL_ADD_TOKENMAXXER_EVENT, ())?;
     }
     Ok(())
 }
@@ -354,6 +369,17 @@ fn hide_panel(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
         panel.hide().map_err(|_| "panel unavailable".to_owned())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+fn take_panel_add_tokenmaxxer_request(
+    window: WebviewWindow,
+    actions: State<'_, PanelActionState>,
+) -> Result<bool, String> {
+    require_panel(&window)?;
+    Ok(actions
+        .add_tokenmaxxer_pending
+        .swap(false, Ordering::AcqRel))
 }
 
 fn show_onboarding(app: &AppHandle) -> tauri::Result<()> {
@@ -674,7 +700,8 @@ pub fn run() {
             resize_panel,
             reveal_recovery_key,
             select_settings_section,
-            set_launch_at_login
+            set_launch_at_login,
+            take_panel_add_tokenmaxxer_request
         ])
         .setup(move |app| {
             #[cfg(debug_assertions)]
@@ -707,6 +734,7 @@ pub fn run() {
             );
             app.manage(lifecycle.clone());
             app.manage(core.clone());
+            app.manage(PanelActionState::default());
 
             app.state::<NativeCore>()
                 .set_profile_outcome(lifecycle.sanitized_profile_outcome())
@@ -752,7 +780,8 @@ pub fn run() {
                     }
                 })?;
             let refresh = MenuItemBuilder::with_id("refresh", "Force sync").build(app)?;
-            let invite = MenuItemBuilder::with_id("invite", "Invite a friend").build(app)?;
+            let add_tokenmaxxer =
+                MenuItemBuilder::with_id("add_tokenmaxxer", "Add a Tokenmaxxer…").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             #[cfg(debug_assertions)]
             let quit_label = development_instance.as_ref().map_or_else(
@@ -764,7 +793,7 @@ pub fn run() {
             let quit = MenuItemBuilder::with_id("quit", quit_label).build(app)?;
             let separator = PredefinedMenuItem::separator(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&refresh, &invite, &settings, &separator, &quit])
+                .items(&[&refresh, &add_tokenmaxxer, &settings, &separator, &quit])
                 .build()?;
 
             let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
@@ -785,8 +814,8 @@ pub fn run() {
                     "refresh" => {
                         let _ = request_native_refresh(app);
                     }
-                    "invite" => {
-                        let _ = show_panel_invite(app);
+                    "add_tokenmaxxer" => {
+                        let _ = show_panel_add_tokenmaxxer(app);
                     }
                     "settings" => {
                         let _ = show_settings(app, SettingsSection::General);

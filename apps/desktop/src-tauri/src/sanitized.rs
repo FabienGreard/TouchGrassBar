@@ -23,7 +23,7 @@ use crate::lifecycle::{
 };
 
 pub const CONTRACT_VERSION: u8 = 2;
-pub const PANEL_INVITE_EVENT: &str = "panel-invite-requested";
+pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
 const READ_MODEL_SCHEMA_VERSION: i64 = 2;
 const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
@@ -1567,7 +1567,7 @@ pub fn native_contract_export() -> Value {
         "bootstrapContractVersion": LIFECYCLE_CONTRACT_VERSION,
         "bootstrapStateSchema": bootstrap_state_schema(),
         "contractVersion": CONTRACT_VERSION,
-        "panelInviteEvent": PANEL_INVITE_EVENT,
+        "panelAddTokenmaxxerEvent": PANEL_ADD_TOKENMAXXER_EVENT,
         "refreshReceiptSchema": schema_for!(RefreshReceipt),
         "revisionNoticeEvent": REVISION_NOTICE_EVENT,
         "revisionNoticeSchema": schema_for!(RevisionNotice),

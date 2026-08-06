@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { subscribeToPanelInvite } from "@/components/panel/panel-invite";
+import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tokenmaxxer";
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
@@ -38,7 +38,7 @@ function PanelScreen({
 
     let active = true;
     let stop: (() => void) | undefined;
-    void subscribeToPanelInvite(() => {
+    void subscribeToPanelAddTokenmaxxer(() => {
       if (active) setAddTokenmaxxerOpen(true);
     }).then((stopListening) => {
       if (active) stop = stopListening;
