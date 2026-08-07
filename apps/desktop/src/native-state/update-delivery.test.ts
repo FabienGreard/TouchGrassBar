@@ -22,9 +22,9 @@ const availableState = {
 } as const;
 
 function port(): UpdatePort & { changed: () => void } {
-  let changed = () => undefined;
+  let receiveChange: (() => void) | undefined;
   return {
-    changed: () => changed(),
+    changed: () => receiveChange?.(),
     check: vi.fn(async () => ({
       ok: true as const,
       value: { ...idleState, update: { status: "checking" } },
@@ -37,7 +37,7 @@ function port(): UpdatePort & { changed: () => void } {
     read: vi.fn(async () => ({ ok: true as const, value: idleState })),
     retry: vi.fn(async () => ({ ok: true as const, value: idleState })),
     subscribe: vi.fn(async (receive) => {
-      changed = receive;
+      receiveChange = receive;
       return { ok: true as const, value: () => undefined };
     }),
   };
