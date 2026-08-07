@@ -48,15 +48,17 @@ function ProfileEditor(props: ProfileEditorProps) {
     }
     setSaveFailed(false);
     setSaving(true);
+    setEditing(false);
     try {
       const saved = await props.onDisplayNameChange(displayName);
       if (saved === false) {
         setSaveFailed(true);
+        setEditing(true);
         return;
       }
-      setEditing(false);
     } catch {
       setSaveFailed(true);
+      setEditing(true);
     } finally {
       setSaving(false);
     }
@@ -123,7 +125,7 @@ function ProfileEditor(props: ProfileEditorProps) {
     <ProfileCard
       avatarLabel={initialLetter}
       className={props.className}
-      data-profile-state="saved"
+      data-profile-state={saving ? "saving" : "saved"}
       displayName={
         <strong className="mt-0.5 block truncate text-[13px]">
           {props.displayName}
@@ -132,12 +134,13 @@ function ProfileEditor(props: ProfileEditorProps) {
       displayNameAction={
         props.onDisplayNameChange === undefined ? undefined : (
           <Button
+            disabled={saving}
             onClick={beginEditing}
             size="quiet"
             type="button"
             variant="ghost"
           >
-            Edit
+            {saving ? "Saving…" : "Edit"}
           </Button>
         )
       }

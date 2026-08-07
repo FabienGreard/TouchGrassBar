@@ -129,18 +129,62 @@ describe("Settings delivery", () => {
     });
   });
 
-  test("commits a Display Name only after the native confirmation", async () => {
+  test("shows a Display Name before the native confirmation", async () => {
     const native = port();
+    let confirmUpdate!: (outcome: SettingsPortOutcome<unknown>) => void;
+    native.updateDisplayName = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          confirmUpdate = resolve;
+        }),
+    );
     const delivery = createSettingsDelivery(native);
     await delivery.activate();
 
-    expect(await delivery.updateDisplayName("New name")).toBe(true);
+    const save = delivery.updateDisplayName("New name");
+    expect(delivery.getSnapshot().snapshot).toMatchObject({
+      displayName: "New name",
+      profileProvisioning: "profile-pending",
+    });
     expect(native.updateDisplayName).toHaveBeenCalledWith("New name");
+    confirmUpdate({
+      ok: true,
+      value: {
+        ...settingsState,
+        displayName: "New name",
+        profileProvisioning: "ready",
+        touchGrassId: "TG-234567",
+      },
+    });
+    expect(await save).toBe(true);
     expect(delivery.getSnapshot().snapshot).toMatchObject({
       displayName: "New name",
       profileProvisioning: "ready",
       touchGrassId: "TG-234567",
     });
+  });
+
+  test("restores the Display Name when the native update fails", async () => {
+    const native = port();
+    let rejectUpdate!: (outcome: SettingsPortOutcome<unknown>) => void;
+    native.updateDisplayName = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          rejectUpdate = resolve;
+        }),
+    );
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    const save = delivery.updateDisplayName("New name");
+    expect(delivery.getSnapshot().snapshot?.displayName).toBe("New name");
+
+    rejectUpdate({
+      fault: { code: "display-name-update-unavailable" },
+      ok: false,
+    });
+    expect(await save).toBe(false);
+    expect(delivery.getSnapshot().snapshot?.displayName).toBe("Fabien");
   });
 
   test("preserves the selected section across provider refreshes", async () => {

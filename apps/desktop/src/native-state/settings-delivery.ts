@@ -61,6 +61,7 @@ function createSettingsDelivery(port: SettingsPort) {
   let recoveryRevision = 0;
   let saveInFlight: Promise<boolean> | null = null;
   let displayNameSaveInFlight: Promise<boolean> | null = null;
+  let optimisticDisplayName: string | null = null;
   let sectionSelection = Promise.resolve(true);
   let sectionRevision = 0;
   let selectedSection: SettingsSection | null = null;
@@ -92,6 +93,9 @@ function createSettingsDelivery(port: SettingsPort) {
     selectedSection = section;
     const snapshot = {
       ...parsed.data,
+      ...(optimisticDisplayName === null
+        ? {}
+        : { displayName: optimisticDisplayName }),
       recoveryKeySuffix: recoveryClearAvailable
         ? parsed.data.recoveryKeySuffix
         : null,
@@ -122,6 +126,19 @@ function createSettingsDelivery(port: SettingsPort) {
       snapshot,
     });
     return true;
+  };
+
+  const publishDisplayName = (
+    displayName: SettingsState["displayName"],
+  ) => {
+    if (current.snapshot === null) return;
+    const snapshot = { ...current.snapshot };
+    if (displayName === undefined) {
+      delete snapshot.displayName;
+    } else {
+      snapshot.displayName = displayName;
+    }
+    publish({ ...current, snapshot });
   };
 
   const read = () => {
@@ -260,10 +277,19 @@ function createSettingsDelivery(port: SettingsPort) {
     },
     updateDisplayName(displayName: string) {
       if (displayNameSaveInFlight !== null) return displayNameSaveInFlight;
+      const previousDisplayName = current.snapshot?.displayName;
+      optimisticDisplayName = displayName;
+      publishDisplayName(displayName);
       displayNameSaveInFlight = (async () => {
-        const outcome = await port.updateDisplayName(displayName);
-        if (!outcome.ok) return false;
-        return accept(outcome.value);
+        try {
+          const outcome = await port.updateDisplayName(displayName);
+          optimisticDisplayName = null;
+          if (outcome.ok && accept(outcome.value)) return true;
+        } catch {
+          optimisticDisplayName = null;
+        }
+        publishDisplayName(previousDisplayName);
+        return false;
       })().finally(() => {
         displayNameSaveInFlight = null;
       });
