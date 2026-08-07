@@ -35,7 +35,6 @@ const CAPTURE_SCHEMA_MODULE: &str = "claude-quota-capture";
 const CAPTURE_SCHEMA_VERSION: i64 = 1;
 const MAX_STATUS_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 256;
-const MAX_RESPONSE_CURSORS: i64 = 32;
 const UPSTREAM_ARGUMENT: &str = "--touchgrassbar-upstream-hex";
 
 #[cfg(debug_assertions)]
@@ -476,42 +475,19 @@ fn capture_status_line_payload(
     if previous_duration.is_some_and(|previous| previous >= api_duration) {
         return Ok(false);
     }
-    let current_quota = transaction
+    let current_observed_at = transaction
         .query_row(
-            "SELECT
-               observed_at,
-               five_hour_used_percentage,
-               five_hour_resets_at,
-               seven_day_used_percentage,
-               seven_day_resets_at
+            "SELECT observed_at
              FROM claude_quota_observation
              WHERE singleton = 1",
             [],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, f64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, i64>(4)?,
-                ))
-            },
+            |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(|_| ())?;
-    if let Some((current_at, five_used, five_reset, seven_used, seven_reset)) = current_quota {
+    if let Some(current_at) = current_observed_at {
         let current_at = OffsetDateTime::parse(&current_at, &Rfc3339).map_err(|_| ())?;
-        if now <= current_at
-            || (previous_duration.is_none()
-                && !quota_observation_advances(
-                    five_hour,
-                    seven_day,
-                    five_used,
-                    five_reset,
-                    seven_used,
-                    seven_reset,
-                ))
-        {
+        if now <= current_at {
             return Ok(false);
         }
     }
@@ -550,48 +526,8 @@ fn capture_status_line_payload(
             ],
         )
         .map_err(|_| ())?;
-    transaction
-        .execute(
-            "DELETE FROM claude_response_cursors
-             WHERE session_id NOT IN (
-               SELECT session_id FROM claude_response_cursors
-               ORDER BY observed_at DESC, session_id DESC
-               LIMIT ?1
-             )",
-            [MAX_RESPONSE_CURSORS],
-        )
-        .map_err(|_| ())?;
     transaction.commit().map_err(|_| ())?;
     Ok(true)
-}
-
-fn quota_observation_advances(
-    five_hour: ClaudeRateLimitWindow,
-    seven_day: ClaudeRateLimitWindow,
-    current_five_used: f64,
-    current_five_reset: i64,
-    current_seven_used: f64,
-    current_seven_reset: i64,
-) -> bool {
-    let progress = [
-        quota_window_progress(five_hour, current_five_used, current_five_reset),
-        quota_window_progress(seven_day, current_seven_used, current_seven_reset),
-    ];
-    !progress.contains(&std::cmp::Ordering::Less) && progress.contains(&std::cmp::Ordering::Greater)
-}
-
-fn quota_window_progress(
-    incoming: ClaudeRateLimitWindow,
-    current_used: f64,
-    current_reset: i64,
-) -> std::cmp::Ordering {
-    match incoming.resets_at.cmp(&current_reset) {
-        std::cmp::Ordering::Equal => incoming
-            .used_percentage
-            .partial_cmp(&current_used)
-            .unwrap_or(std::cmp::Ordering::Less),
-        progress => progress,
-    }
 }
 
 fn load_quota_observation(database_path: &Path) -> Result<Option<ClaudeQuotaObservation>, ()> {
@@ -1280,12 +1216,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_cursors_and_out_of_order_helpers_cannot_renew_or_roll_back_quota() {
+    fn exact_response_cursors_reject_replays_without_assuming_quota_direction() {
         let fixture = FixtureDirectory::new();
         let database = fixture.database();
         let older = status_payload_for("fixture-older-session", 100, 23.5, 41.25);
         let newer = status_payload_for("fixture-newer-session", 100, 35.0, 52.0);
         let delayed = status_payload_for("fixture-delayed-session", 100, 60.0, 70.0);
+        let corrected = status_payload_for("fixture-newer-session", 200, 30.0, 48.0);
 
         assert!(capture_status_line_payload(&database, &older, test_time()).unwrap());
         assert!(
@@ -1306,13 +1243,6 @@ mod tests {
             "a delayed helper cannot replace an observation received later"
         );
 
-        let connection = Connection::open(&database).unwrap();
-        connection
-            .execute(
-                "DELETE FROM claude_response_cursors WHERE session_id = ?1",
-                ["fixture-older-session"],
-            )
-            .unwrap();
         assert!(
             !capture_status_line_payload(
                 &database,
@@ -1320,32 +1250,35 @@ mod tests {
                 test_time() + time::Duration::minutes(2),
             )
             .unwrap(),
-            "a lost cursor cannot make an older timer payload current"
+            "an exact response cursor rejects a timer replay"
         );
 
-        connection
-            .execute(
-                "DELETE FROM claude_response_cursors WHERE session_id = ?1",
-                ["fixture-newer-session"],
-            )
-            .unwrap();
         assert!(
-            !capture_status_line_payload(
+            capture_status_line_payload(
                 &database,
-                &newer,
+                &corrected,
                 test_time() + time::Duration::minutes(3),
             )
             .unwrap(),
-            "a lost cursor cannot renew unchanged quota"
+            "a later response is accepted even when provider quota values decrease"
+        );
+        assert!(
+            !capture_status_line_payload(
+                &database,
+                &corrected,
+                test_time() + time::Duration::minutes(4),
+            )
+            .unwrap(),
+            "the later response is still rejected when its timer reruns"
         );
 
         let observation = load_quota_observation(&database).unwrap().unwrap();
         assert_eq!(
             observation.observed_at,
-            test_time() + time::Duration::minutes(1)
+            test_time() + time::Duration::minutes(3)
         );
-        assert_eq!(observation.five_hour.used_percentage, 35.0);
-        assert_eq!(observation.seven_day.used_percentage, 52.0);
+        assert_eq!(observation.five_hour.used_percentage, 30.0);
+        assert_eq!(observation.seven_day.used_percentage, 48.0);
     }
 
     #[test]
