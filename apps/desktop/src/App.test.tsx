@@ -44,9 +44,9 @@ describe("native App composition", () => {
   test("keeps disconnected production Settings controls inert", () => {
     const markup = renderSettings("#settings-general");
 
-    expect(markup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(1);
+    expect(markup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(2);
     expect(markup).not.toContain('role="switch" aria-checked="true"');
-    expect(markup).toContain("Updater unavailable.");
+    expect(markup).toContain(">Check now</button>");
   });
 
   test("does not invent provider detection in production onboarding", () => {

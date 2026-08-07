@@ -42,12 +42,13 @@ const settingsSectionDetails: Record<
   },
 };
 type SettingsScreenProps = {
+  autoUpdates?: boolean | null | undefined;
   busyProviders?: boolean | undefined;
   launchAtLogin?: boolean | null | undefined;
   launchAtLoginSaving?: boolean | undefined;
+  onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
   onCheckProviders?: (() => void) | undefined;
   onCheckForUpdates?: (() => void) | undefined;
-  onDeferUpdate?: (() => void) | undefined;
   onInstallUpdate?: (() => void) | undefined;
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
   onOpenLatestDmg?: (() => void) | undefined;
@@ -69,12 +70,13 @@ type SettingsScreenProps = {
 };
 
 function SettingsScreen({
+  autoUpdates = null,
   busyProviders = false,
   launchAtLogin = null,
   launchAtLoginSaving = false,
+  onAutoUpdatesChange,
   onCheckProviders,
   onCheckForUpdates,
-  onDeferUpdate,
   onInstallUpdate,
   onLaunchAtLoginChange,
   onOpenLatestDmg,
@@ -129,7 +131,7 @@ function SettingsScreen({
           ))}
         </NativeWindowNav>
         <small className="mt-auto px-2 font-mono text-[9px] text-sheet-muted">
-          Version {updateState?.currentVersion ?? "unavailable"}
+          Version {updateState?.currentVersion ?? "0.0.0"}
         </small>
       </NativeWindowSidebar>
 
@@ -164,8 +166,9 @@ function SettingsScreen({
                   Version and update checks.
                 </p>
                 <UpdatesSettings
+                  autoUpdates={autoUpdates}
+                  onAutoUpdatesChange={onAutoUpdatesChange}
                   onCheckForUpdates={onCheckForUpdates}
-                  onDefer={onDeferUpdate}
                   onInstall={onInstallUpdate}
                   onOpenLatestDmg={onOpenLatestDmg}
                   onOpenSource={onOpenSource}

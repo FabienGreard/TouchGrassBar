@@ -98,6 +98,12 @@ function SettingsCoordinator({
 
   return (
     <SettingsScreen
+      autoUpdates={
+        updateView.state === null ||
+        updateView.state.update.status === "unavailable"
+          ? null
+          : true
+      }
       busyProviders={checkingProviders}
       launchAtLogin={launchAtLogin}
       launchAtLoginSaving={view.savingLaunchAtLogin}
@@ -107,9 +113,6 @@ function SettingsCoordinator({
       }}
       onCheckForUpdates={() => {
         void updates.check();
-      }}
-      onDeferUpdate={() => {
-        void updates.defer();
       }}
       onInstallUpdate={() => {
         void updates.install();

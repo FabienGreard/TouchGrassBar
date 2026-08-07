@@ -19,9 +19,7 @@ import {
   UsageOverview,
   type UsagePresentation,
 } from "@/components/panel/usage-overview";
-import { UpdateExperience, type UpdateActions } from "@/update/update-experience";
-
-type PanelViewProps = UpdateActions & {
+type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
@@ -30,6 +28,7 @@ type PanelViewProps = UpdateActions & {
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
   onRefresh: () => void;
   onSettings: () => void;
+  onUpdate?: (() => void) | undefined;
   refreshing: boolean;
   state: SanitizedDesktopState | null;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
@@ -46,11 +45,7 @@ function PanelView({
   onAddTokenmaxxerOpenChange = () => undefined,
   onRefresh,
   onSettings,
-  onCheck,
-  onDefer,
-  onInstall,
-  onOpenLatestDmg,
-  onRetry,
+  onUpdate = () => undefined,
   refreshing,
   state,
   tokenmaxxerRows,
@@ -68,17 +63,13 @@ function PanelView({
           onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
           onRefresh={onRefresh}
           onSettings={onSettings}
+          onUpdate={onUpdate}
           refreshing={refreshing}
           state={state}
-        />
-        <UpdateExperience
-          onCheck={onCheck}
-          onDefer={onDefer}
-          onInstall={onInstall}
-          onOpenLatestDmg={onOpenLatestDmg}
-          onRetry={onRetry}
-          state={updateState}
-          surface="panel"
+          updateAvailable={
+            updateState?.update.status === "available" ||
+            updateState?.update.status === "failed"
+          }
         />
 
         {!state ? (

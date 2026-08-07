@@ -39,6 +39,7 @@ const currentUpdate: UpdateState = {
 
 function DevPreviewApp() {
   const [devInstance] = useState(currentDevInstance);
+  const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [profile, setProfile] = useState({
@@ -107,10 +108,11 @@ function DevPreviewApp() {
         <App
           hasNativeRuntime={false}
           settings={{
+            autoUpdates,
             launchAtLogin,
+            onAutoUpdatesChange: setAutoUpdates,
             onCheckProviders: () => undefined,
             onCheckForUpdates: () => undefined,
-            onDeferUpdate: () => undefined,
             onInstallUpdate: () => undefined,
             onLaunchAtLoginChange: setLaunchAtLogin,
             onOpenLatestDmg: () => undefined,

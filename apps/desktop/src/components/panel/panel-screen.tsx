@@ -120,6 +120,7 @@ function PanelScreen({
       : presentation.currentProfile;
   const updateActionsAvailable =
     hasNativeRuntime || presentation.updateState !== undefined;
+  const updateState = presentation.updateState ?? updateView.state;
   const runUpdateAction = (action: () => Promise<boolean>) => {
     if (hasNativeRuntime) void action();
   };
@@ -132,51 +133,27 @@ function PanelScreen({
       error={deliveryView.phase === "degraded"}
       nativeGlass
       onAddTokenmaxxerOpenChange={setAddTokenmaxxerOpen}
-      onCheck={
-        updateActionsAvailable
-          ? () => {
-              runUpdateAction(updates.check);
-            }
-          : undefined
-      }
-      onDefer={
-        updateActionsAvailable
-          ? () => {
-              runUpdateAction(updates.defer);
-            }
-          : undefined
-      }
-      onInstall={
-        updateActionsAvailable
-          ? () => {
-              runUpdateAction(updates.install);
-            }
-          : undefined
-      }
-      onOpenLatestDmg={
-        updateActionsAvailable
-          ? () => {
-              runUpdateAction(updates.openLatestDmg);
-            }
-          : undefined
-      }
       onRefresh={() => {
         void stateDelivery.requestRefresh();
       }}
       onSettings={() => {
         if (hasNativeRuntime) void invoke("open_settings");
       }}
-      onRetry={
+      onUpdate={
         updateActionsAvailable
           ? () => {
-              runUpdateAction(updates.retry);
+              runUpdateAction(
+                updateState?.update.status === "failed"
+                  ? updates.retry
+                  : updates.install,
+              );
             }
           : undefined
       }
       refreshing={deliveryView.refreshing}
       state={deliveryView.snapshot}
       tokenmaxxerRows={presentation.tokenmaxxerRows}
-      updateState={presentation.updateState ?? updateView.state}
+      updateState={updateState}
       usagePresentation={presentation.usagePresentation}
     />
   );

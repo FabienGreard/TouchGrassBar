@@ -448,7 +448,7 @@ impl UpdateRuntime {
                     );
                     return;
                 };
-                let deferred_version = minimum_required.then_some(version.to_string());
+                let deferred_version = Some(version.to_string());
                 if persistence
                     .set_offer(
                         deferred_version.as_deref(),
@@ -855,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn later_persists_only_a_bounded_semver_for_the_row() {
+    fn available_offer_persists_only_a_bounded_newer_semver() {
         let database = TestDatabase::new();
         let persistence = UpdatePersistence::open(Some(&database.0)).unwrap();
         persistence.set_deferred_version(Some("1.4.0")).unwrap();

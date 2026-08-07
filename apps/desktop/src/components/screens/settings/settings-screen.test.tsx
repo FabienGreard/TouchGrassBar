@@ -129,12 +129,56 @@ describe("settings screen", () => {
 
     expect(generalMarkup).toContain("Not connected in this build.");
     expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(
-      1,
+      2,
     );
-    expect(generalMarkup).toContain("Updater unavailable.");
+    expect(generalMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Check now/);
     expect(generalMarkup).toMatch(
       /<button[^>]*disabled=""[^>]*>View on GitHub/,
     );
+  });
+
+  test("keeps update actions inside the existing compact Settings rows", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates
+        onInstallUpdate={() => undefined}
+        updateState={{
+          contractVersion: 1,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: {
+            presentation: "sheet",
+            status: "available",
+            version: "1.4.0",
+          },
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Version 1.3.2");
+    expect(markup).toContain("Version 1.4.0 is ready.");
+    expect(markup).toContain("Install &amp; Relaunch");
+    expect(markup).not.toContain('data-slot="update-sheet"');
+
+    const failedMarkup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates
+        onOpenLatestDmg={() => undefined}
+        onRetryUpdate={() => undefined}
+        updateState={{
+          contractVersion: 1,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: {
+            failure: "signature",
+            status: "failed",
+            version: "1.4.0",
+          },
+        }}
+      />,
+    );
+    expect(failedMarkup).toContain(">Retry</button>");
+    expect(failedMarkup).toContain(">Download latest DMG ↗</button>");
   });
 
   test("names provider actions independently for VoiceOver", () => {

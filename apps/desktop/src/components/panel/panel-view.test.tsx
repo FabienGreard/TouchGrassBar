@@ -171,15 +171,14 @@ describe("panel states", () => {
     expect(markup).not.toContain('role="alert"');
   });
 
-  test("shows the explicit update sheet only when an update is available", async () => {
+  test("keeps the compact update icon when an update is available", async () => {
     const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(
       <PanelView
         error={false}
         onRefresh={() => undefined}
         onSettings={() => undefined}
-        onDefer={() => undefined}
-        onInstall={() => undefined}
+        onUpdate={() => undefined}
         refreshing={false}
         state={currentState}
         updateState={{
@@ -195,11 +194,12 @@ describe("panel states", () => {
       />,
     );
 
-    expect(markup).toContain('data-slot="update-sheet"');
+    expect(markup).toContain('data-slot="update-action"');
     expect(markup).toContain('data-variant="primary"');
-    expect(markup).toContain("Fresh grass available.");
-    expect(markup).toContain("Install &amp; Relaunch");
-    expect(markup).not.toContain('role="dialog"');
+    expect(markup).toContain('aria-label="Install update and relaunch"');
+    expect(markup).toContain('data-size="icon"');
+    expect(markup).toContain('data-icon-source="Download04Icon"');
+    expect(markup).not.toContain('data-slot="update-sheet"');
   });
 
   test("renders the populated development fixture without changing the production fallback", async () => {

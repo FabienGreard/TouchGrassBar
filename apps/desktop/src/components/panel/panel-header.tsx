@@ -2,6 +2,7 @@ import type { SanitizedDesktopState } from "@touchgrass/contracts";
 import {
   Brand,
   Button,
+  DownloadIcon,
   EllipsisIcon,
   InviteIcon,
   PanelMenu,
@@ -17,8 +18,10 @@ type PanelHeaderProps = {
   onAddTokenmaxxer: () => void;
   onRefresh: () => void;
   onSettings: () => void;
+  onUpdate: () => void;
   refreshing: boolean;
   state: SanitizedDesktopState | null;
+  updateAvailable: boolean;
 };
 
 function syncLabel(error: boolean, state: SanitizedDesktopState | null) {
@@ -35,8 +38,10 @@ function PanelHeader({
   onAddTokenmaxxer,
   onRefresh,
   onSettings,
+  onUpdate,
   refreshing,
   state,
+  updateAvailable,
 }: PanelHeaderProps) {
   return (
     <header className="flex items-center justify-between border-b border-pearl-line bg-panel-header px-4 pt-[15px] pb-3 contrast-more:border-pearl-ink">
@@ -48,6 +53,21 @@ function PanelHeader({
       </div>
 
       <div className="ml-2 flex items-center gap-1">
+        {updateAvailable ? (
+          <Button
+            aria-label="Install update and relaunch"
+            data-slot="update-action"
+            onClick={onUpdate}
+            size="icon"
+            title="Install update and relaunch"
+            type="button"
+          >
+            <DownloadIcon
+              aria-hidden="true"
+              data-icon-source="Download04Icon"
+            />
+          </Button>
+        ) : null}
         <PanelMenu>
           <PanelMenuTrigger asChild>
             <Button
