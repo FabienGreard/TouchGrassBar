@@ -16,7 +16,7 @@ type CalculatedScore = {
   tokenScore: number;
 };
 
-function calculateScore(
+export function calculateScore(
   rows: Array<{
     apiEquivalentCostMicros?: number;
     costIsComplete: boolean;

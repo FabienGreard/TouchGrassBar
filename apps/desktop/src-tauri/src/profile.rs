@@ -1024,8 +1024,15 @@ mod tests {
             ProfileProvisioningStatus::ProfilePending
         );
         assert_eq!(
-            pending.providers.map(|provider| provider.status),
-            providers_before.map(|provider| provider.status)
+            pending
+                .providers
+                .iter()
+                .map(|provider| provider.status)
+                .collect::<Vec<_>>(),
+            providers_before
+                .iter()
+                .map(|provider| provider.status)
+                .collect::<Vec<_>>()
         );
         assert!(pending.providers.iter().all(|provider| matches!(
             provider.status,

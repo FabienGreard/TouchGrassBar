@@ -1,5 +1,17 @@
 # Tauri Menu-Bar Viability Spike
 
+**Status:** Active spike
+
+**Related issues:** [#33](https://github.com/FabienGreard/TouchGrassBar/issues/33),
+[#35](https://github.com/FabienGreard/TouchGrassBar/issues/35)
+
+**Cleanup condition:** Delete this report after both related issues close and
+all still-current release gates move into durable release or QA documentation.
+
+**Promotion target:** Keep proven native behavior in `apps/desktop` and its
+tests. Move remaining signing and performance gates into the release and QA
+documentation delivered by issues #33 and #35.
+
 ## Outcome
 
 The architecture is viable with a native AppKit adjustment, subject to physical multi-monitor/fullscreen testing and notarizing a real TouchGrassBar artifact.

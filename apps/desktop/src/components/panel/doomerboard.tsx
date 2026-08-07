@@ -11,6 +11,7 @@ import {
   SegmentedControl,
   SegmentedControlItem,
 } from "@touchgrass/ui";
+import type { CodingProvider } from "@touchgrass/contracts";
 import { useState } from "react";
 
 import { useCopyText } from "@/components/use-copy-text";
@@ -29,13 +30,11 @@ const periodOptions = [
   { label: "30 days", value: "month" },
 ] as const;
 
-const providerOptions = [
-  { label: "Combined", value: "combined" },
-  { label: "Codex", value: "codex" },
-  { label: "Claude", value: "claude" },
-] as const;
-
 type QueryOption = { label: string; value: string };
+type DoomerboardProvider = {
+  displayName: string;
+  provider: CodingProvider;
+};
 
 type QuerySelectorProps = {
   label: string;
@@ -89,6 +88,7 @@ type DoomerboardToolbarProps = {
   onProviderChange: (provider: string) => void;
   period: string;
   provider: string;
+  providers: readonly DoomerboardProvider[];
   currentUser: CurrentUser | null;
 };
 
@@ -160,8 +160,17 @@ function DoomerboardToolbar({
   onProviderChange,
   period,
   provider,
+  providers,
   currentUser,
 }: DoomerboardToolbarProps) {
+  const providerOptions: QueryOption[] = [
+    { label: "Combined", value: "combined" },
+    ...providers.map(({ displayName, provider: providerId }) => ({
+      label: displayName,
+      value: providerId,
+    })),
+  ];
+
   return (
     <>
       <header className="flex items-center justify-between px-3.5 pt-3">
@@ -335,12 +344,14 @@ function Doomerboard({
   currentProfile = null,
   initialAudience = "global",
   onAddTokenmaxxer = () => undefined,
+  providers = [],
   rows,
   tokenmaxxerRows,
 }: {
   currentProfile?: CurrentUser | null | undefined;
   initialAudience?: Audience | undefined;
   onAddTokenmaxxer?: (() => void) | undefined;
+  providers?: readonly DoomerboardProvider[] | undefined;
   rows?: readonly DoomerboardRow[] | undefined;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
 }) {
@@ -379,6 +390,7 @@ function Doomerboard({
         onProviderChange={setProvider}
         period={period}
         provider={provider}
+        providers={providers}
         currentUser={currentProfile}
       />
       <div className="mt-3 h-[180px]" data-slot="doomerboard-viewport">

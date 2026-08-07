@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
-import { CodingProviderAccessCard } from "@/components/coding-provider-access";
-import type { CodingProviderAccessState } from "@/components/coding-provider-access-state";
+import { CodingProviderAccessCard } from "@/components/provider-access/card";
+import type { CodingProviderAccessState } from "@/components/provider-access/presentation";
 
 const states = [
   {
@@ -53,6 +53,7 @@ describe("coding provider access", () => {
     for (const state of states) {
       const markup = renderToStaticMarkup(
         <CodingProviderAccessCard
+          displayName="Codex"
           onCheck={() => undefined}
           onViewInstallationSteps={() => undefined}
           provider="codex"

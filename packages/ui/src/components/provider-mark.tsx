@@ -9,6 +9,11 @@ type ProviderMarkProps = Omit<ComponentProps<"img">, "src"> & {
   size?: "default" | "large";
 };
 
+const providerLogos = {
+  claude: claudeLogo,
+  codex: codexLogo,
+} satisfies Record<ProviderMarkProps["provider"], string>;
+
 function ProviderMark({
   alt = "",
   className,
@@ -26,7 +31,7 @@ function ProviderMark({
       )}
       data-size={size}
       data-slot="provider-mark"
-      src={provider === "codex" ? codexLogo : claudeLogo}
+      src={providerLogos[provider]}
       {...props}
     />
   );

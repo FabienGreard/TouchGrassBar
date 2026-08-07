@@ -10,9 +10,10 @@ import {
   NativeWindowSidebar,
   ScrollArea,
 } from "@touchgrass/ui";
+import type { CodingProvider } from "@touchgrass/contracts";
 import { useEffect, useRef, useState } from "react";
 
-import type { CodingProviderAccessState } from "@/components/coding-provider-access-state";
+import type { CodingProviderAccessPresentation } from "@/components/provider-access/presentation";
 import { FinishStep, type OnboardingSetupState } from "./finish-step";
 import { onboardingSteps, type OnboardingStep } from "./onboarding-flow";
 import { ProfileStep } from "./profile-step";
@@ -23,16 +24,15 @@ type OnboardingSubmissionState = "failed" | "idle" | "submitting";
 type OnboardingScreenProps = {
   busyProviders?: boolean | undefined;
   canComplete?: boolean | undefined;
-  codexState?: CodingProviderAccessState;
   displayName?: string | undefined;
   furthestStep?: OnboardingStep | undefined;
   initialDisplayName?: string | undefined;
   initialStep?: OnboardingStep;
-  onCheckProvider?: ((provider: "claude" | "codex") => void) | undefined;
+  onCheckProvider?: ((provider: CodingProvider) => void) | undefined;
   onDisplayNameChange?: ((displayName: string) => void) | undefined;
   onFinish?: ((displayName: string) => void) | undefined;
   onStepChange?: ((step: OnboardingStep) => void) | undefined;
-  providerState?: CodingProviderAccessState;
+  providers?: readonly CodingProviderAccessPresentation[] | undefined;
   setupReady?: boolean | undefined;
   setupState?: OnboardingSetupState | undefined;
   step?: OnboardingStep | undefined;
@@ -45,20 +45,18 @@ function stepIndex(step: OnboardingStep) {
 
 function StepBody({
   busyProviders,
-  codexState,
   displayName,
   onCheckProvider,
   onDisplayNameChange,
-  providerState,
+  providers,
   setupState,
   step,
 }: {
   busyProviders: boolean;
-  codexState: CodingProviderAccessState;
   displayName: string;
-  onCheckProvider?: ((provider: "claude" | "codex") => void) | undefined;
+  onCheckProvider?: ((provider: CodingProvider) => void) | undefined;
   onDisplayNameChange: (displayName: string) => void;
-  providerState: CodingProviderAccessState;
+  providers: readonly CodingProviderAccessPresentation[];
   setupState: OnboardingSetupState;
   step: OnboardingStep;
 }) {
@@ -66,9 +64,8 @@ function StepBody({
     return (
       <ProvidersStep
         busy={busyProviders}
-        codexState={codexState}
         onCheckProvider={onCheckProvider}
-        providerState={providerState}
+        providers={providers}
       />
     );
   }
@@ -159,7 +156,6 @@ function StepActions({
 function OnboardingScreen({
   busyProviders = false,
   canComplete,
-  codexState = "unavailable",
   displayName: controlledDisplayName,
   furthestStep: controlledFurthestStep,
   initialDisplayName = "",
@@ -168,7 +164,7 @@ function OnboardingScreen({
   onDisplayNameChange,
   onFinish,
   onStepChange,
-  providerState = "unavailable",
+  providers = [],
   setupReady = false,
   setupState = "unavailable",
   step: controlledStep,
@@ -257,11 +253,10 @@ function OnboardingScreen({
                 </p>
                 <StepBody
                   busyProviders={busyProviders}
-                  codexState={codexState}
                   displayName={displayName}
                   onCheckProvider={onCheckProvider}
                   onDisplayNameChange={changeDisplayName}
-                  providerState={providerState}
+                  providers={providers}
                   setupState={resolvedSetupState}
                   step={step}
                 />

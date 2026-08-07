@@ -1,4 +1,4 @@
-import type { SanitizedDesktopState, UsageTotal } from "@touchgrass/contracts";
+import type { UsagePeriods, UsageTotal } from "@touchgrass/contracts";
 import {
   MetricCard,
   MetricCardDetail,
@@ -12,8 +12,8 @@ import {
 
 type UsageMetricPresentation = {
   gaugeFill: number;
-  trend: string;
-  trendDescription: string;
+  trend?: string | undefined;
+  trendDescription?: string | undefined;
 };
 
 type UsagePresentation = {
@@ -35,16 +35,114 @@ const currencyFormatter = new Intl.NumberFormat("en", {
 
 type GaugeTone = "month" | "today" | "week";
 
+function evidenceDescription(
+  total: Exclude<UsageTotal, { availability: "unavailable" }>,
+) {
+  const basis =
+    total.evidenceBasis === "provider-reported"
+      ? "provider-reported token evidence"
+      : total.evidenceBasis === "locally-derived"
+        ? "locally observed token evidence"
+        : "mixed token evidence";
+  const coverage =
+    total.coverage === "complete"
+      ? "complete period coverage"
+      : "partial period coverage";
+  const costEvidence =
+    total.apiEquivalentCostQuality === "reconciled"
+      ? "pricing detail covers the reported tokens"
+      : total.apiEquivalentCostQuality === "modeled" &&
+          total.apiEquivalentCostCoveragePercent !== null &&
+          total.apiEquivalentCostCoveragePercent !== undefined
+        ? `cost modeled from ${Math.round(total.apiEquivalentCostCoveragePercent)} percent priced evidence`
+        : total.apiEquivalentCostQuality === "local-only"
+          ? "cost estimated from local pricing evidence"
+          : "cost evidence not ready";
+  return `${basis}, ${coverage}, ${costEvidence}`;
+}
+
+function costPresentation(
+  total: Exclude<UsageTotal, { availability: "unavailable" }>,
+  scanStatus: UsagePeriods["scanStatus"],
+) {
+  const evidence = evidenceDescription(total);
+  if (
+    total.apiEquivalentCostUsd !== null &&
+    total.apiEquivalentCostUsd !== undefined
+  ) {
+    const label = `≈ ${currencyFormatter.format(total.apiEquivalentCostUsd)}`;
+    return {
+      accessibleLabel: total.apiEquivalentCostBasis
+        ? `${label}, ${evidence}, pricing basis ${total.apiEquivalentCostBasis}${scanStatus === "indexing" ? ", indexing" : ""}`
+        : `${label}, ${evidence}${scanStatus === "indexing" ? ", indexing" : ""}`,
+      label,
+      ready: true,
+    };
+  }
+  if (scanStatus === "indexing") {
+    return {
+      accessibleLabel: `API equivalent indexing, ${evidence}`,
+      label: "Indexing…",
+      ready: false,
+    };
+  }
+  return {
+    accessibleLabel: `API equivalent not ready, ${evidence}`,
+    label: "—",
+    ready: false,
+  };
+}
+
+function trendPresentation(
+  total: UsageTotal,
+  gaugeFill: number | undefined,
+  comparison: string,
+): UsageMetricPresentation | undefined {
+  if (total.availability === "unavailable" || gaugeFill === undefined)
+    return undefined;
+  if (total.trendPercent === null || total.trendPercent === undefined)
+    return { gaugeFill };
+  const rounded = Math.round(total.trendPercent * 10) / 10;
+  const trend = `${rounded > 0 ? "+" : ""}${rounded}%`;
+  const direction = rounded > 0 ? "Up" : rounded < 0 ? "Down" : "No change";
+  const magnitude = Math.abs(rounded);
+  return {
+    gaugeFill,
+    trend,
+    trendDescription:
+      direction === "No change"
+        ? `No change from ${comparison}`
+        : `${direction} ${magnitude} percent from ${comparison}`,
+  };
+}
+
+function relativeGaugeFills(usage: UsagePeriods) {
+  const values = [usage.today, usage.sevenDays, usage.thirtyDays].map(
+    (total) =>
+      total.availability === "unavailable" ? undefined : total.observedTokens,
+  );
+  const maximum = Math.max(0, ...values.filter((value) => value !== undefined));
+  return values.map((value) =>
+    value === undefined
+      ? undefined
+      : maximum === 0
+        ? 0
+        : Math.round((value / maximum) * 100),
+  );
+}
+
 function UsageMetric({
   label,
   presentation,
   tone,
   total,
+  scanStatus,
 }: {
   label: string;
   presentation?: UsageMetricPresentation | undefined;
   tone: GaugeTone;
   total: UsageTotal;
+  scanStatus: UsagePeriods["scanStatus"];
 }) {
   if (total.availability === "unavailable") {
     return (
@@ -78,6 +176,8 @@ function UsageMetric({
     );
   }
 
+  const cost = costPresentation(total, scanStatus);
+
   return (
     <MetricCard>
       <MetricCardLabel>{label}</MetricCardLabel>
@@ -92,11 +192,12 @@ function UsageMetric({
       <MetricCardValue>
         {tokenFormatter.format(total.observedTokens)}
       </MetricCardValue>
-      <MetricCardDetail tone="positive">
-        {total.apiEquivalentCostUsd === null ||
-        total.apiEquivalentCostUsd === undefined
-          ? "API equivalent unavailable"
-          : `≈ ${currencyFormatter.format(total.apiEquivalentCostUsd)}`}
+      <MetricCardDetail
+        aria-label={cost.accessibleLabel}
+        className="inline-flex items-center gap-0.5"
+        tone={cost.ready ? "positive" : "muted"}
+      >
+        <span className="overflow-hidden text-ellipsis">{cost.label}</span>
       </MetricCardDetail>
       <MetricCardGauge
         aria-label={
@@ -111,15 +212,29 @@ function UsageMetric({
   );
 }
 
-type CodexUsage = SanitizedDesktopState["usage"]["codex"];
-
 function UsageOverview({
   presentation,
   usage,
 }: {
   presentation?: UsagePresentation | undefined;
-  usage: CodexUsage;
+  usage: UsagePeriods;
 }) {
+  const [todayGauge, sevenDayGauge, thirtyDayGauge] = relativeGaugeFills(usage);
+  const resolvedPresentation = {
+    today:
+      presentation?.today ??
+      trendPresentation(usage.today, todayGauge, "the previous day"),
+    sevenDays:
+      presentation?.sevenDays ??
+      trendPresentation(usage.sevenDays, sevenDayGauge, "the previous 7 days"),
+    thirtyDays:
+      presentation?.thirtyDays ??
+      trendPresentation(
+        usage.thirtyDays,
+        thirtyDayGauge,
+        "the previous 30 days",
+      ),
+  };
   return (
     <section
       aria-labelledby="observed-usage-heading"
@@ -137,21 +252,24 @@ function UsageOverview({
         <MetricCardGroup>
           <UsageMetric
             label="Today"
-            presentation={presentation?.today}
+            presentation={resolvedPresentation.today}
             tone="today"
             total={usage.today}
+            scanStatus={usage.todayScanStatus ?? usage.scanStatus}
           />
           <UsageMetric
             label="7 days"
-            presentation={presentation?.sevenDays}
+            presentation={resolvedPresentation.sevenDays}
             tone="week"
             total={usage.sevenDays}
+            scanStatus={usage.sevenDayScanStatus ?? usage.scanStatus}
           />
           <UsageMetric
             label="30 days"
-            presentation={presentation?.thirtyDays}
+            presentation={resolvedPresentation.thirtyDays}
             tone="month"
             total={usage.thirtyDays}
+            scanStatus={usage.thirtyDayScanStatus ?? usage.scanStatus}
           />
         </MetricCardGroup>
       </div>

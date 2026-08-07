@@ -1,8 +1,21 @@
 # CI speed and scope strategies
 
-**Status:** Recommended direction; no workflow change in this note
+**Status:** Active research
 
 **Date:** 2026-08-05
+
+**Related issues:** [#33](https://github.com/FabienGreard/TouchGrassBar/issues/33),
+[#35](https://github.com/FabienGreard/TouchGrassBar/issues/35), and
+[#37](https://github.com/FabienGreard/TouchGrassBar/issues/37)
+
+**Cleanup condition:** Delete this note after issues #33, #35, and #37 close
+and the current CI and release proof rules exist in durable workflows and
+release documentation.
+
+**Promotion target:** Keep executable controls in `.github/workflows/ci.yml`
+and `.github/workflows/release.yml`. Move operator decisions and manual gates
+into the release runbook delivered by issues #33 and #37.
+
 **Scope:** GitHub Actions dependency setup, caching, and pull request, `main`, and release proof
 
 ## Recommended decision

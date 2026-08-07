@@ -1,10 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
-import { CodingProviderAccessCard } from "@/components/coding-provider-access";
-
 import { ProfileSettings } from "./profile-settings";
 import { SettingsScreen } from "./settings-screen";
+
+const providers = [
+  { displayName: "Codex", provider: "codex", state: "detected" },
+  { displayName: "Claude", provider: "claude", state: "not-installed" },
+] as const;
 
 describe("settings screen", () => {
   test("uses the approved native-sheet composition", () => {
@@ -123,9 +126,6 @@ describe("settings screen", () => {
 
   test("keeps disconnected production settings honest and inert", () => {
     const generalMarkup = renderToStaticMarkup(<SettingsScreen />);
-    const providerMarkup = renderToStaticMarkup(
-      <CodingProviderAccessCard provider="codex" state="unavailable" />,
-    );
 
     expect(generalMarkup).toContain("Not connected in this build.");
     expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(
@@ -135,25 +135,33 @@ describe("settings screen", () => {
     expect(generalMarkup).toMatch(
       /<button[^>]*disabled=""[^>]*>View on GitHub/,
     );
-    expect(providerMarkup).toContain("Unavailable");
-    expect(providerMarkup).toContain(
-      "Provider detection is not connected in this build.",
-    );
-    expect(providerMarkup).not.toContain("Check now");
-    expect(providerMarkup).not.toContain("Check again");
   });
 
   test("names provider actions independently for VoiceOver", () => {
     const markup = renderToStaticMarkup(
       <SettingsScreen
-        codexState="detected"
         onCheckProviders={() => undefined}
-        providerState="not-installed"
+        providers={providers}
         section="providers"
       />,
     );
 
     expect(markup).toContain('aria-label="Check Codex again"');
     expect(markup).toContain('aria-label="Check Claude again"');
+  });
+
+  test("renders the provider collection supplied by Rust", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        providers={[providers[1]]}
+        section="providers"
+      />,
+    );
+
+    expect(markup).toContain(">Claude<");
+    expect(markup).not.toContain(">Codex<");
+    expect(markup.match(/data-slot="provider-connection-card"/g)).toHaveLength(
+      1,
+    );
   });
 });

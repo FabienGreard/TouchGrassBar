@@ -61,10 +61,22 @@ function DevPreviewApp() {
         <App
           hasNativeRuntime={false}
           onboarding={{
-            ...scenario.onboarding,
             initialDisplayName: "Fabien",
+            initialStep: scenario.onboarding.initialStep,
             onCheckProvider: () => undefined,
             onFinish: () => undefined,
+            providers: [
+              {
+                displayName: "Codex",
+                provider: "codex",
+                state: scenario.onboarding.codexState,
+              },
+              {
+                displayName: "Claude",
+                provider: "claude",
+                state: scenario.onboarding.providerState,
+              },
+            ],
             setupState: scenario.onboarding.setupState,
           }}
           surface="onboarding"
@@ -77,7 +89,6 @@ function DevPreviewApp() {
           hasNativeRuntime={false}
           settings={{
             autoUpdates,
-            codexState: "ready",
             launchAtLogin,
             onAutoUpdatesChange: setAutoUpdates,
             onCheckProviders: () => undefined,
@@ -96,7 +107,14 @@ function DevPreviewApp() {
               scenario.settingsProfileState === "profile-pending"
                 ? "profile-pending"
                 : "ready",
-            providerState: scenario.settingsProviderState,
+            providers: [
+              { displayName: "Codex", provider: "codex", state: "ready" },
+              {
+                displayName: "Claude",
+                provider: "claude",
+                state: scenario.settingsProviderState,
+              },
+            ],
           }}
           surface="settings"
         />

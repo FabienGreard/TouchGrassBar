@@ -1,7 +1,6 @@
 use std::{
-    collections::BTreeSet,
-    env, fs,
-    path::{Path, PathBuf},
+    fs,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -9,9 +8,12 @@ use rusqlite::{Connection, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
 
-use crate::sanitized::{CodingProvider, SanitizedProfileOutcome};
+use crate::providers::{CodingProvider, PROVIDER_REGISTRY, detect_provider_presence};
+use crate::sanitized::SanitizedProfileOutcome;
 
-pub const LIFECYCLE_CONTRACT_VERSION: u8 = 2;
+pub use crate::providers::ProviderPresenceStatus;
+
+pub const LIFECYCLE_CONTRACT_VERSION: u8 = 3;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
 pub const SETTINGS_RECOVERY_CLEAR_EVENT: &str = "settings-recovery-clear-requested";
 const DATABASE_SCHEMA_VERSION: i64 = 4;
@@ -30,14 +32,6 @@ pub enum ProfileProvisioningStatus {
     NotAuthorized,
     ProfilePending,
     Ready,
-}
-
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProviderPresenceStatus {
-    Detected,
-    NotDetected,
-    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -85,27 +79,31 @@ pub enum LaunchAtLoginState {
     Unavailable,
 }
 
-#[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderPresence {
     pub provider: CodingProvider,
+    #[schemars(length(min = 1, max = 40))]
+    pub display_name: String,
     pub status: ProviderPresenceStatus,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BootstrapStateV2 {
+pub struct BootstrapStateV3 {
     pub contract_version: u8,
     pub bootstrap: BootstrapStatus,
     pub profile_provisioning: ProfileProvisioningStatus,
     pub persistence: PersistenceStatus,
     pub display_name: Option<String>,
     pub touch_grass_id: Option<String>,
-    pub providers: [ProviderPresence; 2],
+    #[schemars(length(max = 16))]
+    pub providers: Vec<ProviderPresence>,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SettingsStateV2 {
+pub struct SettingsStateV3 {
     pub contract_version: u8,
     pub section: SettingsSection,
     pub launch_at_login: LaunchAtLoginState,
@@ -116,7 +114,8 @@ pub struct SettingsStateV2 {
     ))]
     pub recovery_key_suffix: Option<String>,
     pub touch_grass_id: Option<String>,
-    pub providers: [ProviderPresence; 2],
+    #[schemars(length(max = 16))]
+    pub providers: Vec<ProviderPresence>,
 }
 
 #[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
@@ -506,46 +505,9 @@ trait ProviderPresenceDetector: Send + Sync {
 
 struct SystemProviderPresenceDetector;
 
-impl SystemProviderPresenceDetector {
-    fn candidates(provider: CodingProvider) -> BTreeSet<PathBuf> {
-        let (command, application) = match provider {
-            CodingProvider::Codex => ("codex", "Codex.app"),
-            CodingProvider::Claude => ("claude", "Claude.app"),
-        };
-        let mut candidates = BTreeSet::new();
-        if let Some(path) = env::var_os("PATH") {
-            for directory in env::split_paths(&path) {
-                candidates.insert(directory.join(command));
-            }
-        }
-        for directory in ["/opt/homebrew/bin", "/usr/local/bin"] {
-            candidates.insert(PathBuf::from(directory).join(command));
-        }
-        candidates.insert(PathBuf::from("/Applications").join(application));
-        if let Some(home) = env::var_os("HOME") {
-            let home = PathBuf::from(home);
-            for directory in [".local/bin", ".bun/bin", ".npm-global/bin"] {
-                candidates.insert(home.join(directory).join(command));
-            }
-            candidates.insert(home.join("Applications").join(application));
-            if matches!(provider, CodingProvider::Claude) {
-                candidates.insert(home.join(".claude/local/claude"));
-            }
-        }
-        candidates
-    }
-}
-
 impl ProviderPresenceDetector for SystemProviderPresenceDetector {
     fn detect(&self, provider: CodingProvider) -> ProviderPresenceStatus {
-        if Self::candidates(provider)
-            .iter()
-            .any(|candidate| candidate.is_file() || candidate.is_dir())
-        {
-            ProviderPresenceStatus::Detected
-        } else {
-            ProviderPresenceStatus::NotDetected
-        }
+        detect_provider_presence(provider)
     }
 }
 
@@ -606,11 +568,15 @@ impl DesktopLifecycle {
         }
     }
 
-    fn providers(&self) -> [ProviderPresence; 2] {
-        [CodingProvider::Codex, CodingProvider::Claude].map(|provider| ProviderPresence {
-            provider,
-            status: self.inner.detector.detect(provider),
-        })
+    fn providers(&self) -> Vec<ProviderPresence> {
+        PROVIDER_REGISTRY
+            .iter()
+            .map(|descriptor| ProviderPresence {
+                provider: descriptor.provider,
+                display_name: descriptor.display_name.to_owned(),
+                status: self.inner.detector.detect(descriptor.provider),
+            })
+            .collect()
     }
 
     pub fn should_show_bootstrap(&self) -> bool {
@@ -619,12 +585,12 @@ impl DesktopLifecycle {
             .unwrap_or(true)
     }
 
-    pub fn bootstrap_state(&self) -> BootstrapStateV2 {
+    pub fn bootstrap_state(&self) -> BootstrapStateV3 {
         let (record, persistence) = self
             .record()
             .map(|record| (record, PersistenceStatus::Available))
             .unwrap_or_else(|_| (LifecycleRecord::required(), PersistenceStatus::Unavailable));
-        BootstrapStateV2 {
+        BootstrapStateV3 {
             contract_version: LIFECYCLE_CONTRACT_VERSION,
             bootstrap: record.bootstrap,
             profile_provisioning: record.profile_provisioning,
@@ -635,7 +601,7 @@ impl DesktopLifecycle {
         }
     }
 
-    pub fn complete_bootstrap(&self, display_name: &str) -> Result<BootstrapStateV2, &'static str> {
+    pub fn complete_bootstrap(&self, display_name: &str) -> Result<BootstrapStateV3, &'static str> {
         match &self.inner.store {
             LifecycleStore::Persistent(store) => {
                 store.complete_bootstrap(display_name)?;
@@ -695,11 +661,11 @@ impl DesktopLifecycle {
         }
     }
 
-    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV2 {
+    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV3 {
         let record = self
             .record()
             .unwrap_or_else(|_| LifecycleRecord::required());
-        SettingsStateV2 {
+        SettingsStateV3 {
             contract_version: LIFECYCLE_CONTRACT_VERSION,
             section: self.current_settings_section(),
             launch_at_login,
@@ -748,11 +714,11 @@ impl DesktopLifecycle {
 }
 
 pub fn bootstrap_state_schema() -> Schema {
-    schema_for!(BootstrapStateV2)
+    schema_for!(BootstrapStateV3)
 }
 
 pub fn settings_state_schema() -> Schema {
-    schema_for!(SettingsStateV2)
+    schema_for!(SettingsStateV3)
 }
 
 pub fn settings_navigation_schema() -> Schema {
@@ -762,6 +728,8 @@ pub fn settings_navigation_schema() -> Schema {
 #[cfg(test)]
 mod tests {
     use std::{
+        env, fs,
+        path::PathBuf,
         process,
         sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
@@ -1012,8 +980,10 @@ mod tests {
             lifecycle
                 .bootstrap_state()
                 .providers
-                .map(|item| item.status),
-            [
+                .into_iter()
+                .map(|item| item.status)
+                .collect::<Vec<_>>(),
+            vec![
                 ProviderPresenceStatus::Detected,
                 ProviderPresenceStatus::NotDetected
             ]

@@ -1,4 +1,8 @@
-import type { ProviderSnapshot, QuotaLane } from "@touchgrass/contracts";
+import type {
+  ProviderPresentation,
+  ProviderSnapshot,
+  QuotaLane,
+} from "@touchgrass/contracts";
 import { ProviderMark, QuotaProgress } from "@touchgrass/ui";
 
 const localResetTimeFormatter = new Intl.DateTimeFormat("en-GB", {
@@ -131,8 +135,8 @@ function ProviderQuotaLane({
   );
 }
 
-function ProviderCard({ provider }: { provider: ProviderSnapshot }) {
-  const label = provider.provider === "codex" ? "Codex" : "Claude";
+function ProviderCard({ presentation }: { presentation: ProviderPresentation }) {
+  const { displayName: label, quota: provider } = presentation;
   const lanes = orderedQuotaLanes(provider);
   const primaryLane = lanes[0] ?? null;
   const secondaryLanes = lanes.slice(1);
@@ -143,6 +147,7 @@ function ProviderCard({ provider }: { provider: ProviderSnapshot }) {
       aria-labelledby={`${provider.provider}-heading`}
       className="border-b border-pearl-line bg-provider-row px-4 py-[15px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight"
       data-provider-availability={provider.availability}
+      data-provider-presence={presentation.presence}
     >
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2.5">
         <span className="grid h-[29px] w-[29px] place-items-center overflow-hidden rounded-[7px] border border-input bg-pearl-control shadow-control contrast-more:border-pearl-ink">

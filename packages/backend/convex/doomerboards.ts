@@ -18,7 +18,7 @@ const doomerboardRow = v.object({
   touchGrassId: v.string(),
 });
 
-function rankRows<
+export function rankRows<
   T extends {
     apiEquivalentCostMicros?: number;
     displayName: string;

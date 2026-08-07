@@ -8,6 +8,10 @@ TouchGrassBar helps people understand their AI coding consumption and compare se
 An AI coding service whose usage TouchGrassBar can observe. The MVP providers are Codex and Claude.
 _Avoid_: AI, model, vendor
 
+**Provider Presence**:
+Whether a Coding Provider installation is locally detected, not detected, or cannot be checked. Provider Presence does not prove authentication, Quota access, or Observed Usage availability.
+_Avoid_: Provider connection, provider authorization, provider availability
+
 **Quota**:
 A provider-defined allowance for a bounded period. A quota is not the same as locally observed usage.
 _Avoid_: Usage, balance
@@ -34,7 +38,7 @@ A point-in-time collection of a coding provider's Quota Lanes. It can be initial
 _Avoid_: Usage aggregate, balance
 
 **Usage Evidence Basis**:
-Whether Observed Usage is `provider-reported` or `locally-derived`. This describes the selected source, independently of coverage or freshness.
+Whether Observed Usage is `provider-reported` or `locally-derived`, or `mixed` for a Combined provider scope. This describes the selected source, independently of coverage or freshness.
 _Avoid_: Accurate, estimated, quota
 
 **Usage Coverage**:
@@ -53,16 +57,20 @@ _Avoid_: Quota usage, billed usage, exact usage
 Token throughput counted under provider-specific rules without double-counting overlapping fields. Codex provider daily totals are used directly; its local cumulative fallback does not add cached-input or reasoning breakdowns again. Claude totals input, cache-creation input, cache-read input, and output while treating thinking as part of output. Provider-specific differences in tokenization and reporting remain part of the number.
 _Avoid_: Billed tokens, normalized tokens, productivity
 
+**Usage Trend**:
+The percentage change in Observed Tokens between one displayed period and the equal period immediately before it. The comparison uses the same selected usage source as the displayed total. Within a provider window that contains reported buckets, an omitted sparse day counts as zero. The previous period must contain at least one observed bucket and a non-zero token total. A Combined Usage Trend is weighted by each contributing provider's previous Observed Tokens. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
+_Avoid_: Cost trend, spend change, price change
+
 **Token Score**:
 The unweighted sum of observed tokens for a Tokenmaxxer, time range, and provider scope. It is the sole Doomerboard ordering metric.
 _Avoid_: Usage score, productivity score, points
 
 **API-Equivalent Cost**:
-An approximate estimate of what observed tokens would cost at the model's published per-token price applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Historical estimates retain that basis unless a catalog correction recomputes affected retained model-days under a new version; an unknown required price produces no estimate rather than a guessed or partial total.
+An approximate estimate of what Observed Tokens would cost at published per-token prices applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Reconciled cost uses local priced detail that equals the authoritative tokens. Modeled cost applies a defensible average rate from priced local detail to the authoritative tokens and reports that priced-detail coverage. Local-only cost uses available local detail when provider-reported usage is unavailable. An unknown price leaves only that detail unpriced; a period with other usable priced evidence may still have a Modeled or Local-only estimate, while a period with no defensible priced evidence has no estimate. A catalog correction recomputes only affected retained model-days and never changes Token Score or Doomerboard rank.
 _Avoid_: Spend, bill, actual cost
 
 **Daily Usage Aggregate**:
-A summary of Observed Usage for one Coding Provider, one Tokenmaxxer, and one Ranking Day. It contains only the aggregate, Usage Evidence Basis, Usage Coverage, observation time, revision, and a complete API-Equivalent Cost with its pricing basis when available. It is the most detailed usage record that may leave the Tokenmaxxer's Mac.
+A summary of Observed Usage for one Coding Provider, one Tokenmaxxer, and one Ranking Day. It contains only the aggregate, Usage Evidence Basis, Usage Coverage, observation time, revision, and the best defensible API-Equivalent Cost with its pricing basis when available. It is the most detailed usage record that may leave the Tokenmaxxer's Mac.
 _Avoid_: Raw usage, usage log
 
 **Usage Snapshot**:

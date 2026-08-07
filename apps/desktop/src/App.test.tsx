@@ -17,9 +17,8 @@ describe("native App composition", () => {
   test("does not invent provider detection in production Settings", () => {
     const markup = renderSettings("#settings-providers");
 
-    expect(
-      markup.match(/data-coding-provider-access-state="unavailable"/g),
-    ).toHaveLength(2);
+    expect(markup).not.toContain("data-coding-provider-access-state");
+    expect(markup).not.toContain('data-slot="provider-connection-card"');
     expect(markup).not.toContain('data-coding-provider-access-state="ready"');
     expect(markup).not.toContain(
       'data-coding-provider-access-state="not-installed"',
@@ -55,9 +54,8 @@ describe("native App composition", () => {
       <App hasNativeRuntime surface="onboarding" />,
     );
 
-    expect(
-      markup.match(/data-coding-provider-access-state="unavailable"/g),
-    ).toHaveLength(2);
+    expect(markup).not.toContain("data-coding-provider-access-state");
+    expect(markup).not.toContain('data-slot="provider-connection-card"');
     expect(markup).not.toContain('data-coding-provider-access-state="ready"');
     expect(markup).not.toContain(
       'data-coding-provider-access-state="not-installed"',

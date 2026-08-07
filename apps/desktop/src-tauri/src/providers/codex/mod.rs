@@ -1,3 +1,5 @@
+mod usage;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -10,16 +12,32 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
+use self::usage::{
+    AccountUsageObservation, CachedAccountUsageObservation, load_cached_account_usage,
+    parse_account_usage, project_usage_periods_with_account_time, scan_local_usage,
+    store_cached_account_usage,
+};
+use super::{ProviderObservation, ProviderObservationAdapter};
+use crate::daily_usage_aggregate::preserve_best_known_costs;
 use crate::sanitized::{
-    Clock, CodingProvider, ProviderSnapshot, QuotaLane, RefreshAttempt, RefreshFailure,
-    RefreshTrigger, SanitizedDesktopStateV2, SnapshotRefreshAdapter,
+    Clock, CodingProvider, ProviderPresentation, ProviderSnapshot, QuotaLane, RefreshAttempt,
+    RefreshFailure, RefreshTrigger, UsagePeriods,
 };
 
 const INITIALIZE_REQUEST_ID: i64 = 1;
 const DEFAULT_LIMIT_ID: &str = "codex";
 const IGNORED_CODEX_LIMIT_NAME: &str = "GPT-5.3-Codex-Spark";
+const ACCOUNT_USAGE_REFRESH_MINUTES: i64 = 30;
+
+pub(super) fn debug_usage_pass(
+    database_path: &Path,
+    codex_home: &Path,
+    now: OffsetDateTime,
+) -> Result<String, ()> {
+    usage::debug_usage_pass(database_path, codex_home, now)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct UsedPercent(u8);
@@ -396,6 +414,14 @@ fn debug_event(event: &str) {
 fn debug_event(_event: &str) {}
 
 #[cfg(debug_assertions)]
+fn debug_usage_event(event: &str) {
+    eprintln!("[TouchGrassBar][codex-usage] {event}");
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_usage_event(_event: &str) {}
+
+#[cfg(debug_assertions)]
 fn debug_observation_summary(observation: &CodexQuotaObservation) -> String {
     let mut labels = Vec::new();
     for (limit_id, bucket) in observation.ordered_buckets() {
@@ -430,23 +456,148 @@ fn debug_observation(observation: &CodexQuotaObservation) {
 #[cfg(not(debug_assertions))]
 fn debug_observation(_observation: &CodexQuotaObservation) {}
 
-pub(crate) struct CodexQuotaRefreshAdapter {
+pub(crate) struct CodexProviderObservationAdapter {
     clock: Arc<dyn Clock>,
+    database_path: Option<PathBuf>,
     session: Mutex<Option<CodexAppServerSession>>,
     refresh_trigger: Mutex<Option<RefreshTrigger>>,
 }
 
-impl CodexQuotaRefreshAdapter {
-    pub(crate) fn production(clock: Arc<dyn Clock>) -> Self {
+trait AccountUsageReader {
+    fn read_account_usage(
+        &mut self,
+        attempt: &RefreshAttempt,
+    ) -> Result<AccountUsageObservation, RefreshFailure>;
+}
+
+impl CodexProviderObservationAdapter {
+    pub(crate) fn production(clock: Arc<dyn Clock>, database_path: Option<PathBuf>) -> Self {
         Self {
             clock,
+            database_path,
             session: Mutex::new(None),
             refresh_trigger: Mutex::new(None),
         }
     }
+
+    fn refresh_account_usage<R: AccountUsageReader>(
+        &self,
+        session: &mut R,
+        attempt: &RefreshAttempt,
+    ) -> Option<CachedAccountUsageObservation> {
+        let now = self.clock.now();
+        let cached = load_cached_account_usage(self.database_path.as_deref());
+        let refresh_reason =
+            account_usage_refresh_reason(cached.as_ref(), now, attempt.is_manual());
+        let Some(refresh_reason) = refresh_reason else {
+            let age_seconds = cached
+                .as_ref()
+                .map(|cached| (now - cached.observed_at).whole_seconds().max(0))
+                .unwrap_or(0);
+            debug_usage_event(&format!("account_cache_hit age_seconds={age_seconds}"));
+            return cached;
+        };
+
+        debug_usage_event(&format!("account_refresh_started reason={refresh_reason}"));
+        match session.read_account_usage(attempt) {
+            Ok(observation) => {
+                let observed_at = self.clock.now();
+                let stored = store_cached_account_usage(
+                    self.database_path.as_deref(),
+                    &observation,
+                    observed_at,
+                )
+                .is_ok();
+                debug_usage_event(&format!(
+                    "account_refresh_completed days={} cache_stored={stored}",
+                    observation.day_count()
+                ));
+                Some(CachedAccountUsageObservation {
+                    observation,
+                    observed_at,
+                })
+            }
+            Err(_) => {
+                debug_usage_event(&format!(
+                    "account_refresh_failed fallback_cached={}",
+                    cached.is_some()
+                ));
+                cached
+            }
+        }
+    }
+
+    fn update_usage_projection(
+        &self,
+        usage: &mut UsagePeriods,
+        account: Option<&CachedAccountUsageObservation>,
+        observed_at: OffsetDateTime,
+    ) -> bool {
+        let local_usage = scan_local_usage(self.database_path.as_deref(), observed_at);
+        if account.is_none() && local_usage.is_none() {
+            debug_usage_event("projection_preserved reason=no_evidence");
+            return false;
+        }
+        let projected = project_usage_periods_with_account_time(
+            account.map(|cached| &cached.observation),
+            local_usage.as_ref(),
+            observed_at,
+            account.map_or(observed_at, |cached| cached.observed_at),
+        );
+        let previous = usage.clone();
+        *usage = preserve_best_known_costs(projected, &previous);
+        let published = &*usage;
+        let cost_available = |total: &crate::sanitized::UsageTotal| {
+            matches!(
+                total,
+                crate::sanitized::UsageTotal::Current {
+                    api_equivalent_cost_usd: Some(_),
+                    ..
+                } | crate::sanitized::UsageTotal::Stale {
+                    api_equivalent_cost_usd: Some(_),
+                    ..
+                }
+            )
+        };
+        debug_usage_event(&format!(
+            "projection_updated scan={:?} today_scan={:?} seven_day_scan={:?} thirty_day_scan={:?} account_cached={} today_cost={} seven_day_cost={} thirty_day_cost={}",
+            published.scan_status,
+            published.today_scan_status,
+            published.seven_day_scan_status,
+            published.thirty_day_scan_status,
+            account.is_some(),
+            cost_available(&published.today),
+            cost_available(&published.seven_days),
+            cost_available(&published.thirty_days)
+        ));
+        true
+    }
 }
 
-impl SnapshotRefreshAdapter for CodexQuotaRefreshAdapter {
+fn account_usage_refresh_reason(
+    cached: Option<&CachedAccountUsageObservation>,
+    now: OffsetDateTime,
+    manual: bool,
+) -> Option<&'static str> {
+    if manual {
+        return Some("manual");
+    }
+    let Some(cached) = cached else {
+        return Some("missing");
+    };
+    if cached.observed_at > now
+        || now - cached.observed_at >= Duration::minutes(ACCOUNT_USAGE_REFRESH_MINUTES)
+    {
+        return Some("expired");
+    }
+    None
+}
+
+impl ProviderObservationAdapter for CodexProviderObservationAdapter {
+    fn provider(&self) -> CodingProvider {
+        CodingProvider::Codex
+    }
+
     fn install_refresh_trigger(&self, trigger: RefreshTrigger) {
         *self
             .refresh_trigger
@@ -456,9 +607,25 @@ impl SnapshotRefreshAdapter for CodexQuotaRefreshAdapter {
 
     fn refresh(
         &self,
-        mut cached: SanitizedDesktopStateV2,
+        cached: &ProviderPresentation,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
+    ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+        let mut provider_observation = ProviderObservation {
+            quota: cached.quota.clone(),
+            usage: cached.usage.clone(),
+        };
+        if attempt.is_local_usage_only() {
+            let observed_at = self.clock.now();
+            let account = load_cached_account_usage(self.database_path.as_deref());
+            attempt.remaining()?;
+            self.update_usage_projection(
+                &mut provider_observation.usage,
+                account.as_ref(),
+                observed_at,
+            );
+            attempt.remaining()?;
+            return Ok(Some(provider_observation));
+        }
         debug_event("refresh_started");
         let mut session_guard = self
             .session
@@ -486,20 +653,56 @@ impl SnapshotRefreshAdapter for CodexQuotaRefreshAdapter {
             .read_observation(attempt);
         let observation = match result {
             Ok(observation) => observation,
-            Err(error) => {
+            Err(_error) => {
                 debug_event("refresh_failed stage=full_read");
+                // Quota and usage are independent app-server capabilities.
+                // A quota failure must not prevent a due or manual account
+                // usage refresh from using the still-live session.
+                let account = self.refresh_account_usage(
+                    session_guard
+                        .as_mut()
+                        .ok_or(RefreshFailure::SourceUnavailable)?,
+                    attempt,
+                );
                 session_guard.take();
-                return Err(error);
+                let observed_at = self.clock.now();
+                attempt.remaining()?;
+                self.update_usage_projection(
+                    &mut provider_observation.usage,
+                    account.as_ref(),
+                    observed_at,
+                );
+                attempt.remaining()?;
+                debug_event("usage_projection_completed source=cached_account_or_local");
+                return Ok(Some(provider_observation));
             }
         };
-        cached.providers[0] = observation
+        let quota = observation
             .sanitized_snapshot(self.clock.now())
             .map_err(|_| {
                 debug_event("refresh_failed stage=sanitized_projection");
                 RefreshFailure::SourceUnavailable
             })?;
+        provider_observation.quota = quota;
+        let account_usage = self.refresh_account_usage(
+            session_guard
+                .as_mut()
+                .ok_or(RefreshFailure::SourceUnavailable)?,
+            attempt,
+        );
+        let observed_at = self.clock.now();
+        attempt.remaining()?;
+        if self.update_usage_projection(
+            &mut provider_observation.usage,
+            account_usage.as_ref(),
+            observed_at,
+        ) {
+            debug_event("usage_projection_completed");
+        } else {
+            debug_event("usage_projection_preserved");
+        }
         debug_event("refresh_completed");
-        Ok(Some(cached))
+        Ok(Some(provider_observation))
     }
 }
 
@@ -649,6 +852,38 @@ impl CodexAppServerSession {
         }
     }
 
+    fn read_usage_observation(
+        &mut self,
+        attempt: &RefreshAttempt,
+    ) -> Result<AccountUsageObservation, RefreshFailure> {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        self.send(json!({
+            "method": "account/usage/read",
+            "id": request_id,
+            "params": null
+        }))?;
+        loop {
+            let message = self.receive(attempt)?;
+            if is_sparse_notification(&message) {
+                self.merge_notification(&message)?;
+                continue;
+            }
+            if message.get("id").and_then(Value::as_i64) != Some(request_id) {
+                continue;
+            }
+            if message.get("error").is_some() {
+                return Err(RefreshFailure::SourceUnavailable);
+            }
+            let payload = message
+                .get("result")
+                .ok_or(RefreshFailure::SourceUnavailable)?;
+            let payload =
+                serde_json::to_string(payload).map_err(|_| RefreshFailure::SourceUnavailable)?;
+            return parse_account_usage(&payload).map_err(|_| RefreshFailure::SourceUnavailable);
+        }
+    }
+
     fn merge_notification(&mut self, message: &Value) -> Result<bool, RefreshFailure> {
         let params = message
             .get("params")
@@ -699,6 +934,15 @@ impl CodexAppServerSession {
             })?
             .map_err(|_| RefreshFailure::SourceUnavailable)?;
         serde_json::from_str(&line).map_err(|_| RefreshFailure::SourceUnavailable)
+    }
+}
+
+impl AccountUsageReader for CodexAppServerSession {
+    fn read_account_usage(
+        &mut self,
+        attempt: &RefreshAttempt,
+    ) -> Result<AccountUsageObservation, RefreshFailure> {
+        self.read_usage_observation(attempt)
     }
 }
 
@@ -834,6 +1078,83 @@ mod tests {
 
     fn observed_at() -> OffsetDateTime {
         OffsetDateTime::parse(OBSERVED_AT, &Rfc3339).expect("valid observation time")
+    }
+
+    #[test]
+    fn account_usage_cache_refreshes_at_thirty_minutes_and_on_manual_sync() {
+        let now = observed_at();
+        let observation = parse_account_usage(
+            r#"{"dailyUsageBuckets":[{"startDate":"2026-08-06","tokens":340}],"summary":{}}"#,
+        )
+        .unwrap();
+        let fresh = CachedAccountUsageObservation {
+            observation,
+            observed_at: now - Duration::minutes(29),
+        };
+        let expired = CachedAccountUsageObservation {
+            observed_at: now - Duration::minutes(30),
+            ..fresh.clone()
+        };
+
+        assert_eq!(
+            account_usage_refresh_reason(None, now, false),
+            Some("missing")
+        );
+        assert_eq!(account_usage_refresh_reason(Some(&fresh), now, false), None);
+        assert_eq!(
+            account_usage_refresh_reason(Some(&fresh), now, true),
+            Some("manual")
+        );
+        assert_eq!(
+            account_usage_refresh_reason(Some(&expired), now, false),
+            Some("expired")
+        );
+    }
+
+    struct FixedClock(OffsetDateTime);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> OffsetDateTime {
+            self.0
+        }
+    }
+
+    struct RecordingUsageReader {
+        reads: usize,
+        observation: AccountUsageObservation,
+    }
+
+    impl AccountUsageReader for RecordingUsageReader {
+        fn read_account_usage(
+            &mut self,
+            _attempt: &RefreshAttempt,
+        ) -> Result<AccountUsageObservation, RefreshFailure> {
+            self.reads += 1;
+            Ok(self.observation.clone())
+        }
+    }
+
+    #[test]
+    fn account_usage_read_remains_independent_after_a_quota_failure() {
+        let now = observed_at();
+        let adapter = CodexProviderObservationAdapter::production(Arc::new(FixedClock(now)), None);
+        let mut reader = RecordingUsageReader {
+            reads: 0,
+            observation: parse_account_usage(
+                r#"{"dailyUsageBuckets":[{"startDate":"2026-08-06","tokens":340}],"summary":{}}"#,
+            )
+            .unwrap(),
+        };
+
+        // The quota branch calls this same independent capability before it
+        // drops a failed quota session.
+        let usage = adapter
+            .refresh_account_usage(&mut reader, &RefreshAttempt::test())
+            .expect("manual usage refresh must still return account usage");
+
+        assert_eq!(reader.reads, 1);
+        assert_eq!(usage.observation.day_count(), 1);
+        assert_eq!(usage.observed_at, now);
     }
 
     #[test]

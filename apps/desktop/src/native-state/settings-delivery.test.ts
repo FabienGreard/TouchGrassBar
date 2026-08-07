@@ -7,13 +7,13 @@ import {
 } from "@/native-state/settings-delivery";
 
 const settingsState = {
-  contractVersion: 2,
+  contractVersion: 3,
   displayName: "Fabien",
   launchAtLogin: { availability: "available", enabled: false },
   profileProvisioning: "profile-pending",
   providers: [
-    { provider: "codex", status: "detected" },
-    { provider: "claude", status: "not-detected" },
+    { displayName: "Codex", provider: "codex", status: "detected" },
+    { displayName: "Claude", provider: "claude", status: "not-detected" },
   ],
   section: "general",
 } as const;

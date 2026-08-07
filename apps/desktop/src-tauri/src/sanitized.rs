@@ -17,33 +17,191 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::codex_quota::CodexQuotaRefreshAdapter;
+use crate::daily_usage_aggregate::combine_usage_periods;
 use crate::lifecycle::{
     LIFECYCLE_CONTRACT_VERSION, SETTINGS_NAVIGATION_EVENT, SETTINGS_RECOVERY_CLEAR_EVENT,
     bootstrap_state_schema, settings_navigation_schema, settings_state_schema,
 };
+pub use crate::providers::{CodingProvider, ProviderPresenceStatus};
+use crate::providers::{
+    PROVIDER_REGISTRY, detect_provider_presence, production_observation_coordinator,
+    provider_descriptor,
+};
 
-pub const CONTRACT_VERSION: u8 = 2;
+pub const CONTRACT_VERSION: u8 = 3;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
-const READ_MODEL_SCHEMA_VERSION: i64 = 2;
+const READ_MODEL_SCHEMA_VERSION: i64 = 4;
 const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const REFRESH_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 const REFRESH_ATTEMPT_TIMEOUT: Duration = REFRESH_INTERVAL;
 const NETWORK_RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const LOCAL_USAGE_CATCH_UP_DEFAULT_ACTIVE: Duration = Duration::from_secs(2);
+const LOCAL_USAGE_CATCH_UP_ERROR_DELAY: Duration = Duration::from_secs(60);
+
+#[cfg(debug_assertions)]
+fn debug_local_usage_event(event: &str) {
+    eprintln!("[TouchGrassBar][codex-usage] {event}");
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_local_usage_event(_event: &str) {}
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SanitizedDesktopStateV2 {
+pub struct SanitizedDesktopStateV3 {
     pub contract_version: u8,
     pub generated_at: String,
     pub revision: String,
-    pub providers: [ProviderSnapshot; 2],
-    pub usage: UsageByProvider,
+    #[schemars(length(max = 16))]
+    pub providers: Vec<ProviderPresentation>,
+    pub combined_usage: UsagePeriods,
     pub sync: SyncState,
     pub profile: SanitizedProfileOutcome,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPresentation {
+    pub provider: CodingProvider,
+    #[schemars(length(min = 1, max = 40))]
+    pub display_name: String,
+    pub presence: ProviderPresenceStatus,
+    pub quota: ProviderSnapshot,
+    pub usage: UsagePeriods,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacySanitizedDesktopState {
+    contract_version: u8,
+    generated_at: String,
+    revision: String,
+    providers: Vec<ProviderSnapshot>,
+    usage: LegacyUsageByProvider,
+    sync: SyncState,
+    profile: SanitizedProfileOutcome,
+}
+
+#[derive(Deserialize)]
+struct LegacyUsageByProvider {
+    codex: UsagePeriods,
+    claude: UsagePeriods,
+}
+
+impl LegacyUsageByProvider {
+    fn get(&self, provider: CodingProvider) -> &UsagePeriods {
+        match provider {
+            CodingProvider::Codex => &self.codex,
+            CodingProvider::Claude => &self.claude,
+        }
+    }
+}
+
+impl LegacySanitizedDesktopState {
+    fn into_current(
+        self,
+        revision: String,
+        schema_version: i64,
+    ) -> Result<SanitizedDesktopStateV3, &'static str> {
+        if i64::from(self.contract_version) != schema_version || self.revision != revision {
+            return Err("native state persistence unavailable");
+        }
+        let Self {
+            contract_version: _,
+            generated_at,
+            revision: _,
+            providers: legacy_quotas,
+            usage,
+            sync,
+            profile,
+        } = self;
+        let providers = PROVIDER_REGISTRY
+            .iter()
+            .map(|descriptor| {
+                let provider = descriptor.provider;
+                let quota = legacy_quotas
+                    .iter()
+                    .find(|snapshot| snapshot.provider() == provider)
+                    .cloned()
+                    .unwrap_or(ProviderSnapshot::Unavailable {
+                        provider,
+                        quota_lanes: [],
+                    });
+                ProviderPresentation {
+                    provider,
+                    display_name: descriptor.display_name.to_owned(),
+                    presence: detect_provider_presence(provider),
+                    quota,
+                    usage: usage.get(provider).clone(),
+                }
+            })
+            .collect();
+        let mut current = SanitizedDesktopStateV3 {
+            contract_version: CONTRACT_VERSION,
+            generated_at,
+            revision,
+            providers,
+            combined_usage: unavailable_periods(),
+            sync,
+            profile,
+        };
+        current.refresh_combined_usage();
+        Ok(current)
+    }
+}
+
+impl SanitizedDesktopStateV3 {
+    pub(crate) fn provider(&self, provider: CodingProvider) -> Option<&ProviderPresentation> {
+        self.providers
+            .iter()
+            .find(|presentation| presentation.provider == provider)
+    }
+
+    pub(crate) fn provider_mut(
+        &mut self,
+        provider: CodingProvider,
+    ) -> Option<&mut ProviderPresentation> {
+        self.providers
+            .iter_mut()
+            .find(|presentation| presentation.provider == provider)
+    }
+
+    pub(crate) fn refresh_combined_usage(&mut self) {
+        let periods = self
+            .providers
+            .iter()
+            .filter(|presentation| presentation.is_visible())
+            .map(|presentation| &presentation.usage)
+            .collect::<Vec<_>>();
+        self.combined_usage = combine_usage_periods(&periods);
+    }
+}
+
+impl ProviderPresentation {
+    pub(crate) fn unavailable(provider: CodingProvider) -> Self {
+        let descriptor = provider_descriptor(provider);
+        Self {
+            provider,
+            display_name: descriptor.display_name.to_owned(),
+            presence: ProviderPresenceStatus::Unavailable,
+            quota: ProviderSnapshot::Unavailable {
+                provider,
+                quota_lanes: [],
+            },
+            usage: unavailable_periods(),
+        }
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.presence == ProviderPresenceStatus::Detected
+            || !matches!(self.quota, ProviderSnapshot::Unavailable { .. })
+            || !matches!(self.usage.today, UsageTotal::Unavailable)
+            || !matches!(self.usage.seven_days, UsageTotal::Unavailable)
+            || !matches!(self.usage.thirty_days, UsageTotal::Unavailable)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -87,13 +245,6 @@ pub enum ProviderSnapshot {
     },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CodingProvider {
-    Codex,
-    Claude,
-}
-
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaLane {
@@ -107,14 +258,15 @@ pub struct QuotaLane {
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
-pub struct UsageByProvider {
-    pub codex: UsagePeriods,
-    pub claude: UsagePeriods,
-}
-
-#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsagePeriods {
+    pub scan_status: UsageScanStatus,
+    #[serde(default)]
+    pub today_scan_status: UsageScanStatus,
+    #[serde(default)]
+    pub seven_day_scan_status: UsageScanStatus,
+    #[serde(default)]
+    pub thirty_day_scan_status: UsageScanStatus,
     pub today: UsageTotal,
     pub seven_days: UsageTotal,
     pub thirty_days: UsageTotal,
@@ -135,6 +287,18 @@ pub enum UsageTotal {
         observed_at: String,
         observed_tokens: u64,
         api_equivalent_cost_usd: Option<f64>,
+        #[serde(default)]
+        trend_percent: Option<f64>,
+        #[serde(default)]
+        trend_previous_tokens: Option<u64>,
+        #[serde(default)]
+        #[schemars(length(min = 1, max = 256))]
+        api_equivalent_cost_basis: Option<String>,
+        #[serde(default)]
+        api_equivalent_cost_quality: Option<ApiEquivalentCostQuality>,
+        #[serde(default)]
+        #[schemars(range(min = 0.0, max = 100.0))]
+        api_equivalent_cost_coverage_percent: Option<f64>,
     },
     Stale {
         evidence_basis: UsageEvidenceBasis,
@@ -142,6 +306,18 @@ pub enum UsageTotal {
         observed_at: String,
         observed_tokens: u64,
         api_equivalent_cost_usd: Option<f64>,
+        #[serde(default)]
+        trend_percent: Option<f64>,
+        #[serde(default)]
+        trend_previous_tokens: Option<u64>,
+        #[serde(default)]
+        #[schemars(length(min = 1, max = 256))]
+        api_equivalent_cost_basis: Option<String>,
+        #[serde(default)]
+        api_equivalent_cost_quality: Option<ApiEquivalentCostQuality>,
+        #[serde(default)]
+        #[schemars(range(min = 0.0, max = 100.0))]
+        api_equivalent_cost_coverage_percent: Option<f64>,
     },
 }
 
@@ -151,6 +327,7 @@ pub enum UsageTotal {
 pub enum UsageEvidenceBasis {
     ProviderReported,
     LocallyDerived,
+    Mixed,
 }
 
 #[allow(dead_code)]
@@ -159,6 +336,23 @@ pub enum UsageEvidenceBasis {
 pub enum UsageCoverage {
     Complete,
     Partial,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApiEquivalentCostQuality {
+    Reconciled,
+    Modeled,
+    LocalOnly,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageScanStatus {
+    Complete,
+    Indexing,
+    #[default]
+    Unavailable,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -193,6 +387,7 @@ pub struct RefreshReceipt {
 pub(crate) struct RefreshAttempt {
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
+    sources: RefreshSources,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -203,11 +398,20 @@ pub(crate) enum RefreshFailure {
 }
 
 impl RefreshAttempt {
-    fn new(cancelled: Arc<AtomicBool>) -> Self {
+    fn new(cancelled: Arc<AtomicBool>, sources: RefreshSources) -> Self {
         Self {
             cancelled,
             deadline: Instant::now() + REFRESH_ATTEMPT_TIMEOUT,
+            sources,
         }
+    }
+
+    pub(crate) fn is_manual(&self) -> bool {
+        self.sources.contains(RefreshSource::Manual)
+    }
+
+    pub(crate) fn is_local_usage_only(&self) -> bool {
+        self.sources.is_only(RefreshSource::LocalUsageCatchUp)
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
@@ -225,6 +429,14 @@ impl RefreshAttempt {
             Ok(remaining)
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test() -> Self {
+        Self::new(
+            Arc::new(AtomicBool::new(false)),
+            RefreshSources(RefreshSource::Manual.bit()),
+        )
+    }
 }
 
 pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
@@ -235,9 +447,9 @@ pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
     /// keeps application shutdown bounded.
     fn refresh(
         &self,
-        cached: SanitizedDesktopStateV2,
+        cached: SanitizedDesktopStateV3,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure>;
+    ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure>;
 }
 
 #[cfg(test)]
@@ -247,9 +459,9 @@ struct CachedProjectionRefreshAdapter;
 impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     fn refresh(
         &self,
-        _cached: SanitizedDesktopStateV2,
+        _cached: SanitizedDesktopStateV3,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
+    ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
         attempt.remaining()?;
         // Provider observation is not wired yet. An unchanged cached projection
         // does not create a false revision or notice.
@@ -271,6 +483,13 @@ impl Clock for SystemClock {
     }
 }
 
+fn production_refresh_adapter(
+    clock: Arc<dyn Clock>,
+    database_path: Option<PathBuf>,
+) -> Arc<dyn SnapshotRefreshAdapter> {
+    Arc::new(production_observation_coordinator(clock, database_path))
+}
+
 struct SqliteReadModelStore {
     connection: Connection,
 }
@@ -278,8 +497,8 @@ struct SqliteReadModelStore {
 impl SqliteReadModelStore {
     fn open(
         path: &Path,
-        initial: &SanitizedDesktopStateV2,
-    ) -> Result<(Self, SanitizedDesktopStateV2), &'static str> {
+        initial: &SanitizedDesktopStateV3,
+    ) -> Result<(Self, SanitizedDesktopStateV3), &'static str> {
         let Some(parent) = path.parent() else {
             return Err("native state persistence unavailable");
         };
@@ -300,7 +519,7 @@ impl SqliteReadModelStore {
     fn migrate(
         connection: &mut Connection,
         path: &Path,
-        initial: &SanitizedDesktopStateV2,
+        initial: &SanitizedDesktopStateV3,
     ) -> Result<(), &'static str> {
         let version = read_model_schema_version(connection)?;
 
@@ -313,7 +532,7 @@ impl SqliteReadModelStore {
 
         backup_read_model_before_migration(connection, path, version)?;
 
-        let (snapshot, revision) = if version == 1 {
+        let (snapshot, revision) = if (1..=3).contains(&version) {
             let (revision, snapshot_json) = connection
                 .query_row(
                     "SELECT revision, snapshot_json
@@ -325,14 +544,29 @@ impl SqliteReadModelStore {
                 .map_err(|_| "native state persistence unavailable")?;
             let mut snapshot_value: Value = serde_json::from_str(&snapshot_json)
                 .map_err(|_| "native state persistence unavailable")?;
-            snapshot_value
+            let snapshot_object = snapshot_value
                 .as_object_mut()
-                .ok_or("native state persistence unavailable")?
-                .insert("profile".to_owned(), json!({ "status": "not-authorized" }));
-            let mut snapshot: SanitizedDesktopStateV2 = serde_json::from_value(snapshot_value)
+                .ok_or("native state persistence unavailable")?;
+            if version == 1 {
+                snapshot_object.insert("profile".to_owned(), json!({ "status": "not-authorized" }));
+            }
+            if version <= 2 {
+                if let Some(usage) = snapshot_value
+                    .get_mut("usage")
+                    .and_then(Value::as_object_mut)
+                {
+                    for provider in ["codex", "claude"] {
+                        if let Some(periods) =
+                            usage.get_mut(provider).and_then(Value::as_object_mut)
+                        {
+                            periods.insert("scanStatus".to_owned(), json!("unavailable"));
+                        }
+                    }
+                }
+            }
+            let snapshot: LegacySanitizedDesktopState = serde_json::from_value(snapshot_value)
                 .map_err(|_| "native state persistence unavailable")?;
-            snapshot.contract_version = CONTRACT_VERSION;
-            snapshot.revision.clone_from(&revision);
+            let snapshot = snapshot.into_current(revision.clone(), version)?;
             validate_snapshot(&snapshot)?;
             (snapshot, revision)
         } else {
@@ -343,11 +577,11 @@ impl SqliteReadModelStore {
         let transaction = connection
             .transaction()
             .map_err(|_| "native state persistence unavailable")?;
-        if version == 1 {
+        if version > 0 {
             transaction
                 .execute_batch(
                     "ALTER TABLE sanitized_desktop_state
-                       RENAME TO sanitized_desktop_state_v1;",
+                       RENAME TO sanitized_desktop_state_previous;",
                 )
                 .map_err(|_| "native state persistence unavailable")?;
         }
@@ -359,8 +593,8 @@ impl SqliteReadModelStore {
                  );
                  CREATE TABLE sanitized_desktop_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   schema_version INTEGER NOT NULL CHECK (schema_version = 2),
-                   contract_version INTEGER NOT NULL CHECK (contract_version = 2),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 4),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 3),
                    revision TEXT NOT NULL CHECK (
                      length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
                    ),
@@ -381,9 +615,9 @@ impl SqliteReadModelStore {
                 ],
             )
             .map_err(|_| "native state persistence unavailable")?;
-        if version == 1 {
+        if version > 0 {
             transaction
-                .execute_batch("DROP TABLE sanitized_desktop_state_v1;")
+                .execute_batch("DROP TABLE sanitized_desktop_state_previous;")
                 .map_err(|_| "native state persistence unavailable")?;
         }
         transaction
@@ -399,7 +633,7 @@ impl SqliteReadModelStore {
             .map_err(|_| "native state persistence unavailable")
     }
 
-    fn read_from(connection: &Connection) -> Result<SanitizedDesktopStateV2, &'static str> {
+    fn read_from(connection: &Connection) -> Result<SanitizedDesktopStateV3, &'static str> {
         let (schema_version, contract_version, revision, snapshot_json) = connection
             .query_row(
                 "SELECT schema_version, contract_version, revision, snapshot_json
@@ -419,7 +653,7 @@ impl SqliteReadModelStore {
         if schema_version != READ_MODEL_SCHEMA_VERSION || contract_version != CONTRACT_VERSION {
             return Err("native state persistence unavailable");
         }
-        let snapshot: SanitizedDesktopStateV2 = serde_json::from_str(&snapshot_json)
+        let snapshot: SanitizedDesktopStateV3 = serde_json::from_str(&snapshot_json)
             .map_err(|_| "native state persistence unavailable")?;
         validate_snapshot(&snapshot)?;
         if snapshot.revision != revision {
@@ -428,7 +662,7 @@ impl SqliteReadModelStore {
         Ok(snapshot)
     }
 
-    fn commit(&mut self, state: &SanitizedDesktopStateV2) -> Result<(), &'static str> {
+    fn commit(&mut self, state: &SanitizedDesktopStateV3) -> Result<(), &'static str> {
         validate_snapshot(state)?;
         let snapshot_json =
             serde_json::to_string(state).map_err(|_| "native state persistence unavailable")?;
@@ -477,6 +711,7 @@ pub enum RefreshSource {
     NetworkRecovery,
     Schedule,
     ProviderNotification,
+    LocalUsageCatchUp,
 }
 
 impl RefreshSource {
@@ -489,6 +724,7 @@ impl RefreshSource {
             Self::NetworkRecovery => 1 << 4,
             Self::Schedule => 1 << 5,
             Self::ProviderNotification => 1 << 6,
+            Self::LocalUsageCatchUp => 1 << 7,
         }
     }
 }
@@ -505,6 +741,10 @@ impl RefreshSources {
         self.0 & source.bit() != 0
     }
 
+    fn is_only(self, source: RefreshSource) -> bool {
+        self.0 == source.bit()
+    }
+
     fn contains_immediate_request(self) -> bool {
         [
             RefreshSource::Launch,
@@ -512,6 +752,7 @@ impl RefreshSources {
             RefreshSource::Wake,
             RefreshSource::NetworkRecovery,
             RefreshSource::ProviderNotification,
+            RefreshSource::LocalUsageCatchUp,
         ]
         .into_iter()
         .any(|source| self.contains(source))
@@ -519,7 +760,7 @@ impl RefreshSources {
 }
 
 struct CachedProjection {
-    state: Mutex<SanitizedDesktopStateV2>,
+    state: Mutex<SanitizedDesktopStateV3>,
 }
 
 #[derive(Default)]
@@ -533,13 +774,13 @@ struct RevisionSubscribers {
 }
 
 impl CachedProjection {
-    fn new(state: SanitizedDesktopStateV2) -> Self {
+    fn new(state: SanitizedDesktopStateV3) -> Self {
         Self {
             state: Mutex::new(state),
         }
     }
 
-    fn snapshot(&self) -> Result<SanitizedDesktopStateV2, &'static str> {
+    fn snapshot(&self) -> Result<SanitizedDesktopStateV3, &'static str> {
         self.state
             .lock()
             .map(|state| state.clone())
@@ -549,7 +790,7 @@ impl CachedProjection {
     fn commit_refreshed_snapshot(
         &self,
         store: &mut ReadModelStore,
-        mut refreshed: SanitizedDesktopStateV2,
+        mut refreshed: SanitizedDesktopStateV3,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         let cached = self.snapshot()?;
@@ -578,8 +819,8 @@ impl CachedProjection {
     fn commit_snapshot(
         &self,
         store: &mut ReadModelStore,
-        mut refreshed: SanitizedDesktopStateV2,
-        cached: SanitizedDesktopStateV2,
+        mut refreshed: SanitizedDesktopStateV3,
+        cached: SanitizedDesktopStateV3,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         refreshed.contract_version = CONTRACT_VERSION;
@@ -690,13 +931,11 @@ impl RefreshInbox {
         if self.stopping.load(Ordering::Acquire) {
             return Err("refresh coordinator unavailable");
         }
-        if !self.in_flight.load(Ordering::Acquire) {
-            self.record(source);
-            match self.wake.try_send(()) {
-                Ok(()) | Err(TrySendError::Full(())) => {}
-                Err(TrySendError::Disconnected(())) => {
-                    return Err("refresh coordinator unavailable");
-                }
+        self.record(source);
+        match self.wake.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) => {}
+            Err(TrySendError::Disconnected(())) => {
+                return Err("refresh coordinator unavailable");
             }
         }
         if self.stopping.load(Ordering::Acquire) {
@@ -819,6 +1058,7 @@ struct CoordinatorWorker {
     retry_not_before: Option<OffsetDateTime>,
     next_scheduled_at: OffsetDateTime,
     next_network_poll_at: Instant,
+    next_local_usage_catch_up_at: Instant,
     last_network_reachability: Option<bool>,
 }
 
@@ -849,6 +1089,7 @@ impl CoordinatorWorker {
             retry_not_before: None,
             next_scheduled_at,
             next_network_poll_at: Instant::now() + NETWORK_RECOVERY_POLL_INTERVAL,
+            next_local_usage_catch_up_at: Instant::now(),
             last_network_reachability: None,
         }
     }
@@ -860,7 +1101,9 @@ impl CoordinatorWorker {
             let network_wait = self
                 .next_network_poll_at
                 .saturating_duration_since(Instant::now());
-            match wake_receiver.recv_timeout(schedule_wait.min(network_wait)) {
+            let local_usage_wait = self.local_usage_catch_up_wait().unwrap_or(Duration::MAX);
+            match wake_receiver.recv_timeout(schedule_wait.min(network_wait).min(local_usage_wait))
+            {
                 Ok(()) | Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
@@ -873,25 +1116,44 @@ impl CoordinatorWorker {
             if now >= self.next_scheduled_at {
                 self.inbox.record(RefreshSource::Schedule);
             }
+            if self.local_usage_catch_up_is_due() {
+                self.inbox.record(RefreshSource::LocalUsageCatchUp);
+            }
             let sources = self.inbox.take_sources();
             if sources.is_empty() || !self.refresh_is_due(sources, now) {
                 continue;
             }
 
             self.inbox.in_flight.store(true, Ordering::Release);
-            let result = self.refresh_once();
+            let refresh_started = Instant::now();
+            let result = self.refresh_once(sources);
             // User requests that race with admission join this active attempt.
             // A provider notification can arrive after the full read, so keep
             // that source pending for a follow-up merge.
-            let joined_sources = self.inbox.take_sources();
             while wake_receiver.try_recv().is_ok() {}
-            if joined_sources.contains(RefreshSource::ProviderNotification) {
-                self.inbox.record(RefreshSource::ProviderNotification);
+            // Drain first, then take joined sources. A request that arrives
+            // after this take leaves its wake signal queued for the next loop.
+            let joined_sources = self.inbox.take_sources();
+            let manual_follow_up = joined_sources.contains(RefreshSource::Manual)
+                && !sources.contains(RefreshSource::Manual);
+            let provider_follow_up = joined_sources.contains(RefreshSource::ProviderNotification);
+            if provider_follow_up || manual_follow_up {
+                if manual_follow_up {
+                    self.inbox.record(RefreshSource::Manual);
+                }
+                if provider_follow_up {
+                    self.inbox.record(RefreshSource::ProviderNotification);
+                }
                 let _ = self.inbox.wake.try_send(());
             }
             let notice = match result {
                 RefreshRunResult::Completed { failed, notice } => {
-                    self.record_refresh_result(failed, self.clock.now());
+                    if sources.contains(RefreshSource::LocalUsageCatchUp) {
+                        self.record_local_usage_catch_up_result(failed, refresh_started.elapsed());
+                    }
+                    if !sources.is_only(RefreshSource::LocalUsageCatchUp) {
+                        self.record_refresh_result(failed, self.clock.now());
+                    }
                     notice
                 }
                 RefreshRunResult::Cancelled => None,
@@ -901,6 +1163,43 @@ impl CoordinatorWorker {
                 self.subscribers.publish(notice);
             }
         }
+    }
+
+    fn local_usage_catch_up_wait(&self) -> Option<Duration> {
+        self.projection
+            .snapshot()
+            .ok()
+            .filter(|state| {
+                state
+                    .providers
+                    .iter()
+                    .any(|provider| provider.usage.scan_status == UsageScanStatus::Indexing)
+            })
+            .map(|_| {
+                self.next_local_usage_catch_up_at
+                    .saturating_duration_since(Instant::now())
+            })
+    }
+
+    fn local_usage_catch_up_is_due(&self) -> bool {
+        self.local_usage_catch_up_wait()
+            .is_some_and(|wait| wait.is_zero())
+    }
+
+    fn record_local_usage_catch_up_result(&mut self, failed: bool, active_duration: Duration) {
+        let delay = if failed {
+            LOCAL_USAGE_CATCH_UP_ERROR_DELAY
+        } else {
+            active_duration
+                .max(LOCAL_USAGE_CATCH_UP_DEFAULT_ACTIVE)
+                .saturating_mul(4)
+        };
+        self.next_local_usage_catch_up_at = Instant::now() + delay;
+        debug_local_usage_event(&format!(
+            "catch_up_scheduled delay_ms={} active_ms={} failed={failed}",
+            delay.as_millis(),
+            active_duration.as_millis()
+        ));
     }
 
     fn poll_network_if_due(&mut self) {
@@ -918,6 +1217,9 @@ impl CoordinatorWorker {
     }
 
     fn refresh_is_due(&mut self, sources: RefreshSources, now: OffsetDateTime) -> bool {
+        if sources.is_only(RefreshSource::LocalUsageCatchUp) {
+            return true;
+        }
         if let Some(retry_not_before) = self.retry_not_before
             && now < retry_not_before
         {
@@ -938,7 +1240,7 @@ impl CoordinatorWorker {
         sources.contains(RefreshSource::Schedule) && now >= self.next_scheduled_at
     }
 
-    fn refresh_once(&mut self) -> RefreshRunResult {
+    fn refresh_once(&mut self, sources: RefreshSources) -> RefreshRunResult {
         let mut cached = match self.projection.snapshot() {
             Ok(cached) => cached,
             Err(_) => {
@@ -975,7 +1277,7 @@ impl CoordinatorWorker {
                 Err(_) => pre_refresh_failed = true,
             }
         }
-        let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled));
+        let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled), sources);
         let observation = catch_unwind(AssertUnwindSafe(|| {
             self.refresh_adapter.refresh(cached.clone(), &attempt)
         }));
@@ -1061,7 +1363,7 @@ impl NativeCore {
         Self::open_with(
             path,
             Arc::clone(&clock),
-            Arc::new(CodexQuotaRefreshAdapter::production(clock)),
+            production_refresh_adapter(clock, Some(path.to_path_buf())),
         )
     }
 
@@ -1099,7 +1401,7 @@ impl NativeCore {
 
     pub fn unavailable() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let refresh_adapter = Arc::new(CodexQuotaRefreshAdapter::production(Arc::clone(&clock)));
+        let refresh_adapter = production_refresh_adapter(Arc::clone(&clock), None);
         let core = Self::with_components(
             unavailable_state_at(1, clock.now()),
             ReadModelStore::Memory,
@@ -1133,7 +1435,7 @@ impl NativeCore {
     }
 
     fn with_components(
-        state: SanitizedDesktopStateV2,
+        state: SanitizedDesktopStateV3,
         store: ReadModelStore,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
@@ -1172,8 +1474,12 @@ impl NativeCore {
         }
     }
 
-    pub fn panel_state(&self) -> Result<SanitizedDesktopStateV2, &'static str> {
-        self.inner.projection.snapshot()
+    /// Returns the complete panel projection with provider visibility already
+    /// applied by the native policy.
+    pub fn panel_state(&self) -> Result<SanitizedDesktopStateV3, &'static str> {
+        let mut snapshot = self.inner.projection.snapshot()?;
+        snapshot.providers.retain(ProviderPresentation::is_visible);
+        Ok(snapshot)
     }
 
     pub fn set_profile_outcome(
@@ -1263,7 +1569,13 @@ fn read_model_backup_is_valid(
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
         .map_err(|_| "native state persistence unavailable")?;
-    Ok(stored_versions == (source_version, source_version))
+    let expected_contract_version = match source_version {
+        1 => 1,
+        2 => 2,
+        3 | 4 => i64::from(CONTRACT_VERSION),
+        _ => return Ok(false),
+    };
+    Ok(stored_versions == (source_version, expected_contract_version))
 }
 
 fn backup_read_model_before_migration(
@@ -1352,6 +1664,14 @@ impl QuotaLane {
 }
 
 impl ProviderSnapshot {
+    pub(crate) fn provider(&self) -> CodingProvider {
+        match self {
+            Self::Unavailable { provider, .. }
+            | Self::Current { provider, .. }
+            | Self::Stale { provider, .. } => *provider,
+        }
+    }
+
     fn needs_refresh(&self, now: OffsetDateTime) -> bool {
         match self {
             Self::Unavailable { .. } => false,
@@ -1458,6 +1778,11 @@ impl UsageTotal {
                 observed_at,
                 observed_tokens,
                 api_equivalent_cost_usd,
+                trend_percent,
+                trend_previous_tokens,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
             } if timestamp_is_due(observed_at, now) => (
                 Self::Stale {
                     evidence_basis: *evidence_basis,
@@ -1465,6 +1790,11 @@ impl UsageTotal {
                     observed_at: observed_at.clone(),
                     observed_tokens: *observed_tokens,
                     api_equivalent_cost_usd: *api_equivalent_cost_usd,
+                    trend_percent: *trend_percent,
+                    trend_previous_tokens: *trend_previous_tokens,
+                    api_equivalent_cost_basis: api_equivalent_cost_basis.clone(),
+                    api_equivalent_cost_quality: *api_equivalent_cost_quality,
+                    api_equivalent_cost_coverage_percent: *api_equivalent_cost_coverage_percent,
                 },
                 true,
             ),
@@ -1480,21 +1810,49 @@ impl UsageTotal {
     }
 }
 
-fn snapshot_needs_refresh(snapshot: &SanitizedDesktopStateV2, now: OffsetDateTime) -> bool {
+impl ProviderPresentation {
+    fn needs_refresh(&self, now: OffsetDateTime) -> bool {
+        self.quota.needs_refresh(now)
+            || [
+                &self.usage.today,
+                &self.usage.seven_days,
+                &self.usage.thirty_days,
+            ]
+            .into_iter()
+            .any(|usage| usage.needs_refresh(now))
+    }
+
+    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
+        let (quota, quota_changed) = self.quota.transition_at(now);
+        let (usage, usage_changed) = transition_periods_at(&self.usage, now);
+        let mut transitioned = self.clone();
+        transitioned.quota = quota;
+        transitioned.usage = usage;
+        (transitioned, quota_changed || usage_changed)
+    }
+
+    fn next_transition_after(&self, now: OffsetDateTime) -> Option<OffsetDateTime> {
+        self.quota
+            .next_transition_after(now)
+            .into_iter()
+            .chain(
+                [
+                    &self.usage.today,
+                    &self.usage.seven_days,
+                    &self.usage.thirty_days,
+                ]
+                .into_iter()
+                .filter_map(|usage| usage.next_transition_after(now)),
+            )
+            .min()
+    }
+}
+
+fn snapshot_needs_refresh(snapshot: &SanitizedDesktopStateV3, now: OffsetDateTime) -> bool {
     snapshot
         .providers
         .iter()
         .any(|provider| provider.needs_refresh(now))
-        || [
-            &snapshot.usage.codex.today,
-            &snapshot.usage.codex.seven_days,
-            &snapshot.usage.codex.thirty_days,
-            &snapshot.usage.claude.today,
-            &snapshot.usage.claude.seven_days,
-            &snapshot.usage.claude.thirty_days,
-        ]
-        .into_iter()
-        .any(|usage| usage.needs_refresh(now))
 }
 
 fn transition_periods_at(periods: &UsagePeriods, now: OffsetDateTime) -> (UsagePeriods, bool) {
@@ -1503,6 +1861,10 @@ fn transition_periods_at(periods: &UsagePeriods, now: OffsetDateTime) -> (UsageP
     let (thirty_days, thirty_days_changed) = periods.thirty_days.transition_at(now);
     (
         UsagePeriods {
+            scan_status: periods.scan_status,
+            today_scan_status: periods.today_scan_status,
+            seven_day_scan_status: periods.seven_day_scan_status,
+            thirty_day_scan_status: periods.thirty_day_scan_status,
             today,
             seven_days,
             thirty_days,
@@ -1512,71 +1874,160 @@ fn transition_periods_at(periods: &UsagePeriods, now: OffsetDateTime) -> (UsageP
 }
 
 fn transition_snapshot_at(
-    snapshot: &SanitizedDesktopStateV2,
+    snapshot: &SanitizedDesktopStateV3,
     now: OffsetDateTime,
-) -> Option<SanitizedDesktopStateV2> {
-    let (codex, codex_changed) = snapshot.providers[0].transition_at(now);
-    let (claude, claude_changed) = snapshot.providers[1].transition_at(now);
-    let (codex_usage, codex_usage_changed) = transition_periods_at(&snapshot.usage.codex, now);
-    let (claude_usage, claude_usage_changed) = transition_periods_at(&snapshot.usage.claude, now);
-    (codex_changed || claude_changed || codex_usage_changed || claude_usage_changed).then(|| {
+) -> Option<SanitizedDesktopStateV3> {
+    let mut changed = false;
+    let providers = snapshot
+        .providers
+        .iter()
+        .map(|provider| {
+            let (provider, provider_changed) = provider.transition_at(now);
+            changed |= provider_changed;
+            provider
+        })
+        .collect::<Vec<_>>();
+    changed.then(|| {
         let mut transitioned = snapshot.clone();
-        transitioned.providers = [codex, claude];
-        transitioned.usage = UsageByProvider {
-            codex: codex_usage,
-            claude: claude_usage,
-        };
+        transitioned.providers = providers;
+        transitioned.refresh_combined_usage();
         transitioned
     })
 }
 
-fn next_refresh_at(snapshot: &SanitizedDesktopStateV2, now: OffsetDateTime) -> OffsetDateTime {
+fn next_refresh_at(snapshot: &SanitizedDesktopStateV3, now: OffsetDateTime) -> OffsetDateTime {
     let provider_deadline = snapshot
         .providers
         .iter()
         .filter_map(|provider| provider.next_transition_after(now))
         .min();
-    let usage_deadline = [
-        &snapshot.usage.codex.today,
-        &snapshot.usage.codex.seven_days,
-        &snapshot.usage.codex.thirty_days,
-        &snapshot.usage.claude.today,
-        &snapshot.usage.claude.seven_days,
-        &snapshot.usage.claude.thirty_days,
-    ]
-    .into_iter()
-    .filter_map(|usage| usage.next_transition_after(now))
-    .min();
     provider_deadline
-        .into_iter()
-        .chain(usage_deadline)
-        .min()
         .unwrap_or(now + to_time_duration(REFRESH_INTERVAL))
         .min(now + to_time_duration(REFRESH_INTERVAL))
 }
 
-fn validate_snapshot(snapshot: &SanitizedDesktopStateV2) -> Result<(), &'static str> {
+fn validate_snapshot(snapshot: &SanitizedDesktopStateV3) -> Result<(), &'static str> {
     if snapshot.contract_version != CONTRACT_VERSION
         || snapshot.revision.parse::<u64>().is_err()
         || OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339).is_err()
     {
         return Err("native state unavailable");
     }
-    let provider = |snapshot: &ProviderSnapshot| match snapshot {
+    if snapshot.providers.len() != PROVIDER_REGISTRY.len()
+        || snapshot
+            .providers
+            .iter()
+            .map(|presentation| presentation.provider)
+            .ne(PROVIDER_REGISTRY
+                .iter()
+                .map(|descriptor| descriptor.provider))
+    {
+        return Err("native state unavailable");
+    }
+    let quota_provider = |snapshot: &ProviderSnapshot| match snapshot {
         ProviderSnapshot::Unavailable { provider, .. }
         | ProviderSnapshot::Current { provider, .. }
         | ProviderSnapshot::Stale { provider, .. } => *provider,
     };
-    if provider(&snapshot.providers[0]) != CodingProvider::Codex
-        || provider(&snapshot.providers[1]) != CodingProvider::Claude
-    {
+    let mut seen = std::collections::BTreeSet::new();
+    for presentation in &snapshot.providers {
+        if !seen.insert(presentation.provider)
+            || quota_provider(&presentation.quota) != presentation.provider
+            || presentation.display_name != provider_descriptor(presentation.provider).display_name
+        {
+            return Err("native state unavailable");
+        }
+        for usage in [
+            &presentation.usage.today,
+            &presentation.usage.seven_days,
+            &presentation.usage.thirty_days,
+        ] {
+            validate_usage_total(usage)?;
+        }
+    }
+    for usage in [
+        &snapshot.combined_usage.today,
+        &snapshot.combined_usage.seven_days,
+        &snapshot.combined_usage.thirty_days,
+    ] {
+        validate_usage_total(usage)?;
+    }
+    let expected_combined = combine_usage_periods(
+        &snapshot
+            .providers
+            .iter()
+            .filter(|presentation| presentation.is_visible())
+            .map(|presentation| &presentation.usage)
+            .collect::<Vec<_>>(),
+    );
+    if snapshot.combined_usage != expected_combined {
         return Err("native state unavailable");
     }
     Ok(())
 }
 
+fn validate_usage_total(usage: &UsageTotal) -> Result<(), &'static str> {
+    let (UsageTotal::Current {
+        observed_at,
+        api_equivalent_cost_usd,
+        trend_percent,
+        api_equivalent_cost_basis,
+        api_equivalent_cost_quality,
+        api_equivalent_cost_coverage_percent,
+        ..
+    }
+    | UsageTotal::Stale {
+        observed_at,
+        api_equivalent_cost_usd,
+        trend_percent,
+        api_equivalent_cost_basis,
+        api_equivalent_cost_quality,
+        api_equivalent_cost_coverage_percent,
+        ..
+    }) = usage
+    else {
+        return Ok(());
+    };
+    if OffsetDateTime::parse(observed_at, &Rfc3339).is_err()
+        || trend_percent.is_some_and(|value| !value.is_finite())
+    {
+        return Err("native state unavailable");
+    }
+    match (
+        api_equivalent_cost_usd,
+        api_equivalent_cost_basis,
+        api_equivalent_cost_quality,
+        api_equivalent_cost_coverage_percent,
+    ) {
+        (None, None, None, None) => Ok(()),
+        (Some(cost), Some(_), Some(ApiEquivalentCostQuality::Modeled), Some(coverage))
+            if cost.is_finite()
+                && *cost >= 0.0
+                && coverage.is_finite()
+                && (0.0..=100.0).contains(coverage) =>
+        {
+            Ok(())
+        }
+        (Some(cost), Some(_), Some(quality), None)
+            if cost.is_finite()
+                && *cost >= 0.0
+                && matches!(
+                    quality,
+                    ApiEquivalentCostQuality::Reconciled | ApiEquivalentCostQuality::LocalOnly
+                ) =>
+        {
+            Ok(())
+        }
+        _ => Err("native state unavailable"),
+    }
+}
+
 fn unavailable_periods() -> UsagePeriods {
     UsagePeriods {
+        scan_status: UsageScanStatus::Unavailable,
+        today_scan_status: UsageScanStatus::Unavailable,
+        seven_day_scan_status: UsageScanStatus::Unavailable,
+        thirty_day_scan_status: UsageScanStatus::Unavailable,
         today: UsageTotal::Unavailable,
         seven_days: UsageTotal::Unavailable,
         thirty_days: UsageTotal::Unavailable,
@@ -1588,39 +2039,37 @@ fn format_time(now: OffsetDateTime) -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }
 
-pub fn unavailable_state(revision: u64) -> SanitizedDesktopStateV2 {
+pub fn unavailable_state(revision: u64) -> SanitizedDesktopStateV3 {
     unavailable_state_at(revision, OffsetDateTime::now_utc())
 }
 
-fn unavailable_state_at(revision: u64, now: OffsetDateTime) -> SanitizedDesktopStateV2 {
-    SanitizedDesktopStateV2 {
+fn unavailable_state_at(revision: u64, now: OffsetDateTime) -> SanitizedDesktopStateV3 {
+    let providers = PROVIDER_REGISTRY
+        .iter()
+        .map(|descriptor| {
+            let mut presentation = ProviderPresentation::unavailable(descriptor.provider);
+            presentation.presence = detect_provider_presence(descriptor.provider);
+            presentation
+        })
+        .collect::<Vec<_>>();
+    let mut state = SanitizedDesktopStateV3 {
         contract_version: CONTRACT_VERSION,
         generated_at: format_time(now),
         revision: revision.max(1).to_string(),
-        providers: [
-            ProviderSnapshot::Unavailable {
-                provider: CodingProvider::Codex,
-                quota_lanes: [],
-            },
-            ProviderSnapshot::Unavailable {
-                provider: CodingProvider::Claude,
-                quota_lanes: [],
-            },
-        ],
-        usage: UsageByProvider {
-            codex: unavailable_periods(),
-            claude: unavailable_periods(),
-        },
+        providers,
+        combined_usage: unavailable_periods(),
         sync: SyncState {
             status: SyncStatus::Unavailable,
             last_successful_at: None,
         },
         profile: SanitizedProfileOutcome::NotAuthorized,
-    }
+    };
+    state.refresh_combined_usage();
+    state
 }
 
 pub fn native_contract_schema() -> Schema {
-    schema_for!(SanitizedDesktopStateV2)
+    schema_for!(SanitizedDesktopStateV3)
 }
 
 pub fn native_contract_export() -> Value {
@@ -1688,6 +2137,12 @@ mod tests {
                 read_model_backup_partial_path(&self.0, 0),
                 read_model_backup_path(&self.0, 1),
                 read_model_backup_partial_path(&self.0, 1),
+                read_model_backup_path(&self.0, 2),
+                read_model_backup_partial_path(&self.0, 2),
+                read_model_backup_path(&self.0, 3),
+                read_model_backup_partial_path(&self.0, 3),
+                read_model_backup_path(&self.0, 4),
+                read_model_backup_partial_path(&self.0, 4),
             ] {
                 let _ = fs::remove_file(path);
             }
@@ -1718,8 +2173,9 @@ mod tests {
     }
 
     struct ScriptedRefreshSource {
-        responses: Mutex<VecDeque<Result<Option<SanitizedDesktopStateV2>, RefreshFailure>>>,
+        responses: Mutex<VecDeque<Result<Option<SanitizedDesktopStateV3>, RefreshFailure>>>,
         runs: AtomicUsize,
+        local_runs: AtomicUsize,
         completed: AtomicUsize,
         refresh_gate: Option<(usize, Arc<RefreshGate>)>,
         refresh_trigger: Mutex<Option<RefreshTrigger>>,
@@ -1743,11 +2199,12 @@ mod tests {
 
     impl ScriptedRefreshSource {
         fn new(
-            responses: impl IntoIterator<Item = Result<Option<SanitizedDesktopStateV2>, RefreshFailure>>,
+            responses: impl IntoIterator<Item = Result<Option<SanitizedDesktopStateV3>, RefreshFailure>>,
         ) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().collect()),
                 runs: AtomicUsize::new(0),
+                local_runs: AtomicUsize::new(0),
                 completed: AtomicUsize::new(0),
                 refresh_gate: None,
                 refresh_trigger: Mutex::new(None),
@@ -1792,10 +2249,13 @@ mod tests {
 
         fn refresh(
             &self,
-            _cached: SanitizedDesktopStateV2,
+            _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
             attempt.remaining()?;
+            if attempt.is_local_usage_only() {
+                self.local_runs.fetch_add(1, Ordering::SeqCst);
+            }
             let run = self.runs.fetch_add(1, Ordering::SeqCst);
             if let Some((blocked_run, gate)) = &self.refresh_gate
                 && run == *blocked_run
@@ -1848,49 +2308,109 @@ mod tests {
     fn observed_state(
         observed_at: OffsetDateTime,
         observed_tokens: u64,
-    ) -> SanitizedDesktopStateV2 {
+    ) -> SanitizedDesktopStateV3 {
         let observed_at = format_time(observed_at);
-        SanitizedDesktopStateV2 {
+        let codex_usage = UsagePeriods {
+            scan_status: UsageScanStatus::Unavailable,
+            today_scan_status: UsageScanStatus::Unavailable,
+            seven_day_scan_status: UsageScanStatus::Unavailable,
+            thirty_day_scan_status: UsageScanStatus::Unavailable,
+            today: UsageTotal::Current {
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                coverage: UsageCoverage::Complete,
+                observed_at: observed_at.clone(),
+                observed_tokens,
+                api_equivalent_cost_usd: None,
+                trend_percent: None,
+                trend_previous_tokens: None,
+                api_equivalent_cost_basis: None,
+                api_equivalent_cost_quality: None,
+                api_equivalent_cost_coverage_percent: None,
+            },
+            seven_days: UsageTotal::Unavailable,
+            thirty_days: UsageTotal::Unavailable,
+        };
+        let mut state = SanitizedDesktopStateV3 {
             contract_version: CONTRACT_VERSION,
             generated_at: observed_at.clone(),
             revision: "1".to_owned(),
-            providers: [
-                ProviderSnapshot::Current {
+            providers: vec![
+                ProviderPresentation {
                     provider: CodingProvider::Codex,
-                    observed_at: observed_at.clone(),
-                    quota_lanes: vec![QuotaLane {
-                        label: "Weekly limit".to_owned(),
-                        unit: "percent".to_owned(),
-                        allowance: Some(100.0),
-                        remaining: Some(74.0),
-                        reset_at: None,
-                    }],
+                    display_name: "Codex".to_owned(),
+                    presence: ProviderPresenceStatus::Detected,
+                    quota: ProviderSnapshot::Current {
+                        provider: CodingProvider::Codex,
+                        observed_at: observed_at.clone(),
+                        quota_lanes: vec![QuotaLane {
+                            label: "Weekly limit".to_owned(),
+                            unit: "percent".to_owned(),
+                            allowance: Some(100.0),
+                            remaining: Some(74.0),
+                            reset_at: None,
+                        }],
+                    },
+                    usage: codex_usage,
                 },
-                ProviderSnapshot::Unavailable {
+                ProviderPresentation {
                     provider: CodingProvider::Claude,
-                    quota_lanes: [],
+                    display_name: "Claude".to_owned(),
+                    presence: ProviderPresenceStatus::NotDetected,
+                    quota: ProviderSnapshot::Unavailable {
+                        provider: CodingProvider::Claude,
+                        quota_lanes: [],
+                    },
+                    usage: unavailable_periods(),
                 },
             ],
-            usage: UsageByProvider {
-                codex: UsagePeriods {
-                    today: UsageTotal::Current {
-                        evidence_basis: UsageEvidenceBasis::ProviderReported,
-                        coverage: UsageCoverage::Complete,
-                        observed_at: observed_at.clone(),
-                        observed_tokens,
-                        api_equivalent_cost_usd: None,
-                    },
-                    seven_days: UsageTotal::Unavailable,
-                    thirty_days: UsageTotal::Unavailable,
-                },
-                claude: unavailable_periods(),
-            },
+            combined_usage: unavailable_periods(),
             sync: SyncState {
                 status: SyncStatus::Unavailable,
                 last_successful_at: None,
             },
             profile: SanitizedProfileOutcome::NotAuthorized,
+        };
+        state.refresh_combined_usage();
+        state
+    }
+
+    fn legacy_observed_state_value(
+        contract_version: u8,
+        observed_at: OffsetDateTime,
+        observed_tokens: u64,
+    ) -> Value {
+        let state = observed_state(observed_at, observed_tokens);
+        let codex_usage = &state.provider(CodingProvider::Codex).unwrap().usage;
+        let claude_usage = &state.provider(CodingProvider::Claude).unwrap().usage;
+        let mut value = json!({
+            "contractVersion": contract_version,
+            "generatedAt": state.generated_at,
+            "revision": state.revision,
+            "providers": state
+                .providers
+                .iter()
+                .map(|provider| &provider.quota)
+                .collect::<Vec<_>>(),
+            "usage": {
+                "codex": codex_usage,
+                "claude": claude_usage,
+            },
+            "sync": state.sync,
+            "profile": state.profile,
+        });
+        if contract_version == 1 {
+            value.as_object_mut().unwrap().remove("profile");
         }
+        if contract_version <= 2 {
+            for provider in ["codex", "claude"] {
+                let periods = value["usage"][provider].as_object_mut().unwrap();
+                periods.remove("scanStatus");
+                periods.remove("todayScanStatus");
+                periods.remove("sevenDayScanStatus");
+                periods.remove("thirtyDayScanStatus");
+            }
+        }
+        value
     }
 
     fn test_time() -> OffsetDateTime {
@@ -1902,8 +2422,18 @@ mod tests {
         let value = serde_json::to_value(unavailable_state(1)).unwrap();
         assert_eq!(value["contractVersion"], CONTRACT_VERSION);
         assert_eq!(value["revision"], "1");
+        let codex = value["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|provider| provider["provider"] == "codex")
+            .unwrap();
         assert_eq!(
-            value["usage"]["codex"]["today"],
+            codex["usage"]["today"],
+            json!({ "availability": "unavailable" })
+        );
+        assert_eq!(
+            value["combinedUsage"]["today"],
             json!({ "availability": "unavailable" })
         );
         assert!(value.to_string().find("observedTokens").is_none());
@@ -1931,9 +2461,11 @@ mod tests {
         assert_eq!(notice.revision, "2");
         assert_eq!(after.revision, notice.revision);
         assert!(matches!(
-            after.usage.codex.today,
+            &after.provider(CodingProvider::Codex).unwrap().usage.today,
             UsageTotal::Current { .. }
         ));
+        assert_eq!(after.providers.len(), 1);
+        assert!(after.provider(CodingProvider::Claude).is_none());
     }
 
     #[test]
@@ -1972,9 +2504,9 @@ mod tests {
     impl SnapshotRefreshAdapter for BlockingRefreshSource {
         fn refresh(
             &self,
-            _cached: SanitizedDesktopStateV2,
+            _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
             attempt.remaining()?;
             self.runs.fetch_add(1, Ordering::SeqCst);
             self.started.wait();
@@ -2014,6 +2546,85 @@ mod tests {
         assert_eq!(source.runs.load(Ordering::SeqCst), 1);
     }
 
+    struct JoinedManualRefreshSource {
+        started: Barrier,
+        release: Barrier,
+        manual_attempts: Mutex<Vec<bool>>,
+    }
+
+    impl JoinedManualRefreshSource {
+        fn new() -> Self {
+            Self {
+                started: Barrier::new(2),
+                release: Barrier::new(2),
+                manual_attempts: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SnapshotRefreshAdapter for JoinedManualRefreshSource {
+        fn refresh(
+            &self,
+            _cached: SanitizedDesktopStateV3,
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+            let first = {
+                let mut attempts = self
+                    .manual_attempts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                attempts.push(attempt.is_manual());
+                attempts.len() == 1
+            };
+            if first {
+                self.started.wait();
+                self.release.wait();
+            }
+            attempt.remaining()?;
+            Ok(Some(observed_state(test_time(), 42)))
+        }
+    }
+
+    #[test]
+    fn manual_request_joining_non_manual_refresh_runs_as_follow_up() {
+        let source = Arc::new(JoinedManualRefreshSource::new());
+        let core = NativeCore::with_refresh_adapter(source.clone());
+        let notices = core.revision_notices().unwrap();
+
+        assert!(
+            core.request_refresh(RefreshSource::ProviderNotification)
+                .unwrap()
+                .accepted
+        );
+        source.started.wait();
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        source.release.wait();
+
+        notices.recv_timeout(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while source
+            .manual_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            < 2
+            && Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            *source
+                .manual_attempts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![false, true]
+        );
+    }
+
     struct ShutdownRefreshSource {
         started: Barrier,
         cancellation_observed: Barrier,
@@ -2033,9 +2644,9 @@ mod tests {
     impl SnapshotRefreshAdapter for ShutdownRefreshSource {
         fn refresh(
             &self,
-            _cached: SanitizedDesktopStateV2,
+            _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV2>, RefreshFailure> {
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
             self.started.wait();
             while !attempt.is_cancelled() {
                 std::thread::yield_now();
@@ -2141,7 +2752,7 @@ mod tests {
 
         assert_eq!(cached.revision, "2");
         assert!(matches!(
-            cached.usage.codex.today,
+            &cached.provider(CodingProvider::Codex).unwrap().usage.today,
             UsageTotal::Current {
                 observed_tokens: 42,
                 ..
@@ -2152,9 +2763,7 @@ mod tests {
     #[test]
     fn migrates_contract_v1_cache_without_losing_provider_state() {
         let database = TestDatabase::new();
-        let mut legacy = serde_json::to_value(observed_state(test_time(), 42)).unwrap();
-        legacy["contractVersion"] = json!(1);
-        legacy.as_object_mut().unwrap().remove("profile");
+        let legacy = legacy_observed_state_value(1, test_time(), 42);
         let legacy_json = serde_json::to_string(&legacy).unwrap();
         let connection = Connection::open(&database.0).unwrap();
         connection
@@ -2228,7 +2837,11 @@ mod tests {
         assert_eq!(restored.contract_version, CONTRACT_VERSION);
         assert_eq!(restored.profile, SanitizedProfileOutcome::NotAuthorized);
         assert!(matches!(
-            restored.usage.codex.today,
+            &restored
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today,
             UsageTotal::Current {
                 observed_tokens: 42,
                 ..
@@ -2262,6 +2875,147 @@ mod tests {
             fs::read(older_backup).unwrap(),
             b"existing version-zero backup"
         );
+    }
+
+    #[test]
+    fn migrates_v2_cache_without_resetting_the_sanitized_snapshot() {
+        let database = TestDatabase::new();
+        let legacy = legacy_observed_state_value(2, test_time(), 42);
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL CHECK (version >= 1)
+                 );
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 2),
+                   revision TEXT NOT NULL,
+                   snapshot_json TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO touchgrassbar_schema_versions (module, version) VALUES (?1, 2)",
+                [READ_MODEL_SCHEMA_MODULE],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sanitized_desktop_state (
+                   singleton, schema_version, contract_version, revision, snapshot_json
+                 ) VALUES (1, 2, 2, '1', ?1)",
+                [legacy.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let migrated = core.panel_state().unwrap();
+        assert_eq!(migrated.revision, "1");
+        assert!(matches!(
+            &migrated
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        assert_eq!(
+            migrated
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .scan_status,
+            UsageScanStatus::Unavailable
+        );
+        let connection = Connection::open(&database.0).unwrap();
+        let version: i64 = connection
+            .query_row(
+                "SELECT schema_version FROM sanitized_desktop_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, READ_MODEL_SCHEMA_VERSION);
+        assert!(read_model_backup_path(&database.0, 2).is_file());
+    }
+
+    #[test]
+    fn migrates_fixed_v3_cache_to_dynamic_providers_without_a_refresh() {
+        let database = TestDatabase::new();
+        let mut legacy = legacy_observed_state_value(3, test_time(), 42);
+        legacy["usage"]["codex"]["scanStatus"] = json!("complete");
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL CHECK (version >= 1)
+                 );
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 3),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 3),
+                   revision TEXT NOT NULL,
+                   snapshot_json TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO touchgrassbar_schema_versions (module, version) VALUES (?1, 3)",
+                [READ_MODEL_SCHEMA_MODULE],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sanitized_desktop_state (
+                   singleton, schema_version, contract_version, revision, snapshot_json
+                 ) VALUES (1, 3, 3, '1', ?1)",
+                [legacy.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let migrated = core.panel_state().unwrap();
+
+        assert_eq!(migrated.revision, "1");
+        let codex = migrated.provider(CodingProvider::Codex).unwrap();
+        assert_eq!(codex.display_name, "Codex");
+        assert_eq!(codex.usage.scan_status, UsageScanStatus::Complete);
+        assert!(matches!(
+            &codex.usage.today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &migrated.combined_usage.today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        assert!(read_model_backup_path(&database.0, 3).is_file());
     }
 
     #[test]
@@ -2463,13 +3217,55 @@ mod tests {
             "3"
         );
         assert!(matches!(
-            core.panel_state().unwrap().usage.codex.today,
+            &core
+                .panel_state()
+                .unwrap()
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today,
             UsageTotal::Current {
                 observed_tokens: 2,
                 ..
             }
         ));
         assert_eq!(source.runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn any_provider_indexing_starts_an_independent_local_catch_up_pass() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let mut indexing = observed_state(test_time(), 42);
+        let indexing_claude = indexing.provider_mut(CodingProvider::Claude).unwrap();
+        indexing_claude.presence = ProviderPresenceStatus::Detected;
+        indexing_claude.usage.scan_status = UsageScanStatus::Indexing;
+        indexing.refresh_combined_usage();
+        let mut complete = observed_state(test_time(), 42);
+        let complete_claude = complete.provider_mut(CodingProvider::Claude).unwrap();
+        complete_claude.presence = ProviderPresenceStatus::Detected;
+        complete_claude.usage.scan_status = UsageScanStatus::Complete;
+        complete.refresh_combined_usage();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(indexing)),
+            Ok(Some(complete)),
+        ]));
+        let core = NativeCore::open_without_launch(&database.0, clock, source.clone()).unwrap();
+
+        core.request_refresh(RefreshSource::Launch).unwrap();
+        wait_for_completed_runs(&source, 2);
+        wait_for_idle(&core);
+
+        assert_eq!(source.local_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            core.panel_state()
+                .unwrap()
+                .provider(CodingProvider::Claude)
+                .unwrap()
+                .usage
+                .scan_status,
+            UsageScanStatus::Complete
+        );
     }
 
     #[test]
@@ -2519,9 +3315,12 @@ mod tests {
             "3"
         );
         let stale = core.panel_state().unwrap();
-        assert!(matches!(stale.providers[0], ProviderSnapshot::Stale { .. }));
         assert!(matches!(
-            stale.usage.codex.today,
+            &stale.providers[0].quota,
+            ProviderSnapshot::Stale { .. }
+        ));
+        assert!(matches!(
+            &stale.provider(CodingProvider::Codex).unwrap().usage.today,
             UsageTotal::Stale {
                 observed_tokens: 42,
                 ..
@@ -2551,7 +3350,13 @@ mod tests {
             "4"
         );
         assert!(matches!(
-            core.panel_state().unwrap().usage.codex.today,
+            &core
+                .panel_state()
+                .unwrap()
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today,
             UsageTotal::Current {
                 observed_tokens: 43,
                 ..
@@ -2597,7 +3402,7 @@ mod tests {
 
         assert_eq!(transition_notice.unwrap().revision, "3");
         assert!(matches!(
-            state_during_refresh.providers[0],
+            &state_during_refresh.providers[0].quota,
             ProviderSnapshot::Stale { .. }
         ));
     }
@@ -2607,7 +3412,7 @@ mod tests {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
         let mut observed = observed_state(test_time(), 42);
-        if let ProviderSnapshot::Current { quota_lanes, .. } = &mut observed.providers[0] {
+        if let ProviderSnapshot::Current { quota_lanes, .. } = &mut observed.providers[0].quota {
             quota_lanes[0].reset_at = Some(format_time(test_time() + TimeDuration::minutes(2)));
         }
         let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed)), Ok(None)]));
@@ -2642,11 +3447,15 @@ mod tests {
         );
         let after_reset = core.panel_state().unwrap();
         assert!(matches!(
-            after_reset.providers[0],
+            &after_reset.providers[0].quota,
             ProviderSnapshot::Unavailable { .. }
         ));
         assert!(matches!(
-            after_reset.usage.codex.today,
+            &after_reset
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today,
             UsageTotal::Current {
                 observed_tokens: 42,
                 ..

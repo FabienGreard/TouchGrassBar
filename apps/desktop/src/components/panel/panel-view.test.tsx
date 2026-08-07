@@ -150,6 +150,27 @@ describe("panel states", () => {
     expect(markup).toContain("animate-pulse motion-reduce:animate-none");
   });
 
+  test("does not expose internal snapshot diagnostics", () => {
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={null}
+      />,
+    );
+
+    expect(markup).toContain("Local state unavailable");
+    expect(markup).toContain("Local provider state unavailable");
+    expect(markup).toContain('data-slot="loading-panel"');
+    expect(markup).not.toContain('aria-busy="true"');
+    expect(markup).not.toContain("animate-pulse");
+    expect(markup).not.toContain("Nothing invented");
+    expect(markup).not.toContain("native snapshot");
+    expect(markup).not.toContain('role="alert"');
+  });
+
   test("shows the primary update action only when an update is available", async () => {
     const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(
@@ -249,6 +270,144 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
     expect(markup).not.toContain("Doomerboard unavailable");
     expect(markup).not.toContain("My Tokenmaxxers");
+  });
+
+  test("renders the provider visibility selected by the native snapshot", async () => {
+    const hiddenState = await deliveredBrowserFixture("current");
+    hiddenState.providers = hiddenState.providers.filter(
+      (provider) => provider.provider !== "claude",
+    );
+    const hiddenMarkup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={hiddenState}
+      />,
+    );
+    expect(hiddenMarkup).not.toContain('id="claude-heading"');
+
+    const previousValueState = await deliveredBrowserFixture("current");
+    const previousClaude = previousValueState.providers.find(
+      (provider) => provider.provider === "claude",
+    );
+    if (!previousClaude) throw new Error("Claude fixture unavailable");
+    previousClaude.presence = "not-detected";
+    const previousValueMarkup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={previousValueState}
+      />,
+    );
+    expect(previousValueMarkup).toContain('id="claude-heading"');
+  });
+
+  test("shows compact costs without exposing internal quality labels", async () => {
+    const currentState = await deliveredBrowserFixture("current");
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={currentState}
+      />,
+    );
+
+    expect(markup).toContain("-8%");
+    expect(markup).toContain("Down 8 percent from the previous day");
+    expect(markup).toContain("+14%");
+    expect(markup).toContain("+22%");
+    expect(markup).toContain("≈ $38.61");
+    expect(markup).not.toContain(">Reconciled<");
+    expect(markup).not.toContain(">Modeled");
+    expect(markup).not.toContain(">Local only<");
+    expect(markup).toContain("provider-reported token evidence");
+    expect(markup).toContain("complete period coverage");
+    expect(markup).toContain("pricing detail covers the reported tokens");
+    expect(markup).toContain("pricing basis openai-standard-2026-08-06-v1");
+    expect(markup).toContain("width:4%");
+    expect(markup).toContain("width:25%");
+    expect(markup).toContain("width:100%");
+  });
+
+  test("shows a compact indexing state when cost evidence is not ready", async () => {
+    const currentState = await deliveredBrowserFixture("current");
+    currentState.combinedUsage.scanStatus = "indexing";
+    const today = currentState.combinedUsage.today;
+    if (today.availability === "unavailable")
+      throw new Error("fixture unavailable");
+    today.apiEquivalentCostUsd = null;
+    today.apiEquivalentCostBasis = null;
+    today.apiEquivalentCostQuality = null;
+    today.apiEquivalentCostCoveragePercent = null;
+    const sevenDays = currentState.combinedUsage.sevenDays;
+    const thirtyDays = currentState.combinedUsage.thirtyDays;
+    if (
+      sevenDays.availability === "unavailable" ||
+      thirtyDays.availability === "unavailable"
+    )
+      throw new Error("fixture unavailable");
+    sevenDays.apiEquivalentCostQuality = "modeled";
+    sevenDays.apiEquivalentCostCoveragePercent = 80;
+    thirtyDays.apiEquivalentCostQuality = "local-only";
+    thirtyDays.apiEquivalentCostCoveragePercent = null;
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={currentState}
+      />,
+    );
+
+    expect(markup).toContain("Indexing…");
+    expect(markup).toContain("≈ $214.96");
+    expect(markup).toContain("≈ $856.73");
+    expect(markup).not.toContain('data-icon-spin="true"');
+    expect(markup).not.toContain("Finish now");
+    expect(markup).not.toContain("API equivalent unavailable");
+    expect(markup).not.toContain(">Modeled");
+    expect(markup).not.toContain(">Local only<");
+    expect(markup).toContain("cost modeled from 80 percent priced evidence");
+    expect(markup).toContain("cost estimated from local pricing evidence");
+  });
+
+  test("finishes recent cost periods before older periods", async () => {
+    const currentState = await deliveredBrowserFixture("current");
+    currentState.combinedUsage.scanStatus = "indexing";
+    currentState.combinedUsage.todayScanStatus = "complete";
+    currentState.combinedUsage.sevenDayScanStatus = "indexing";
+    currentState.combinedUsage.thirtyDayScanStatus = "indexing";
+    for (const total of [
+      currentState.combinedUsage.today,
+      currentState.combinedUsage.sevenDays,
+      currentState.combinedUsage.thirtyDays,
+    ]) {
+      if (total.availability === "unavailable") continue;
+      total.apiEquivalentCostUsd = null;
+      total.apiEquivalentCostBasis = null;
+      total.apiEquivalentCostQuality = null;
+      total.apiEquivalentCostCoveragePercent = null;
+    }
+
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={currentState}
+      />,
+    );
+
+    expect(markup.match(/Indexing…/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="API equivalent not ready,');
   });
 
   test("announces stale Quota Lanes without hiding their last valid values", async () => {

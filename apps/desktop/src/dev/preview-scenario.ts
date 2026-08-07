@@ -2,7 +2,7 @@ import type { DesktopSurface } from "@/App";
 import {
   codingProviderAccessStates,
   type CodingProviderAccessState,
-} from "@/components/coding-provider-access-state";
+} from "@/components/provider-access/presentation";
 import {
   onboardingSteps,
   type OnboardingStep,

@@ -8,28 +8,36 @@ import {
   tokenmaxxerSchema,
 } from "./index";
 
+const unavailableUsage = {
+  scanStatus: "unavailable",
+  thirtyDays: { availability: "unavailable" },
+  sevenDays: { availability: "unavailable" },
+  today: { availability: "unavailable" },
+} as const;
+
 const unavailableState = {
-  contractVersion: 2,
+  combinedUsage: unavailableUsage,
+  contractVersion: 3,
   generatedAt: "2026-08-03T00:00:00.000Z",
   profile: { status: "not-authorized" },
   revision: "1",
   providers: [
-    { availability: "unavailable", provider: "codex", quotaLanes: [] },
-    { availability: "unavailable", provider: "claude", quotaLanes: [] },
+    {
+      displayName: "Codex",
+      presence: "not-detected",
+      provider: "codex",
+      quota: { availability: "unavailable", provider: "codex", quotaLanes: [] },
+      usage: unavailableUsage,
+    },
+    {
+      displayName: "Claude",
+      presence: "not-detected",
+      provider: "claude",
+      quota: { availability: "unavailable", provider: "claude", quotaLanes: [] },
+      usage: unavailableUsage,
+    },
   ],
   sync: { lastSuccessfulAt: null, status: "unavailable" },
-  usage: {
-    claude: {
-      thirtyDays: { availability: "unavailable" },
-      sevenDays: { availability: "unavailable" },
-      today: { availability: "unavailable" },
-    },
-    codex: {
-      thirtyDays: { availability: "unavailable" },
-      sevenDays: { availability: "unavailable" },
-      today: { availability: "unavailable" },
-    },
-  },
 } as const;
 
 describe("public contracts", () => {
@@ -49,6 +57,24 @@ describe("public contracts", () => {
     expect(JSON.stringify(unavailableState)).not.toContain("observedTokens");
   });
 
+  test("rejects partial API-equivalent cost metadata", () => {
+    const invalid = {
+      ...unavailableState,
+      combinedUsage: {
+        ...unavailableState.combinedUsage,
+        today: {
+          apiEquivalentCostUsd: 1,
+          availability: "current",
+          coverage: "complete",
+          evidenceBasis: "provider-reported",
+          observedAt: "2026-08-03T00:00:00.000Z",
+          observedTokens: 100,
+        },
+      },
+    };
+    expect(sanitizedDesktopStateSchema.safeParse(invalid).success).toBe(false);
+  });
+
   test("accepts only the Rust-owned refresh acknowledgement shape", () => {
     expect(refreshReceiptSchema.parse({ accepted: true })).toEqual({
       accepted: true,
@@ -63,19 +89,19 @@ describe("public contracts", () => {
 
   test("strictly validates the Rust-owned bootstrap and Settings views", () => {
     const providers = [
-      { provider: "codex", status: "detected" },
-      { provider: "claude", status: "not-detected" },
+      { displayName: "Codex", provider: "codex", status: "detected" },
+      { displayName: "Claude", provider: "claude", status: "not-detected" },
     ] as const;
     const bootstrap = {
       bootstrap: "completed",
-      contractVersion: 2,
+      contractVersion: 3,
       displayName: "Fabien",
       persistence: "available",
       profileProvisioning: "profile-pending",
       providers,
     } as const;
     const settings = {
-      contractVersion: 2,
+      contractVersion: 3,
       displayName: "Fabien",
       launchAtLogin: { availability: "available", enabled: true },
       recoveryKeySuffix: "K9m",
@@ -91,7 +117,7 @@ describe("public contracts", () => {
         .success,
     ).toBe(false);
     expect(
-      settingsStateSchema.safeParse({ ...settings, contractVersion: 3 })
+      settingsStateSchema.safeParse({ ...settings, contractVersion: 2 })
         .success,
     ).toBe(false);
     expect(
@@ -103,7 +129,7 @@ describe("public contracts", () => {
   test.each([
     [
       "an unknown contract version",
-      { ...unavailableState, contractVersion: 3 },
+      { ...unavailableState, contractVersion: 2 },
     ],
     [
       "raw provider material",

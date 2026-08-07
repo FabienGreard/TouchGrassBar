@@ -7,13 +7,13 @@ import {
 
 const bootstrapState = {
   bootstrap: "required",
-  contractVersion: 2,
+  contractVersion: 3,
   displayName: null,
   persistence: "available",
   profileProvisioning: "not-authorized",
   providers: [
-    { provider: "codex", status: "detected" },
-    { provider: "claude", status: "not-detected" },
+    { displayName: "Codex", provider: "codex", status: "detected" },
+    { displayName: "Claude", provider: "claude", status: "not-detected" },
   ],
 } as const;
 

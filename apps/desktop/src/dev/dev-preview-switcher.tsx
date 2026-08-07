@@ -17,7 +17,7 @@ import type { BrowserFixtureName } from "@/dev/preview-scenario";
 import {
   codingProviderAccessStates,
   type CodingProviderAccessState,
-} from "@/components/coding-provider-access-state";
+} from "@/components/provider-access/presentation";
 import {
   onboardingSteps,
   type OnboardingStep,
