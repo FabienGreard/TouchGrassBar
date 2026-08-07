@@ -55,6 +55,20 @@ pub fn run_codex_usage_debug_pass(
         .map_err(|()| "Codex usage extraction failed")
 }
 
+#[doc(hidden)]
+pub fn run_claude_quota_debug_pass(
+    database_path: &std::path::Path,
+    seed_fixture: bool,
+) -> Result<String, &'static str> {
+    let now = time::OffsetDateTime::now_utc();
+    if seed_fixture {
+        providers::seed_claude_debug_fixture(database_path, now)
+            .map_err(|()| "Claude quota fixture failed")?;
+    }
+    providers::debug_claude_quota_pass(database_path, now)
+        .map_err(|()| "Claude quota inspection failed")
+}
+
 #[derive(Default)]
 struct PanelActionState {
     add_tokenmaxxer_pending: AtomicBool,

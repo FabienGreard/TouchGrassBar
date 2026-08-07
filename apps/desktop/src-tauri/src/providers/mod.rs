@@ -120,6 +120,31 @@ pub(crate) fn debug_codex_usage_pass(
     codex::debug_usage_pass(database_path, codex_home, now)
 }
 
+pub(crate) fn seed_claude_debug_fixture(
+    database_path: &Path,
+    now: OffsetDateTime,
+) -> Result<(), ()> {
+    claude::seed_debug_fixture(database_path, now)
+}
+
+pub(crate) fn debug_claude_quota_pass(
+    database_path: &Path,
+    now: OffsetDateTime,
+) -> Result<String, ()> {
+    claude::debug_quota_report(database_path, now)
+}
+
+#[cfg(test)]
+pub(crate) fn test_claude_observation_coordinator(
+    clock: Arc<dyn Clock>,
+    database_path: std::path::PathBuf,
+) -> ProviderObservationCoordinator {
+    let claude: Arc<dyn ProviderObservationAdapter> = Arc::new(
+        claude::ClaudeProviderObservationAdapter::production(clock, Some(database_path)),
+    );
+    ProviderObservationCoordinator::new(vec![claude])
+}
+
 impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
     fn install_refresh_trigger(&self, trigger: RefreshTrigger) {
         for adapter in &self.adapters {

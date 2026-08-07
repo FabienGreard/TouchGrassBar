@@ -2579,6 +2579,41 @@ mod tests {
     }
 
     #[test]
+    fn claude_capture_commits_native_panel_revision() {
+        let database = TestDatabase::new();
+        let now = test_time();
+        crate::providers::seed_claude_debug_fixture(&database.0, now).unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(now));
+        let refresh_adapter: Arc<dyn SnapshotRefreshAdapter> =
+            Arc::new(crate::providers::test_claude_observation_coordinator(
+                Arc::clone(&clock),
+                database.0.clone(),
+            ));
+        let core = NativeCore::open_without_launch(&database.0, clock, refresh_adapter).unwrap();
+        let notices = core.revision_notices().unwrap();
+
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        let notice = notices.recv_timeout(Duration::from_secs(1)).unwrap();
+        let panel = core.panel_state().unwrap();
+        let claude = panel.provider(CodingProvider::Claude).unwrap();
+
+        assert_eq!(notice.revision, "2");
+        assert_eq!(panel.revision, notice.revision);
+        let ProviderSnapshot::Current { quota_lanes, .. } = &claude.quota else {
+            panic!("Claude quota did not become current");
+        };
+        assert_eq!(quota_lanes.len(), 2);
+        assert_eq!(quota_lanes[0].label, "5-hour limit");
+        assert_eq!(quota_lanes[0].remaining, Some(76.5));
+        assert_eq!(quota_lanes[1].label, "Weekly limit");
+        assert_eq!(quota_lanes[1].remaining, Some(58.75));
+    }
+
+    #[test]
     fn refresh_drops_closed_notice_receivers_without_rejecting_work() {
         let core = NativeCore::with_refresh_adapter(Arc::new(ScriptedRefreshSource::new([Ok(
             Some(observed_state(test_time(), 42)),

@@ -614,6 +614,58 @@ fn load_quota_observation(
     }))
 }
 
+pub(super) fn seed_debug_fixture(database_path: &Path, now: OffsetDateTime) -> Result<(), ()> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "cost": { "total_api_duration_ms": 1 },
+        "rate_limits": {
+            "five_hour": {
+                "resets_at": (now + time::Duration::hours(4)).unix_timestamp(),
+                "used_percentage": 23.5
+            },
+            "seven_day": {
+                "resets_at": (now + time::Duration::days(6)).unix_timestamp(),
+                "used_percentage": 41.25
+            }
+        },
+        "session_id": "touchgrassbar-debug-fixture"
+    }))
+    .map_err(|_| ())?;
+    capture_status_line_payload(database_path, &payload, now)?
+        .then_some(())
+        .ok_or(())
+}
+
+pub(super) fn debug_quota_report(database_path: &Path, now: OffsetDateTime) -> Result<String, ()> {
+    let Some(observation) = load_quota_observation(database_path, now)? else {
+        return Ok(
+            "[TouchGrassBar][claude-quota-report] availability=unavailable reason=not_observed"
+                .to_owned(),
+        );
+    };
+    if observation.sanitized_snapshot(now).is_err() {
+        return Ok(
+            "[TouchGrassBar][claude-quota-report] availability=unavailable reason=expired_or_invalid"
+                .to_owned(),
+        );
+    }
+    let observed_age_seconds = (now - observation.observed_at).whole_seconds().max(0);
+    let five_hour_reset_seconds =
+        (OffsetDateTime::from_unix_timestamp(observation.five_hour.resets_at).map_err(|_| ())?
+            - now)
+            .whole_seconds();
+    let seven_day_reset_seconds =
+        (OffsetDateTime::from_unix_timestamp(observation.seven_day.resets_at).map_err(|_| ())?
+            - now)
+            .whole_seconds();
+    Ok(format!(
+        "[TouchGrassBar][claude-quota-report] availability=current observed_age_seconds={observed_age_seconds} lane_count=2\n\
+[TouchGrassBar][claude-quota-report] lane=five_hour remaining_percent={:.2} reset_in_seconds={five_hour_reset_seconds}\n\
+[TouchGrassBar][claude-quota-report] lane=seven_day remaining_percent={:.2} reset_in_seconds={seven_day_reset_seconds}",
+        100.0 - observation.five_hour.used_percentage,
+        100.0 - observation.seven_day.used_percentage,
+    ))
+}
+
 #[cfg(any(test, not(debug_assertions)))]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -1189,6 +1241,30 @@ mod tests {
             "/redacted/",
         ] {
             assert!(!serialized.contains(sentinel));
+        }
+    }
+
+    #[test]
+    fn debug_report_distinguishes_missing_and_current_without_private_data() {
+        let fixture = FixtureDirectory::new();
+        let database = fixture.database();
+        assert_eq!(
+            debug_quota_report(&database, test_time()).unwrap(),
+            "[TouchGrassBar][claude-quota-report] availability=unavailable reason=not_observed"
+        );
+
+        assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
+        let report = debug_quota_report(&database, test_time()).unwrap();
+        assert!(report.contains("availability=current observed_age_seconds=0 lane_count=2"));
+        assert!(report.contains("lane=five_hour remaining_percent=76.50 reset_in_seconds=14400"));
+        assert!(report.contains("lane=seven_day remaining_percent=58.75 reset_in_seconds=518400"));
+        for sentinel in [
+            "REDACTED-CREDENTIAL",
+            "REDACTED-PROVIDER-CONTENT",
+            "REDACTED-SESSION",
+            "/redacted/",
+        ] {
+            assert!(!report.contains(sentinel));
         }
     }
 
