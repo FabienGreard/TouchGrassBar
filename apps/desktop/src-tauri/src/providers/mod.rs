@@ -1,3 +1,4 @@
+mod claude;
 mod codex;
 mod registry;
 
@@ -75,10 +76,27 @@ pub(crate) fn production_observation_coordinator(
     clock: Arc<dyn Clock>,
     database_path: Option<std::path::PathBuf>,
 ) -> ProviderObservationCoordinator {
-    let codex: Arc<dyn ProviderObservationAdapter> = Arc::new(
-        codex::CodexProviderObservationAdapter::production(clock, database_path),
+    let codex: Arc<dyn ProviderObservationAdapter> =
+        Arc::new(codex::CodexProviderObservationAdapter::production(
+            Arc::clone(&clock),
+            database_path.clone(),
+        ));
+    let claude: Arc<dyn ProviderObservationAdapter> = Arc::new(
+        claude::ClaudeProviderObservationAdapter::production(clock, database_path),
     );
-    ProviderObservationCoordinator::new(vec![codex])
+    ProviderObservationCoordinator::new(vec![codex, claude])
+}
+
+pub(crate) fn run_claude_status_line_from_args() -> Option<i32> {
+    claude::run_status_line_from_args()
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn configure_claude_status_line(database_path: &Path) -> Result<(), ()> {
+    if detect_provider_presence(CodingProvider::Claude) != ProviderPresenceStatus::Detected {
+        return Ok(());
+    }
+    claude::configure_production_status_line(database_path)
 }
 
 pub(crate) fn debug_codex_usage_pass(

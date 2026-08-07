@@ -801,6 +801,9 @@ fn hide_surface(window: WebviewWindow) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Some(exit_code) = providers::run_claude_status_line_from_args() {
+        std::process::exit(exit_code);
+    }
     let process_started_at = Instant::now();
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
     #[cfg(debug_assertions)]
@@ -894,6 +897,10 @@ pub fn run() {
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
+            #[cfg(not(debug_assertions))]
+            if let Some(path) = database_path.as_deref() {
+                let _ = providers::configure_claude_status_line(path);
+            }
             let core = database_path
                 .as_deref()
                 .and_then(|path| NativeCore::open(path).ok())
