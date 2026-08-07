@@ -48,18 +48,19 @@ the deployment selection. Select cloud development explicitly when needed:
 
 ```sh
 bun convex:login
-bun run --cwd packages/backend convex deployment select dev
+bun convex:switch:dev
 bun env:check
 ```
 
-The Convex CLI writes the three standard values to the root `.env.local`. You
-can also set those values manually from `.env.example`. No package-specific
-environment file is required.
+The switch commands write the selected profile and its target marker to the
+root `.env.local`.
 
-`convex:dev` runs the Convex development command for the selected deployment.
-`convex:prod` deploys the backend to production and requires explicit production
-authority. The backend package also exposes `convex` as a direct Convex CLI
-passthrough, like the desktop package exposes `tauri`.
+`convex:switch:local` fully replaces `.env.local` and selects a local deployment.
+`convex:switch:dev` and `convex:switch:prod` fully replace `.env.local` with the
+selected ignored environment profile. They do not change `.env.dev` or
+`.env.prod`. `convex:deploy` deploys the backend to production and requires
+explicit production authority. The backend package also exposes `convex` as a
+direct Convex CLI passthrough, like the desktop package exposes `tauri`.
 
 Build a real signed development application bundle with no Vite or Convex
 server:

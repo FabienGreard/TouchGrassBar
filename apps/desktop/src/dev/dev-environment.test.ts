@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 
 import { convexCommandEnvironment } from "../../../../scripts/convex-command-environment";
 import { coordinatedProcessExitCode } from "../../../../scripts/coordinated-process-exit";
+import { developmentTarget } from "../../../../scripts/development-environment";
 
 type TurboConfiguration = {
   tasks?: {
@@ -56,6 +57,28 @@ describe("desktop development environment", () => {
     ).toBeUndefined();
   });
 
+  test("classifies the selected Convex environment profile", () => {
+    const cloudUrls = {
+      CONVEX_SITE_URL: "https://example.convex.site",
+      CONVEX_URL: "https://example.convex.cloud",
+    };
+
+    expect(
+      developmentTarget({
+        ...cloudUrls,
+        CONVEX_DEPLOYMENT: "cloud-deployment",
+        TOUCHGRASS_CONVEX_TARGET: "dev",
+      }),
+    ).toBe("cloud development");
+    expect(
+      developmentTarget({
+        ...cloudUrls,
+        CONVEX_DEPLOYMENT: "cloud-deployment",
+        TOUCHGRASS_CONVEX_TARGET: "prod",
+      }),
+    ).toBe("cloud production");
+  });
+
   test("passes the selected Convex service URLs to native builds", () => {
     const configuration = JSON.parse(
       readFileSync(
@@ -94,10 +117,16 @@ describe("desktop development environment", () => {
     expect(packageManifest.scripts?.["convex:login"]).toContain(
       "packages/backend convex login",
     );
-    expect(packageManifest.scripts?.["convex:dev"]).toContain(
-      "packages/backend convex dev",
+    expect(packageManifest.scripts?.["convex:switch:local"]).toBe(
+      "bun setup",
     );
-    expect(packageManifest.scripts?.["convex:prod"]).toContain(
+    expect(packageManifest.scripts?.["convex:switch:dev"]).toBe(
+      "bun scripts/switch-convex-environment.ts dev",
+    );
+    expect(packageManifest.scripts?.["convex:switch:prod"]).toBe(
+      "bun scripts/switch-convex-environment.ts prod",
+    );
+    expect(packageManifest.scripts?.["convex:deploy"]).toContain(
       "packages/backend convex deploy",
     );
     expect(packageManifest.scripts?.reset).toBe("bun scripts/reset.ts");

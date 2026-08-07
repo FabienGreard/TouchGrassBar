@@ -25,14 +25,15 @@ retaining, reviewing, or closing one, use `docs/agents/artifact-lifecycle.md`.
 
 This project uses [Convex](https://convex.dev) as its backend.
 
-Run `bun setup` in a fresh checkout or worktree. It creates a local Convex
-deployment when `.env.local` has no selected deployment. Development commands
+Run `bun setup` in a fresh checkout or worktree. It fully replaces `.env.local`
+and creates or selects a local Convex deployment. Development commands
 must read the root `.env.local` and must not change its deployment selection.
 This keeps each worktree local and prevents an ordinary start command from
 changing a shared cloud deployment. See the [Convex Agent Mode local-backend
 guide](https://docs.convex.dev/cli/agent-mode#local-backend). Use local Convex
-by default. Never select cloud development, run `convex:prod`, or run
-`reset:release` unless the user explicitly authorizes that target and action.
+by default. Never select cloud development or production, run `convex:deploy`,
+or run `reset:release` unless the user explicitly authorizes that target and
+action.
 Never commit `.env.local`, `.convex/`, credentials, signing material, sessions,
 or recovery material.
 

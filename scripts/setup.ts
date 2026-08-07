@@ -203,6 +203,8 @@ if (process.argv.length > 2) {
 }
 
 await installDependencies();
+writeFileSync(localEnvironmentPath, "", { mode: 0o600 });
+chmodSync(localEnvironmentPath, 0o600);
 removeObsoleteEnvironmentAliases();
 let environment = readLocalDevelopmentEnvironment();
 if (!environment.CONVEX_DEPLOYMENT?.trim()) {

@@ -7,6 +7,7 @@ use std::{
 };
 
 use schemars::JsonSchema;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 #[derive(
@@ -107,10 +108,26 @@ fn home_provider_executable_candidates(provider: CodingProvider, home: &Path) ->
     if let Ok(versions) = std::fs::read_dir(home.join(".nvm/versions/node")) {
         let mut version_candidates = versions
             .flatten()
-            .map(|version| version.path().join("bin").join(descriptor.command))
+            .map(|entry| {
+                let version = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.strip_prefix('v'))
+                    .and_then(|name| Version::parse(name).ok());
+                (version, entry.path().join("bin").join(descriptor.command))
+            })
             .collect::<Vec<_>>();
-        version_candidates.sort_by(|left, right| right.cmp(left));
-        candidates.extend(version_candidates);
+        // Try valid NVM versions from newest to oldest. Keep other entries as fallbacks.
+        version_candidates.sort_by(|(left_version, left_path), (right_version, right_path)| {
+            right_version
+                .cmp(left_version)
+                .then_with(|| right_path.cmp(left_path))
+        });
+        candidates.extend(
+            version_candidates
+                .into_iter()
+                .map(|(_, candidate)| candidate),
+        );
     }
     if provider == CodingProvider::Claude {
         candidates.push(home.join(".claude/local/claude"));
@@ -219,6 +236,26 @@ mod tests {
         assert!(
             home_provider_executable_candidates(CodingProvider::Codex, &home.0)
                 .contains(&version_bin.join("codex"))
+        );
+    }
+
+    #[test]
+    fn nvm_candidates_use_descending_semantic_versions() {
+        let home = FixtureHome::new();
+        let versions_root = home.0.join(".nvm/versions/node");
+        for version in ["v9.0.0", "v20.10.0", "v24.0.0", "not-a-version"] {
+            fs::create_dir_all(versions_root.join(version)).unwrap();
+        }
+
+        let candidates = home_provider_executable_candidates(CodingProvider::Claude, &home.0)
+            .into_iter()
+            .filter(|candidate| candidate.starts_with(&versions_root))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            candidates,
+            ["v24.0.0", "v20.10.0", "v9.0.0", "not-a-version"]
+                .map(|version| versions_root.join(version).join("bin/claude"))
         );
     }
 

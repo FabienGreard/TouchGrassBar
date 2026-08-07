@@ -1,14 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const workspaceRoot = resolve(import.meta.dir, "..");
+const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localEnvironmentPath = join(workspaceRoot, ".env.local");
 const profileServiceEnvironmentNames = [
   "CONVEX_SITE_URL",
   "CONVEX_URL",
 ] as const;
 
-type DevelopmentTarget = "cloud development" | "local";
+type DevelopmentTarget = "cloud development" | "cloud production" | "local";
 
 function readLocalDevelopmentEnvironment() {
   if (!existsSync(localEnvironmentPath)) return {};
@@ -61,7 +62,7 @@ function validServiceUrl(
   const expectedSuffix =
     name === "CONVEX_URL" ? ".convex.cloud" : ".convex.site";
   if (url.protocol !== "https:" || !url.hostname.endsWith(expectedSuffix)) {
-    throw new Error("The selected cloud development deployment has an invalid URL.");
+    throw new Error("The selected cloud deployment has an invalid URL.");
   }
 }
 
@@ -75,14 +76,17 @@ function developmentTarget(
   const deployment = environment.CONVEX_DEPLOYMENT!.trim();
   const convexUrl = environment.CONVEX_URL!.trim();
   const siteUrl = environment.CONVEX_SITE_URL!.trim();
+  const selectedCloudTarget = environment.TOUCHGRASS_CONVEX_TARGET?.trim();
   const target: DevelopmentTarget =
     deployment.startsWith("anonymous:") || deployment.startsWith("local:")
       ? "local"
-      : deployment.startsWith("dev:")
+      : deployment.startsWith("dev:") || selectedCloudTarget === "dev"
         ? "cloud development"
+        : selectedCloudTarget === "prod"
+          ? "cloud production"
         : (() => {
             throw new Error(
-              "Development commands accept only a local or cloud development Convex deployment.",
+              "The selected Convex deployment type is unknown.",
             );
           })();
   validServiceUrl("CONVEX_URL", convexUrl, target);
