@@ -46,8 +46,19 @@ fn debug_event(event: &str) {
 #[cfg(not(debug_assertions))]
 fn debug_event(_event: &str) {}
 
-fn capture_stored_event() {
-    eprintln!("[TouchGrassBar][claude-quota] capture_stored lane_count=2");
+const CAPTURE_REJECTED_EVENT: &str = "capture_rejected reason=invalid_or_storage_unavailable";
+const CAPTURE_STORED_EVENT: &str = "capture_stored lane_count=2";
+
+fn report_capture_event(event: &str) {
+    eprintln!("[TouchGrassBar][claude-quota] {event}");
+}
+
+fn capture_diagnostic(result: Result<bool, ()>) -> (bool, Option<&'static str>) {
+    match result {
+        Ok(true) => (true, Some(CAPTURE_STORED_EVENT)),
+        Ok(false) => (false, None),
+        Err(()) => (false, Some(CAPTURE_REJECTED_EVENT)),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -961,20 +972,47 @@ fn run_status_line<R: Read, W: Write>(
     notification_path: &Path,
     upstream: Option<&str>,
     input: R,
+    output: W,
+    now: OffsetDateTime,
+) -> StatusLineOutcome {
+    run_status_line_with_diagnostics(
+        database_path,
+        notification_path,
+        upstream,
+        input,
+        output,
+        now,
+        report_capture_event,
+    )
+}
+
+fn run_status_line_with_diagnostics<R: Read, W: Write>(
+    database_path: &Path,
+    notification_path: &Path,
+    upstream: Option<&str>,
+    input: R,
     mut output: W,
     now: OffsetDateTime,
+    mut report: impl FnMut(&'static str),
 ) -> StatusLineOutcome {
     let mut payload = Zeroizing::new(Vec::new());
     let input_read = input
         .take(MAX_STATUS_LINE_BYTES + 1)
         .read_to_end(&mut payload)
         .is_ok();
-    let captured = input_read
+    let capture_result = if input_read
         && u64::try_from(payload.len()).is_ok_and(|length| length <= MAX_STATUS_LINE_BYTES)
-        && capture_status_line_payload(database_path, &payload, now).unwrap_or(false);
+    {
+        capture_status_line_payload(database_path, &payload, now)
+    } else {
+        Err(())
+    };
+    let (captured, diagnostic) = capture_diagnostic(capture_result);
+    if let Some(diagnostic) = diagnostic {
+        report(diagnostic);
+    }
     if captured {
         send_notification(notification_path);
-        capture_stored_event();
     }
     let Some(upstream) = upstream else {
         return StatusLineOutcome {
@@ -1227,17 +1265,18 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("seven_day");
-        assert!(
-            !run_status_line(
-                &database,
-                &fixture.socket(),
-                None,
-                serde_json::to_vec(&incomplete).unwrap().as_slice(),
-                Vec::new(),
-                test_time() + time::Duration::minutes(2),
-            )
-            .captured
+        let mut diagnostics = Vec::new();
+        let incomplete_outcome = run_status_line_with_diagnostics(
+            &database,
+            &fixture.socket(),
+            None,
+            serde_json::to_vec(&incomplete).unwrap().as_slice(),
+            Vec::new(),
+            test_time() + time::Duration::minutes(2),
+            |event| diagnostics.push(event),
         );
+        assert!(!incomplete_outcome.captured);
+        assert_eq!(diagnostics, [CAPTURE_REJECTED_EVENT]);
 
         let mut unknown_rate_limit: Value = serde_json::from_slice(&status_payload(102)).unwrap();
         unknown_rate_limit["rate_limits"]["unexpected"] = json!({
