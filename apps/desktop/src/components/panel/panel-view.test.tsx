@@ -171,26 +171,35 @@ describe("panel states", () => {
     expect(markup).not.toContain('role="alert"');
   });
 
-  test("shows the primary update action only when an update is available", async () => {
+  test("shows the explicit update sheet only when an update is available", async () => {
     const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(
       <PanelView
         error={false}
         onRefresh={() => undefined}
         onSettings={() => undefined}
-        onUpdate={() => undefined}
+        onDefer={() => undefined}
+        onInstall={() => undefined}
         refreshing={false}
         state={currentState}
-        updateAvailable
+        updateState={{
+          contractVersion: 1,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: {
+            presentation: "sheet",
+            status: "available",
+            version: "1.4.0",
+          },
+        }}
       />,
     );
 
-    expect(markup).toContain('data-slot="update-action"');
+    expect(markup).toContain('data-slot="update-sheet"');
     expect(markup).toContain('data-variant="primary"');
-    expect(markup).toContain('aria-label="Download update"');
-    expect(markup).toContain('data-size="icon"');
-    expect(markup).toContain('data-icon-source="Download04Icon"');
-    expect(markup).not.toContain(">Update</button>");
+    expect(markup).toContain("Fresh grass available.");
+    expect(markup).toContain("Install &amp; Relaunch");
+    expect(markup).not.toContain('role="dialog"');
   });
 
   test("renders the populated development fixture without changing the production fallback", async () => {

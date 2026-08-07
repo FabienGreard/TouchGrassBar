@@ -492,6 +492,14 @@ impl SqliteLifecycleStore {
             .then_some(())
             .ok_or("profile lifecycle unavailable")
     }
+
+    fn flush(&self) -> Result<(), &'static str> {
+        self.connection
+            .lock()
+            .map_err(|_| "lifecycle persistence unavailable")?
+            .execute_batch("PRAGMA wal_checkpoint(FULL);")
+            .map_err(|_| "lifecycle persistence unavailable")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -558,6 +566,13 @@ impl DesktopLifecycle {
                     revision: 0,
                 }),
             }),
+        }
+    }
+
+    pub(crate) fn flush(&self) -> Result<(), &'static str> {
+        match &self.inner.store {
+            LifecycleStore::Persistent(store) => store.flush(),
+            LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
         }
     }
 

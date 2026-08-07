@@ -34,6 +34,9 @@ type NativeContractExport = {
   settingsRecoveryClearEvent: string;
   settingsStateSchema: JsonSchema;
   stateSchema: JsonSchema;
+  updateContractVersion: number;
+  updateStateChangedEvent: string;
+  updateStateSchema: JsonSchema;
 };
 
 const workspaceRoot = new URL("..", import.meta.url).pathname;
@@ -61,6 +64,7 @@ const refreshReceiptSchema = contract.refreshReceiptSchema;
 const revisionNoticeSchema = contract.revisionNoticeSchema;
 const settingsNavigationSchema = contract.settingsNavigationSchema;
 const settingsStateSchema = contract.settingsStateSchema;
+const updateStateSchema = contract.updateStateSchema;
 const definitions = {
   ...(bootstrapStateSchema.$defs ?? {}),
   ...(refreshReceiptSchema.$defs ?? {}),
@@ -68,6 +72,7 @@ const definitions = {
   ...(revisionNoticeSchema.$defs ?? {}),
   ...(settingsNavigationSchema.$defs ?? {}),
   ...(settingsStateSchema.$defs ?? {}),
+  ...(updateStateSchema.$defs ?? {}),
 };
 const schemaName = (name: string) =>
   `${name[0]!.toLowerCase()}${name.slice(1)}Schema`;
@@ -212,6 +217,8 @@ export const REVISION_NOTICE_EVENT = ${JSON.stringify(contract.revisionNoticeEve
 export const SETTINGS_CONTRACT_VERSION = ${JSON.stringify(contract.settingsContractVersion)} as const;
 export const SETTINGS_NAVIGATION_EVENT = ${JSON.stringify(contract.settingsNavigationEvent)} as const;
 export const SETTINGS_RECOVERY_CLEAR_EVENT = ${JSON.stringify(contract.settingsRecoveryClearEvent)} as const;
+export const UPDATE_CONTRACT_VERSION = ${JSON.stringify(contract.updateContractVersion)} as const;
+export const UPDATE_STATE_CHANGED_EVENT = ${JSON.stringify(contract.updateStateChangedEvent)} as const;
 
 ${ordered.map((name) => `export const ${schemaName(name)} = ${renderDefinition(name, definitions[name]!)};`).join("\n")}
 export const bootstrapStateSchema = ${render({ ...bootstrapStateSchema, properties: { ...bootstrapStateSchema.properties, contractVersion: { const: contract.bootstrapContractVersion } } })};
@@ -220,6 +227,7 @@ export const refreshReceiptSchema = ${render(refreshReceiptSchema)};
 export const revisionNoticeSchema = ${render(revisionNoticeSchema)};
 export const settingsNavigationRequestSchema = ${render(settingsNavigationSchema)};
 export const settingsStateSchema = ${render({ ...settingsStateSchema, properties: { ...settingsStateSchema.properties, contractVersion: { const: contract.settingsContractVersion } } })};
+export const updateStateSchema = ${render({ ...updateStateSchema, properties: { ...updateStateSchema.properties, contractVersion: { const: contract.updateContractVersion } } })};
 
 ${ordered.map((name) => `export type ${name} = z.infer<typeof ${schemaName(name)}>;`).join("\n")}
 export type BootstrapState = z.infer<typeof bootstrapStateSchema>;
@@ -228,6 +236,7 @@ export type RefreshReceipt = z.infer<typeof refreshReceiptSchema>;
 export type RevisionNotice = z.infer<typeof revisionNoticeSchema>;
 export type SettingsNavigationRequest = z.infer<typeof settingsNavigationRequestSchema>;
 export type SettingsState = z.infer<typeof settingsStateSchema>;
+export type UpdateState = z.infer<typeof updateStateSchema>;
 `;
 
 const outputPath = `${workspaceRoot}packages/contracts/src/native.generated.ts`;

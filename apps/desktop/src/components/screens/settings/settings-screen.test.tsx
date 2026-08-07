@@ -129,9 +129,9 @@ describe("settings screen", () => {
 
     expect(generalMarkup).toContain("Not connected in this build.");
     expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(
-      2,
+      1,
     );
-    expect(generalMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Check now/);
+    expect(generalMarkup).toContain("Updater unavailable.");
     expect(generalMarkup).toMatch(
       /<button[^>]*disabled=""[^>]*>View on GitHub/,
     );

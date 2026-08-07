@@ -6,7 +6,10 @@ import {
   NativeWindowNavItem,
   NativeWindowSidebar,
 } from "@touchgrass/ui";
-import type { ProfileProvisioningStatus } from "@touchgrass/contracts";
+import type {
+  ProfileProvisioningStatus,
+  UpdateState,
+} from "@touchgrass/contracts";
 import { useState } from "react";
 
 import { CodingProviderAccessCard } from "@/components/provider-access/card";
@@ -39,19 +42,21 @@ const settingsSectionDetails: Record<
   },
 };
 type SettingsScreenProps = {
-  autoUpdates?: boolean | null | undefined;
   busyProviders?: boolean | undefined;
   launchAtLogin?: boolean | null | undefined;
   launchAtLoginSaving?: boolean | undefined;
-  onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
   onCheckProviders?: (() => void) | undefined;
   onCheckForUpdates?: (() => void) | undefined;
+  onDeferUpdate?: (() => void) | undefined;
+  onInstallUpdate?: (() => void) | undefined;
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
+  onOpenLatestDmg?: (() => void) | undefined;
   onOpenSource?: (() => void) | undefined;
   onProfileDisplayNameChange?: ((displayName: string) => void) | undefined;
   onHideRecoveryKey?: (() => void) | undefined;
   onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
+  onRetryUpdate?: (() => void) | undefined;
   onSectionChange?: ((section: SettingsSection) => void) | undefined;
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
@@ -60,22 +65,25 @@ type SettingsScreenProps = {
   recoveryKey?: string | null | undefined;
   revealingRecoveryKey?: boolean | undefined;
   section?: SettingsSection | undefined;
+  updateState?: UpdateState | null | undefined;
 };
 
 function SettingsScreen({
-  autoUpdates = null,
   busyProviders = false,
   launchAtLogin = null,
   launchAtLoginSaving = false,
-  onAutoUpdatesChange,
   onCheckProviders,
   onCheckForUpdates,
+  onDeferUpdate,
+  onInstallUpdate,
   onLaunchAtLoginChange,
+  onOpenLatestDmg,
   onOpenSource,
   onProfileDisplayNameChange,
   onHideRecoveryKey,
   onRevealRecoveryKey,
   onStartRecovery,
+  onRetryUpdate,
   onSectionChange,
   pendingDisplayName = null,
   profile = null,
@@ -84,6 +92,7 @@ function SettingsScreen({
   recoveryKey = null,
   revealingRecoveryKey = false,
   section: controlledSection,
+  updateState = null,
 }: SettingsScreenProps) {
   const [localSection, setLocalSection] = useState<SettingsSection>(() =>
     typeof window === "undefined"
@@ -120,7 +129,7 @@ function SettingsScreen({
           ))}
         </NativeWindowNav>
         <small className="mt-auto px-2 font-mono text-[9px] text-sheet-muted">
-          Version 0.0.0
+          Version {updateState?.currentVersion ?? "unavailable"}
         </small>
       </NativeWindowSidebar>
 
@@ -155,10 +164,13 @@ function SettingsScreen({
                   Version and update checks.
                 </p>
                 <UpdatesSettings
-                  autoUpdates={autoUpdates}
-                  onAutoUpdatesChange={onAutoUpdatesChange}
                   onCheckForUpdates={onCheckForUpdates}
+                  onDefer={onDeferUpdate}
+                  onInstall={onInstallUpdate}
+                  onOpenLatestDmg={onOpenLatestDmg}
                   onOpenSource={onOpenSource}
+                  onRetry={onRetryUpdate}
+                  state={updateState}
                 />
               </section>
             </div>

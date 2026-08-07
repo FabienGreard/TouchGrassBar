@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { UpdateState } from "@touchgrass/contracts";
 
 import { App } from "@/App";
 import "@/dev/dev-preview.css";
@@ -18,9 +19,26 @@ import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-de
 
 document.documentElement.dataset.desktopPreview = "true";
 
+const availableUpdate: UpdateState = {
+  contractVersion: 1,
+  currentVersion: "1.3.2",
+  onlineFeaturesPaused: false,
+  update: {
+    presentation: "sheet",
+    status: "available",
+    version: "1.4.0",
+  },
+};
+
+const currentUpdate: UpdateState = {
+  contractVersion: 1,
+  currentVersion: "1.3.2",
+  onlineFeaturesPaused: false,
+  update: { status: "idle" },
+};
+
 function DevPreviewApp() {
   const [devInstance] = useState(currentDevInstance);
-  const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [profile, setProfile] = useState({
@@ -49,7 +67,8 @@ function DevPreviewApp() {
         currentProfile,
         doomerboardRows: currentDoomerboardRows,
         tokenmaxxerRows: myTokenmaxxerRows,
-        updateAvailable: scenario.fixture === "update",
+        updateState:
+          scenario.fixture === "update" ? availableUpdate : currentUpdate,
         usagePresentation: currentUsagePresentation,
       }
     : undefined;
@@ -88,12 +107,13 @@ function DevPreviewApp() {
         <App
           hasNativeRuntime={false}
           settings={{
-            autoUpdates,
             launchAtLogin,
-            onAutoUpdatesChange: setAutoUpdates,
             onCheckProviders: () => undefined,
             onCheckForUpdates: () => undefined,
+            onDeferUpdate: () => undefined,
+            onInstallUpdate: () => undefined,
             onLaunchAtLoginChange: setLaunchAtLogin,
+            onOpenLatestDmg: () => undefined,
             onOpenSource: () => undefined,
             onProfileDisplayNameChange: (displayName) =>
               setProfile((current) => ({ ...current, displayName })),
@@ -115,6 +135,8 @@ function DevPreviewApp() {
                 state: scenario.settingsProviderState,
               },
             ],
+            updateState:
+              scenario.fixture === "update" ? availableUpdate : currentUpdate,
           }}
           surface="settings"
         />

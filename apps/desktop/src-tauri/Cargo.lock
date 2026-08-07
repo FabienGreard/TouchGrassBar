@@ -4728,6 +4728,7 @@ dependencies = [
  "schemars 1.2.2",
  "security-framework",
  "security-framework-sys",
+ "semver",
  "serde",
  "serde_json",
  "tauri",

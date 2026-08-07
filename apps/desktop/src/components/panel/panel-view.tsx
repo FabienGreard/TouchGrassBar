@@ -1,6 +1,7 @@
 import type {
   ProviderPresentation,
   SanitizedDesktopState,
+  UpdateState,
 } from "@touchgrass/contracts";
 import { PanelShell } from "@touchgrass/ui";
 import { useRef } from "react";
@@ -18,8 +19,9 @@ import {
   UsageOverview,
   type UsagePresentation,
 } from "@/components/panel/usage-overview";
+import { UpdateExperience, type UpdateActions } from "@/update/update-experience";
 
-type PanelViewProps = {
+type PanelViewProps = UpdateActions & {
   addTokenmaxxerOpen?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
@@ -28,11 +30,10 @@ type PanelViewProps = {
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
   onRefresh: () => void;
   onSettings: () => void;
-  onUpdate?: (() => void) | undefined;
   refreshing: boolean;
   state: SanitizedDesktopState | null;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
-  updateAvailable?: boolean | undefined;
+  updateState?: UpdateState | null | undefined;
   usagePresentation?: UsagePresentation | undefined;
 };
 
@@ -45,11 +46,15 @@ function PanelView({
   onAddTokenmaxxerOpenChange = () => undefined,
   onRefresh,
   onSettings,
-  onUpdate = () => undefined,
+  onCheck,
+  onDefer,
+  onInstall,
+  onOpenLatestDmg,
+  onRetry,
   refreshing,
   state,
   tokenmaxxerRows,
-  updateAvailable = false,
+  updateState = null,
   usagePresentation,
 }: PanelViewProps) {
   const panelContainerRef = useRef<HTMLElement>(null);
@@ -63,10 +68,17 @@ function PanelView({
           onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
           onRefresh={onRefresh}
           onSettings={onSettings}
-          onUpdate={onUpdate}
           refreshing={refreshing}
           state={state}
-          updateAvailable={updateAvailable}
+        />
+        <UpdateExperience
+          onCheck={onCheck}
+          onDefer={onDefer}
+          onInstall={onInstall}
+          onOpenLatestDmg={onOpenLatestDmg}
+          onRetry={onRetry}
+          state={updateState}
+          surface="panel"
         />
 
         {!state ? (

@@ -1,44 +1,32 @@
 import { Button } from "@touchgrass/ui";
+import type { UpdateState } from "@touchgrass/contracts";
 
-import { SettingsToggleRow } from "./settings-toggle-row";
+import { UpdateExperience, type UpdateActions } from "@/update/update-experience";
 
 function UpdatesSettings({
-  autoUpdates,
-  onAutoUpdatesChange,
+  onCheck,
+  onDefer,
+  onInstall,
+  onOpenLatestDmg,
   onCheckForUpdates,
   onOpenSource,
-}: {
-  autoUpdates: boolean | null;
-  onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
+  onRetry,
+  state,
+}: UpdateActions & {
   onCheckForUpdates?: (() => void) | undefined;
   onOpenSource?: (() => void) | undefined;
+  state: UpdateState | null;
 }) {
   return (
     <div className="grid gap-3" data-slot="updates-settings">
-      <div className="flex items-center justify-between gap-6 rounded-[12px] bg-white/38 px-4 py-3.5">
-        <span>
-          <strong className="block text-[12px]">Version 0.0.0</strong>
-          <small className="mt-0.5 block text-[9px] text-sheet-muted">
-            Development build
-          </small>
-        </span>
-        <Button
-          disabled={onCheckForUpdates === undefined}
-          onClick={onCheckForUpdates}
-          type="button"
-          variant="ghost"
-        >
-          Check now
-        </Button>
-      </div>
-      <SettingsToggleRow
-        checked={autoUpdates ?? false}
-        disabled={autoUpdates === null}
-        label="Check automatically"
-        onCheckedChange={onAutoUpdatesChange}
-        {...(autoUpdates === null
-          ? { description: "Not connected in this build." }
-          : {})}
+      <UpdateExperience
+        onCheck={onCheck ?? onCheckForUpdates}
+        onDefer={onDefer}
+        onInstall={onInstall}
+        onOpenLatestDmg={onOpenLatestDmg}
+        onRetry={onRetry}
+        state={state}
+        surface="settings"
       />
       <div className="flex items-center justify-between gap-6 border-t border-sheet-line px-4 pt-3">
         <span>
