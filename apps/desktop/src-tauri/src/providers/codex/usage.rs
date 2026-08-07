@@ -36,10 +36,10 @@ const PREFIX_ANCHOR_SAMPLE_BYTES: u64 = 1_024;
 const LOCAL_USAGE_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
-const ROLLOUT_PARSER_VERSION: i64 = 7;
+const ROLLOUT_PARSER_VERSION: i64 = 8;
 const UNKNOWN_MODEL: &str = "__unknown__";
 const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
-const USAGE_INDEX_SCHEMA_VERSION: i64 = 1;
+const USAGE_INDEX_SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -893,6 +893,7 @@ fn add_delta(
 fn scan_rollout_reader(
     reader: impl BufRead,
     cutoff: Date,
+    today: Date,
     days: &mut BTreeMap<Date, LocalUsageDay>,
 ) -> bool {
     let mut state = RolloutScanState::default();
@@ -926,7 +927,10 @@ fn scan_rollout_reader(
             }
         };
         let day = utc_ranking_day(timestamp);
-        let in_retention = day >= cutoff;
+        if day > today {
+            continue;
+        }
+        let in_retention = day >= cutoff && day <= today;
         match header.record_type.as_str() {
             "session_meta" => {
                 let Ok(line) = serde_json::from_slice::<RawSessionMetaLine>(&line) else {
@@ -1062,7 +1066,8 @@ struct FileCursor {
     modified_ns: i64,
     parsed_offset: u64,
     parsed_prefix_anchor: Option<String>,
-    completion_state: String,
+    completion_state: FileCompletionState,
+    deferred_until_day: Option<Date>,
     parser_version: i64,
     parser_state: RolloutScanState,
 }
@@ -1073,18 +1078,72 @@ struct StoredFileSummary {
     size: u64,
     modified_ns: i64,
     parsed_offset: u64,
-    completion_state: String,
+    completion_state: FileCompletionState,
+    deferred_until_day: Option<Date>,
     parser_version: i64,
 }
 
 impl StoredFileSummary {
-    fn needs_work(&self, identity: &str, size: u64, modified_ns: i64) -> bool {
+    fn needs_work(&self, identity: &str, size: u64, modified_ns: i64, today: Date) -> bool {
+        let position_is_settled = (self.parsed_offset == size
+            && self.completion_state.is_terminal())
+            || (self.parsed_offset < size
+                && self.completion_state.is_deferred()
+                && self.deferred_until_day.is_some_and(|day| day > today));
         self.parser_version != ROLLOUT_PARSER_VERSION
             || self.identity != identity
             || self.size != size
             || self.modified_ns != modified_ns
-            || self.parsed_offset != size
-            || !matches!(self.completion_state.as_str(), "complete" | "error")
+            || !position_is_settled
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FileCompletionState {
+    Complete,
+    Error,
+    Indexing,
+    DiscardingOverlongLine,
+    Deferred,
+    DeferredError,
+    Unknown,
+}
+
+impl FileCompletionState {
+    fn from_stored(value: &str) -> Self {
+        match value {
+            "complete" => Self::Complete,
+            "error" => Self::Error,
+            "indexing" => Self::Indexing,
+            "discarding-overlong-line" => Self::DiscardingOverlongLine,
+            "deferred" => Self::Deferred,
+            "deferred-error" => Self::DeferredError,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn as_stored(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Error => "error",
+            Self::Indexing => "indexing",
+            Self::DiscardingOverlongLine => "discarding-overlong-line",
+            Self::Deferred => "deferred",
+            Self::DeferredError => "deferred-error",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn has_parser_error(self) -> bool {
+        matches!(self, Self::Error | Self::DeferredError)
+    }
+
+    fn is_deferred(self) -> bool {
+        matches!(self, Self::Deferred | Self::DeferredError)
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(self, Self::Complete | Self::Error)
     }
 }
 
@@ -1181,39 +1240,43 @@ fn mark_model_day_incomplete(
 fn process_index_line(
     line: &[u8],
     cutoff: Date,
+    today: Date,
     record_ordinal: u64,
     state: &mut RolloutScanState,
     rows: &mut BTreeMap<ModelDayKey, ModelDayDelta>,
-) -> bool {
+) -> IndexLineOutcome {
     if line.len() > MAX_ROLLOUT_LINE_BYTES {
         debug_parser_failure("line_too_large", None);
-        return false;
+        return IndexLineOutcome::Processed(false);
     }
     let header: RawRolloutHeader = match serde_json::from_slice(line) {
         Ok(header) => header,
         Err(_) => {
             debug_parser_failure("header_schema", None);
-            return false;
+            return IndexLineOutcome::Processed(false);
         }
     };
     let timestamp = match parse_rollout_timestamp(&header.timestamp) {
         Ok(timestamp) => timestamp,
         Err(_) => {
             debug_parser_failure("timestamp", None);
-            return false;
+            return IndexLineOutcome::Processed(false);
         }
     };
     let _ = header.payload;
     let day = utc_ranking_day(timestamp);
-    let in_retention = day >= cutoff;
-    match header.record_type.as_str() {
+    if day > today {
+        return IndexLineOutcome::DeferredUntil(day);
+    }
+    let in_retention = day >= cutoff && day <= today;
+    let processed = match header.record_type.as_str() {
         "session_meta" => {
             let Ok(line) = serde_json::from_slice::<RawSessionMetaLine>(line) else {
                 if in_retention {
                     mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
                 }
                 debug_parser_failure("session_meta_schema", in_retention.then_some(day));
-                return false;
+                return IndexLineOutcome::Processed(false);
             };
             let _ = (line.timestamp, line.record_type);
             if apply_session_metadata(state, line.payload).is_err() {
@@ -1230,7 +1293,7 @@ fn process_index_line(
                     mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
                 }
                 debug_parser_failure("turn_context_schema", in_retention.then_some(day));
-                return false;
+                return IndexLineOutcome::Processed(false);
             };
             let _ = (line.timestamp, line.record_type);
             state.active_model =
@@ -1238,7 +1301,7 @@ fn process_index_line(
             if in_retention && state.active_model.is_none() {
                 mark_model_day_incomplete(rows, timestamp, None);
                 debug_parser_failure("model_name", Some(day));
-                return false;
+                return IndexLineOutcome::Processed(false);
             }
             true
         }
@@ -1248,11 +1311,11 @@ fn process_index_line(
                     mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
                 }
                 debug_parser_failure("event_schema", in_retention.then_some(day));
-                return false;
+                return IndexLineOutcome::Processed(false);
             };
             let _ = (line.timestamp, line.record_type);
             let RawEventPayload::TokenCount { info, rate_limits } = line.payload else {
-                return true;
+                return IndexLineOutcome::Processed(true);
             };
             let _ = (
                 info.last_token_usage,
@@ -1264,7 +1327,7 @@ fn process_index_line(
                     mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
                 }
                 debug_parser_failure("schema_not_initialized", in_retention.then_some(day));
-                return false;
+                return IndexLineOutcome::Processed(false);
             }
             let current = info.total_token_usage;
             let delta = match state.previous {
@@ -1274,7 +1337,7 @@ fn process_index_line(
                 }
                 None if state.baseline_is_inherited == Some(true) => {
                     state.previous = Some(current);
-                    return true;
+                    return IndexLineOutcome::Processed(true);
                 }
                 None => {
                     state.previous = Some(current);
@@ -1282,7 +1345,7 @@ fn process_index_line(
                         mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
                     }
                     debug_parser_failure("baseline", in_retention.then_some(day));
-                    return false;
+                    return IndexLineOutcome::Processed(false);
                 }
             };
             state.previous = Some(current);
@@ -1292,7 +1355,7 @@ fn process_index_line(
                     .history_start_ordinal
                     .is_some_and(|history_start| record_ordinal < history_start)
             {
-                return true;
+                return IndexLineOutcome::Processed(true);
             }
             match delta.and_then(|delta| {
                 add_model_day_delta(rows, timestamp, state.active_model.as_deref(), delta)
@@ -1306,7 +1369,13 @@ fn process_index_line(
             }
         }
         _ => true,
-    }
+    };
+    IndexLineOutcome::Processed(processed)
+}
+
+enum IndexLineOutcome {
+    Processed(bool),
+    DeferredUntil(Date),
 }
 
 fn usage_index_schema_version(connection: &Connection) -> Result<i64, ()> {
@@ -1439,6 +1508,7 @@ fn ensure_index_schema(
                parsed_prefix_anchor TEXT,
                parser_version INTEGER NOT NULL,
                completion_state TEXT NOT NULL,
+               deferred_until_day TEXT,
                active_model TEXT,
                baseline_is_inherited INTEGER,
                history_start_ordinal INTEGER,
@@ -1525,6 +1595,17 @@ fn ensure_index_schema(
             )
             .map_err(|_| ())?;
     }
+    if !file_columns
+        .iter()
+        .any(|column| column == "deferred_until_day")
+    {
+        transaction
+            .execute(
+                "ALTER TABLE codex_usage_files ADD COLUMN deferred_until_day TEXT",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
     let has_pricing_fingerprint = table_columns(&transaction, "codex_usage_file_model_days")?
         .iter()
         .any(|column| column == "pricing_fingerprint");
@@ -1594,10 +1675,12 @@ fn from_i64(value: i64) -> Result<u64, ()> {
     u64::try_from(value).map_err(|_| ())
 }
 
-fn reprice_index(connection: &Connection) -> Result<bool, ()> {
+fn reprice_index(connection: &Connection, cutoff: Date, today: Date) -> Result<bool, ()> {
     reprice_index_batch_with_manifest(
         connection,
         pricing_manifest().ok_or(())?,
+        cutoff,
+        today,
         REPRICE_ROWS_PER_PASS,
     )
 }
@@ -1606,8 +1689,16 @@ fn reprice_index(connection: &Connection) -> Result<bool, ()> {
 fn reprice_index_with_manifest(
     connection: &Connection,
     manifest: &PricingManifest,
+    cutoff: Date,
+    today: Date,
 ) -> Result<(), ()> {
-    while !reprice_index_batch_with_manifest(connection, manifest, REPRICE_ROWS_PER_PASS)? {}
+    while !reprice_index_batch_with_manifest(
+        connection,
+        manifest,
+        cutoff,
+        today,
+        REPRICE_ROWS_PER_PASS,
+    )? {}
     Ok(())
 }
 
@@ -1696,6 +1787,8 @@ fn ensure_file_day_summaries(connection: &Connection) -> Result<(), ()> {
 fn reprice_index_batch_with_manifest(
     connection: &Connection,
     manifest: &PricingManifest,
+    cutoff: Date,
+    today: Date,
     max_rows: usize,
 ) -> Result<bool, ()> {
     let completed_fingerprint = connection
@@ -1742,14 +1835,19 @@ fn reprice_index_batch_with_manifest(
                     cache_write_input_tokens, output_tokens, reasoning_output_tokens,
                     observed_tokens, pricing_basis, pricing_fingerprint
              FROM codex_usage_file_model_days
-             WHERE rowid > ?1
+             WHERE rowid > ?1 AND day >= ?2 AND day <= ?3
              ORDER BY rowid
-             LIMIT ?2",
+             LIMIT ?4",
         )
         .map_err(|_| ())?;
     let rows = statement
         .query_map(
-            params![cursor, i64::try_from(max_rows).map_err(|_| ())?],
+            params![
+                cursor,
+                cutoff.to_string(),
+                today.to_string(),
+                i64::try_from(max_rows).map_err(|_| ())?
+            ],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -1883,6 +1981,7 @@ fn reprice_index_batch_with_manifest(
 fn prune_expired_index(
     connection: &Connection,
     cutoff: Date,
+    today: Date,
     cutoff_modified_ns: i64,
 ) -> Result<bool, ()> {
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
@@ -1890,10 +1989,12 @@ fn prune_expired_index(
         .execute(
             "DELETE FROM codex_usage_file_model_days
              WHERE rowid IN (
-               SELECT rowid FROM codex_usage_file_model_days WHERE day < ?1 LIMIT ?2
+               SELECT rowid FROM codex_usage_file_model_days
+               WHERE day < ?1 OR day > ?2 LIMIT ?3
              )",
             params![
                 cutoff.to_string(),
+                today.to_string(),
                 i64::try_from(PRUNE_ROWS_PER_PASS).map_err(|_| ())?
             ],
         )
@@ -1903,10 +2004,12 @@ fn prune_expired_index(
         .execute(
             "DELETE FROM codex_usage_file_days
              WHERE rowid IN (
-               SELECT rowid FROM codex_usage_file_days WHERE day < ?1 LIMIT ?2
+               SELECT rowid FROM codex_usage_file_days
+               WHERE day < ?1 OR day > ?2 LIMIT ?3
              )",
             params![
                 cutoff.to_string(),
+                today.to_string(),
                 i64::try_from(PRUNE_ROWS_PER_PASS).map_err(|_| ())?
             ],
         )
@@ -1921,13 +2024,14 @@ fn prune_expired_index(
                WHERE f.modified_ns < ?1
                  AND NOT EXISTS (
                    SELECT 1 FROM codex_usage_file_model_days d
-                   WHERE d.path = f.path AND d.day >= ?2
+                   WHERE d.path = f.path AND d.day >= ?2 AND d.day <= ?3
                  )
-               LIMIT ?3
+               LIMIT ?4
              )",
             params![
                 cutoff_modified_ns,
                 cutoff.to_string(),
+                today.to_string(),
                 i64::try_from(PRUNE_ROWS_PER_PASS).map_err(|_| ())?
             ],
         )
@@ -2047,7 +2151,7 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
     connection
         .prepare(
             "SELECT path, file_identity, size_bytes, modified_ns, parsed_offset,
-                    completion_state, parser_version
+                    completion_state, parser_version, deferred_until_day
              FROM codex_usage_files",
         )
         .map_err(|_| ())?
@@ -2060,8 +2164,13 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
                     modified_ns: row.get(3)?,
                     parsed_offset: from_i64(row.get(4)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    completion_state: row.get(5)?,
+                    completion_state: FileCompletionState::from_stored(&row.get::<_, String>(5)?),
                     parser_version: row.get(6)?,
+                    deferred_until_day: row
+                        .get::<_, Option<String>>(7)?
+                        .map(|value| parse_ranking_day(&value))
+                        .transpose()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
             ))
         })
@@ -2078,7 +2187,7 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                     record_ordinal, usage_excluded, schema_supported, parser_version,
                     previous_input, previous_cached_input, previous_cache_write_input,
                     previous_output, previous_reasoning_output, previous_total,
-                    parsed_prefix_anchor
+                    parsed_prefix_anchor, deferred_until_day
              FROM codex_usage_files WHERE path = ?1",
             [path],
             |row| {
@@ -2110,7 +2219,12 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                     parsed_offset: from_i64(row.get(3)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     parsed_prefix_anchor: row.get(18)?,
-                    completion_state: row.get(4)?,
+                    completion_state: FileCompletionState::from_stored(&row.get::<_, String>(4)?),
+                    deferred_until_day: row
+                        .get::<_, Option<String>>(19)?
+                        .map(|value| parse_ranking_day(&value))
+                        .transpose()
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     parser_version: row.get(11)?,
                     parser_state: RolloutScanState {
                         active_model: row.get(5)?,
@@ -2156,8 +2270,8 @@ fn commit_file_progress(
                record_ordinal, usage_excluded, schema_supported,
                previous_input, previous_cached_input, previous_cache_write_input,
                previous_output, previous_reasoning_output, previous_total,
-               parsed_prefix_anchor
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+               parsed_prefix_anchor, deferred_until_day
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
              ON CONFLICT(path) DO UPDATE SET
                file_identity=excluded.file_identity, size_bytes=excluded.size_bytes,
                modified_ns=excluded.modified_ns, parsed_offset=excluded.parsed_offset,
@@ -2173,7 +2287,8 @@ fn commit_file_progress(
                previous_output=excluded.previous_output,
                previous_reasoning_output=excluded.previous_reasoning_output,
                previous_total=excluded.previous_total,
-               parsed_prefix_anchor=excluded.parsed_prefix_anchor",
+               parsed_prefix_anchor=excluded.parsed_prefix_anchor,
+               deferred_until_day=excluded.deferred_until_day",
             params![
                 path,
                 cursor.identity,
@@ -2181,7 +2296,7 @@ fn commit_file_progress(
                 cursor.modified_ns,
                 to_i64(cursor.parsed_offset)?,
                 ROLLOUT_PARSER_VERSION,
-                cursor.completion_state,
+                cursor.completion_state.as_stored(),
                 cursor.parser_state.active_model,
                 cursor.parser_state.baseline_is_inherited,
                 cursor
@@ -2224,6 +2339,7 @@ fn commit_file_progress(
                     .map(|usage| to_i64(usage.total))
                     .transpose()?,
                 cursor.parsed_prefix_anchor,
+                cursor.deferred_until_day.map(|day| day.to_string()),
             ],
         )
         .map_err(|_| ())?;
@@ -2362,6 +2478,7 @@ fn index_file(
     connection: &Connection,
     path: &Path,
     cutoff: Date,
+    today: Date,
     started: Instant,
     max_millis: u128,
     remaining_bytes: &mut u64,
@@ -2384,6 +2501,8 @@ fn index_file(
             || size < cursor.size
             || size < cursor.parsed_offset
             || (size == cursor.size && modified_ns != cursor.modified_ns)
+            || cursor.completion_state == FileCompletionState::Unknown
+            || cursor.completion_state.is_deferred() != cursor.deferred_until_day.is_some()
     });
     let prefix_matches = if metadata_requires_rebuild {
         true
@@ -2402,7 +2521,7 @@ fn index_file(
         && cursor.parsed_offset == size
         && cursor.size == size
         && cursor.modified_ns == modified_ns
-        && matches!(cursor.completion_state.as_str(), "complete" | "error")
+        && cursor.completion_state.is_terminal()
     {
         return Ok(true);
     }
@@ -2415,7 +2534,8 @@ fn index_file(
         modified_ns,
         parsed_offset: 0,
         parsed_prefix_anchor: None,
-        completion_state: "indexing".to_owned(),
+        completion_state: FileCompletionState::Indexing,
+        deferred_until_day: None,
         parser_version: ROLLOUT_PARSER_VERSION,
         parser_state: RolloutScanState::default(),
     });
@@ -2427,9 +2547,11 @@ fn index_file(
         .map_err(|_| ())?;
     let mut reader = BufReader::new(file);
     let mut rows = BTreeMap::new();
-    let mut parser_complete =
-        cursor.completion_state != "error" && cursor.completion_state != "discarding-overlong-line";
-    let mut discarding_overlong_line = cursor.completion_state == "discarding-overlong-line";
+    let mut parser_complete = !cursor.completion_state.has_parser_error()
+        && cursor.completion_state != FileCompletionState::DiscardingOverlongLine;
+    let mut discarding_overlong_line =
+        cursor.completion_state == FileCompletionState::DiscardingOverlongLine;
+    let mut deferred_until_day = None;
     loop {
         if cursor.parser_state.exclude_usage {
             cursor.parsed_offset = size;
@@ -2474,36 +2596,60 @@ fn index_file(
             }
             break;
         }
-        *remaining_bytes -= bytes;
-        cursor.parsed_offset = cursor.parsed_offset.checked_add(bytes).ok_or(())?;
         line.pop();
         if line.last() == Some(&b'\r') {
             line.pop();
         }
-        if !line.is_empty() {
+        if line.is_empty() {
+            *remaining_bytes -= bytes;
+            cursor.parsed_offset = cursor.parsed_offset.checked_add(bytes).ok_or(())?;
+        } else {
             let record_ordinal = cursor.parser_state.record_ordinal;
-            cursor.parser_state.record_ordinal =
-                cursor.parser_state.record_ordinal.saturating_add(1);
-            parser_complete &= process_index_line(
+            match process_index_line(
                 &line,
                 cutoff,
+                today,
                 record_ordinal,
                 &mut cursor.parser_state,
                 &mut rows,
-            );
+            ) {
+                IndexLineOutcome::Processed(processed) => {
+                    cursor.parser_state.record_ordinal =
+                        cursor.parser_state.record_ordinal.saturating_add(1);
+                    parser_complete &= processed;
+                    *remaining_bytes -= bytes;
+                    cursor.parsed_offset = cursor.parsed_offset.checked_add(bytes).ok_or(())?;
+                }
+                IndexLineOutcome::DeferredUntil(day) => {
+                    deferred_until_day = Some(day);
+                    debug_usage_event(&format!("rollout_deferred until={day}"));
+                    break;
+                }
+            }
         }
     }
-    cursor.completion_state = if discarding_overlong_line && cursor.parsed_offset < size {
-        "discarding-overlong-line"
+    let is_deferred = deferred_until_day.is_some();
+    cursor.completion_state = if deferred_until_day.is_some() {
+        if parser_complete {
+            FileCompletionState::Deferred
+        } else {
+            FileCompletionState::DeferredError
+        }
+    } else if discarding_overlong_line && cursor.parsed_offset < size {
+        FileCompletionState::DiscardingOverlongLine
     } else if cursor.parsed_offset == size {
-        if parser_complete { "complete" } else { "error" }
+        if parser_complete {
+            FileCompletionState::Complete
+        } else {
+            FileCompletionState::Error
+        }
     } else {
-        "indexing"
-    }
-    .to_owned();
+        FileCompletionState::Indexing
+    };
+    cursor.deferred_until_day = deferred_until_day;
     cursor.parsed_prefix_anchor = parsed_prefix_anchor(path, cursor.parsed_offset)?;
     commit_file_progress(connection, &path_value, &cursor, rows)?;
-    Ok(cursor.parsed_offset == size)
+    Ok(cursor.parsed_offset == size || is_deferred)
 }
 
 fn read_indexed_usage(
@@ -2521,7 +2667,8 @@ fn read_indexed_usage(
             "SELECT d.day, SUM(d.observed_tokens),
                     SUM(d.priced_tokens),
                     SUM(d.cost_usd),
-                    MIN(CASE WHEN f.completion_state = 'complete' AND d.complete = 1
+                    MIN(CASE WHEN f.completion_state IN ('complete', 'deferred')
+                                      AND d.complete = 1
                              THEN 1 ELSE 0 END),
                     MAX(d.observed_through),
                     MAX(d.priced_observed_through)
@@ -2575,8 +2722,12 @@ fn read_indexed_usage(
     let (latest_pending_modified_ns, latest_error_modified_ns, has_excluded_files) = connection
         .query_row(
             "SELECT
-               MAX(CASE WHEN completion_state NOT IN ('complete', 'error') THEN modified_ns END),
-               MAX(CASE WHEN completion_state = 'error' THEN modified_ns END),
+               MAX(CASE WHEN completion_state NOT IN (
+                                'complete', 'error', 'deferred', 'deferred-error'
+                              )
+                        THEN modified_ns END),
+               MAX(CASE WHEN completion_state IN ('error', 'deferred-error')
+                        THEN modified_ns END),
                COALESCE(MAX(usage_excluded), 0)
              FROM codex_usage_files
              WHERE modified_ns >= ?1",
@@ -2640,8 +2791,9 @@ fn index_local_usage_with_budget(
     let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
     let cutoff_modified_ns =
         i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).ok()?;
-    let retention_complete = prune_expired_index(&connection, cutoff, cutoff_modified_ns).ok()?;
-    let pricing_complete = reprice_index(&connection).ok()?;
+    let retention_complete =
+        prune_expired_index(&connection, cutoff, today, cutoff_modified_ns).ok()?;
+    let pricing_complete = retention_complete && reprice_index(&connection, cutoff, today).ok()?;
     let summaries_complete = pricing_complete && ensure_file_day_summaries(&connection).is_ok();
     if !retention_complete || !pricing_complete || !summaries_complete {
         debug_usage_event(&format!(
@@ -2690,9 +2842,9 @@ fn index_local_usage_with_budget(
         let identity = file_identity(&metadata);
         let path_value = path.to_string_lossy().into_owned();
         let needs_work = modified_ns >= cutoff_modified_ns
-            && stored_files
-                .get(&path_value)
-                .is_none_or(|stored| stored.needs_work(&identity, metadata.len(), modified_ns));
+            && stored_files.get(&path_value).is_none_or(|stored| {
+                stored.needs_work(&identity, metadata.len(), modified_ns, today)
+            });
         ordered_files.push((needs_work, identity, modified_ns, metadata.len(), path));
     }
     ordered_files.sort_by_key(|entry| (!entry.0, std::cmp::Reverse(entry.2)));
@@ -2730,6 +2882,7 @@ fn index_local_usage_with_budget(
             &connection,
             path,
             cutoff,
+            today,
             started,
             max_millis,
             &mut file_remaining_bytes,
@@ -2752,8 +2905,12 @@ fn index_local_usage_with_budget(
     let (error_files, pending_files, excluded_files) = connection
         .query_row(
             "SELECT
-               COALESCE(SUM(CASE WHEN completion_state = 'error' THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN completion_state NOT IN ('complete', 'error') THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state IN ('error', 'deferred-error')
+                                 THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state NOT IN (
+                                          'complete', 'error', 'deferred', 'deferred-error'
+                                        )
+                                 THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN usage_excluded = 1 THEN 1 ELSE 0 END), 0)
              FROM codex_usage_files WHERE parser_version = ?1 AND modified_ns >= ?2",
             params![ROLLOUT_PARSER_VERSION, cutoff_modified_ns],
@@ -2801,7 +2958,7 @@ fn index_local_usage_with_budget(
             let path_value = path.to_string_lossy();
             indexed_files
                 .get(path_value.as_ref())
-                .is_none_or(|stored| stored.needs_work(identity, *size, *modified_ns))
+                .is_none_or(|stored| stored.needs_work(identity, *size, *modified_ns, today))
         })
         .filter_map(|(_, _, modified_ns, _, _)| {
             OffsetDateTime::from_unix_timestamp_nanos(i128::from(*modified_ns)).ok()
@@ -2953,12 +3110,18 @@ fn render_debug_usage_report(
     let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
     let cutoff_modified_ns =
         i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).map_err(|_| ())?;
-    let (complete_files, pending_files, error_files, excluded_files) = connection
+    let (complete_files, deferred_files, pending_files, error_files, excluded_files) = connection
         .query_row(
             "SELECT
                COALESCE(SUM(CASE WHEN completion_state = 'complete' THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN completion_state NOT IN ('complete', 'error') THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN completion_state = 'error' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state IN ('deferred', 'deferred-error')
+                                 THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state NOT IN (
+                                          'complete', 'error', 'deferred', 'deferred-error'
+                                        )
+                                 THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state IN ('error', 'deferred-error')
+                                 THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN usage_excluded = 1 THEN 1 ELSE 0 END), 0)
              FROM codex_usage_files WHERE parser_version = ?1 AND modified_ns >= ?2",
             params![ROLLOUT_PARSER_VERSION, cutoff_modified_ns],
@@ -2968,13 +3131,14 @@ fn render_debug_usage_report(
                     row.get::<_, u64>(1)?,
                     row.get::<_, u64>(2)?,
                     row.get::<_, u64>(3)?,
+                    row.get::<_, u64>(4)?,
                 ))
             },
         )
         .map_err(|_| ())?;
     let manifest = pricing_manifest();
     let mut lines = vec![format!(
-        "[TouchGrassBar][codex-usage-report] retention_days={} pricing_basis={} account_observed_at={} scan={:?} today_scan={:?} seven_day_scan={:?} thirty_day_scan={:?} complete_files={complete_files} pending_files={pending_files} error_files={error_files} excluded_inherited_files={excluded_files}",
+        "[TouchGrassBar][codex-usage-report] retention_days={} pricing_basis={} account_observed_at={} scan={:?} today_scan={:?} seven_day_scan={:?} thirty_day_scan={:?} complete_files={complete_files} deferred_files={deferred_files} pending_files={pending_files} error_files={error_files} excluded_inherited_files={excluded_files}",
         LOCAL_USAGE_RETENTION_DAYS,
         manifest.map_or("unavailable", |manifest| manifest.basis.as_str()),
         account.map_or_else(
@@ -3371,7 +3535,13 @@ mod tests {
         let connection = Connection::open(&fixture.database).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE codex_usage_index_meta (
+                "CREATE TABLE touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL
+                 );
+                 INSERT INTO touchgrassbar_schema_versions(module, version)
+                 VALUES('codex-usage-index', 1);
+                 CREATE TABLE codex_usage_index_meta (
                    key TEXT PRIMARY KEY NOT NULL,
                    value TEXT NOT NULL
                  );
@@ -3432,6 +3602,7 @@ mod tests {
             "record_ordinal",
             "usage_excluded",
             "parsed_prefix_anchor",
+            "deferred_until_day",
         ] {
             assert!(file_columns.iter().any(|column| column == required));
         }
@@ -3452,13 +3623,13 @@ mod tests {
             1
         );
 
-        let backup_path = usage_index_backup_path(&fixture.database, 0);
+        let backup_path = usage_index_backup_path(&fixture.database, 1);
         assert!(backup_path.is_file());
         assert!(!usage_index_backup_partial_path(&fixture.database, 0).exists());
         let backup =
             Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
                 .unwrap();
-        assert_eq!(usage_index_schema_version(&backup).unwrap(), 0);
+        assert_eq!(usage_index_schema_version(&backup).unwrap(), 1);
         assert_eq!(
             backup
                 .query_row("SELECT COUNT(*) FROM codex_usage_files", [], |row| {
@@ -3530,6 +3701,101 @@ mod tests {
         assert!(cursor.0 > first_cursor.0);
         assert_eq!(cursor.0, cursor.2);
         assert_eq!(cursor.3, "complete");
+    }
+
+    #[test]
+    fn sqlite_index_defers_a_future_record_and_resumes_it_on_its_utc_day() {
+        let fixture = TempUsage::new();
+        let future = json!({
+            "timestamp": "2026-08-07T10:01:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 70,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 100
+                    },
+                    "model_context_window": 1_050_000,
+                    "total_token_usage": {
+                        "input_tokens": 140,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 60,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 200
+                    }
+                },
+                "rate_limits": null
+            }
+        });
+        fs::write(&fixture.rollout, format!("{}{future}\n", root_rollout(100))).unwrap();
+        let first_now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+
+        let first = index_local_usage_at(&fixture.database, &fixture.root, first_now).unwrap();
+        assert_eq!(first.scan_status, UsageScanStatus::Complete);
+        assert_eq!(first.daily[&first_now.date()].observed_tokens, 100);
+        assert!(first.daily[&first_now.date()].complete);
+        let connection = Connection::open(&fixture.database).unwrap();
+        let deferred: (i64, i64, String, Option<String>) = connection
+            .query_row(
+                "SELECT size_bytes, parsed_offset, completion_state, deferred_until_day
+                 FROM codex_usage_files",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert!(deferred.1 < deferred.0);
+        assert_eq!(deferred.2, "deferred");
+        assert_eq!(deferred.3.as_deref(), Some("2026-08-07"));
+        drop(connection);
+
+        let second_now = first_now + Duration::days(1);
+        let second = index_local_usage_at(&fixture.database, &fixture.root, second_now).unwrap();
+        assert_eq!(second.scan_status, UsageScanStatus::Complete);
+        assert_eq!(second.daily[&first_now.date()].observed_tokens, 100);
+        assert_eq!(second.daily[&second_now.date()].observed_tokens, 100);
+        let connection = Connection::open(&fixture.database).unwrap();
+        let completed: (i64, i64, String, Option<String>) = connection
+            .query_row(
+                "SELECT size_bytes, parsed_offset, completion_state, deferred_until_day
+                 FROM codex_usage_files",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(completed.0, completed.1);
+        assert_eq!(completed.2, "complete");
+        assert_eq!(completed.3, None);
+    }
+
+    #[test]
+    fn sqlite_index_preserves_a_parser_error_while_a_future_record_is_deferred() {
+        let fixture = TempUsage::new();
+        let future = r#"{"timestamp":"2026-08-07T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":0,"output_tokens":30,"reasoning_output_tokens":0,"total_tokens":100},"model_context_window":1050000,"total_token_usage":{"input_tokens":140,"cached_input_tokens":0,"output_tokens":60,"reasoning_output_tokens":0,"total_tokens":200}},"rate_limits":null}}"#;
+        fs::write(
+            &fixture.rollout,
+            format!("{}not-json\n{future}\n", root_rollout(100)),
+        )
+        .unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(indexed.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+        assert!(!indexed.daily[&now.date()].complete);
+        let connection = Connection::open(&fixture.database).unwrap();
+        let state: (String, Option<String>) = connection
+            .query_row(
+                "SELECT completion_state, deferred_until_day FROM codex_usage_files",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state.0, "deferred-error");
+        assert_eq!(state.1.as_deref(), Some("2026-08-07"));
     }
 
     #[test]
@@ -3894,7 +4160,7 @@ mod tests {
             )
             .unwrap();
         let changed = changed_pricing_manifest("test-price-basis-v2", 60.0);
-        reprice_index_with_manifest(&connection, &changed).unwrap();
+        reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
         let after: (i64, i64, i64, i64, i64, i64, f64, String) = connection
             .query_row(
                 "SELECT f.parsed_offset, d.input_tokens, d.cached_input_tokens,
@@ -3954,7 +4220,7 @@ mod tests {
             )
             .unwrap();
         let changed = changed_pricing_manifest("openai-standard-2026-08-06-v1", 60.0);
-        reprice_index_with_manifest(&connection, &changed).unwrap();
+        reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
         let after: (i64, i64, f64) = connection
             .query_row(
                 "SELECT f.parsed_offset, d.observed_tokens, d.cost_usd
@@ -4058,7 +4324,7 @@ mod tests {
             .unwrap();
 
         let changed = changed_pricing_manifest("openai-standard-2026-08-06-v1", 60.0);
-        reprice_index_with_manifest(&connection, &changed).unwrap();
+        reprice_index_with_manifest(&connection, &changed, day, day).unwrap();
 
         let repriced = connection
             .prepare("SELECT model FROM repriced_model_days ORDER BY model")
@@ -4101,7 +4367,7 @@ mod tests {
         value["basis"] = json!("test-basis-only-v2");
         let changed = parse_pricing_manifest(&value.to_string()).unwrap();
 
-        reprice_index_with_manifest(&connection, &changed).unwrap();
+        reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
 
         let after: (i64, i64, f64, String) = connection
             .query_row(
@@ -4116,6 +4382,65 @@ mod tests {
         assert_eq!(before.2, after.2, "numeric prices did not change");
         assert_ne!(before.3, after.3, "stored basis must be refreshed");
         assert_eq!(after.3, "test-basis-only-v2");
+    }
+
+    #[test]
+    fn repricing_ignores_model_days_outside_the_retention_window() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let path: String = connection
+            .query_row("SELECT path FROM codex_usage_files", [], |row| row.get(0))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO codex_usage_file_model_days(
+                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                   observed_tokens, cost_usd, pricing_basis, pricing_fingerprint,
+                   complete, observed_through
+                 ) VALUES (?1, '2026-07-07', 'gpt-5.6-sol', 70, 70, 20, 0, 30, 10,
+                           100, 123.0, 'old-basis', 'old-rule', 1,
+                           '2026-07-07T12:00:00Z')",
+                [path.as_str()],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE repriced_days(day TEXT NOT NULL);
+                 CREATE TEMP TRIGGER record_repriced_day
+                 AFTER UPDATE OF cost_usd ON codex_usage_file_model_days
+                 BEGIN
+                   INSERT INTO repriced_days(day) VALUES(NEW.day);
+                 END;",
+            )
+            .unwrap();
+
+        let changed = changed_pricing_manifest("test-retained-price-v2", 60.0);
+        let cutoff = Date::from_calendar_date(2026, Month::July, 8).unwrap();
+        reprice_index_with_manifest(&connection, &changed, cutoff, now.date()).unwrap();
+
+        let repriced = connection
+            .prepare("SELECT day FROM repriced_days ORDER BY day")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(repriced, vec!["2026-08-06"]);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT cost_usd FROM codex_usage_file_model_days
+                     WHERE day = '2026-07-07'",
+                    [],
+                    |row| row.get::<_, f64>(0),
+                )
+                .unwrap(),
+            123.0
+        );
     }
 
     #[test]
@@ -4136,7 +4461,28 @@ mod tests {
                    observed_tokens, cost_usd, pricing_basis, complete, observed_through
                  ) VALUES (?1, '2026-01-01', 'gpt-5.6-sol', 7, 7, 0, 0, 3, 0, 10,
                            0.000125, 'old-basis', 1, '2026-01-01T12:00:00Z')",
-                [path],
+                [path.as_str()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO codex_usage_file_model_days(
+                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                   observed_tokens, cost_usd, pricing_basis, complete, observed_through
+                 ) VALUES (?1, '2026-08-07', 'gpt-5.6-sol', 7, 7, 0, 0, 3, 0, 10,
+                           0.000125, 'future-basis', 1, '2026-08-07T12:00:00Z')",
+                [path.as_str()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO codex_usage_file_days(
+                   path, day, observed_tokens, priced_tokens, cost_usd, complete,
+                   observed_through, priced_observed_through
+                 ) VALUES (?1, '2026-08-07', 10, 10, 0.000125, 1,
+                           '2026-08-07T12:00:00Z', '2026-08-07T12:00:00Z')",
+                [path.as_str()],
             )
             .unwrap();
         connection
@@ -4152,14 +4498,26 @@ mod tests {
 
         index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
         let connection = Connection::open(&fixture.database).unwrap();
-        let expired_rows: i64 = connection
+        let out_of_window_rows: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM codex_usage_file_model_days WHERE day < '2026-07-08'",
+                "SELECT COUNT(*) FROM codex_usage_file_model_days
+                 WHERE day < '2026-07-08' OR day > '2026-08-06'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(expired_rows, 0);
+        assert_eq!(out_of_window_rows, 0);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM codex_usage_file_days
+                     WHERE day < '2026-07-08' OR day > '2026-08-06'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -4352,10 +4710,35 @@ mod tests {
         let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
         let mut days = BTreeMap::new();
 
-        assert!(scan_rollout_reader(fixture.as_bytes(), day, &mut days));
+        assert!(scan_rollout_reader(fixture.as_bytes(), day, day, &mut days));
         assert_eq!(days[&day].observed_tokens, 300);
         assert!(days[&day].complete);
         assert!(days[&day].api_equivalent_cost_usd.is_some());
+    }
+
+    #[test]
+    fn rollout_scan_excludes_future_ranking_days() {
+        let fixture = concat!(
+            r#"{"timestamp":"2026-08-06T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.145.0"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":100},"model_context_window":1050000,"total_token_usage":{"input_tokens":70,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":100}},"rate_limits":null}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-07T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"new_total":200},"rate_limits":null}}"#,
+            "\n",
+        );
+        let today = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        let mut days = BTreeMap::new();
+
+        assert!(scan_rollout_reader(
+            fixture.as_bytes(),
+            today,
+            today,
+            &mut days
+        ));
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[&today].observed_tokens, 100);
     }
 
     #[test]
@@ -4373,7 +4756,7 @@ mod tests {
         let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
         let mut days = BTreeMap::new();
 
-        assert!(scan_rollout_reader(fixture.as_bytes(), day, &mut days));
+        assert!(scan_rollout_reader(fixture.as_bytes(), day, day, &mut days));
         assert!(days.is_empty());
     }
 
@@ -4392,7 +4775,7 @@ mod tests {
         let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
         let mut days = BTreeMap::new();
 
-        assert!(scan_rollout_reader(fixture.as_bytes(), day, &mut days));
+        assert!(scan_rollout_reader(fixture.as_bytes(), day, day, &mut days));
         assert!(days.is_empty());
     }
 
@@ -4411,7 +4794,7 @@ mod tests {
         let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
         let mut days = BTreeMap::new();
 
-        assert!(scan_rollout_reader(fixture.as_bytes(), day, &mut days));
+        assert!(scan_rollout_reader(fixture.as_bytes(), day, day, &mut days));
         assert_eq!(days[&day].observed_tokens, 100);
     }
 
@@ -4430,7 +4813,12 @@ mod tests {
         let cutoff = Date::from_calendar_date(2026, Month::August, 6).unwrap();
         let mut days = BTreeMap::new();
 
-        assert!(scan_rollout_reader(fixture.as_bytes(), cutoff, &mut days));
+        assert!(scan_rollout_reader(
+            fixture.as_bytes(),
+            cutoff,
+            cutoff,
+            &mut days
+        ));
         assert_eq!(days.len(), 1);
         assert_eq!(days[&cutoff].observed_tokens, 100);
     }
@@ -4446,7 +4834,12 @@ mod tests {
         let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
         let mut days = BTreeMap::new();
 
-        assert!(!scan_rollout_reader(fixture.as_bytes(), day, &mut days));
+        assert!(!scan_rollout_reader(
+            fixture.as_bytes(),
+            day,
+            day,
+            &mut days
+        ));
         assert!(!days[&day].complete);
         assert_eq!(days[&day].observed_tokens, 0);
     }

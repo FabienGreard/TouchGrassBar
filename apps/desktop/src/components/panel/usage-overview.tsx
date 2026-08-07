@@ -35,29 +35,59 @@ const currencyFormatter = new Intl.NumberFormat("en", {
 
 type GaugeTone = "month" | "today" | "week";
 
+function evidenceDescription(
+  total: Exclude<UsageTotal, { availability: "unavailable" }>,
+) {
+  const basis =
+    total.evidenceBasis === "provider-reported"
+      ? "provider-reported token evidence"
+      : total.evidenceBasis === "locally-derived"
+        ? "locally observed token evidence"
+        : "mixed token evidence";
+  const coverage =
+    total.coverage === "complete"
+      ? "complete period coverage"
+      : "partial period coverage";
+  const costEvidence =
+    total.apiEquivalentCostQuality === "reconciled"
+      ? "pricing detail covers the reported tokens"
+      : total.apiEquivalentCostQuality === "modeled" &&
+          total.apiEquivalentCostCoveragePercent !== null &&
+          total.apiEquivalentCostCoveragePercent !== undefined
+        ? `cost modeled from ${Math.round(total.apiEquivalentCostCoveragePercent)} percent priced evidence`
+        : total.apiEquivalentCostQuality === "local-only"
+          ? "cost estimated from local pricing evidence"
+          : "cost evidence not ready";
+  return `${basis}, ${coverage}, ${costEvidence}`;
+}
+
 function costPresentation(
   total: Exclude<UsageTotal, { availability: "unavailable" }>,
   scanStatus: UsagePeriods["scanStatus"],
 ) {
-  if (total.apiEquivalentCostUsd !== null && total.apiEquivalentCostUsd !== undefined) {
+  const evidence = evidenceDescription(total);
+  if (
+    total.apiEquivalentCostUsd !== null &&
+    total.apiEquivalentCostUsd !== undefined
+  ) {
     const label = `≈ ${currencyFormatter.format(total.apiEquivalentCostUsd)}`;
     return {
       accessibleLabel: total.apiEquivalentCostBasis
-        ? `${label}, pricing basis ${total.apiEquivalentCostBasis}${scanStatus === "indexing" ? ", indexing" : ""}`
-        : `${label}${scanStatus === "indexing" ? ", indexing" : ""}`,
+        ? `${label}, ${evidence}, pricing basis ${total.apiEquivalentCostBasis}${scanStatus === "indexing" ? ", indexing" : ""}`
+        : `${label}, ${evidence}${scanStatus === "indexing" ? ", indexing" : ""}`,
       label,
       ready: true,
     };
   }
   if (scanStatus === "indexing") {
     return {
-      accessibleLabel: "API equivalent indexing",
+      accessibleLabel: `API equivalent indexing, ${evidence}`,
       label: "Indexing…",
       ready: false,
     };
   }
   return {
-    accessibleLabel: "API equivalent not ready",
+    accessibleLabel: `API equivalent not ready, ${evidence}`,
     label: "—",
     ready: false,
   };
@@ -87,12 +117,17 @@ function trendPresentation(
 }
 
 function relativeGaugeFills(usage: UsagePeriods) {
-  const values = [usage.today, usage.sevenDays, usage.thirtyDays].map((total) =>
-    total.availability === "unavailable" ? undefined : total.observedTokens,
+  const values = [usage.today, usage.sevenDays, usage.thirtyDays].map(
+    (total) =>
+      total.availability === "unavailable" ? undefined : total.observedTokens,
   );
   const maximum = Math.max(0, ...values.filter((value) => value !== undefined));
   return values.map((value) =>
-    value === undefined ? undefined : maximum === 0 ? 0 : Math.round((value / maximum) * 100),
+    value === undefined
+      ? undefined
+      : maximum === 0
+        ? 0
+        : Math.round((value / maximum) * 100),
   );
 }
 
@@ -191,11 +226,7 @@ function UsageOverview({
       trendPresentation(usage.today, todayGauge, "the previous day"),
     sevenDays:
       presentation?.sevenDays ??
-      trendPresentation(
-        usage.sevenDays,
-        sevenDayGauge,
-        "the previous 7 days",
-      ),
+      trendPresentation(usage.sevenDays, sevenDayGauge, "the previous 7 days"),
     thirtyDays:
       presentation?.thirtyDays ??
       trendPresentation(

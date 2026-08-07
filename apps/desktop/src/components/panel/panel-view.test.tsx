@@ -302,13 +302,13 @@ describe("panel states", () => {
     expect(markup).toContain("+14%");
     expect(markup).toContain("+22%");
     expect(markup).toContain("≈ $38.61");
-    expect(markup).not.toContain("Reconciled");
-    expect(markup).not.toContain("Modeled");
-    expect(markup).not.toContain("Local only");
-    expect(markup).not.toContain("Provider reported");
-    expect(markup).toContain(
-      "pricing basis openai-standard-2026-08-06-v1",
-    );
+    expect(markup).not.toContain(">Reconciled<");
+    expect(markup).not.toContain(">Modeled");
+    expect(markup).not.toContain(">Local only<");
+    expect(markup).toContain("provider-reported token evidence");
+    expect(markup).toContain("complete period coverage");
+    expect(markup).toContain("pricing detail covers the reported tokens");
+    expect(markup).toContain("pricing basis openai-standard-2026-08-06-v1");
     expect(markup).toContain("width:4%");
     expect(markup).toContain("width:25%");
     expect(markup).toContain("width:100%");
@@ -318,7 +318,8 @@ describe("panel states", () => {
     const currentState = await deliveredBrowserFixture("current");
     currentState.combinedUsage.scanStatus = "indexing";
     const today = currentState.combinedUsage.today;
-    if (today.availability === "unavailable") throw new Error("fixture unavailable");
+    if (today.availability === "unavailable")
+      throw new Error("fixture unavailable");
     today.apiEquivalentCostUsd = null;
     today.apiEquivalentCostBasis = null;
     today.apiEquivalentCostQuality = null;
@@ -350,8 +351,10 @@ describe("panel states", () => {
     expect(markup).not.toContain('data-icon-spin="true"');
     expect(markup).not.toContain("Finish now");
     expect(markup).not.toContain("API equivalent unavailable");
-    expect(markup).not.toContain("Modeled");
-    expect(markup).not.toContain("Local only");
+    expect(markup).not.toContain(">Modeled");
+    expect(markup).not.toContain(">Local only<");
+    expect(markup).toContain("cost modeled from 80 percent priced evidence");
+    expect(markup).toContain("cost estimated from local pricing evidence");
   });
 
   test("finishes recent cost periods before older periods", async () => {
@@ -383,7 +386,7 @@ describe("panel states", () => {
     );
 
     expect(markup.match(/Indexing…/g)).toHaveLength(2);
-    expect(markup).toContain('aria-label="API equivalent not ready"');
+    expect(markup).toContain('aria-label="API equivalent not ready,');
   });
 
   test("announces stale Quota Lanes without hiding their last valid values", async () => {

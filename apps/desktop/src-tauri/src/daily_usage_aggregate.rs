@@ -97,10 +97,14 @@ fn provider_reported_cost(
             missing_provider_tokens = missing_provider_tokens.checked_add(provider_tokens)?;
             continue;
         };
-        if detail.observed_tokens == 0
-            || detail.priced_tokens == 0
-            || detail.priced_tokens > detail.observed_tokens
-        {
+        if detail.priced_tokens == 0 {
+            // Unknown model prices leave this detail uncovered. A priced day
+            // in the same period can still supply a defensible modeled rate.
+            modeled = true;
+            missing_provider_tokens = missing_provider_tokens.checked_add(provider_tokens)?;
+            continue;
+        }
+        if detail.observed_tokens == 0 || detail.priced_tokens > detail.observed_tokens {
             return None;
         }
         let observed_through = detail.observed_through?;
@@ -154,16 +158,18 @@ fn locally_derived_cost(
     local: &BTreeMap<Date, DailyCostEvidence>,
     days: impl Iterator<Item = Date>,
 ) -> Option<CostProjection> {
-    let (usd, priced_tokens) = days.filter_map(|day| local.get(&day)).try_fold(
-        (0.0, 0_u64),
-        |(total, priced_tokens), detail| {
-            let cost = detail.api_equivalent_cost_usd?;
-            Some((
-                total + cost,
-                priced_tokens.checked_add(detail.priced_tokens)?,
-            ))
-        },
-    )?;
+    let mut usd = 0.0;
+    let mut priced_tokens = 0_u64;
+    for detail in days.filter_map(|day| local.get(&day)) {
+        if detail.priced_tokens == 0 {
+            continue;
+        }
+        if detail.observed_tokens == 0 || detail.priced_tokens > detail.observed_tokens {
+            return None;
+        }
+        usd += detail.api_equivalent_cost_usd?;
+        priced_tokens = priced_tokens.checked_add(detail.priced_tokens)?;
+    }
     (priced_tokens > 0 && usd.is_finite()).then_some(CostProjection {
         usd,
         quality: ApiEquivalentCostQuality::LocalOnly,
@@ -879,6 +885,109 @@ mod tests {
         };
         assert_eq!(observed_tokens, 400);
         assert_eq!(api_equivalent_cost_usd, None);
+    }
+
+    #[test]
+    fn provider_period_models_unknown_price_detail_from_a_known_rate() {
+        let now = now();
+        let priced_day = now.date() - Duration::days(1);
+        let unknown_price_day = now.date() - Duration::days(2);
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(BTreeMap::from([
+                (priced_day, 100),
+                (unknown_price_day, 300),
+            ])),
+            provider_observed_at: Some(now),
+            local_cost_evidence: BTreeMap::from([
+                (priced_day, priced_detail(now, 100, 2.0)),
+                (
+                    unknown_price_day,
+                    DailyCostEvidence {
+                        observed_tokens: 300,
+                        priced_tokens: 0,
+                        api_equivalent_cost_usd: None,
+                        complete: false,
+                        observed_through: Some(now - Duration::minutes(1)),
+                        priced_observed_through: None,
+                    },
+                ),
+            ]),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: Some("fixture-v1".to_owned()),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+        };
+
+        let periods = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = periods.seven_days
+        else {
+            panic!("account-reported seven-day usage must remain available");
+        };
+        assert_eq!(observed_tokens, 400);
+        assert_eq!(api_equivalent_cost_usd, Some(8.0));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(25.0));
+    }
+
+    #[test]
+    fn local_only_period_keeps_priced_detail_when_another_model_is_unknown() {
+        let now = now();
+        let priced_day = now.date() - Duration::days(1);
+        let unknown_price_day = now.date() - Duration::days(2);
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: None,
+            provider_observed_at: None,
+            local_cost_evidence: BTreeMap::from([
+                (priced_day, priced_detail(now, 100, 2.0)),
+                (
+                    unknown_price_day,
+                    DailyCostEvidence {
+                        observed_tokens: 300,
+                        priced_tokens: 0,
+                        api_equivalent_cost_usd: None,
+                        complete: false,
+                        observed_through: Some(now - Duration::minutes(1)),
+                        priced_observed_through: None,
+                    },
+                ),
+            ]),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: Some("fixture-v1".to_owned()),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+        };
+
+        let periods = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            ..
+        } = periods.seven_days
+        else {
+            panic!("local evidence must remain available");
+        };
+        assert_eq!(observed_tokens, 400);
+        assert_eq!(api_equivalent_cost_usd, Some(2.0));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::LocalOnly)
+        );
     }
 
     #[test]

@@ -1159,8 +1159,9 @@ impl CoordinatorWorker {
             .ok()
             .filter(|state| {
                 state
-                    .provider(CodingProvider::Codex)
-                    .is_some_and(|provider| provider.usage.scan_status == UsageScanStatus::Indexing)
+                    .providers
+                    .iter()
+                    .any(|provider| provider.usage.scan_status == UsageScanStatus::Indexing)
             })
             .map(|_| {
                 self.next_local_usage_catch_up_at
@@ -3138,22 +3139,18 @@ mod tests {
     }
 
     #[test]
-    fn indexing_state_starts_an_independent_local_catch_up_pass() {
+    fn any_provider_indexing_starts_an_independent_local_catch_up_pass() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
         let mut indexing = observed_state(test_time(), 42);
-        indexing
-            .provider_mut(CodingProvider::Codex)
-            .unwrap()
-            .usage
-            .scan_status = UsageScanStatus::Indexing;
+        let indexing_claude = indexing.provider_mut(CodingProvider::Claude).unwrap();
+        indexing_claude.presence = ProviderPresenceStatus::Detected;
+        indexing_claude.usage.scan_status = UsageScanStatus::Indexing;
         indexing.refresh_combined_usage();
         let mut complete = observed_state(test_time(), 42);
-        complete
-            .provider_mut(CodingProvider::Codex)
-            .unwrap()
-            .usage
-            .scan_status = UsageScanStatus::Complete;
+        let complete_claude = complete.provider_mut(CodingProvider::Claude).unwrap();
+        complete_claude.presence = ProviderPresenceStatus::Detected;
+        complete_claude.usage.scan_status = UsageScanStatus::Complete;
         complete.refresh_combined_usage();
         let source = Arc::new(ScriptedRefreshSource::new([
             Ok(Some(indexing)),
@@ -3169,7 +3166,7 @@ mod tests {
         assert_eq!(
             core.panel_state()
                 .unwrap()
-                .provider(CodingProvider::Codex)
+                .provider(CodingProvider::Claude)
                 .unwrap()
                 .usage
                 .scan_status,

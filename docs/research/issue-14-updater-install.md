@@ -1,9 +1,25 @@
 # Issue 14: updater and install policy
 
-**Status:** Approved product decision; canonical resolution recorded on GitHub issue #14
+**Status:** Active research
 
 **Date:** 2026-08-03
-**Scope:** GitHub issue [#14](https://github.com/FabienGreard/TouchGrassBar/issues/14), following the distribution trust decision recorded in [#4](https://github.com/FabienGreard/TouchGrassBar/issues/4). This note changes no production code.
+
+**Related issues:** [#32](https://github.com/FabienGreard/TouchGrassBar/issues/32),
+[#33](https://github.com/FabienGreard/TouchGrassBar/issues/33), and
+[#34](https://github.com/FabienGreard/TouchGrassBar/issues/34). Issue #14 holds
+the approved source decision.
+
+**Cleanup condition:** Delete this note after issues #32, #33, and #34 close
+and their current updater, release, recovery, and install rules exist in
+durable product, release, and QA documentation.
+
+**Promotion target:** Move product behavior into `docs/product.md`, release
+controls into `.github/workflows/release.yml` and its release runbook, and
+failure cases into the updater and release QA tests owned by issues #32 and
+#33.
+
+**Scope:** Updater and install policy that follows the distribution trust
+decision in issue #4. This note changes no production code.
 
 ## Recommended decision
 

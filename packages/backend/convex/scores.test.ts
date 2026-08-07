@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
-import { rankRows } from "../convex/doomerboards";
-import { calculateScore } from "../convex/model/scores";
+import { rankRows } from "./doomerboards";
+import { calculateScore } from "./model/scores";
 
 describe("cost and ranking independence", () => {
   test("a cost-only reprice does not change Token Score or rank", () => {
@@ -24,12 +24,15 @@ describe("cost and ranking independence", () => {
       "2026-08-06",
     );
 
-    expect(after.apiEquivalentCostMicros).not.toBe(
-      before.apiEquivalentCostMicros,
-    );
+    const beforeCost = before.apiEquivalentCostMicros;
+    const afterCost = after.apiEquivalentCostMicros;
+    if (beforeCost === undefined || afterCost === undefined) {
+      throw new Error("priced rows must produce an API-equivalent cost");
+    }
+    expect(afterCost).not.toBe(beforeCost);
     expect(after.tokenScore).toBe(before.tokenScore);
 
-    const board = (apiEquivalentCostMicros: number | undefined) =>
+    const board = (apiEquivalentCostMicros: number) =>
       rankRows([
         {
           apiEquivalentCostMicros: 300_000,
@@ -55,8 +58,6 @@ describe("cost and ranking independence", () => {
         touchGrassId,
       }));
 
-    expect(board(after.apiEquivalentCostMicros)).toEqual(
-      board(before.apiEquivalentCostMicros),
-    );
+    expect(board(afterCost)).toEqual(board(beforeCost));
   });
 });
