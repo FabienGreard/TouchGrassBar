@@ -16,6 +16,11 @@ const idleState = {
   update: { status: "idle" },
 } as const;
 
+const availableState = {
+  ...idleState,
+  update: { status: "available", version: "1.4.0" },
+} as const;
+
 function port(): UpdatePort & { changed: () => void } {
   let changed = () => undefined;
   return {
@@ -49,6 +54,34 @@ describe("update delivery", () => {
     expect(delivery.getSnapshot()).toEqual({ phase: "ready", state: idleState });
     native.changed();
     await vi.waitFor(() => expect(native.read).toHaveBeenCalledTimes(2));
+  });
+
+  test("queues a follow-up read when a notice arrives during a pending read", async () => {
+    const native = port();
+    let completeFirstRead: (outcome: {
+      ok: true;
+      value: unknown;
+    }) => void = () => undefined;
+    const firstRead = new Promise<{ ok: true; value: unknown }>((resolve) => {
+      completeFirstRead = resolve;
+    });
+    native.read = vi
+      .fn()
+      .mockReturnValueOnce(firstRead)
+      .mockResolvedValueOnce({ ok: true, value: availableState });
+    const delivery = createUpdateDelivery(native);
+
+    const activation = delivery.activate();
+    await vi.waitFor(() => expect(native.read).toHaveBeenCalledOnce());
+    native.changed();
+    completeFirstRead({ ok: true, value: idleState });
+    await activation;
+
+    expect(native.read).toHaveBeenCalledTimes(2);
+    expect(delivery.getSnapshot()).toEqual({
+      phase: "ready",
+      state: availableState,
+    });
   });
 
   test("rejects unknown contract fields and contains port failures", async () => {

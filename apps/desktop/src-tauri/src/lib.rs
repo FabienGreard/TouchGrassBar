@@ -11,7 +11,7 @@ pub mod updater;
 use std::{
     env,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -102,20 +102,68 @@ impl ProfileRetryMailbox {
 
 #[derive(Clone)]
 struct ProfileRuntime {
+    admission: Arc<ProfileWorkAdmission>,
     coordinator: Arc<std::sync::Mutex<profile::ProfileCoordinator>>,
     core: NativeCore,
-    in_flight: Arc<AtomicBool>,
     lifecycle: DesktopLifecycle,
     online_gate: OnlineFeatureGate,
-    paused: Arc<AtomicBool>,
     retry: ProfileRetryMailbox,
 }
 
-struct ProfileAttemptGuard(Arc<AtomicBool>);
+#[derive(Default)]
+struct ProfileWorkAdmission {
+    idle: Condvar,
+    state: Mutex<ProfileWorkState>,
+}
+
+#[derive(Default)]
+struct ProfileWorkState {
+    in_flight: usize,
+    paused: bool,
+}
+
+impl ProfileWorkAdmission {
+    fn try_start(self: &Arc<Self>) -> Option<ProfileAttemptGuard> {
+        let mut state = self.state.lock().ok()?;
+        if state.paused {
+            return None;
+        }
+        state.in_flight = state.in_flight.checked_add(1)?;
+        Some(ProfileAttemptGuard(Arc::clone(self)))
+    }
+
+    fn pause(&self) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        state.paused = true;
+        while state.in_flight > 0 {
+            state = self.idle.wait(state).map_err(|_| ())?;
+        }
+        Ok(())
+    }
+
+    fn resume(&self) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        state.paused = false;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn is_paused(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.paused)
+    }
+}
+
+struct ProfileAttemptGuard(Arc<ProfileWorkAdmission>);
 
 impl Drop for ProfileAttemptGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        let Ok(mut state) = self.0.state.lock() else {
+            return;
+        };
+        state.in_flight = state.in_flight.saturating_sub(1);
+        if state.in_flight == 0 {
+            self.0.idle.notify_all();
+        }
     }
 }
 
@@ -132,8 +180,7 @@ impl ProfilePauseGuard<'_> {
 
 impl Drop for ProfilePauseGuard<'_> {
     fn drop(&mut self) {
-        if self.resume_on_drop {
-            self.runtime.paused.store(false, Ordering::Release);
+        if self.resume_on_drop && self.runtime.admission.resume().is_ok() {
             self.runtime.trigger();
         }
     }
@@ -153,12 +200,11 @@ impl ProfileRuntime {
         let (retry, requests) = ProfileRetryMailbox::new();
         let worker_retry = retry.clone();
         let runtime = Self {
+            admission: Arc::new(ProfileWorkAdmission::default()),
             coordinator,
             core: app.state::<NativeCore>().inner().clone(),
-            in_flight: Arc::new(AtomicBool::new(false)),
             lifecycle: runtime_lifecycle,
             online_gate,
-            paused: Arc::new(AtomicBool::new(false)),
             retry,
         };
         let worker_runtime = runtime.clone();
@@ -186,12 +232,13 @@ impl ProfileRuntime {
     }
 
     fn attempt(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
-        if self.paused.load(Ordering::Acquire) || self.online_gate.is_paused() {
+        if self.online_gate.is_paused() {
             return Ok(None);
         }
-        self.in_flight.store(true, Ordering::Release);
-        let _attempt = ProfileAttemptGuard(Arc::clone(&self.in_flight));
-        if self.paused.load(Ordering::Acquire) || self.online_gate.is_paused() {
+        let Some(_attempt) = self.admission.try_start() else {
+            return Ok(None);
+        };
+        if self.online_gate.is_paused() {
             return Ok(None);
         }
         let attempt = self
@@ -230,15 +277,12 @@ impl ProfileRuntime {
         profile::production_recovery_key_suffix(&self.lifecycle)
     }
 
-    fn pause_for_update(&self) -> ProfilePauseGuard<'_> {
-        self.paused.store(true, Ordering::Release);
-        while self.in_flight.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        ProfilePauseGuard {
+    fn pause_for_update(&self) -> Result<ProfilePauseGuard<'_>, ()> {
+        self.admission.pause()?;
+        Ok(ProfilePauseGuard {
             runtime: self,
             resume_on_drop: true,
-        }
+        })
     }
 }
 
@@ -1157,6 +1201,37 @@ mod tests {
         assert!(!should_show_bootstrap_on_start(true, true));
         assert!(!should_show_bootstrap_on_start(false, false));
         assert!(!should_show_bootstrap_on_start(false, true));
+    }
+
+    #[test]
+    fn profile_update_pause_waits_for_every_admitted_attempt() {
+        let admission = Arc::new(ProfileWorkAdmission::default());
+        let first = admission.try_start().expect("first attempt admitted");
+        let second = admission.try_start().expect("second attempt admitted");
+        let waiting_admission = Arc::clone(&admission);
+        let (paused, pause_result) = mpsc::sync_channel(1);
+        let pause_thread = std::thread::spawn(move || {
+            waiting_admission.pause().expect("pause admission");
+            let _ = paused.send(());
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !admission.is_paused() {
+            assert!(Instant::now() < deadline, "pause did not close admission");
+            std::thread::yield_now();
+        }
+
+        assert!(admission.try_start().is_none());
+        drop(first);
+        assert!(pause_result.try_recv().is_err());
+        drop(second);
+        pause_result
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pause did not wait for all attempts");
+        pause_thread.join().expect("pause thread failed");
+
+        assert!(admission.try_start().is_none());
+        admission.resume().expect("resume admission");
+        assert!(admission.try_start().is_some());
     }
 
     #[test]

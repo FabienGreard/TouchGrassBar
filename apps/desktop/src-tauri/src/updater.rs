@@ -440,11 +440,6 @@ impl UpdateRuntime {
                     self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
                     return;
                 }
-                let minimum_required_version =
-                    validated_policy(&update.raw_json, &self.current_version, &version)
-                        .map(|policy| policy.minimum_supported_version.to_string());
-                let minimum_required = minimum_required_version.is_some();
-                self.gate.set_paused(minimum_required);
                 let Some(persistence) = &self.persistence else {
                     self.fail(
                         Some(version.to_string()),
@@ -453,6 +448,20 @@ impl UpdateRuntime {
                     );
                     return;
                 };
+                let Ok(persisted) = persistence.snapshot() else {
+                    self.fail(
+                        Some(version.to_string()),
+                        UpdateFailure::Unavailable,
+                        RetryAction::Check,
+                    );
+                    return;
+                };
+                let minimum_required_version = effective_minimum_required_version(
+                    &self.current_version,
+                    persisted.minimum_required_version.as_deref(),
+                    validated_policy(&update.raw_json, &self.current_version, &version),
+                );
+                let minimum_required = minimum_required_version.is_some();
                 let offered_version = Some(version.to_string());
                 if persistence
                     .set_offer(
@@ -468,6 +477,7 @@ impl UpdateRuntime {
                     );
                     return;
                 }
+                self.gate.set_paused(minimum_required);
                 if let Ok(mut pending) = self.pending.lock() {
                     *pending = Some(PendingUpdate {
                         update,
@@ -491,20 +501,32 @@ impl UpdateRuntime {
             Ok(None) => {
                 self.install_after_check
                     .store(false, std::sync::atomic::Ordering::Release);
-                self.gate.set_paused(false);
-                if let Ok(mut pending) = self.pending.lock() {
-                    *pending = None;
-                }
-                let cleared = self
-                    .persistence
-                    .as_ref()
-                    .ok_or(())
-                    .and_then(|persistence| persistence.set_offer(None, None));
-                if cleared.is_err() {
+                let Some(persistence) = &self.persistence else {
+                    self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
+                    return;
+                };
+                let Ok(persisted) = persistence.snapshot() else {
+                    self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
+                    return;
+                };
+                let minimum_required_version = effective_minimum_required_version(
+                    &self.current_version,
+                    persisted.minimum_required_version.as_deref(),
+                    None,
+                );
+                let minimum_required = minimum_required_version.is_some();
+                if persistence
+                    .set_offer(None, minimum_required_version.as_deref())
+                    .is_err()
+                {
                     self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
                     return;
                 }
-                self.publish(UpdateStatus::UpToDate, false);
+                self.gate.set_paused(minimum_required);
+                if let Ok(mut pending) = self.pending.lock() {
+                    *pending = None;
+                }
+                self.publish(UpdateStatus::UpToDate, minimum_required);
             }
             Err(error) => self.fail(None, classify_error(&error, false), RetryAction::Check),
         }
@@ -605,7 +627,9 @@ impl UpdateRuntime {
         };
         let result = finish_verified_install(
             || {
-                let profile_pause = profile_runtime.pause_for_update();
+                let profile_pause = profile_runtime
+                    .pause_for_update()
+                    .map_err(|()| UpdateFailure::Replacement)?;
                 let core_pause = core.pause_for_update();
                 lifecycle.flush().map_err(|_| UpdateFailure::Replacement)?;
                 core.flush().map_err(|_| UpdateFailure::Replacement)?;
@@ -756,6 +780,23 @@ fn valid_version(version: &str) -> bool {
 fn version_is_newer(version: &str, current_version: &Version) -> bool {
     version.len() <= MAX_VERSION_LENGTH
         && Version::parse(version).is_ok_and(|version| version > *current_version)
+}
+
+fn effective_minimum_required_version(
+    current_version: &Version,
+    persisted_version: Option<&str>,
+    manifest_policy: Option<ValidatedPolicy>,
+) -> Option<String> {
+    let persisted_version = persisted_version
+        .filter(|version| version.len() <= MAX_VERSION_LENGTH)
+        .and_then(|version| Version::parse(version).ok())
+        .filter(|version| version > current_version);
+    let manifest_version = manifest_policy.map(|policy| policy.minimum_supported_version);
+    persisted_version
+        .into_iter()
+        .chain(manifest_version)
+        .max()
+        .map(|version| version.to_string())
 }
 
 fn persisted_minimum_required(persisted: &PersistedUpdateState, current_version: &Version) -> bool {
@@ -947,6 +988,41 @@ mod tests {
         ] {
             assert_eq!(validated_policy(&invalid, &current, &offered), None);
         }
+
+        assert_eq!(
+            effective_minimum_required_version(&current, Some("1.3.0"), None).as_deref(),
+            Some("1.3.0")
+        );
+        assert_eq!(
+            effective_minimum_required_version(
+                &current,
+                Some("1.3.0"),
+                Some(ValidatedPolicy {
+                    minimum_supported_version: Version::parse("1.2.5").unwrap(),
+                }),
+            )
+            .as_deref(),
+            Some("1.3.0")
+        );
+        assert_eq!(
+            effective_minimum_required_version(
+                &current,
+                Some("1.3.0"),
+                Some(ValidatedPolicy {
+                    minimum_supported_version: Version::parse("1.4.0").unwrap(),
+                }),
+            )
+            .as_deref(),
+            Some("1.4.0")
+        );
+        assert_eq!(
+            effective_minimum_required_version(
+                &Version::parse("1.3.0").unwrap(),
+                Some("1.3.0"),
+                None,
+            ),
+            None
+        );
     }
 
     #[test]

@@ -34,6 +34,7 @@ type UpdateDeliverySnapshot = {
 function createUpdateDelivery(port: UpdatePort) {
   let current: UpdateDeliverySnapshot = { phase: "loading", state: null };
   let readInFlight: Promise<void> | null = null;
+  let readRequested = false;
   const listeners = new Set<() => void>();
 
   const publish = (next: UpdateDeliverySnapshot) => {
@@ -52,14 +53,18 @@ function createUpdateDelivery(port: UpdatePort) {
   };
 
   const read = () => {
+    readRequested = true;
     if (readInFlight !== null) return readInFlight;
     readInFlight = (async () => {
-      const outcome = await port.read();
-      if (!outcome.ok) {
-        publish({ ...current, phase: "degraded" });
-        return;
+      while (readRequested) {
+        readRequested = false;
+        const outcome = await port.read();
+        if (!outcome.ok) {
+          publish({ ...current, phase: "degraded" });
+        } else {
+          accept(outcome.value);
+        }
       }
-      accept(outcome.value);
     })().finally(() => {
       readInFlight = null;
     });
