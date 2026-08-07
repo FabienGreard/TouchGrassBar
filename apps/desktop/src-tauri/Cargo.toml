@@ -18,6 +18,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 base64 = "0.22"
 convex = { version = "=0.10.4", default-features = false, features = ["rustls-tls-native-roots"] }
+fs2 = "=0.4.3"
 getrandom = "0.3"
 minisign-verify = "=0.2.5"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }

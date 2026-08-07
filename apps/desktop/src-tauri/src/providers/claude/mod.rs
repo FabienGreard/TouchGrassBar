@@ -925,6 +925,40 @@ fn remove_bridge_owner_at_depth(
     with_bridge_upstream(command, cleaned_upstream.as_deref()).map(Some)
 }
 
+struct StatusLineSettingsLock(fs::File);
+
+impl StatusLineSettingsLock {
+    fn acquire(settings_path: &Path) -> Result<Self, ()> {
+        let parent = settings_path.parent().ok_or(())?;
+        fs::create_dir_all(parent).map_err(|_| ())?;
+        let lock_path = parent.join(".touchgrassbar-status-line.lock");
+        let mut options = fs::OpenOptions::new();
+        options.create(true).read(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(lock_path).map_err(|_| ())?;
+        for _ in 0..80 {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(Self(file)),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(StdDuration::from_millis(25));
+                }
+                Err(_) => return Err(()),
+            }
+        }
+        Err(())
+    }
+}
+
+impl Drop for StatusLineSettingsLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
 fn read_settings(path: &Path) -> Result<Value, ()> {
     match fs::read(path) {
         Ok(bytes) => {
@@ -975,6 +1009,7 @@ fn configure_status_line_at(
     notification_path: &Path,
     owner: &str,
 ) -> Result<(), ()> {
+    let _settings_lock = StatusLineSettingsLock::acquire(settings_path)?;
     let mut settings = read_settings(settings_path)?;
     let root = settings.as_object_mut().ok_or(())?;
     let upstream = match root.get("statusLine") {
@@ -1032,6 +1067,7 @@ fn configure_status_line_at(
 
 #[cfg(any(test, debug_assertions))]
 fn restore_status_line_at(settings_path: &Path, owner: &str) -> Result<(), ()> {
+    let _settings_lock = StatusLineSettingsLock::acquire(settings_path)?;
     let mut settings = read_settings(settings_path)?;
     let root = settings.as_object_mut().ok_or(())?;
     let Some(status_line) = root.get("statusLine") else {
@@ -1234,8 +1270,12 @@ pub(super) fn run_status_line_from_args() -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeSet,
         fs,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Barrier,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1668,6 +1708,50 @@ mod tests {
         );
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(output, b"kept");
+    }
+
+    #[test]
+    fn concurrent_bridge_owners_do_not_lose_settings_updates() {
+        let fixture = FixtureDirectory::new();
+        fs::write(
+            fixture.settings(),
+            br#"{"statusLine":{"command":"printf kept","type":"command"}}"#,
+        )
+        .unwrap();
+        let barrier = Arc::new(Barrier::new(6));
+        let workers = (0..6)
+            .map(|index| {
+                let root = fixture.0.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    configure_status_line_at(
+                        &root.join("provider-settings.json"),
+                        &root.join(format!("Worktree{index}")),
+                        &root.join(format!("worktree-{index}.sqlite3")),
+                        &root.join(format!("worktree-{index}.sock")),
+                        &format!("worktree-{index}"),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+
+        let configured: Value =
+            serde_json::from_slice(&fs::read(fixture.settings()).unwrap()).unwrap();
+        let mut command = configured["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let mut owners = BTreeSet::new();
+        while is_touchgrassbar_bridge(&command) {
+            owners.insert(bridge_owner(&command).unwrap().unwrap());
+            command = bridge_upstream(&command).unwrap().unwrap();
+        }
+        assert_eq!(owners.len(), 6);
+        assert_eq!(command, "printf kept");
     }
 
     #[test]
