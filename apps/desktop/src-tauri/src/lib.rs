@@ -57,21 +57,11 @@ pub fn run_codex_usage_debug_pass(
 
 #[doc(hidden)]
 pub fn run_claude_quota_debug_pass(
-    database_path: &std::path::Path,
-    source_database: Option<&std::path::Path>,
-    seed_fixture: bool,
+    probe_directory: &std::path::Path,
 ) -> Result<String, &'static str> {
     let now = time::OffsetDateTime::now_utc();
-    if let Some(source_database) = source_database {
-        providers::snapshot_claude_debug_capture(source_database, database_path)
-            .map_err(|()| "Claude quota snapshot failed")?;
-    }
-    if seed_fixture {
-        providers::seed_claude_debug_fixture(database_path, now)
-            .map_err(|()| "Claude quota fixture failed")?;
-    }
-    providers::debug_claude_quota_pass(database_path, now)
-        .map_err(|()| "Claude quota inspection failed")
+    providers::debug_live_claude_quota_pass(probe_directory, now)
+        .map_err(|()| "Claude CLI quota probe failed")
 }
 
 #[derive(Default)]
@@ -820,21 +810,10 @@ fn hide_surface(window: WebviewWindow) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if let Some(exit_code) = providers::run_claude_status_line_from_args() {
-        std::process::exit(exit_code);
-    }
     let process_started_at = Instant::now();
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
     #[cfg(debug_assertions)]
     let development_instance = dev_instance::DevelopmentInstance::from_environment();
-    #[cfg(debug_assertions)]
-    let claude_bridge_owner = development_instance.as_ref().map_or_else(
-        || "app.touchgrass.bar.dev".to_owned(),
-        |instance| instance.namespace().to_owned(),
-    );
-    #[cfg(not(debug_assertions))]
-    let claude_bridge_owner = "app.touchgrass.bar".to_owned();
-    let setup_claude_bridge_owner = claude_bridge_owner.clone();
     let builder = tauri::Builder::default();
     #[cfg(debug_assertions)]
     let builder = if development_instance.is_none() {
@@ -924,15 +903,6 @@ pub fn run() {
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
-            match database_path.as_deref() {
-                Some(path) => {
-                    let _ =
-                        providers::configure_claude_status_line(path, &setup_claude_bridge_owner);
-                }
-                None => eprintln!(
-                    "[TouchGrassBar][claude-quota] bridge_setup_failed reason=database_unavailable"
-                ),
-            }
             let core = database_path
                 .as_deref()
                 .and_then(|path| NativeCore::open(path).ok())
@@ -1112,7 +1082,7 @@ pub fn run() {
         app.set_dock_visibility(false);
     }
 
-    app.run(move |app, event| match event {
+    app.run(|app, event| match event {
         RunEvent::Resumed => {
             if let Some(core) = app.try_state::<NativeCore>() {
                 let _ = core.request_refresh(RefreshSource::Wake);
@@ -1122,8 +1092,6 @@ pub fn run() {
             if let Some(core) = app.try_state::<NativeCore>() {
                 core.shutdown();
             }
-            #[cfg(debug_assertions)]
-            providers::restore_claude_status_line(&claude_bridge_owner);
         }
         _ => {}
     });

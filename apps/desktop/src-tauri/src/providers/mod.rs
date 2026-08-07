@@ -87,33 +87,6 @@ pub(crate) fn production_observation_coordinator(
     ProviderObservationCoordinator::new(vec![codex, claude])
 }
 
-pub(crate) fn run_claude_status_line_from_args() -> Option<i32> {
-    claude::run_status_line_from_args()
-}
-
-pub(crate) fn configure_claude_status_line(database_path: &Path, owner: &str) -> Result<(), ()> {
-    if detect_provider_presence(CodingProvider::Claude) != ProviderPresenceStatus::Detected {
-        eprintln!(
-            "[TouchGrassBar][claude-quota] bridge_setup_skipped reason=provider_not_detected"
-        );
-        return Ok(());
-    }
-    let result = claude::configure_status_line(database_path, owner);
-    match result {
-        Ok(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_setup_completed"),
-        Err(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_setup_failed"),
-    }
-    result
-}
-
-#[cfg(debug_assertions)]
-pub(crate) fn restore_claude_status_line(owner: &str) {
-    match claude::restore_status_line(owner) {
-        Ok(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_restored"),
-        Err(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_restore_failed"),
-    }
-}
-
 pub(crate) fn debug_codex_usage_pass(
     database_path: &Path,
     codex_home: &Path,
@@ -122,34 +95,20 @@ pub(crate) fn debug_codex_usage_pass(
     codex::debug_usage_pass(database_path, codex_home, now)
 }
 
-pub(crate) fn seed_claude_debug_fixture(
-    database_path: &Path,
-    now: OffsetDateTime,
-) -> Result<(), ()> {
-    claude::seed_debug_fixture(database_path, now)
-}
-
-pub(crate) fn snapshot_claude_debug_capture(
-    source_path: &Path,
-    target_path: &Path,
-) -> Result<(), ()> {
-    claude::snapshot_debug_capture(source_path, target_path)
-}
-
-pub(crate) fn debug_claude_quota_pass(
-    database_path: &Path,
+pub(crate) fn debug_live_claude_quota_pass(
+    probe_directory: &Path,
     now: OffsetDateTime,
 ) -> Result<String, ()> {
-    claude::debug_quota_report(database_path, now)
+    claude::debug_live_quota_report(probe_directory, now)
 }
 
 #[cfg(test)]
 pub(crate) fn test_claude_observation_coordinator(
     clock: Arc<dyn Clock>,
-    database_path: std::path::PathBuf,
 ) -> ProviderObservationCoordinator {
+    let observation = claude::fixture_observation(clock.now());
     let claude: Arc<dyn ProviderObservationAdapter> = Arc::new(
-        claude::ClaudeProviderObservationAdapter::production(clock, Some(database_path)),
+        claude::ClaudeProviderObservationAdapter::fixture(clock, observation),
     );
     ProviderObservationCoordinator::new(vec![claude])
 }

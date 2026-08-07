@@ -17,16 +17,19 @@ tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 base64 = "0.22"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+chrono-tz = "=0.10.4"
 convex = { version = "=0.10.4", default-features = false, features = ["rustls-tls-native-roots"] }
-fs2 = "=0.4.3"
 getrandom = "0.3"
 minisign-verify = "=0.2.5"
+portable-pty = "=0.9.0"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 rusqlite = { version = "0.37", features = ["backup", "bundled"] }
 schemars = "=1.2.2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+strip-ansi-escapes = "=0.2.1"
 tauri = { version = "=2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-process = "2"

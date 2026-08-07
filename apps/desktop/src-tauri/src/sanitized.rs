@@ -1778,7 +1778,7 @@ impl ProviderSnapshot {
         }
     }
 
-    pub(crate) fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
+    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
         let (provider, observed_at, quota_lanes, current) = match self {
             Self::Unavailable { .. } => return (self.clone(), false),
             Self::Current {
@@ -2579,16 +2579,13 @@ mod tests {
     }
 
     #[test]
-    fn claude_capture_commits_native_panel_revision() {
+    fn claude_cli_observation_commits_native_panel_revision() {
         let database = TestDatabase::new();
         let now = test_time();
-        crate::providers::seed_claude_debug_fixture(&database.0, now).unwrap();
         let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(now));
-        let refresh_adapter: Arc<dyn SnapshotRefreshAdapter> =
-            Arc::new(crate::providers::test_claude_observation_coordinator(
-                Arc::clone(&clock),
-                database.0.clone(),
-            ));
+        let refresh_adapter: Arc<dyn SnapshotRefreshAdapter> = Arc::new(
+            crate::providers::test_claude_observation_coordinator(Arc::clone(&clock)),
+        );
         let core = NativeCore::open_without_launch(&database.0, clock, refresh_adapter).unwrap();
         let notices = core.revision_notices().unwrap();
 
