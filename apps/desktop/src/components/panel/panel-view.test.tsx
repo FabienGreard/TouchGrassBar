@@ -150,6 +150,27 @@ describe("panel states", () => {
     expect(markup).toContain("animate-pulse motion-reduce:animate-none");
   });
 
+  test("does not expose internal snapshot diagnostics", () => {
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={null}
+      />,
+    );
+
+    expect(markup).toContain("Local state unavailable");
+    expect(markup).toContain("Local provider state unavailable");
+    expect(markup).toContain('data-slot="loading-panel"');
+    expect(markup).not.toContain('aria-busy="true"');
+    expect(markup).not.toContain("animate-pulse");
+    expect(markup).not.toContain("Nothing invented");
+    expect(markup).not.toContain("native snapshot");
+    expect(markup).not.toContain('role="alert"');
+  });
+
   test("shows the primary update action only when an update is available", async () => {
     const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(

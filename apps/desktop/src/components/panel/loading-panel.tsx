@@ -32,18 +32,30 @@ const loadingProviders = [
   },
 ] as const satisfies readonly ProviderPresentation[];
 
-function LoadingPanel() {
+type LoadingPanelProps = {
+  loading?: boolean;
+};
+
+function LoadingPanel({ loading = true }: LoadingPanelProps) {
   return (
     <div
-      aria-busy="true"
-      aria-label="Loading local provider state"
+      aria-busy={loading || undefined}
+      aria-label={
+        loading ? "Loading local provider state" : "Local provider state unavailable"
+      }
       data-slot="loading-panel"
-      role="status"
+      role={loading ? "status" : undefined}
     >
-      <span className="sr-only">Reading the local snapshot…</span>
+      {loading ? (
+        <span className="sr-only">Reading the local snapshot…</span>
+      ) : null}
       <div
         aria-hidden="true"
-        className="pointer-events-none animate-pulse motion-reduce:animate-none"
+        className={
+          loading
+            ? "pointer-events-none animate-pulse motion-reduce:animate-none"
+            : "pointer-events-none"
+        }
         inert
       >
         <div>
@@ -62,3 +74,4 @@ function LoadingPanel() {
 }
 
 export { LoadingPanel };
+export type { LoadingPanelProps };

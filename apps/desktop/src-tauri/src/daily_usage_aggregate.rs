@@ -81,14 +81,13 @@ fn observed_period_sum(
     observed_day.then_some(total)
 }
 
-fn selected_source_trend(
+fn selected_source_previous_tokens(
     evidence: &ProviderUsageEvidence,
     evidence_basis: UsageEvidenceBasis,
     today: Date,
     length: i64,
-    current_tokens: u64,
-) -> Option<f64> {
-    let previous_tokens = match evidence_basis {
+) -> Option<u64> {
+    match evidence_basis {
         UsageEvidenceBasis::ProviderReported => evidence
             .provider_reported_tokens
             .as_ref()
@@ -106,8 +105,7 @@ fn selected_source_trend(
             })
         }
         UsageEvidenceBasis::Mixed => None,
-    }?;
-    trend_percent(current_tokens, previous_tokens)
+    }
 }
 
 fn provider_reported_cost(
@@ -293,7 +291,9 @@ fn project_period(
             return UsageTotal::Unavailable;
         };
 
-    let trend = selected_source_trend(evidence, evidence_basis, today, length, tokens);
+    let trend_previous_tokens =
+        selected_source_previous_tokens(evidence, evidence_basis, today, length);
+    let trend = trend_previous_tokens.and_then(|previous| trend_percent(tokens, previous));
     let observed_at = observed_at
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned());
@@ -304,6 +304,7 @@ fn project_period(
         observed_tokens: tokens,
         api_equivalent_cost_usd: cost.map(|cost| cost.usd),
         trend_percent: trend,
+        trend_previous_tokens,
         api_equivalent_cost_basis: cost.and_then(|_| evidence.pricing_basis.clone()),
         api_equivalent_cost_quality: cost.map(|cost| cost.quality),
         api_equivalent_cost_coverage_percent: cost.and_then(|cost| cost.coverage_percent),
@@ -350,6 +351,7 @@ struct AvailableTotal<'a> {
     observed_tokens: u64,
     api_equivalent_cost_usd: Option<f64>,
     trend_percent: Option<f64>,
+    trend_previous_tokens: Option<u64>,
     api_equivalent_cost_basis: Option<&'a str>,
     api_equivalent_cost_quality: Option<ApiEquivalentCostQuality>,
     api_equivalent_cost_coverage_percent: Option<f64>,
@@ -364,6 +366,7 @@ fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
         observed_tokens,
         api_equivalent_cost_usd,
         trend_percent,
+        trend_previous_tokens,
         api_equivalent_cost_basis,
         api_equivalent_cost_quality,
         api_equivalent_cost_coverage_percent,
@@ -375,6 +378,7 @@ fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
             observed_tokens,
             api_equivalent_cost_usd,
             trend_percent,
+            trend_previous_tokens,
             api_equivalent_cost_basis,
             api_equivalent_cost_quality,
             api_equivalent_cost_coverage_percent,
@@ -387,6 +391,7 @@ fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
             *observed_tokens,
             *api_equivalent_cost_usd,
             *trend_percent,
+            *trend_previous_tokens,
             api_equivalent_cost_basis.as_deref(),
             *api_equivalent_cost_quality,
             *api_equivalent_cost_coverage_percent,
@@ -398,6 +403,7 @@ fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
             observed_tokens,
             api_equivalent_cost_usd,
             trend_percent,
+            trend_previous_tokens,
             api_equivalent_cost_basis,
             api_equivalent_cost_quality,
             api_equivalent_cost_coverage_percent,
@@ -410,6 +416,7 @@ fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
             *observed_tokens,
             *api_equivalent_cost_usd,
             *trend_percent,
+            *trend_previous_tokens,
             api_equivalent_cost_basis.as_deref(),
             *api_equivalent_cost_quality,
             *api_equivalent_cost_coverage_percent,
@@ -424,6 +431,7 @@ fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
         observed_tokens,
         api_equivalent_cost_usd,
         trend_percent,
+        trend_previous_tokens,
         api_equivalent_cost_basis,
         api_equivalent_cost_quality,
         api_equivalent_cost_coverage_percent,
@@ -434,20 +442,13 @@ fn combined_trend(totals: &[AvailableTotal<'_>], observed_tokens: u64) -> Option
     if totals.len() == 1 {
         return totals[0].trend_percent;
     }
-    let previous_tokens = totals.iter().try_fold(0.0, |sum, total| {
-        let trend = total.trend_percent?;
-        let ratio = 1.0 + trend / 100.0;
-        if !ratio.is_finite() || ratio <= 0.0 {
-            return None;
-        }
-        let previous = total.observed_tokens as f64 / ratio;
-        (previous.is_finite() && previous >= 0.0).then_some(sum + previous)
+    let previous_tokens = totals.iter().try_fold(0_u64, |sum, total| {
+        sum.checked_add(total.trend_previous_tokens?)
     })?;
-    if previous_tokens == 0.0 {
+    if previous_tokens == 0 {
         return None;
     }
-    let trend = ((observed_tokens as f64 - previous_tokens) / previous_tokens) * 100.0;
-    trend.is_finite().then_some(trend)
+    trend_percent(observed_tokens, previous_tokens)
 }
 
 fn combined_cost(totals: &[AvailableTotal<'_>]) -> Option<CostProjection> {
@@ -562,6 +563,9 @@ fn combine_total(totals: &[&UsageTotal]) -> UsageTotal {
     let cost = combined_cost(&available);
     let basis = cost.and_then(|_| combined_basis(&available));
     let trend = combined_trend(&available, observed_tokens);
+    let trend_previous_tokens = available.iter().try_fold(0_u64, |sum, total| {
+        sum.checked_add(total.trend_previous_tokens?)
+    });
     let stale = available.iter().any(|total| total.stale);
     let fields = (
         evidence_basis,
@@ -581,6 +585,7 @@ fn combine_total(totals: &[&UsageTotal]) -> UsageTotal {
             observed_tokens: fields.3,
             api_equivalent_cost_usd: fields.4,
             trend_percent: trend,
+            trend_previous_tokens,
             api_equivalent_cost_basis: fields.5,
             api_equivalent_cost_quality: fields.6,
             api_equivalent_cost_coverage_percent: fields.7,
@@ -593,6 +598,7 @@ fn combine_total(totals: &[&UsageTotal]) -> UsageTotal {
             observed_tokens: fields.3,
             api_equivalent_cost_usd: fields.4,
             trend_percent: trend,
+            trend_previous_tokens,
             api_equivalent_cost_basis: fields.5,
             api_equivalent_cost_quality: fields.6,
             api_equivalent_cost_coverage_percent: fields.7,
@@ -1182,6 +1188,7 @@ mod tests {
                 observed_tokens: 100,
                 api_equivalent_cost_usd: Some(2.0),
                 trend_percent: Some(5.0),
+                trend_previous_tokens: None,
                 api_equivalent_cost_basis: Some("openai-v1".to_owned()),
                 api_equivalent_cost_quality: Some(ApiEquivalentCostQuality::Reconciled),
                 api_equivalent_cost_coverage_percent: None,
@@ -1219,7 +1226,7 @@ mod tests {
     #[test]
     fn combined_usage_weights_provider_trends_by_previous_tokens() {
         let observed_at = now().format(&Rfc3339).unwrap();
-        let periods = |observed_tokens, trend_percent| UsagePeriods {
+        let periods = |observed_tokens, trend_percent, trend_previous_tokens| UsagePeriods {
             scan_status: UsageScanStatus::Complete,
             today_scan_status: UsageScanStatus::Complete,
             seven_day_scan_status: UsageScanStatus::Complete,
@@ -1231,6 +1238,7 @@ mod tests {
                 observed_tokens,
                 api_equivalent_cost_usd: None,
                 trend_percent: Some(trend_percent),
+                trend_previous_tokens: Some(trend_previous_tokens),
                 api_equivalent_cost_basis: None,
                 api_equivalent_cost_quality: None,
                 api_equivalent_cost_coverage_percent: None,
@@ -1238,8 +1246,8 @@ mod tests {
             seven_days: UsageTotal::Unavailable,
             thirty_days: UsageTotal::Unavailable,
         };
-        let codex = periods(200, 100.0);
-        let claude = periods(900, 0.0);
+        let codex = periods(200, 100.0, 100);
+        let claude = periods(900, 0.0, 900);
 
         let combined = combine_usage_periods(&[&codex, &claude]);
         let UsageTotal::Current {
@@ -1252,6 +1260,39 @@ mod tests {
         };
         assert_eq!(observed_tokens, 1_100);
         assert!((trend_percent.unwrap() - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn combined_usage_keeps_previous_weight_when_one_provider_drops_to_zero() {
+        let observed_at = now().format(&Rfc3339).unwrap();
+        let periods = |observed_tokens, trend_percent, previous_tokens| UsagePeriods {
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+            today: UsageTotal::Current {
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                coverage: UsageCoverage::Complete,
+                observed_at: observed_at.clone(),
+                observed_tokens,
+                api_equivalent_cost_usd: None,
+                trend_percent: Some(trend_percent),
+                trend_previous_tokens: Some(previous_tokens),
+                api_equivalent_cost_basis: None,
+                api_equivalent_cost_quality: None,
+                api_equivalent_cost_coverage_percent: None,
+            },
+            seven_days: UsageTotal::Unavailable,
+            thirty_days: UsageTotal::Unavailable,
+        };
+        let codex = periods(0, -100.0, 100);
+        let claude = periods(900, 0.0, 900);
+
+        let combined = combine_usage_periods(&[&codex, &claude]);
+        let UsageTotal::Current { trend_percent, .. } = combined.today else {
+            panic!("combined today must be available");
+        };
+        assert_eq!(trend_percent, Some(-10.0));
     }
 
     #[test]
@@ -1269,6 +1310,7 @@ mod tests {
                 observed_tokens: 100,
                 api_equivalent_cost_usd: Some(cost),
                 trend_percent: None,
+                trend_previous_tokens: None,
                 api_equivalent_cost_basis: Some("fixture-v1".to_owned()),
                 api_equivalent_cost_quality: Some(quality),
                 api_equivalent_cost_coverage_percent: coverage_percent,

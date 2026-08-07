@@ -463,6 +463,13 @@ pub(crate) struct CodexProviderObservationAdapter {
     refresh_trigger: Mutex<Option<RefreshTrigger>>,
 }
 
+trait AccountUsageReader {
+    fn read_account_usage(
+        &mut self,
+        attempt: &RefreshAttempt,
+    ) -> Result<AccountUsageObservation, RefreshFailure>;
+}
+
 impl CodexProviderObservationAdapter {
     pub(crate) fn production(clock: Arc<dyn Clock>, database_path: Option<PathBuf>) -> Self {
         Self {
@@ -473,9 +480,9 @@ impl CodexProviderObservationAdapter {
         }
     }
 
-    fn refresh_account_usage(
+    fn refresh_account_usage<R: AccountUsageReader>(
         &self,
-        session: &mut CodexAppServerSession,
+        session: &mut R,
         attempt: &RefreshAttempt,
     ) -> Option<CachedAccountUsageObservation> {
         let now = self.clock.now();
@@ -492,7 +499,7 @@ impl CodexProviderObservationAdapter {
         };
 
         debug_usage_event(&format!("account_refresh_started reason={refresh_reason}"));
-        match session.read_usage_observation(attempt) {
+        match session.read_account_usage(attempt) {
             Ok(observation) => {
                 let observed_at = self.clock.now();
                 let stored = store_cached_account_usage(
@@ -648,10 +655,18 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
             Ok(observation) => observation,
             Err(_error) => {
                 debug_event("refresh_failed stage=full_read");
+                // Quota and usage are independent app-server capabilities.
+                // A quota failure must not prevent a due or manual account
+                // usage refresh from using the still-live session.
+                let account = self.refresh_account_usage(
+                    session_guard
+                        .as_mut()
+                        .ok_or(RefreshFailure::SourceUnavailable)?,
+                    attempt,
+                );
                 session_guard.take();
                 let observed_at = self.clock.now();
                 attempt.remaining()?;
-                let account = load_cached_account_usage(self.database_path.as_deref());
                 self.update_usage_projection(
                     &mut provider_observation.usage,
                     account.as_ref(),
@@ -922,6 +937,15 @@ impl CodexAppServerSession {
     }
 }
 
+impl AccountUsageReader for CodexAppServerSession {
+    fn read_account_usage(
+        &mut self,
+        attempt: &RefreshAttempt,
+    ) -> Result<AccountUsageObservation, RefreshFailure> {
+        self.read_usage_observation(attempt)
+    }
+}
+
 impl Drop for CodexAppServerSession {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -1085,6 +1109,52 @@ mod tests {
             account_usage_refresh_reason(Some(&expired), now, false),
             Some("expired")
         );
+    }
+
+    struct FixedClock(OffsetDateTime);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> OffsetDateTime {
+            self.0
+        }
+    }
+
+    struct RecordingUsageReader {
+        reads: usize,
+        observation: AccountUsageObservation,
+    }
+
+    impl AccountUsageReader for RecordingUsageReader {
+        fn read_account_usage(
+            &mut self,
+            _attempt: &RefreshAttempt,
+        ) -> Result<AccountUsageObservation, RefreshFailure> {
+            self.reads += 1;
+            Ok(self.observation.clone())
+        }
+    }
+
+    #[test]
+    fn account_usage_read_remains_independent_after_a_quota_failure() {
+        let now = observed_at();
+        let adapter = CodexProviderObservationAdapter::production(Arc::new(FixedClock(now)), None);
+        let mut reader = RecordingUsageReader {
+            reads: 0,
+            observation: parse_account_usage(
+                r#"{"dailyUsageBuckets":[{"startDate":"2026-08-06","tokens":340}],"summary":{}}"#,
+            )
+            .unwrap(),
+        };
+
+        // The quota branch calls this same independent capability before it
+        // drops a failed quota session.
+        let usage = adapter
+            .refresh_account_usage(&mut reader, &RefreshAttempt::test())
+            .expect("manual usage refresh must still return account usage");
+
+        assert_eq!(reader.reads, 1);
+        assert_eq!(usage.observation.day_count(), 1);
+        assert_eq!(usage.observed_at, now);
     }
 
     #[test]

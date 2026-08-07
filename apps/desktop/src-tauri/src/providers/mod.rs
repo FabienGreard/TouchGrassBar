@@ -219,6 +219,7 @@ mod tests {
                 observed_tokens: tokens,
                 api_equivalent_cost_usd: None,
                 trend_percent: None,
+                trend_previous_tokens: None,
                 api_equivalent_cost_basis: None,
                 api_equivalent_cost_quality: None,
                 api_equivalent_cost_coverage_percent: None,

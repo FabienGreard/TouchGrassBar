@@ -630,6 +630,7 @@ type LocalUsageDay = DailyCostEvidence;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LocalUsageObservation {
     daily: BTreeMap<Date, LocalUsageDay>,
+    pricing_basis: Option<String>,
     scan_status: UsageScanStatus,
     latest_pending_modified_at: Option<OffsetDateTime>,
     latest_error_modified_at: Option<OffsetDateTime>,
@@ -659,6 +660,7 @@ impl Default for LocalUsageObservation {
     fn default() -> Self {
         Self {
             daily: BTreeMap::new(),
+            pricing_basis: None,
             scan_status: UsageScanStatus::Unavailable,
             latest_pending_modified_at: None,
             latest_error_modified_at: None,
@@ -677,6 +679,16 @@ impl LocalUsageObservation {
             period_start,
             self.scan_scope_known,
         )
+    }
+
+    fn suppress_cost_evidence(&mut self) {
+        for detail in self.daily.values_mut() {
+            detail.priced_tokens = 0;
+            detail.api_equivalent_cost_usd = None;
+            detail.complete = false;
+            detail.priced_observed_through = None;
+        }
+        self.pricing_basis = None;
     }
 }
 
@@ -1925,22 +1937,22 @@ fn reprice_index_batch_with_manifest(
     for (path, day) in affected_file_days {
         rebuild_file_day_summary(&transaction, &path, day)?;
     }
-    transaction
-        .execute(
-            "INSERT INTO codex_usage_index_meta(key, value) VALUES('pricing_basis', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [manifest.basis.as_str()],
-        )
-        .map_err(|_| ())?;
-    transaction
-        .execute(
-            "INSERT INTO codex_usage_index_meta(key, value)
-             VALUES('pricing_manifest_fingerprint', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [manifest.fingerprint.as_str()],
-        )
-        .map_err(|_| ())?;
     if batch_complete {
+        transaction
+            .execute(
+                "INSERT INTO codex_usage_index_meta(key, value) VALUES('pricing_basis', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [manifest.basis.as_str()],
+            )
+            .map_err(|_| ())?;
+        transaction
+            .execute(
+                "INSERT INTO codex_usage_index_meta(key, value)
+                 VALUES('pricing_manifest_fingerprint', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [manifest.fingerprint.as_str()],
+            )
+            .map_err(|_| ())?;
         transaction
             .execute(
                 "INSERT INTO codex_usage_index_meta(key, value)
@@ -2752,8 +2764,17 @@ fn read_indexed_usage(
             .transpose()
             .map_err(|_| ())
     };
+    let pricing_basis = connection
+        .query_row(
+            "SELECT value FROM codex_usage_index_meta WHERE key = 'pricing_basis'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| ())?;
     Ok(LocalUsageObservation {
         daily: rows,
+        pricing_basis,
         scan_status,
         latest_pending_modified_at: parse_modified_at(latest_pending_modified_ns)?
             .into_iter()
@@ -2800,7 +2821,7 @@ fn index_local_usage_with_budget(
             "scan_pass_completed stop=maintenance elapsed_ms={} retention_complete={retention_complete} pricing_complete={pricing_complete} summaries_complete={summaries_complete}",
             started.elapsed().as_millis()
         ));
-        return read_indexed_usage(
+        let mut local = read_indexed_usage(
             &connection,
             cutoff,
             today,
@@ -2808,7 +2829,11 @@ fn index_local_usage_with_budget(
             false,
             None,
         )
-        .ok();
+        .ok()?;
+        if !pricing_complete {
+            local.suppress_cost_evidence();
+        }
+        return Some(local);
     }
     let mut files = Vec::new();
     let mut found_root = false;
@@ -3323,7 +3348,9 @@ pub(crate) fn project_usage_periods_with_account_time(
         local_cost_evidence: local.map_or_else(BTreeMap::new, |local| local.daily.clone()),
         local_evidence_available: local.is_some(),
         local_observed_at: local.map(|_| now),
-        pricing_basis: pricing_manifest().map(|manifest| manifest.basis.clone()),
+        pricing_basis: local
+            .and_then(|local| local.pricing_basis.clone())
+            .or_else(|| pricing_manifest().map(|manifest| manifest.basis.clone())),
         scan_status: local.map_or(UsageScanStatus::Unavailable, |local| local.scan_status),
         today_scan_status: local.map_or(UsageScanStatus::Unavailable, |local| {
             local.period_scan_status(today, 1)
@@ -4212,6 +4239,103 @@ mod tests {
         assert_eq!(before_summary.0, after_summary.0);
         assert_ne!(before_summary.1, after_summary.1);
         assert_eq!(after.7, "test-price-basis-v2");
+    }
+
+    #[test]
+    fn partial_repricing_keeps_the_last_complete_published_basis() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let account = AccountUsageObservation {
+            daily_tokens: BTreeMap::from([(now.date(), 100)]),
+        };
+        let previous_local = read_indexed_usage(
+            &connection,
+            now.date(),
+            now.date(),
+            UsageScanStatus::Complete,
+            true,
+            None,
+        )
+        .unwrap();
+        let previous = project_usage_periods(Some(&account), Some(&previous_local), now);
+        let original_basis = pricing_manifest().unwrap().basis.clone();
+        let changed = changed_pricing_manifest("test-price-basis-v2", 60.0);
+
+        assert!(
+            !reprice_index_batch_with_manifest(&connection, &changed, now.date(), now.date(), 1,)
+                .unwrap()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT value FROM codex_usage_index_meta WHERE key = 'pricing_basis'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            original_basis
+        );
+
+        let mut partial_local = read_indexed_usage(
+            &connection,
+            now.date(),
+            now.date(),
+            UsageScanStatus::Indexing,
+            false,
+            None,
+        )
+        .unwrap();
+        partial_local.suppress_cost_evidence();
+        let partial = preserve_best_known_costs(
+            project_usage_periods(Some(&account), Some(&partial_local), now),
+            &previous,
+        );
+        let UsageTotal::Current {
+            api_equivalent_cost_usd: partial_cost,
+            api_equivalent_cost_basis: partial_basis,
+            ..
+        } = partial.today
+        else {
+            panic!("partial projection must keep account usage");
+        };
+        let UsageTotal::Current {
+            api_equivalent_cost_usd: previous_cost,
+            api_equivalent_cost_basis: previous_basis,
+            ..
+        } = previous.today
+        else {
+            panic!("previous projection must be current");
+        };
+        assert_eq!(partial_cost, previous_cost);
+        assert_eq!(partial_basis, previous_basis);
+
+        assert!(
+            reprice_index_batch_with_manifest(&connection, &changed, now.date(), now.date(), 1,)
+                .unwrap()
+        );
+        let repriced_local = read_indexed_usage(
+            &connection,
+            now.date(),
+            now.date(),
+            UsageScanStatus::Complete,
+            true,
+            None,
+        )
+        .unwrap();
+        let repriced = project_usage_periods(Some(&account), Some(&repriced_local), now);
+        let UsageTotal::Current {
+            api_equivalent_cost_usd: repriced_cost,
+            api_equivalent_cost_basis: repriced_basis,
+            ..
+        } = repriced.today
+        else {
+            panic!("repriced projection must be current");
+        };
+        assert_ne!(repriced_cost, previous_cost);
+        assert_eq!(repriced_basis.as_deref(), Some("test-price-basis-v2"));
     }
 
     #[test]

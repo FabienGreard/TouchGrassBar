@@ -290,6 +290,8 @@ pub enum UsageTotal {
         #[serde(default)]
         trend_percent: Option<f64>,
         #[serde(default)]
+        trend_previous_tokens: Option<u64>,
+        #[serde(default)]
         #[schemars(length(min = 1, max = 256))]
         api_equivalent_cost_basis: Option<String>,
         #[serde(default)]
@@ -306,6 +308,8 @@ pub enum UsageTotal {
         api_equivalent_cost_usd: Option<f64>,
         #[serde(default)]
         trend_percent: Option<f64>,
+        #[serde(default)]
+        trend_previous_tokens: Option<u64>,
         #[serde(default)]
         #[schemars(length(min = 1, max = 256))]
         api_equivalent_cost_basis: Option<String>,
@@ -927,13 +931,11 @@ impl RefreshInbox {
         if self.stopping.load(Ordering::Acquire) {
             return Err("refresh coordinator unavailable");
         }
-        if !self.in_flight.load(Ordering::Acquire) {
-            self.record(source);
-            match self.wake.try_send(()) {
-                Ok(()) | Err(TrySendError::Full(())) => {}
-                Err(TrySendError::Disconnected(())) => {
-                    return Err("refresh coordinator unavailable");
-                }
+        self.record(source);
+        match self.wake.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) => {}
+            Err(TrySendError::Disconnected(())) => {
+                return Err("refresh coordinator unavailable");
             }
         }
         if self.stopping.load(Ordering::Acquire) {
@@ -1128,10 +1130,20 @@ impl CoordinatorWorker {
             // User requests that race with admission join this active attempt.
             // A provider notification can arrive after the full read, so keep
             // that source pending for a follow-up merge.
-            let joined_sources = self.inbox.take_sources();
             while wake_receiver.try_recv().is_ok() {}
-            if joined_sources.contains(RefreshSource::ProviderNotification) {
-                self.inbox.record(RefreshSource::ProviderNotification);
+            // Drain first, then take joined sources. A request that arrives
+            // after this take leaves its wake signal queued for the next loop.
+            let joined_sources = self.inbox.take_sources();
+            let manual_follow_up = joined_sources.contains(RefreshSource::Manual)
+                && !sources.contains(RefreshSource::Manual);
+            let provider_follow_up = joined_sources.contains(RefreshSource::ProviderNotification);
+            if provider_follow_up || manual_follow_up {
+                if manual_follow_up {
+                    self.inbox.record(RefreshSource::Manual);
+                }
+                if provider_follow_up {
+                    self.inbox.record(RefreshSource::ProviderNotification);
+                }
                 let _ = self.inbox.wake.try_send(());
             }
             let notice = match result {
@@ -1767,6 +1779,7 @@ impl UsageTotal {
                 observed_tokens,
                 api_equivalent_cost_usd,
                 trend_percent,
+                trend_previous_tokens,
                 api_equivalent_cost_basis,
                 api_equivalent_cost_quality,
                 api_equivalent_cost_coverage_percent,
@@ -1778,6 +1791,7 @@ impl UsageTotal {
                     observed_tokens: *observed_tokens,
                     api_equivalent_cost_usd: *api_equivalent_cost_usd,
                     trend_percent: *trend_percent,
+                    trend_previous_tokens: *trend_previous_tokens,
                     api_equivalent_cost_basis: api_equivalent_cost_basis.clone(),
                     api_equivalent_cost_quality: *api_equivalent_cost_quality,
                     api_equivalent_cost_coverage_percent: *api_equivalent_cost_coverage_percent,
@@ -2308,6 +2322,7 @@ mod tests {
                 observed_tokens,
                 api_equivalent_cost_usd: None,
                 trend_percent: None,
+                trend_previous_tokens: None,
                 api_equivalent_cost_basis: None,
                 api_equivalent_cost_quality: None,
                 api_equivalent_cost_coverage_percent: None,
@@ -2529,6 +2544,85 @@ mod tests {
         assert_eq!(core.panel_state().unwrap().revision, "2");
         assert!(notices.recv_timeout(Duration::from_millis(50)).is_err());
         assert_eq!(source.runs.load(Ordering::SeqCst), 1);
+    }
+
+    struct JoinedManualRefreshSource {
+        started: Barrier,
+        release: Barrier,
+        manual_attempts: Mutex<Vec<bool>>,
+    }
+
+    impl JoinedManualRefreshSource {
+        fn new() -> Self {
+            Self {
+                started: Barrier::new(2),
+                release: Barrier::new(2),
+                manual_attempts: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl SnapshotRefreshAdapter for JoinedManualRefreshSource {
+        fn refresh(
+            &self,
+            _cached: SanitizedDesktopStateV3,
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+            let first = {
+                let mut attempts = self
+                    .manual_attempts
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                attempts.push(attempt.is_manual());
+                attempts.len() == 1
+            };
+            if first {
+                self.started.wait();
+                self.release.wait();
+            }
+            attempt.remaining()?;
+            Ok(Some(observed_state(test_time(), 42)))
+        }
+    }
+
+    #[test]
+    fn manual_request_joining_non_manual_refresh_runs_as_follow_up() {
+        let source = Arc::new(JoinedManualRefreshSource::new());
+        let core = NativeCore::with_refresh_adapter(source.clone());
+        let notices = core.revision_notices().unwrap();
+
+        assert!(
+            core.request_refresh(RefreshSource::ProviderNotification)
+                .unwrap()
+                .accepted
+        );
+        source.started.wait();
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        source.release.wait();
+
+        notices.recv_timeout(Duration::from_secs(1)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while source
+            .manual_attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            < 2
+            && Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            *source
+                .manual_attempts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![false, true]
+        );
     }
 
     struct ShutdownRefreshSource {

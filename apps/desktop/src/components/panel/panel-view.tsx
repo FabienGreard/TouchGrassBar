@@ -70,20 +70,7 @@ function PanelView({
         />
 
         {!state ? (
-          error ? (
-            <section
-              className="border-b border-pearl-line bg-pearl-surface-soft p-5 contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight"
-              role="alert"
-            >
-              <strong className="text-[14px]">Nothing invented.</strong>
-              <p className="mt-1.5 mb-0 text-[11px] leading-5 text-pearl-muted contrast-more:text-pearl-ink">
-                The native snapshot is unavailable. No missing value has been
-                counted as zero.
-              </p>
-            </section>
-          ) : (
-            <LoadingPanel />
-          )
+          <LoadingPanel loading={!error} />
         ) : (
           <>
             <div>
