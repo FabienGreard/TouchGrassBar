@@ -6,7 +6,10 @@ import {
   NativeWindowNavItem,
   NativeWindowSidebar,
 } from "@touchgrass/ui";
-import type { ProfileProvisioningStatus } from "@touchgrass/contracts";
+import type {
+  ProfileProvisioningStatus,
+  UpdateState,
+} from "@touchgrass/contracts";
 import { useState } from "react";
 
 import { CodingProviderAccessCard } from "@/components/provider-access/card";
@@ -46,12 +49,15 @@ type SettingsScreenProps = {
   onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
   onCheckProviders?: (() => void) | undefined;
   onCheckForUpdates?: (() => void) | undefined;
+  onInstallUpdate?: (() => void) | undefined;
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
+  onOpenLatestDmg?: (() => void) | undefined;
   onOpenSource?: (() => void) | undefined;
   onProfileDisplayNameChange?: ((displayName: string) => void) | undefined;
   onHideRecoveryKey?: (() => void) | undefined;
   onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
+  onRetryUpdate?: (() => void) | undefined;
   onSectionChange?: ((section: SettingsSection) => void) | undefined;
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
@@ -60,6 +66,7 @@ type SettingsScreenProps = {
   recoveryKey?: string | null | undefined;
   revealingRecoveryKey?: boolean | undefined;
   section?: SettingsSection | undefined;
+  updateState?: UpdateState | null | undefined;
 };
 
 function SettingsScreen({
@@ -70,12 +77,15 @@ function SettingsScreen({
   onAutoUpdatesChange,
   onCheckProviders,
   onCheckForUpdates,
+  onInstallUpdate,
   onLaunchAtLoginChange,
+  onOpenLatestDmg,
   onOpenSource,
   onProfileDisplayNameChange,
   onHideRecoveryKey,
   onRevealRecoveryKey,
   onStartRecovery,
+  onRetryUpdate,
   onSectionChange,
   pendingDisplayName = null,
   profile = null,
@@ -84,6 +94,7 @@ function SettingsScreen({
   recoveryKey = null,
   revealingRecoveryKey = false,
   section: controlledSection,
+  updateState = null,
 }: SettingsScreenProps) {
   const [localSection, setLocalSection] = useState<SettingsSection>(() =>
     typeof window === "undefined"
@@ -120,7 +131,7 @@ function SettingsScreen({
           ))}
         </NativeWindowNav>
         <small className="mt-auto px-2 font-mono text-[9px] text-sheet-muted">
-          Version 0.0.0
+          Version {updateState?.currentVersion ?? "unavailable"}
         </small>
       </NativeWindowSidebar>
 
@@ -158,7 +169,11 @@ function SettingsScreen({
                   autoUpdates={autoUpdates}
                   onAutoUpdatesChange={onAutoUpdatesChange}
                   onCheckForUpdates={onCheckForUpdates}
+                  onInstall={onInstallUpdate}
+                  onOpenLatestDmg={onOpenLatestDmg}
                   onOpenSource={onOpenSource}
+                  onRetry={onRetryUpdate}
+                  state={updateState}
                 />
               </section>
             </div>

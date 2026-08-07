@@ -171,7 +171,7 @@ describe("panel states", () => {
     expect(markup).not.toContain('role="alert"');
   });
 
-  test("shows the primary update action only when an update is available", async () => {
+  test("keeps the compact update icon when an update is available", async () => {
     const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(
       <PanelView
@@ -181,16 +181,49 @@ describe("panel states", () => {
         onUpdate={() => undefined}
         refreshing={false}
         state={currentState}
-        updateAvailable
+        updateState={{
+          contractVersion: 1,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: {
+            status: "available",
+            version: "1.4.0",
+          },
+        }}
       />,
     );
 
     expect(markup).toContain('data-slot="update-action"');
     expect(markup).toContain('data-variant="primary"');
-    expect(markup).toContain('aria-label="Download update"');
+    expect(markup).toContain('aria-label="Install update and relaunch"');
     expect(markup).toContain('data-size="icon"');
     expect(markup).toContain('data-icon-source="Download04Icon"');
-    expect(markup).not.toContain(">Update</button>");
+    expect(markup).not.toContain('data-slot="update-sheet"');
+
+    const retryMarkup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        onUpdate={() => undefined}
+        refreshing={false}
+        state={currentState}
+        updateState={{
+          contractVersion: 1,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: true,
+          update: {
+            failure: "signature",
+            status: "failed",
+            version: "1.4.0",
+          },
+        }}
+      />,
+    );
+    expect(retryMarkup).toContain('aria-label="Retry required update"');
+    expect(retryMarkup).not.toContain(
+      'aria-label="Install update and relaunch"',
+    );
   });
 
   test("renders the populated development fixture without changing the production fallback", async () => {

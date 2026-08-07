@@ -1,6 +1,7 @@
 import type {
   ProviderPresentation,
   SanitizedDesktopState,
+  UpdateState,
 } from "@touchgrass/contracts";
 import { PanelShell } from "@touchgrass/ui";
 import { useRef } from "react";
@@ -19,6 +20,20 @@ import {
   type UsagePresentation,
 } from "@/components/panel/usage-overview";
 
+function updateActionLabel(updateState: UpdateState | null) {
+  if (updateState?.update.status === "failed") {
+    return updateState.onlineFeaturesPaused
+      ? "Retry required update"
+      : "Retry update";
+  }
+  if (updateState?.update.status === "available") {
+    return updateState.onlineFeaturesPaused
+      ? "Install required update and relaunch"
+      : "Install update and relaunch";
+  }
+  return null;
+}
+
 type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
@@ -32,7 +47,7 @@ type PanelViewProps = {
   refreshing: boolean;
   state: SanitizedDesktopState | null;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
-  updateAvailable?: boolean | undefined;
+  updateState?: UpdateState | null | undefined;
   usagePresentation?: UsagePresentation | undefined;
 };
 
@@ -49,7 +64,7 @@ function PanelView({
   refreshing,
   state,
   tokenmaxxerRows,
-  updateAvailable = false,
+  updateState = null,
   usagePresentation,
 }: PanelViewProps) {
   const panelContainerRef = useRef<HTMLElement>(null);
@@ -66,7 +81,7 @@ function PanelView({
           onUpdate={onUpdate}
           refreshing={refreshing}
           state={state}
-          updateAvailable={updateAvailable}
+          updateActionLabel={updateActionLabel(updateState)}
         />
 
         {!state ? (

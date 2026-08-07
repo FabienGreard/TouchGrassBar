@@ -46,7 +46,7 @@ describe("native App composition", () => {
 
     expect(markup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(2);
     expect(markup).not.toContain('role="switch" aria-checked="true"');
-    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Check now/);
+    expect(markup).toContain(">Check now</button>");
   });
 
   test("does not invent provider detection in production onboarding", () => {

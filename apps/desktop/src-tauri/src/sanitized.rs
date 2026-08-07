@@ -27,6 +27,7 @@ use crate::providers::{
     PROVIDER_REGISTRY, detect_provider_presence, production_observation_coordinator,
     provider_descriptor,
 };
+use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update_state_schema};
 
 pub const CONTRACT_VERSION: u8 = 3;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
@@ -690,6 +691,12 @@ impl SqliteReadModelStore {
             .commit()
             .map_err(|_| "native state persistence unavailable")
     }
+
+    fn flush(&self) -> Result<(), &'static str> {
+        self.connection
+            .execute_batch("PRAGMA wal_checkpoint(FULL);")
+            .map_err(|_| "native state persistence unavailable")
+    }
 }
 
 enum ReadModelStore {
@@ -920,8 +927,10 @@ impl RevisionSubscribers {
 }
 
 struct RefreshInbox {
+    admission: Mutex<()>,
     pending_sources: AtomicU8,
     in_flight: AtomicBool,
+    paused: AtomicBool,
     stopping: AtomicBool,
     wake: SyncSender<()>,
 }
@@ -952,6 +961,18 @@ impl RefreshInbox {
     fn take_sources(&self) -> RefreshSources {
         RefreshSources(self.pending_sources.swap(0, Ordering::AcqRel))
     }
+
+    fn try_start_refresh(&self) -> bool {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.paused.load(Ordering::Acquire) {
+            return false;
+        }
+        self.in_flight.store(true, Ordering::Release);
+        true
+    }
 }
 
 struct RefreshCoordinator {
@@ -959,6 +980,29 @@ struct RefreshCoordinator {
     cancelled: Arc<AtomicBool>,
     worker: Mutex<Option<JoinHandle<()>>>,
     subscribers: Arc<RevisionSubscribers>,
+}
+
+pub(crate) struct UpdatePauseGuard<'a> {
+    coordinator: &'a RefreshCoordinator,
+    resume_on_drop: bool,
+}
+
+impl UpdatePauseGuard<'_> {
+    pub(crate) fn keep_paused(mut self) {
+        self.resume_on_drop = false;
+    }
+}
+
+impl Drop for UpdatePauseGuard<'_> {
+    fn drop(&mut self) {
+        if self.resume_on_drop {
+            self.coordinator
+                .inbox
+                .paused
+                .store(false, Ordering::Release);
+            let _ = self.coordinator.inbox.wake.try_send(());
+        }
+    }
 }
 
 impl RefreshCoordinator {
@@ -971,8 +1015,10 @@ impl RefreshCoordinator {
     ) -> Self {
         let (wake, wake_receiver) = mpsc::sync_channel(1);
         let inbox = Arc::new(RefreshInbox {
+            admission: Mutex::new(()),
             pending_sources: AtomicU8::new(0),
             in_flight: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             wake,
         });
@@ -1014,6 +1060,24 @@ impl RefreshCoordinator {
 
     fn request(&self, source: RefreshSource) -> Result<RefreshReceipt, &'static str> {
         self.inbox.request(source)
+    }
+
+    fn pause_for_update(&self) -> UpdatePauseGuard<'_> {
+        let _admission = self
+            .inbox
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.inbox.paused.store(true, Ordering::Release);
+        drop(_admission);
+        let _ = self.inbox.wake.try_send(());
+        while self.inbox.in_flight.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        UpdatePauseGuard {
+            coordinator: self,
+            resume_on_drop: true,
+        }
     }
 
     fn shutdown(&self) {
@@ -1097,6 +1161,12 @@ impl CoordinatorWorker {
     fn run(mut self, wake_receiver: Receiver<()>) {
         self.last_network_reachability = crate::network::is_reachable();
         while !self.inbox.stopping.load(Ordering::Acquire) {
+            if self.inbox.paused.load(Ordering::Acquire) {
+                match wake_receiver.recv_timeout(Duration::from_millis(100)) {
+                    Ok(()) | Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
             let schedule_wait = wait_until(self.clock.now(), self.next_scheduled_at);
             let network_wait = self
                 .next_network_poll_at
@@ -1124,7 +1194,12 @@ impl CoordinatorWorker {
                 continue;
             }
 
-            self.inbox.in_flight.store(true, Ordering::Release);
+            if !self.inbox.try_start_refresh() {
+                self.inbox
+                    .pending_sources
+                    .fetch_or(sources.0, Ordering::AcqRel);
+                continue;
+            }
             let refresh_started = Instant::now();
             let result = self.refresh_once(sources);
             // User requests that race with admission join this active attempt.
@@ -1512,6 +1587,22 @@ impl NativeCore {
 
     pub(crate) fn shutdown(&self) {
         self.inner.coordinator.shutdown();
+    }
+
+    pub(crate) fn pause_for_update(&self) -> UpdatePauseGuard<'_> {
+        self.inner.coordinator.pause_for_update()
+    }
+
+    pub(crate) fn flush(&self) -> Result<(), &'static str> {
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state persistence unavailable")?;
+        match &*store {
+            ReadModelStore::Persistent(store) => store.flush(),
+            ReadModelStore::Memory => Ok(()),
+        }
     }
 }
 
@@ -2087,6 +2178,9 @@ pub fn native_contract_export() -> Value {
         "settingsRecoveryClearEvent": SETTINGS_RECOVERY_CLEAR_EVENT,
         "settingsStateSchema": settings_state_schema(),
         "stateSchema": native_contract_schema(),
+        "updateContractVersion": UPDATE_CONTRACT_VERSION,
+        "updateStateChangedEvent": UPDATE_STATE_CHANGED_EVENT,
+        "updateStateSchema": update_state_schema(),
     })
 }
 
@@ -2303,6 +2397,22 @@ mod tests {
             );
             thread::yield_now();
         }
+    }
+
+    #[test]
+    fn pause_for_update_closes_refresh_admission() {
+        let (wake, _receiver) = std::sync::mpsc::sync_channel(1);
+        let inbox = RefreshInbox {
+            admission: Mutex::new(()),
+            pending_sources: AtomicU8::new(0),
+            in_flight: AtomicBool::new(false),
+            paused: AtomicBool::new(true),
+            stopping: AtomicBool::new(false),
+            wake,
+        };
+
+        assert!(!inbox.try_start_refresh());
+        assert!(!inbox.in_flight.load(Ordering::Acquire));
     }
 
     fn observed_state(

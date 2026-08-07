@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { UpdateState } from "@touchgrass/contracts";
 
 import { App } from "@/App";
 import "@/dev/dev-preview.css";
@@ -17,6 +18,23 @@ import { resolveDevPreviewScenario } from "@/dev/preview-scenario";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
 document.documentElement.dataset.desktopPreview = "true";
+
+const availableUpdate: UpdateState = {
+  contractVersion: 1,
+  currentVersion: "1.3.2",
+  onlineFeaturesPaused: false,
+  update: {
+    status: "available",
+    version: "1.4.0",
+  },
+};
+
+const currentUpdate: UpdateState = {
+  contractVersion: 1,
+  currentVersion: "1.3.2",
+  onlineFeaturesPaused: false,
+  update: { status: "idle" },
+};
 
 function DevPreviewApp() {
   const [devInstance] = useState(currentDevInstance);
@@ -49,7 +67,8 @@ function DevPreviewApp() {
         currentProfile,
         doomerboardRows: currentDoomerboardRows,
         tokenmaxxerRows: myTokenmaxxerRows,
-        updateAvailable: scenario.fixture === "update",
+        updateState:
+          scenario.fixture === "update" ? availableUpdate : currentUpdate,
         usagePresentation: currentUsagePresentation,
       }
     : undefined;
@@ -93,7 +112,9 @@ function DevPreviewApp() {
             onAutoUpdatesChange: setAutoUpdates,
             onCheckProviders: () => undefined,
             onCheckForUpdates: () => undefined,
+            onInstallUpdate: () => undefined,
             onLaunchAtLoginChange: setLaunchAtLogin,
+            onOpenLatestDmg: () => undefined,
             onOpenSource: () => undefined,
             onProfileDisplayNameChange: (displayName) =>
               setProfile((current) => ({ ...current, displayName })),
@@ -115,6 +136,8 @@ function DevPreviewApp() {
                 state: scenario.settingsProviderState,
               },
             ],
+            updateState:
+              scenario.fixture === "update" ? availableUpdate : currentUpdate,
           }}
           surface="settings"
         />

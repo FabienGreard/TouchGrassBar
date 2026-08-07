@@ -6,11 +6,12 @@ mod network;
 pub mod profile;
 mod providers;
 pub mod sanitized;
+pub mod updater;
 
 use std::{
     env,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -34,6 +35,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
+use updater::{OnlineFeatureGate, UpdateRuntime, UpdateStateV1};
 
 const PANEL_LABEL: &str = "panel";
 const SETTINGS_LABEL: &str = "settings";
@@ -100,15 +102,97 @@ impl ProfileRetryMailbox {
 
 #[derive(Clone)]
 struct ProfileRuntime {
+    admission: Arc<ProfileWorkAdmission>,
     coordinator: Arc<std::sync::Mutex<profile::ProfileCoordinator>>,
     core: NativeCore,
     lifecycle: DesktopLifecycle,
+    online_gate: OnlineFeatureGate,
     retry: ProfileRetryMailbox,
+}
+
+#[derive(Default)]
+struct ProfileWorkAdmission {
+    idle: Condvar,
+    state: Mutex<ProfileWorkState>,
+}
+
+#[derive(Default)]
+struct ProfileWorkState {
+    in_flight: usize,
+    paused: bool,
+}
+
+impl ProfileWorkAdmission {
+    fn try_start(self: &Arc<Self>) -> Option<ProfileAttemptGuard> {
+        let mut state = self.state.lock().ok()?;
+        if state.paused {
+            return None;
+        }
+        state.in_flight = state.in_flight.checked_add(1)?;
+        Some(ProfileAttemptGuard(Arc::clone(self)))
+    }
+
+    fn pause(&self) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        state.paused = true;
+        while state.in_flight > 0 {
+            state = self.idle.wait(state).map_err(|_| ())?;
+        }
+        Ok(())
+    }
+
+    fn resume(&self) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        state.paused = false;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn is_paused(&self) -> bool {
+        self.state.lock().is_ok_and(|state| state.paused)
+    }
+}
+
+struct ProfileAttemptGuard(Arc<ProfileWorkAdmission>);
+
+impl Drop for ProfileAttemptGuard {
+    fn drop(&mut self) {
+        let Ok(mut state) = self.0.state.lock() else {
+            return;
+        };
+        state.in_flight = state.in_flight.saturating_sub(1);
+        if state.in_flight == 0 {
+            self.0.idle.notify_all();
+        }
+    }
+}
+
+pub(crate) struct ProfilePauseGuard<'a> {
+    runtime: &'a ProfileRuntime,
+    resume_on_drop: bool,
+}
+
+impl ProfilePauseGuard<'_> {
+    pub(crate) fn keep_paused(mut self) {
+        self.resume_on_drop = false;
+    }
+}
+
+impl Drop for ProfilePauseGuard<'_> {
+    fn drop(&mut self) {
+        if self.resume_on_drop && self.runtime.admission.resume().is_ok() {
+            self.runtime.trigger();
+        }
+    }
 }
 
 impl ProfileRuntime {
     #[cfg(target_os = "macos")]
-    fn start(lifecycle: DesktopLifecycle, app: AppHandle) -> std::io::Result<Self> {
+    fn start(
+        lifecycle: DesktopLifecycle,
+        app: AppHandle,
+        online_gate: OnlineFeatureGate,
+    ) -> std::io::Result<Self> {
         let runtime_lifecycle = lifecycle.clone();
         let coordinator = Arc::new(std::sync::Mutex::new(profile::production_coordinator(
             lifecycle,
@@ -116,9 +200,11 @@ impl ProfileRuntime {
         let (retry, requests) = ProfileRetryMailbox::new();
         let worker_retry = retry.clone();
         let runtime = Self {
+            admission: Arc::new(ProfileWorkAdmission::default()),
             coordinator,
             core: app.state::<NativeCore>().inner().clone(),
             lifecycle: runtime_lifecycle,
+            online_gate,
             retry,
         };
         let worker_runtime = runtime.clone();
@@ -146,6 +232,15 @@ impl ProfileRuntime {
     }
 
     fn attempt(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
+        if self.online_gate.is_paused() {
+            return Ok(None);
+        }
+        let Some(_attempt) = self.admission.try_start() else {
+            return Ok(None);
+        };
+        if self.online_gate.is_paused() {
+            return Ok(None);
+        }
         let attempt = self
             .coordinator
             .lock()
@@ -180,6 +275,14 @@ impl ProfileRuntime {
 
     fn recovery_key_suffix(&self) -> Option<String> {
         profile::production_recovery_key_suffix(&self.lifecycle)
+    }
+
+    fn pause_for_update(&self) -> Result<ProfilePauseGuard<'_>, ()> {
+        self.admission.pause()?;
+        Ok(ProfilePauseGuard {
+            runtime: self,
+            resume_on_drop: true,
+        })
     }
 }
 
@@ -330,6 +433,9 @@ fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
     panel.set_position(origin)?;
     panel.show()?;
     panel.set_focus()?;
+    if let Some(updates) = app.try_state::<UpdateRuntime>() {
+        updates.request_automatic_check();
+    }
     if let Some(core) = app.try_state::<NativeCore>() {
         let _ = core.request_refresh(RefreshSource::StalePanelOpen);
     }
@@ -491,6 +597,54 @@ fn require_settings_or_onboarding(window: &WebviewWindow) -> Result<(), String> 
     matches!(window.label(), SETTINGS_LABEL | ONBOARDING_LABEL)
         .then_some(())
         .ok_or_else(|| "command unavailable for this window".to_owned())
+}
+
+fn require_update_surface(window: &WebviewWindow) -> Result<(), String> {
+    matches!(window.label(), PANEL_LABEL | SETTINGS_LABEL)
+        .then_some(())
+        .ok_or_else(|| "command unavailable for this window".to_owned())
+}
+
+#[tauri::command]
+fn get_update_state(
+    window: WebviewWindow,
+    runtime: State<'_, UpdateRuntime>,
+) -> Result<UpdateStateV1, String> {
+    require_update_surface(&window)?;
+    Ok(runtime.state())
+}
+
+#[tauri::command]
+fn check_for_updates(
+    window: WebviewWindow,
+    runtime: State<'_, UpdateRuntime>,
+) -> Result<UpdateStateV1, String> {
+    require_update_surface(&window)?;
+    Ok(runtime.request_manual_check())
+}
+
+#[tauri::command]
+fn install_update(
+    window: WebviewWindow,
+    runtime: State<'_, UpdateRuntime>,
+) -> Result<UpdateStateV1, String> {
+    require_update_surface(&window)?;
+    Ok(runtime.request_install())
+}
+
+#[tauri::command]
+fn retry_update(
+    window: WebviewWindow,
+    runtime: State<'_, UpdateRuntime>,
+) -> Result<UpdateStateV1, String> {
+    require_update_surface(&window)?;
+    Ok(runtime.retry())
+}
+
+#[tauri::command]
+fn open_latest_dmg(window: WebviewWindow, runtime: State<'_, UpdateRuntime>) -> Result<(), String> {
+    require_update_surface(&window)?;
+    runtime.open_latest_dmg().map_err(str::to_owned)
 }
 
 fn require_profile_settings(
@@ -700,16 +854,21 @@ pub fn run() {
         ));
     let mut app = builder
         .invoke_handler(tauri::generate_handler![
+            check_for_updates,
             complete_bootstrap,
             get_bootstrap_state,
             get_sanitized_state,
             get_settings_state,
+            get_update_state,
             hide_surface,
             hide_panel,
+            install_update,
+            open_latest_dmg,
             open_settings,
             request_refresh,
             resize_panel,
             reveal_recovery_key,
+            retry_update,
             select_settings_section,
             set_launch_at_login,
             take_panel_add_tokenmaxxer_request
@@ -747,6 +906,18 @@ pub fn run() {
             app.manage(core.clone());
             app.manage(PanelActionState::default());
 
+            let online_gate = OnlineFeatureGate::default();
+            #[cfg(debug_assertions)]
+            let updater_available = development_instance.is_none();
+            #[cfg(not(debug_assertions))]
+            let updater_available = true;
+            app.manage(UpdateRuntime::open(
+                app.handle().clone(),
+                database_path.as_deref(),
+                online_gate.clone(),
+                updater_available,
+            ));
+
             app.state::<NativeCore>()
                 .set_profile_outcome(lifecycle.sanitized_profile_outcome())
                 .map_err(std::io::Error::other)?;
@@ -763,7 +934,8 @@ pub fn run() {
                     }
                 }
             }
-            let profile_runtime = ProfileRuntime::start(lifecycle, app.handle().clone())?;
+            let profile_runtime =
+                ProfileRuntime::start(lifecycle, app.handle().clone(), online_gate)?;
             profile_runtime.trigger();
             app.manage(profile_runtime);
 
@@ -1029,6 +1201,37 @@ mod tests {
         assert!(!should_show_bootstrap_on_start(true, true));
         assert!(!should_show_bootstrap_on_start(false, false));
         assert!(!should_show_bootstrap_on_start(false, true));
+    }
+
+    #[test]
+    fn profile_update_pause_waits_for_every_admitted_attempt() {
+        let admission = Arc::new(ProfileWorkAdmission::default());
+        let first = admission.try_start().expect("first attempt admitted");
+        let second = admission.try_start().expect("second attempt admitted");
+        let waiting_admission = Arc::clone(&admission);
+        let (paused, pause_result) = mpsc::sync_channel(1);
+        let pause_thread = std::thread::spawn(move || {
+            waiting_admission.pause().expect("pause admission");
+            let _ = paused.send(());
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !admission.is_paused() {
+            assert!(Instant::now() < deadline, "pause did not close admission");
+            std::thread::yield_now();
+        }
+
+        assert!(admission.try_start().is_none());
+        drop(first);
+        assert!(pause_result.try_recv().is_err());
+        drop(second);
+        pause_result
+            .recv_timeout(Duration::from_secs(1))
+            .expect("pause did not wait for all attempts");
+        pause_thread.join().expect("pause thread failed");
+
+        assert!(admission.try_start().is_none());
+        admission.resume().expect("resume admission");
+        assert!(admission.try_start().is_some());
     }
 
     #[test]

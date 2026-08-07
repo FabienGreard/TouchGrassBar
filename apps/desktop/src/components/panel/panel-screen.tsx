@@ -5,13 +5,15 @@ import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tok
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
+import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
+import { createUpdateDelivery } from "@/native-state/update-delivery";
 
 type PanelPresentation = Pick<
   PanelViewProps,
   | "currentProfile"
   | "doomerboardRows"
   | "tokenmaxxerRows"
-  | "updateAvailable"
+  | "updateState"
   | "usagePresentation"
 >;
 
@@ -27,11 +29,33 @@ function PanelScreen({
   stateDelivery,
 }: PanelScreenProps) {
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
+  const [updates] = useState(() =>
+    createUpdateDelivery(createTauriUpdateAdapter()),
+  );
   const deliveryView = useSyncExternalStore(
     stateDelivery.subscribe,
     stateDelivery.getSnapshot,
     stateDelivery.getSnapshot,
   );
+  const updateView = useSyncExternalStore(
+    updates.subscribe,
+    updates.getSnapshot,
+    updates.getSnapshot,
+  );
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return undefined;
+    let disposed = false;
+    let stop: () => void = () => undefined;
+    void updates.activate().then((unsubscribe) => {
+      if (disposed) unsubscribe();
+      else stop = unsubscribe;
+    });
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, [hasNativeRuntime, updates]);
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
@@ -94,6 +118,12 @@ function PanelScreen({
     presentation.currentProfile === undefined
       ? nativeProfile
       : presentation.currentProfile;
+  const updateActionsAvailable =
+    hasNativeRuntime || presentation.updateState !== undefined;
+  const updateState = presentation.updateState ?? updateView.state;
+  const runUpdateAction = (action: () => Promise<boolean>) => {
+    if (hasNativeRuntime) void action();
+  };
 
   return (
     <PanelView
@@ -109,11 +139,21 @@ function PanelScreen({
       onSettings={() => {
         if (hasNativeRuntime) void invoke("open_settings");
       }}
-      onUpdate={() => undefined}
+      onUpdate={
+        updateActionsAvailable
+          ? () => {
+              runUpdateAction(
+                updateState?.update.status === "failed"
+                  ? updates.retry
+                  : updates.install,
+              );
+            }
+          : undefined
+      }
       refreshing={deliveryView.refreshing}
       state={deliveryView.snapshot}
       tokenmaxxerRows={presentation.tokenmaxxerRows}
-      updateAvailable={presentation.updateAvailable}
+      updateState={updateState}
       usagePresentation={presentation.usagePresentation}
     />
   );

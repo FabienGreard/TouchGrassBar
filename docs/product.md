@@ -26,6 +26,14 @@ The macOS app owns all interactive product behavior: onboarding, provider status
 
 The landing site is a static marketing and distribution surface containing product explanation, screenshots, supported providers, the privacy boundary, installation links, and a GitHub link. It exposes no live Doomerboard, Tokenmaxxer Profile, Profile recovery, My Tokenmaxxers management, or authentication.
 
+## Updates and recovery
+
+TouchGrassBar uses one stable update channel. It checks quietly on the first panel open, at most once in 24 hours, and also gives the Tokenmaxxer a separate **Check now** action in Settings. An available update uses the existing compact download icon in the panel header and the existing version row in Settings. Ignoring the icon leaves it available after restart. Only selecting the icon or the compact **Install & Relaunch** Settings action can download, verify, install, and immediately restart the app. TouchGrassBar does not silently install or restart.
+
+The native core owns update checks and installation. React receives only a bounded update state. After the Tauri signature is valid, the native core pauses and flushes owned work before it replaces the app. The app bundle update does not reset the Rust-owned SQLite database or macOS Keychain items.
+
+A validated minimum version can pause only incompatible online or public work. Local provider utility, Settings, update controls, and DMG recovery stay available. Network, download, signature, interruption, low-disk, permission, or replacement failure gives the Tokenmaxxer **Retry** and **Download latest DMG** without exposing raw failure detail. Recovery moves forward to a higher SemVer. The product does not promise automatic rollback or downgrade.
+
 ## Ranking score
 
 Doomerboards order Tokenmaxxers only by observed tokens. A Provider Doomerboard totals one provider; a Combined Doomerboard adds Codex and Claude tokens without weighting for model, price, plan, or quota percentage.
