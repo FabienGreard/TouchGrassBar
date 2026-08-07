@@ -232,14 +232,25 @@ impl ProviderPresentation {
             || !matches!(self.usage.thirty_days, UsageTotal::Unavailable)
     }
 
-    pub(crate) fn finish_reconnecting(&mut self) {
-        if matches!(self.quota, ProviderSnapshot::Unavailable { .. })
+    fn is_reconnecting(&self) -> bool {
+        matches!(self.quota, ProviderSnapshot::Unavailable { .. })
             && self.usage.scan_status == UsageScanStatus::Indexing
-            && matches!(self.usage.today, UsageTotal::Unavailable)
-            && matches!(self.usage.seven_days, UsageTotal::Unavailable)
-            && matches!(self.usage.thirty_days, UsageTotal::Unavailable)
-        {
-            self.usage.scan_status = UsageScanStatus::Unavailable;
+    }
+
+    pub(crate) fn finish_reconnecting(&mut self) {
+        if self.is_reconnecting() {
+            let period_statuses = [
+                self.usage.today_scan_status,
+                self.usage.seven_day_scan_status,
+                self.usage.thirty_day_scan_status,
+            ];
+            self.usage.scan_status = if period_statuses.contains(&UsageScanStatus::Indexing) {
+                UsageScanStatus::Indexing
+            } else if period_statuses.contains(&UsageScanStatus::Complete) {
+                UsageScanStatus::Complete
+            } else {
+                UsageScanStatus::Unavailable
+            };
         }
     }
 }
@@ -882,10 +893,33 @@ impl CachedProjection {
         &self,
         store: &mut ReadModelStore,
         mut refreshed: SanitizedDesktopStateV3,
+        enablement: &dyn ProviderEnablementPolicy,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         let cached = self.snapshot()?;
         refreshed.profile.clone_from(&cached.profile);
+        refreshed.providers = PROVIDER_REGISTRY
+            .iter()
+            .map(|descriptor| {
+                let mut presentation = if enablement.is_provider_enabled(descriptor.provider) {
+                    refreshed
+                        .provider(descriptor.provider)
+                        .cloned()
+                        .or_else(|| {
+                            cached
+                                .provider(descriptor.provider)
+                                .filter(|presentation| presentation.is_reconnecting())
+                                .cloned()
+                        })
+                } else {
+                    cached.provider(descriptor.provider).cloned()
+                }
+                .unwrap_or_else(|| ProviderPresentation::unavailable(descriptor.provider));
+                presentation.display_name = descriptor.display_name.to_owned();
+                presentation
+            })
+            .collect();
+        refreshed.refresh_combined_usage();
         self.commit_snapshot(store, refreshed, cached, now)
     }
 
@@ -910,28 +944,41 @@ impl CachedProjection {
     fn commit_provider_enablement(
         &self,
         store: &mut ReadModelStore,
-        enablement: &dyn ProviderEnablementPolicy,
-        reconnecting_provider: Option<CodingProvider>,
+        changed_provider: Option<(CodingProvider, bool)>,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         let cached = self.snapshot()?;
         let mut refreshed = cached.clone();
-        drop(refreshed.apply_provider_enablement(enablement));
-        if let Some(provider) = reconnecting_provider
+        if let Some((provider, true)) = changed_provider
             && let Some(presentation) = refreshed.provider_mut(provider)
-            && matches!(presentation.quota, ProviderSnapshot::Unavailable { .. })
         {
+            presentation.quota = ProviderSnapshot::Unavailable {
+                provider,
+                quota_lanes: [],
+            };
             presentation.usage.scan_status = UsageScanStatus::Indexing;
         }
-        self.commit_snapshot(store, refreshed, cached, now)
+        refreshed.refresh_combined_usage();
+        self.commit_snapshot_with_force(store, refreshed, cached, now, changed_provider.is_some())
     }
 
     fn commit_snapshot(
         &self,
         store: &mut ReadModelStore,
+        refreshed: SanitizedDesktopStateV3,
+        cached: SanitizedDesktopStateV3,
+        now: OffsetDateTime,
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
+        self.commit_snapshot_with_force(store, refreshed, cached, now, false)
+    }
+
+    fn commit_snapshot_with_force(
+        &self,
+        store: &mut ReadModelStore,
         mut refreshed: SanitizedDesktopStateV3,
         cached: SanitizedDesktopStateV3,
         now: OffsetDateTime,
+        force_revision: bool,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
@@ -940,7 +987,7 @@ impl CachedProjection {
             refreshed.sync.status = SyncStatus::Unavailable;
         }
         validate_snapshot(&refreshed)?;
-        if refreshed == cached {
+        if refreshed == cached && !force_revision {
             return Ok(SnapshotCommitOutcome {
                 notice: None,
                 persistence_failed: false,
@@ -1117,6 +1164,7 @@ impl RefreshCoordinator {
         subscribers: Arc<RevisionSubscribers>,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
+        enablement: Arc<dyn ProviderEnablementPolicy>,
     ) -> Self {
         let (wake, wake_receiver) = mpsc::sync_channel(1);
         let inbox = Arc::new(RefreshInbox {
@@ -1134,15 +1182,27 @@ impl RefreshCoordinator {
             trigger_inbox.record(RefreshSource::ProviderNotification);
             let _ = trigger_inbox.wake.try_send(());
         }));
-        let worker = CoordinatorWorker::new(
+        let now = clock.now();
+        let next_scheduled_at = projection
+            .snapshot()
+            .map(|state| next_refresh_at(&state, now))
+            .unwrap_or(now + to_time_duration(REFRESH_INTERVAL));
+        let worker = CoordinatorWorker {
             projection,
             store,
-            Arc::clone(&subscribers),
+            subscribers: Arc::clone(&subscribers),
             clock,
-            Arc::clone(&refresh_adapter),
-            Arc::clone(&inbox),
-            Arc::clone(&cancelled),
-        );
+            refresh_adapter: Arc::clone(&refresh_adapter),
+            inbox: Arc::clone(&inbox),
+            cancelled: Arc::clone(&cancelled),
+            enablement,
+            consecutive_failures: 0,
+            retry_not_before: None,
+            next_scheduled_at,
+            next_network_poll_at: Instant::now() + NETWORK_RECOVERY_POLL_INTERVAL,
+            next_local_usage_catch_up_at: Instant::now(),
+            last_network_reachability: None,
+        };
         let worker_inbox = Arc::clone(&inbox);
         let worker = thread::Builder::new()
             .name("sanitized-state-coordinator".to_owned())
@@ -1233,6 +1293,7 @@ struct CoordinatorWorker {
     refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     inbox: Arc<RefreshInbox>,
     cancelled: Arc<AtomicBool>,
+    enablement: Arc<dyn ProviderEnablementPolicy>,
     consecutive_failures: u32,
     retry_not_before: Option<OffsetDateTime>,
     next_scheduled_at: OffsetDateTime,
@@ -1242,37 +1303,6 @@ struct CoordinatorWorker {
 }
 
 impl CoordinatorWorker {
-    fn new(
-        projection: Arc<CachedProjection>,
-        store: Arc<Mutex<ReadModelStore>>,
-        subscribers: Arc<RevisionSubscribers>,
-        clock: Arc<dyn Clock>,
-        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
-        inbox: Arc<RefreshInbox>,
-        cancelled: Arc<AtomicBool>,
-    ) -> Self {
-        let now = clock.now();
-        let next_scheduled_at = projection
-            .snapshot()
-            .map(|state| next_refresh_at(&state, now))
-            .unwrap_or(now + to_time_duration(REFRESH_INTERVAL));
-        Self {
-            projection,
-            store,
-            subscribers,
-            clock,
-            refresh_adapter,
-            inbox,
-            cancelled,
-            consecutive_failures: 0,
-            retry_not_before: None,
-            next_scheduled_at,
-            next_network_poll_at: Instant::now() + NETWORK_RECOVERY_POLL_INTERVAL,
-            next_local_usage_catch_up_at: Instant::now(),
-            last_network_reachability: None,
-        }
-    }
-
     fn run(mut self, wake_receiver: Receiver<()>) {
         self.last_network_reachability = crate::network::is_reachable();
         while !self.inbox.stopping.load(Ordering::Acquire) {
@@ -1457,6 +1487,7 @@ impl CoordinatorWorker {
                     self.projection.commit_refreshed_snapshot(
                         &mut store,
                         transitioned,
+                        self.enablement.as_ref(),
                         self.clock.now(),
                     )
                 });
@@ -1503,8 +1534,12 @@ impl CoordinatorWorker {
         let commit_result = candidate
             .map(|candidate| {
                 let mut store = self.store.lock().map_err(|_| "native state unavailable")?;
-                self.projection
-                    .commit_refreshed_snapshot(&mut store, candidate, completed_at)
+                self.projection.commit_refreshed_snapshot(
+                    &mut store,
+                    candidate,
+                    self.enablement.as_ref(),
+                    completed_at,
+                )
             })
             .transpose();
         let failed = pre_refresh_failed
@@ -1622,9 +1657,14 @@ impl NativeCore {
         let mut store = ReadModelStore::Persistent(store);
         let projection = Arc::new(CachedProjection::new(state));
         if let Some(transitioned) = transition_snapshot_at(&projection.snapshot()?, now) {
-            projection.commit_refreshed_snapshot(&mut store, transitioned, now)?;
+            projection.commit_refreshed_snapshot(
+                &mut store,
+                transitioned,
+                enablement.as_ref(),
+                now,
+            )?;
         }
-        projection.commit_provider_enablement(&mut store, enablement.as_ref(), None, now)?;
+        projection.commit_provider_enablement(&mut store, None, now)?;
         Ok(Self::from_components(
             projection,
             store,
@@ -1712,6 +1752,7 @@ impl NativeCore {
             Arc::clone(&subscribers),
             Arc::clone(&clock),
             refresh_adapter,
+            Arc::clone(&enablement),
         );
         Self {
             inner: Arc::new(NativeCoreInner {
@@ -1746,8 +1787,7 @@ impl NativeCore {
             .map_err(|_| "native state unavailable")?;
         let outcome = self.inner.projection.commit_provider_enablement(
             &mut store,
-            self.inner.enablement.as_ref(),
-            enabled.then_some(provider),
+            Some((provider, enabled)),
             self.inner.clock.now(),
         )?;
         if let Some(notice) = outcome.notice {
@@ -2843,12 +2883,21 @@ mod tests {
         let cached_claude = cached.provider(CodingProvider::Claude).unwrap();
         assert!(matches!(
             cached_claude.quota,
-            ProviderSnapshot::Unavailable {
+            ProviderSnapshot::Current {
                 provider: CodingProvider::Claude,
-                quota_lanes: []
+                ..
             }
         ));
-        assert_eq!(cached_claude.usage, unavailable_periods());
+        let UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            ..
+        } = &cached_claude.usage.today
+        else {
+            panic!("disabled provider history must remain cached");
+        };
+        assert_eq!(*observed_tokens, 58);
+        assert_eq!(*api_equivalent_cost_usd, Some(5.8));
         assert_eq!(panel.providers.len(), 2);
         assert_eq!(panel.providers[0].provider, CodingProvider::Codex);
         assert_eq!(panel.providers[1].provider, CodingProvider::Claude);
@@ -2951,6 +3000,86 @@ mod tests {
         let mut reconnecting_usage = unavailable_periods();
         reconnecting_usage.scan_status = UsageScanStatus::Indexing;
         assert_eq!(claude.usage, reconnecting_usage);
+    }
+
+    #[test]
+    fn reenabling_provider_keeps_last_known_cost_while_refresh_is_pending() {
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
+        let mut state = observed_state(test_time(), 42);
+        let mut claude_usage = state.provider(CodingProvider::Codex).unwrap().usage.clone();
+        let UsageTotal::Current {
+            evidence_basis,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            api_equivalent_cost_quality,
+            ..
+        } = &mut claude_usage.today
+        else {
+            panic!("Claude fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::LocallyDerived;
+        *observed_tokens = 58;
+        *api_equivalent_cost_usd = Some(5.8);
+        *api_equivalent_cost_basis = Some("anthropic-fixture".to_owned());
+        *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::LocalOnly);
+        let claude = state.provider_mut(CodingProvider::Claude).unwrap();
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.quota = ProviderSnapshot::Current {
+            provider: CodingProvider::Claude,
+            observed_at: format_time(test_time()),
+            quota_lanes: vec![QuotaLane {
+                label: "Weekly limit".to_owned(),
+                unit: "percent".to_owned(),
+                allowance: Some(100.0),
+                remaining: Some(50.0),
+                reset_at: None,
+            }],
+        };
+        claude.usage = claude_usage;
+        state.refresh_combined_usage();
+        let policy = Arc::new(ClaudeTogglePolicy {
+            enabled: AtomicBool::new(true),
+        });
+        let enablement: Arc<dyn ProviderEnablementPolicy> = policy.clone();
+        let core = NativeCore::with_components(
+            state,
+            ReadModelStore::Memory,
+            clock,
+            Arc::new(CachedProjectionRefreshAdapter),
+            enablement,
+        );
+
+        policy.enabled.store(false, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        assert!(matches!(
+            core.panel_state()
+                .unwrap()
+                .provider(CodingProvider::Claude)
+                .unwrap()
+                .usage
+                .today,
+            UsageTotal::Unavailable
+        ));
+
+        policy.enabled.store(true, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, true)
+            .unwrap();
+        let panel = core.panel_state().unwrap();
+        let claude = panel.provider(CodingProvider::Claude).unwrap();
+
+        assert_eq!(claude.usage.scan_status, UsageScanStatus::Indexing);
+        let UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            ..
+        } = claude.usage.today
+        else {
+            panic!("last known Claude usage must remain visible");
+        };
+        assert_eq!(observed_tokens, 58);
+        assert_eq!(api_equivalent_cost_usd, Some(5.8));
     }
 
     #[test]
@@ -3068,6 +3197,46 @@ mod tests {
         }
     }
 
+    struct BlockingStaleRegistryRefreshSource {
+        started: Barrier,
+        release: Barrier,
+        runs: AtomicUsize,
+    }
+
+    impl BlockingStaleRegistryRefreshSource {
+        fn new() -> Self {
+            Self {
+                started: Barrier::new(2),
+                release: Barrier::new(2),
+                runs: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl SnapshotRefreshAdapter for BlockingStaleRegistryRefreshSource {
+        fn refresh(
+            &self,
+            _cached: SanitizedDesktopStateV3,
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+            attempt.remaining()?;
+            let run = self.runs.fetch_add(1, Ordering::SeqCst);
+            if run < 2 {
+                self.started.wait();
+                self.release.wait();
+            }
+            attempt.remaining()?;
+            let mut state = observed_state(test_time(), 42);
+            if run == 0 {
+                state
+                    .providers
+                    .retain(|provider| provider.provider == CodingProvider::Codex);
+                state.refresh_combined_usage();
+            }
+            Ok(Some(state))
+        }
+    }
+
     #[test]
     fn concurrent_refresh_requests_join_one_in_flight_commit() {
         let source = Arc::new(BlockingRefreshSource::new());
@@ -3117,6 +3286,52 @@ mod tests {
         assert_eq!(source.runs.load(Ordering::SeqCst), 2);
         source.started.wait();
         source.release.wait();
+    }
+
+    #[test]
+    fn stale_refresh_commit_preserves_reconnecting_provider_marker() {
+        let source = Arc::new(BlockingStaleRegistryRefreshSource::new());
+        let policy = Arc::new(ClaudeTogglePolicy {
+            enabled: AtomicBool::new(false),
+        });
+        let enablement: Arc<dyn ProviderEnablementPolicy> = policy.clone();
+        let core = NativeCore::with_components(
+            unavailable_state(1),
+            ReadModelStore::Memory,
+            Arc::new(FixtureClock::new(test_time())),
+            source.clone(),
+            enablement,
+        );
+
+        assert!(core.request_provider_refresh().unwrap().accepted);
+        source.started.wait();
+
+        policy.enabled.store(true, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, true)
+            .unwrap();
+        assert!(core.request_provider_refresh().unwrap().accepted);
+        let scan_status_before_stale_commit = core
+            .panel_state()
+            .unwrap()
+            .provider(CodingProvider::Claude)
+            .unwrap()
+            .usage
+            .scan_status;
+
+        source.release.wait();
+        source.started.wait();
+        let scan_status = core
+            .panel_state()
+            .unwrap()
+            .provider(CodingProvider::Claude)
+            .unwrap()
+            .usage
+            .scan_status;
+        source.release.wait();
+        wait_for_idle(&core);
+
+        assert_eq!(scan_status_before_stale_commit, UsageScanStatus::Indexing);
+        assert_eq!(scan_status, UsageScanStatus::Indexing);
     }
 
     struct JoinedManualRefreshSource {
