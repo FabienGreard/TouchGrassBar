@@ -1,6 +1,10 @@
 //! Compiled coding-provider identities and local presence detection.
 
-use std::{collections::BTreeSet, env, path::PathBuf};
+use std::{
+    collections::BTreeSet,
+    env,
+    path::{Path, PathBuf},
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -54,47 +58,99 @@ pub(crate) fn provider_descriptor(provider: CodingProvider) -> &'static Provider
 
 pub(crate) fn provider_candidates(provider: CodingProvider) -> BTreeSet<PathBuf> {
     let descriptor = provider_descriptor(provider);
-    let mut candidates = BTreeSet::new();
-    if let Some(path) = env::var_os("PATH") {
-        for directory in env::split_paths(&path) {
-            candidates.insert(directory.join(descriptor.command));
-        }
-    }
-    for directory in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        candidates.insert(PathBuf::from(directory).join(descriptor.command));
-    }
+    let mut candidates = provider_executable_candidates(provider)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     candidates.insert(PathBuf::from("/Applications").join(descriptor.application));
     if let Some(home) = env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        candidates.extend(home_provider_candidates(provider, &home));
+        candidates.insert(
+            PathBuf::from(home)
+                .join("Applications")
+                .join(descriptor.application),
+        );
     }
     candidates
 }
 
-fn home_provider_candidates(provider: CodingProvider, home: &std::path::Path) -> BTreeSet<PathBuf> {
+fn provider_executable_candidates(provider: CodingProvider) -> Vec<PathBuf> {
     let descriptor = provider_descriptor(provider);
-    let mut candidates = BTreeSet::new();
-    for directory in [".local/bin", ".bun/bin", ".npm-global/bin", ".volta/bin"] {
-        candidates.insert(home.join(directory).join(descriptor.command));
+    let mut candidates = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push = |candidate: PathBuf| {
+        if seen.insert(candidate.clone()) {
+            candidates.push(candidate);
+        }
+    };
+    if let Some(path) = env::var_os("PATH") {
+        for directory in env::split_paths(&path) {
+            push(directory.join(descriptor.command));
+        }
     }
-    if let Ok(versions) = std::fs::read_dir(home.join(".nvm/versions/node")) {
-        candidates.extend(
-            versions
-                .flatten()
-                .map(|version| version.path().join("bin").join(descriptor.command)),
-        );
+    for directory in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        push(PathBuf::from(directory).join(descriptor.command));
     }
-    candidates.insert(home.join("Applications").join(descriptor.application));
-    if provider == CodingProvider::Claude {
-        candidates.insert(home.join(".claude/local/claude"));
+    if let Some(home) = env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        for candidate in home_provider_executable_candidates(provider, &home) {
+            push(candidate);
+        }
     }
     candidates
+}
+
+fn home_provider_executable_candidates(provider: CodingProvider, home: &Path) -> Vec<PathBuf> {
+    let descriptor = provider_descriptor(provider);
+    let mut candidates = Vec::new();
+    for directory in [".local/bin", ".bun/bin", ".npm-global/bin", ".volta/bin"] {
+        candidates.push(home.join(directory).join(descriptor.command));
+    }
+    if let Ok(versions) = std::fs::read_dir(home.join(".nvm/versions/node")) {
+        let mut version_candidates = versions
+            .flatten()
+            .map(|version| version.path().join("bin").join(descriptor.command))
+            .collect::<Vec<_>>();
+        version_candidates.sort_by(|left, right| right.cmp(left));
+        candidates.extend(version_candidates);
+    }
+    if provider == CodingProvider::Claude {
+        candidates.push(home.join(".claude/local/claude"));
+    }
+    candidates
+}
+
+pub(crate) fn resolve_provider_executable(provider: CodingProvider) -> Option<PathBuf> {
+    first_executable(provider_executable_candidates(provider))
+}
+
+fn first_executable(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn is_executable_file(candidate: &Path) -> bool {
+    let Ok(metadata) = candidate.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 pub(crate) fn detect_provider_presence(provider: CodingProvider) -> ProviderPresenceStatus {
     if provider_candidates(provider)
         .iter()
-        .any(|candidate| candidate.is_file() || candidate.is_dir())
+        .any(|candidate| is_executable_file(candidate) || candidate.is_dir())
     {
         ProviderPresenceStatus::Detected
     } else {
@@ -157,12 +213,35 @@ mod tests {
         fs::create_dir_all(&version_bin).unwrap();
 
         assert!(
-            home_provider_candidates(CodingProvider::Claude, &home.0)
+            home_provider_executable_candidates(CodingProvider::Claude, &home.0)
                 .contains(&version_bin.join("claude"))
         );
         assert!(
-            home_provider_candidates(CodingProvider::Codex, &home.0)
+            home_provider_executable_candidates(CodingProvider::Codex, &home.0)
                 .contains(&version_bin.join("codex"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_resolution_preserves_priority_and_skips_stale_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = FixtureHome::new();
+        fs::create_dir_all(&home.0).unwrap();
+        let stale = home.0.join("stale");
+        let preferred = home.0.join("preferred");
+        let fallback = home.0.join("fallback");
+        for candidate in [&stale, &preferred, &fallback] {
+            fs::write(candidate, b"fixture").unwrap();
+        }
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&preferred, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&fallback, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(
+            first_executable([stale, preferred.clone(), fallback]),
+            Some(preferred)
         );
     }
 }

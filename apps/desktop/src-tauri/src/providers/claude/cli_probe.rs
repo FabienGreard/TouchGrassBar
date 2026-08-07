@@ -16,13 +16,20 @@ use chrono::{Datelike, LocalResult, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use time::OffsetDateTime;
+use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
 use super::ClaudeQuotaObservation;
 
 const MAX_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
 const STARTUP_DELAY: StdDuration = StdDuration::from_secs(2);
-const ENTER_INTERVAL: StdDuration = StdDuration::from_millis(800);
+const PROBE_SESSION_MARKER: &str = ".touchgrassbar-claude-probe-session";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ProbeFailure {
+    Cancelled,
+    Unavailable,
+}
 
 fn probe_event(event: &'static str) {
     super::debug_event(event);
@@ -33,9 +40,14 @@ pub(super) fn probe_usage(
     probe_directory: &Path,
     observed_at: OffsetDateTime,
     timeout: StdDuration,
-) -> Result<ClaudeQuotaObservation, ()> {
-    cleanup_probe_session_artifacts(probe_directory);
-    prepare_probe_directory(probe_directory)?;
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ClaudeQuotaObservation, ProbeFailure> {
+    let session_id = probe_session_id().map_err(|()| ProbeFailure::Unavailable)?;
+    if !cleanup_probe_session_artifacts(probe_directory) {
+        probe_event("cli_probe_failed stage=cleanup_pending");
+        return Err(ProbeFailure::Unavailable);
+    }
+    prepare_probe_directory(probe_directory, session_id).map_err(|()| ProbeFailure::Unavailable)?;
     let _cleanup = ProbeCleanup(probe_directory.to_path_buf());
 
     let pty = native_pty_system();
@@ -48,14 +60,17 @@ pub(super) fn probe_usage(
         })
         .map_err(|_| {
             probe_event("cli_probe_failed stage=pty_open");
+            ProbeFailure::Unavailable
         })?;
     let mut command = CommandBuilder::new(executable);
     command.args([
         "--allowed-tools",
         "",
         "--strict-mcp-config",
+        "--settings",
+        "{\"disableDeepLinkRegistration\":\"disable\"}",
         "--session-id",
-        probe_session_id()?,
+        session_id,
     ]);
     command.env("DISABLE_AUTOUPDATER", "1");
     for (key, _) in env::vars_os() {
@@ -74,15 +89,18 @@ pub(super) fn probe_usage(
     }
     command.cwd(probe_directory);
 
-    let mut child = pair.slave.spawn_command(command).map_err(|_| {
+    let mut child = ManagedChild::new(pair.slave.spawn_command(command).map_err(|_| {
         probe_event("cli_probe_failed stage=process_start");
-    })?;
+        ProbeFailure::Unavailable
+    })?);
     drop(pair.slave);
     let mut writer = pair.master.take_writer().map_err(|_| {
         probe_event("cli_probe_failed stage=pty_writer");
+        ProbeFailure::Unavailable
     })?;
     let mut reader = pair.master.try_clone_reader().map_err(|_| {
         probe_event("cli_probe_failed stage=pty_reader");
+        ProbeFailure::Unavailable
     })?;
     let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(16);
     let reader_thread = thread::Builder::new()
@@ -98,6 +116,7 @@ pub(super) fn probe_usage(
         })
         .map_err(|_| {
             probe_event("cli_probe_failed stage=reader_thread");
+            ProbeFailure::Unavailable
         })?;
 
     let result = capture_usage_output(
@@ -106,9 +125,9 @@ pub(super) fn probe_usage(
         &receiver,
         observed_at,
         timeout.min(StdDuration::from_secs(30)),
+        cancelled,
     );
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(child);
     drop(writer);
     drop(pair.master);
     drop(receiver);
@@ -117,48 +136,56 @@ pub(super) fn probe_usage(
 }
 
 fn capture_usage_output(
-    child: &mut dyn portable_pty::Child,
+    child: &mut (dyn portable_pty::Child + Send + Sync),
     writer: &mut dyn Write,
     receiver: &mpsc::Receiver<Vec<u8>>,
     observed_at: OffsetDateTime,
     timeout: StdDuration,
-) -> Result<ClaudeQuotaObservation, ()> {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ClaudeQuotaObservation, ProbeFailure> {
     let started_at = Instant::now();
-    let deadline = started_at.checked_add(timeout).ok_or(())?;
+    let deadline = started_at
+        .checked_add(timeout)
+        .ok_or(ProbeFailure::Unavailable)?;
     let mut usage_sent = false;
-    let mut next_enter = started_at + STARTUP_DELAY + ENTER_INTERVAL;
     let mut output = Zeroizing::new(Vec::new());
     let mut accepted_prompts = [false; 5];
 
     loop {
+        if cancelled() {
+            probe_event("cli_probe_failed stage=cancelled");
+            return Err(ProbeFailure::Cancelled);
+        }
         let now = Instant::now();
         if now >= deadline {
             probe_event("cli_probe_failed stage=timeout");
-            return Err(());
+            return Err(ProbeFailure::Unavailable);
         }
         if !usage_sent && now.duration_since(started_at) >= STARTUP_DELAY {
-            writer.write_all(b"/usage\r").map_err(|_| ())?;
-            writer.flush().map_err(|_| ())?;
+            writer
+                .write_all(b"/usage\r")
+                .map_err(|_| ProbeFailure::Unavailable)?;
+            writer.flush().map_err(|_| ProbeFailure::Unavailable)?;
             usage_sent = true;
         }
-        if usage_sent && now >= next_enter {
-            writer.write_all(b"\r").map_err(|_| ())?;
-            writer.flush().map_err(|_| ())?;
-            next_enter = now + ENTER_INTERVAL;
-        }
-        if child.try_wait().map_err(|_| ())?.is_some() {
+        if child
+            .try_wait()
+            .map_err(|_| ProbeFailure::Unavailable)?
+            .is_some()
+        {
             probe_event("cli_probe_failed stage=process_exit");
-            return Err(());
+            return Err(ProbeFailure::Unavailable);
         }
 
         match receiver.recv_timeout(StdDuration::from_millis(100)) {
             Ok(chunk) => {
                 if output.len().saturating_add(chunk.len()) > MAX_CLI_OUTPUT_BYTES {
                     probe_event("cli_probe_failed stage=output_limit");
-                    return Err(());
+                    return Err(ProbeFailure::Unavailable);
                 }
                 output.extend_from_slice(&chunk);
-                handle_safe_prompts(&output, writer, &mut accepted_prompts)?;
+                handle_safe_prompts(&output, writer, &mut accepted_prompts)
+                    .map_err(|()| ProbeFailure::Unavailable)?;
                 if usage_sent && let Ok(observation) = parse_usage_output(&output, observed_at) {
                     return Ok(observation);
                 }
@@ -166,8 +193,29 @@ fn capture_usage_output(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 probe_event("cli_probe_failed stage=output_closed");
-                return Err(());
+                return Err(ProbeFailure::Unavailable);
             }
+        }
+    }
+}
+
+struct ManagedChild(Option<Box<dyn portable_pty::Child + Send + Sync>>);
+
+impl ManagedChild {
+    fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
+        Self(Some(child))
+    }
+
+    fn as_mut(&mut self) -> &mut (dyn portable_pty::Child + Send + Sync) {
+        self.0.as_deref_mut().expect("managed child must exist")
+    }
+}
+
+impl Drop for ManagedChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }
@@ -235,23 +283,16 @@ fn probe_session_id() -> Result<&'static str, ()> {
         .ok_or(())
 }
 
-fn prepare_probe_directory(directory: &Path) -> Result<(), ()> {
-    let settings_directory = directory.join(".claude");
-    fs::create_dir_all(&settings_directory).map_err(|_| ())?;
-    let settings = settings_directory.join("settings.local.json");
-    fs::write(
-        &settings,
-        b"{\"disableDeepLinkRegistration\":\"disable\"}\n",
-    )
-    .map_err(|_| ())?;
+fn prepare_probe_directory(directory: &Path, session_id: &str) -> Result<(), ()> {
+    fs::create_dir_all(directory).map_err(|_| ())?;
+    let marker = directory.join(PROBE_SESSION_MARKER);
+    fs::write(&marker, format!("{session_id}\n")).map_err(|_| ())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700)).map_err(|_| ())?;
-        fs::set_permissions(&settings_directory, fs::Permissions::from_mode(0o700))
-            .map_err(|_| ())?;
-        fs::set_permissions(settings, fs::Permissions::from_mode(0o600)).map_err(|_| ())?;
+        fs::set_permissions(marker, fs::Permissions::from_mode(0o600)).map_err(|_| ())?;
     }
     Ok(())
 }
@@ -260,32 +301,83 @@ struct ProbeCleanup(PathBuf);
 
 impl Drop for ProbeCleanup {
     fn drop(&mut self) {
-        cleanup_probe_session_artifacts(&self.0);
+        let _ = cleanup_probe_session_artifacts(&self.0);
     }
 }
 
-fn cleanup_probe_session_artifacts(probe_directory: &Path) {
-    let config_root = env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")));
-    if let Some(config_root) = config_root {
-        let project_directory = config_root
-            .join("projects")
-            .join(claude_project_directory_name(probe_directory));
-        if let Ok(entries) = fs::read_dir(&project_directory) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
-                    && entry.file_type().is_ok_and(|file_type| file_type.is_file())
-                {
-                    let _ = fs::remove_file(path);
-                }
+fn cleanup_probe_session_artifacts(probe_directory: &Path) -> bool {
+    if let Some(config_root) = claude_config_root(probe_directory) {
+        cleanup_probe_session_artifacts_at(probe_directory, &config_root)
+    } else if probe_session_marker_exists(probe_directory) {
+        cleanup_probe_directory(probe_directory, false);
+        false
+    } else {
+        cleanup_probe_directory(probe_directory, true);
+        true
+    }
+}
+
+fn cleanup_probe_session_artifacts_at(probe_directory: &Path, config_root: &Path) -> bool {
+    if !probe_session_marker_exists(probe_directory) {
+        cleanup_probe_directory(probe_directory, true);
+        return true;
+    }
+    let Some(session_id) = read_probe_session_marker(probe_directory) else {
+        cleanup_probe_directory(probe_directory, false);
+        return false;
+    };
+    let project_directory = config_root
+        .join("projects")
+        .join(claude_project_directory_name(probe_directory));
+    let session_file = project_directory.join(format!("{}.jsonl", session_id.as_str()));
+    let transcript_absent = match fs::symlink_metadata(&session_file) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+        Ok(metadata) if metadata.is_file() => {
+            fs::remove_file(&session_file).is_ok()
+                && fs::symlink_metadata(&session_file)
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        }
+        Ok(_) => false,
+    };
+    if transcript_absent
+        && fs::read_dir(&project_directory).is_ok_and(|mut entries| entries.next().is_none())
+    {
+        let _ = fs::remove_dir(project_directory);
+    }
+    cleanup_probe_directory(probe_directory, transcript_absent);
+    transcript_absent
+}
+
+fn probe_session_marker_exists(probe_directory: &Path) -> bool {
+    fs::symlink_metadata(probe_directory.join(PROBE_SESSION_MARKER)).is_ok()
+}
+
+fn read_probe_session_marker(probe_directory: &Path) -> Option<Zeroizing<String>> {
+    let marker = probe_directory.join(PROBE_SESSION_MARKER);
+    let metadata = fs::symlink_metadata(&marker).ok()?;
+    if !metadata.is_file() || metadata.len() > 64 {
+        return None;
+    }
+    let value = Zeroizing::new(fs::read_to_string(marker).ok()?);
+    let session_id = value.trim();
+    is_valid_session_id(session_id).then(|| Zeroizing::new(session_id.to_owned()))
+}
+
+fn is_valid_session_id(session_id: &str) -> bool {
+    session_id.len() == 36
+        && session_id.bytes().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
             }
-        }
-        if fs::read_dir(&project_directory).is_ok_and(|mut entries| entries.next().is_none()) {
-            let _ = fs::remove_dir(project_directory);
-        }
+        })
+}
+
+fn cleanup_probe_directory(probe_directory: &Path, remove_marker: bool) {
+    if remove_marker {
+        let _ = fs::remove_file(probe_directory.join(PROBE_SESSION_MARKER));
     }
     let settings_directory = probe_directory.join(".claude");
     let _ = fs::remove_file(settings_directory.join("settings.local.json"));
@@ -293,9 +385,24 @@ fn cleanup_probe_session_artifacts(probe_directory: &Path) {
     let _ = fs::remove_dir(probe_directory);
 }
 
+fn claude_config_root(probe_directory: &Path) -> Option<PathBuf> {
+    if let Some(value) = env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
+        let configured = PathBuf::from(value);
+        return Some(if configured.is_absolute() {
+            configured
+        } else {
+            probe_directory.join(configured)
+        });
+    }
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
+}
+
 fn claude_project_directory_name(directory: &Path) -> String {
-    let path = directory.to_string_lossy();
-    path.encode_utf16()
+    const MAX_DIRECTORY_NAME_LENGTH: usize = 200;
+
+    let path = directory.to_string_lossy().nfc().collect::<String>();
+    let sanitized = path
+        .encode_utf16()
         .map(|unit| {
             if unit <= u16::from(u8::MAX) && (unit as u8).is_ascii_alphanumeric() {
                 char::from_u32(u32::from(unit)).unwrap_or('-')
@@ -303,8 +410,40 @@ fn claude_project_directory_name(directory: &Path) -> String {
                 '-'
             }
         })
-        .take(200)
-        .collect()
+        .collect::<String>();
+    if sanitized.len() <= MAX_DIRECTORY_NAME_LENGTH {
+        return sanitized;
+    }
+    format!(
+        "{}-{}",
+        &sanitized[..MAX_DIRECTORY_NAME_LENGTH],
+        javascript_hash_base36(&path)
+    )
+}
+
+fn javascript_hash_base36(value: &str) -> String {
+    let hash = value.encode_utf16().fold(0_i32, |hash, unit| {
+        hash.wrapping_mul(31).wrapping_add(i32::from(unit))
+    });
+    let mut magnitude = if hash < 0 {
+        -i64::from(hash)
+    } else {
+        i64::from(hash)
+    };
+    if magnitude == 0 {
+        return "0".to_owned();
+    }
+    let mut encoded = Vec::new();
+    while magnitude > 0 {
+        let digit = (magnitude % 36) as u8;
+        encoded.push(if digit < 10 {
+            char::from(b'0' + digit)
+        } else {
+            char::from(b'a' + digit - 10)
+        });
+        magnitude /= 36;
+    }
+    encoded.into_iter().rev().collect()
 }
 
 pub(super) fn parse_usage_output(
@@ -496,9 +635,44 @@ fn validate_reset(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        process::{Command, Stdio},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering},
+        },
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use time::{Duration, format_description::well_known::Rfc3339};
 
     use super::*;
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct FixtureRoot(PathBuf);
+
+    impl FixtureRoot {
+        fn new() -> Self {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = env::temp_dir().join(format!(
+                "touchgrassbar-claude-probe-test-{}-{timestamp}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for FixtureRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn test_time() -> OffsetDateTime {
         OffsetDateTime::parse("2026-08-07T14:30:00Z", &Rfc3339).unwrap()
@@ -553,5 +727,161 @@ mod tests {
         assert!(!serialized.contains("REDACTED-ACCOUNT"));
         assert!(!serialized.contains("REDACTED-PROVIDER-CONTENT"));
         assert!(!serialized.contains("Current session"));
+    }
+
+    #[test]
+    fn cli_probe_paths_match_claude_project_encoding() {
+        assert_eq!(
+            claude_project_directory_name(Path::new(
+                "/Users/test.name/tést_under/Library/Application Support/TouchGrassBar/ClaudeProbe"
+            )),
+            "-Users-test-name-t-st-under-Library-Application-Support-TouchGrassBar-ClaudeProbe"
+        );
+        assert_eq!(
+            claude_project_directory_name(Path::new("/Users/test/emoji_😀/ClaudeProbe")),
+            "-Users-test-emoji----ClaudeProbe"
+        );
+        let long_path = PathBuf::from(format!("/tmp/{}/ClaudeProbe", "segment_".repeat(40)));
+        assert_eq!(
+            claude_project_directory_name(&long_path),
+            "-tmp-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-segment-seg-x9mpdi"
+        );
+    }
+
+    #[test]
+    fn cli_probe_cleanup_removes_only_its_session_file() {
+        const OWNED_SESSION: &str = "11111111-1111-4111-8111-111111111111";
+        const UNRELATED_SESSION: &str = "22222222-2222-4222-8222-222222222222";
+
+        let fixture = FixtureRoot::new();
+        let probe_directory = fixture.0.join("probe");
+        let config_root = fixture.0.join("config");
+        let project_directory = config_root
+            .join("projects")
+            .join(claude_project_directory_name(&probe_directory));
+        fs::create_dir_all(&probe_directory).unwrap();
+        fs::create_dir_all(&project_directory).unwrap();
+        fs::write(
+            probe_directory.join(PROBE_SESSION_MARKER),
+            format!("{OWNED_SESSION}\n"),
+        )
+        .unwrap();
+        fs::write(
+            project_directory.join(format!("{OWNED_SESSION}.jsonl")),
+            b"owned",
+        )
+        .unwrap();
+        fs::write(
+            project_directory.join(format!("{UNRELATED_SESSION}.jsonl")),
+            b"unrelated",
+        )
+        .unwrap();
+
+        assert!(cleanup_probe_session_artifacts_at(
+            &probe_directory,
+            &config_root
+        ));
+
+        assert!(
+            !project_directory
+                .join(format!("{OWNED_SESSION}.jsonl"))
+                .exists()
+        );
+        assert!(
+            project_directory
+                .join(format!("{UNRELATED_SESSION}.jsonl"))
+                .exists()
+        );
+        assert!(!probe_directory.exists());
+    }
+
+    #[test]
+    fn cli_probe_cleanup_retains_its_marker_when_transcript_removal_fails() {
+        const OWNED_SESSION: &str = "11111111-1111-4111-8111-111111111111";
+
+        let fixture = FixtureRoot::new();
+        let probe_directory = fixture.0.join("probe");
+        let config_root = fixture.0.join("config");
+        let project_directory = config_root
+            .join("projects")
+            .join(claude_project_directory_name(&probe_directory));
+        let blocked_transcript = project_directory.join(format!("{OWNED_SESSION}.jsonl"));
+        fs::create_dir_all(&probe_directory).unwrap();
+        fs::create_dir_all(&blocked_transcript).unwrap();
+        fs::write(
+            probe_directory.join(PROBE_SESSION_MARKER),
+            format!("{OWNED_SESSION}\n"),
+        )
+        .unwrap();
+
+        assert!(!cleanup_probe_session_artifacts_at(
+            &probe_directory,
+            &config_root
+        ));
+        assert!(probe_directory.join(PROBE_SESSION_MARKER).is_file());
+        assert!(blocked_transcript.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_probe_cancellation_terminates_the_child_process() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = FixtureRoot::new();
+        let executable = fixture.0.join("blocking-cli");
+        let pid_file = executable.with_extension("pid");
+        fs::write(
+            &executable,
+            b"#!/bin/sh\nprintf '%s' \"$$\" > \"${0}.pid\"\nwhile :; do :; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let probe_directory = fixture.0.join("probe");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let task_cancelled = Arc::clone(&cancelled);
+        let (sender, receiver) = mpsc::channel();
+        let task = thread::spawn(move || {
+            let result = probe_usage(
+                &executable,
+                &probe_directory,
+                test_time(),
+                StdDuration::from_secs(5),
+                &|| task_cancelled.load(Ordering::Acquire),
+            );
+            let _ = sender.send(result);
+        });
+
+        let pid_deadline = Instant::now() + StdDuration::from_secs(2);
+        let pid = loop {
+            if let Ok(value) = fs::read_to_string(&pid_file)
+                && let Ok(pid) = value.parse::<u32>()
+            {
+                break pid;
+            }
+            if Instant::now() >= pid_deadline {
+                cancelled.store(true, Ordering::Release);
+                let _ = receiver.recv_timeout(StdDuration::from_secs(2));
+                let _ = task.join();
+                panic!("probe child did not start");
+            }
+            thread::sleep(StdDuration::from_millis(10));
+        };
+
+        cancelled.store(true, Ordering::Release);
+        let result = receiver
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("cancelled probe must return");
+        task.join().unwrap();
+
+        assert!(matches!(result, Err(ProbeFailure::Cancelled)));
+        assert!(
+            !Command::new("/bin/kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 }

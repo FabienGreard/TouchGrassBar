@@ -415,6 +415,13 @@ impl RefreshAttempt {
         self.sources.is_only(RefreshSource::LocalUsageCatchUp)
     }
 
+    pub(crate) fn should_skip_claude_quota_probe(&self) -> bool {
+        self.sources.contains_only(&[
+            RefreshSource::ProviderNotification,
+            RefreshSource::LocalUsageCatchUp,
+        ])
+    }
+
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
@@ -436,6 +443,24 @@ impl RefreshAttempt {
         Self::new(
             Arc::new(AtomicBool::new(false)),
             RefreshSources(RefreshSource::Manual.bit()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_provider_notification() -> Self {
+        Self::new(
+            Arc::new(AtomicBool::new(false)),
+            RefreshSources(RefreshSource::ProviderNotification.bit()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_provider_notification_with_local_usage() -> Self {
+        Self::new(
+            Arc::new(AtomicBool::new(false)),
+            RefreshSources(
+                RefreshSource::ProviderNotification.bit() | RefreshSource::LocalUsageCatchUp.bit(),
+            ),
         )
     }
 }
@@ -750,6 +775,11 @@ impl RefreshSources {
 
     fn is_only(self, source: RefreshSource) -> bool {
         self.0 == source.bit()
+    }
+
+    fn contains_only(self, allowed: &[RefreshSource]) -> bool {
+        let allowed = allowed.iter().fold(0, |mask, source| mask | source.bit());
+        self.0 != 0 && self.0 & !allowed == 0
     }
 
     fn contains_immediate_request(self) -> bool {

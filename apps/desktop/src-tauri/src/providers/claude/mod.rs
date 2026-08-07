@@ -13,7 +13,7 @@ use std::{
 
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use super::registry::provider_candidates;
+use super::registry::resolve_provider_executable;
 use super::{ProviderObservation, ProviderObservationAdapter};
 use crate::sanitized::{
     Clock, CodingProvider, ProviderPresentation, ProviderSnapshot, QuotaLane, RefreshAttempt,
@@ -114,6 +114,7 @@ impl ClaudeProviderObservationAdapter {
         &self,
         now: OffsetDateTime,
         timeout: StdDuration,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<ClaudeQuotaObservation, RefreshFailure> {
         #[cfg(test)]
         if let Some(observation) = &self.fixture {
@@ -124,14 +125,19 @@ impl ClaudeProviderObservationAdapter {
             debug_event("cli_probe_unavailable reason=storage_unavailable");
             RefreshFailure::SourceUnavailable
         })?;
-        let executable = resolve_claude_executable().ok_or_else(|| {
+        let executable = resolve_provider_executable(CodingProvider::Claude).ok_or_else(|| {
             debug_event("cli_probe_unavailable reason=executable_unavailable");
             RefreshFailure::SourceUnavailable
         })?;
-        cli_probe::probe_usage(&executable, probe_directory, now, timeout).map_err(|()| {
-            debug_event("cli_probe_unavailable reason=probe_failed");
-            RefreshFailure::SourceUnavailable
-        })
+        cli_probe::probe_usage(&executable, probe_directory, now, timeout, cancelled).map_err(
+            |failure| match failure {
+                cli_probe::ProbeFailure::Cancelled => RefreshFailure::Cancelled,
+                cli_probe::ProbeFailure::Unavailable => {
+                    debug_event("cli_probe_unavailable reason=probe_failed");
+                    RefreshFailure::SourceUnavailable
+                }
+            },
+        )
     }
 }
 
@@ -145,14 +151,14 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
         cached: &ProviderPresentation,
         attempt: &RefreshAttempt,
     ) -> Result<Option<ProviderObservation>, RefreshFailure> {
-        if attempt.is_local_usage_only() {
-            debug_event("refresh_skipped reason=local_usage_only");
+        if attempt.should_skip_claude_quota_probe() {
+            debug_event("refresh_skipped reason=claude_irrelevant_sources");
             return Ok(None);
         }
         let timeout = attempt.remaining()?;
         let now = self.clock.now();
         debug_event("cli_probe_started");
-        let observation = self.observe(now, timeout)?;
+        let observation = self.observe(now, timeout, &|| attempt.is_cancelled())?;
         let quota = observation.sanitized_snapshot(now).map_err(|()| {
             debug_event("cli_probe_unavailable reason=invalid_quota");
             RefreshFailure::SourceUnavailable
@@ -169,23 +175,19 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
     }
 }
 
-fn resolve_claude_executable() -> Option<PathBuf> {
-    provider_candidates(CodingProvider::Claude)
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-}
-
 pub(super) fn debug_live_quota_report(
     probe_directory: &Path,
     now: OffsetDateTime,
 ) -> Result<String, ()> {
-    let executable = resolve_claude_executable().ok_or(())?;
+    let executable = resolve_provider_executable(CodingProvider::Claude).ok_or(())?;
     let observation = cli_probe::probe_usage(
         &executable,
         probe_directory,
         now,
         StdDuration::from_secs(30),
-    )?;
+        &|| false,
+    )
+    .map_err(|_| ())?;
     format_debug_quota_report(&observation, now)
 }
 
@@ -230,5 +232,55 @@ pub(super) fn fixture_observation(now: OffsetDateTime) -> ClaudeQuotaObservation
             resets_at: (now + time::Duration::days(3)).unix_timestamp(),
             used_percentage: 41.25,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FixedClock(OffsetDateTime);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> OffsetDateTime {
+            self.0
+        }
+    }
+
+    #[test]
+    fn codex_provider_notification_does_not_refresh_claude() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let adapter = ClaudeProviderObservationAdapter::fixture(
+            Arc::new(FixedClock(now)),
+            fixture_observation(now),
+        );
+        let cached = ProviderPresentation::unavailable(CodingProvider::Claude);
+
+        assert_eq!(
+            adapter
+                .refresh(&cached, &RefreshAttempt::test_provider_notification())
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn joined_codex_notification_and_local_usage_do_not_refresh_claude() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let adapter = ClaudeProviderObservationAdapter::fixture(
+            Arc::new(FixedClock(now)),
+            fixture_observation(now),
+        );
+        let cached = ProviderPresentation::unavailable(CodingProvider::Claude);
+
+        assert_eq!(
+            adapter
+                .refresh(
+                    &cached,
+                    &RefreshAttempt::test_provider_notification_with_local_usage(),
+                )
+                .unwrap(),
+            None
+        );
     }
 }
