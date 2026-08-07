@@ -462,6 +462,31 @@ impl UpdateRuntime {
                     validated_policy(&update.raw_json, &self.current_version, &version),
                 );
                 let minimum_required = minimum_required_version.is_some();
+                if !offered_version_reaches_minimum(&version, minimum_required_version.as_deref()) {
+                    self.install_after_check
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    if persistence
+                        .set_offer(None, minimum_required_version.as_deref())
+                        .is_err()
+                    {
+                        self.fail(
+                            Some(version.to_string()),
+                            UpdateFailure::Unavailable,
+                            RetryAction::Check,
+                        );
+                        return;
+                    }
+                    self.gate.set_paused(true);
+                    if let Ok(mut pending) = self.pending.lock() {
+                        *pending = None;
+                    }
+                    self.fail(
+                        Some(version.to_string()),
+                        UpdateFailure::Unavailable,
+                        RetryAction::Check,
+                    );
+                    return;
+                }
                 let offered_version = Some(version.to_string());
                 if persistence
                     .set_offer(
@@ -526,7 +551,11 @@ impl UpdateRuntime {
                 if let Ok(mut pending) = self.pending.lock() {
                     *pending = None;
                 }
-                self.publish(UpdateStatus::UpToDate, minimum_required);
+                if minimum_required {
+                    self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
+                } else {
+                    self.publish(UpdateStatus::UpToDate, false);
+                }
             }
             Err(error) => self.fail(None, classify_error(&error, false), RetryAction::Check),
         }
@@ -799,6 +828,16 @@ fn effective_minimum_required_version(
         .map(|version| version.to_string())
 }
 
+fn offered_version_reaches_minimum(
+    offered_version: &Version,
+    minimum_required_version: Option<&str>,
+) -> bool {
+    minimum_required_version.is_none_or(|minimum| {
+        minimum.len() <= MAX_VERSION_LENGTH
+            && Version::parse(minimum).is_ok_and(|minimum| offered_version >= &minimum)
+    })
+}
+
 fn persisted_minimum_required(persisted: &PersistedUpdateState, current_version: &Version) -> bool {
     persisted
         .minimum_required_version
@@ -1023,6 +1062,9 @@ mod tests {
             ),
             None
         );
+        assert!(!offered_version_reaches_minimum(&offered, Some("2.0.0")));
+        assert!(offered_version_reaches_minimum(&offered, Some("1.3.0")));
+        assert!(offered_version_reaches_minimum(&offered, None));
     }
 
     #[test]
