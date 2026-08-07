@@ -3,7 +3,10 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
 import { resolveDevInstance } from "@/dev/dev-instance";
-import { DevFixtureSwitcher } from "@/dev/dev-preview-switcher";
+import {
+  DevFixtureSwitcher,
+  DevPreviewSwitcher,
+} from "@/dev/dev-preview-switcher";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -75,5 +78,26 @@ describe("development preview switcher", () => {
       'style="bottom:auto;left:88px;right:auto;top:96px"',
     );
     expect(markup).toContain('aria-label="Minimize development preview"');
+  });
+
+  test("switches the Settings update preview without losing its context", () => {
+    const markup = renderToStaticMarkup(
+      <DevPreviewSwitcher
+        activeFixture="update"
+        activeSurface="settings"
+        settingsProviderPreviewState="not-installed"
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Update preview states"');
+    expect(markup).toContain(
+      'href="?window=settings&amp;fixture=current&amp;providerState=not-installed#settings-general"',
+    );
+    expect(markup).toContain(
+      'href="?window=settings&amp;fixture=update&amp;providerState=not-installed#settings-general"',
+    );
+    expect(markup).toContain('aria-current="page"');
+    expect(markup).toContain("No update");
+    expect(markup).toContain("Available");
   });
 });

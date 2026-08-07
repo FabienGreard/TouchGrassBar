@@ -449,10 +449,29 @@ function DevPreviewSwitcher({
           <FixtureOptions activeFixture={activeFixture} />
         </div>
       ) : null}
+      {activeSurface === "settings" ? (
+        <PreviewControlRow
+          aria-label="Update preview states"
+          className="border-t border-pearl-border/70 pt-1.5"
+          label="Update"
+        >
+          <PreviewSwitcherOption
+            active={activeFixture !== "update"}
+            href={`?window=settings&fixture=current${settingsProviderState}#settings-general`}
+          >
+            No update
+          </PreviewSwitcherOption>
+          <PreviewSwitcherOption
+            active={activeFixture === "update"}
+            href={`?window=settings&fixture=update${settingsProviderState}#settings-general`}
+          >
+            Available
+          </PreviewSwitcherOption>
+        </PreviewControlRow>
+      ) : null}
       {activeSurface === "settings" && settingsProviderPreviewState ? (
         <PreviewControlRow
           aria-label="Claude provider preview states"
-          className="border-t border-pearl-border/70 pt-1.5"
           label="Claude"
         >
           {providerPreviewStates.map((state) => (
