@@ -2993,11 +2993,18 @@ fn debug_cost_quality(quality: Option<ApiEquivalentCostQuality>) -> &'static str
 
 fn debug_period_projection(
     total: &UsageTotal,
-) -> (Option<u64>, Option<f64>, &'static str, Option<f64>) {
+) -> (
+    Option<u64>,
+    Option<f64>,
+    &'static str,
+    Option<f64>,
+    Option<f64>,
+) {
     match total {
         UsageTotal::Current {
             observed_tokens,
             api_equivalent_cost_usd,
+            trend_percent,
             api_equivalent_cost_quality,
             api_equivalent_cost_coverage_percent,
             ..
@@ -3005,6 +3012,7 @@ fn debug_period_projection(
         | UsageTotal::Stale {
             observed_tokens,
             api_equivalent_cost_usd,
+            trend_percent,
             api_equivalent_cost_quality,
             api_equivalent_cost_coverage_percent,
             ..
@@ -3013,8 +3021,9 @@ fn debug_period_projection(
             *api_equivalent_cost_usd,
             debug_cost_quality(*api_equivalent_cost_quality),
             *api_equivalent_cost_coverage_percent,
+            *trend_percent,
         ),
-        UsageTotal::Unavailable => (None, None, "unavailable", None),
+        UsageTotal::Unavailable => (None, None, "unavailable", None, None),
     }
 }
 
@@ -3046,15 +3055,16 @@ fn debug_period_line(
         (Some(_), None) => "local-unavailable",
         (None, None) => "unavailable",
     };
-    let (observed_tokens, cost, quality, coverage) = debug_period_projection(projected);
+    let (observed_tokens, cost, quality, coverage, trend) = debug_period_projection(projected);
     format!(
-        "[TouchGrassBar][codex-usage-report] period={label} account_tokens={} local_detail_tokens={} priced_local_tokens={} relation={relation} authoritative_tokens={} projected_cost_usd={} quality={quality} coverage_percent={}",
+        "[TouchGrassBar][codex-usage-report] period={label} account_tokens={} local_detail_tokens={} priced_local_tokens={} relation={relation} authoritative_tokens={} projected_cost_usd={} quality={quality} coverage_percent={} trend_percent={}",
         account_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
         local_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
         priced_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
         observed_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
         cost.map_or_else(|| "unavailable".to_owned(), |value| format!("{value:.6}")),
         coverage.map_or_else(|| "unavailable".to_owned(), |value| format!("{value:.2}")),
+        trend.map_or_else(|| "unavailable".to_owned(), |value| format!("{value:.2}")),
     )
 }
 
@@ -5074,7 +5084,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_account_days_remain_partial_and_do_not_invent_a_trend() {
+    fn a_missing_previous_account_window_does_not_invent_a_trend() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let account = AccountUsageObservation {
             daily_tokens: BTreeMap::from([(now.date(), 1_000)]),

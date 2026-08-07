@@ -57,6 +57,10 @@ _Avoid_: Quota usage, billed usage, exact usage
 Token throughput counted under provider-specific rules without double-counting overlapping fields. Codex provider daily totals are used directly; its local cumulative fallback does not add cached-input or reasoning breakdowns again. Claude totals input, cache-creation input, cache-read input, and output while treating thinking as part of output. Provider-specific differences in tokenization and reporting remain part of the number.
 _Avoid_: Billed tokens, normalized tokens, productivity
 
+**Usage Trend**:
+The percentage change in Observed Tokens between one displayed period and the equal period immediately before it. The comparison uses the same selected usage source as the displayed total. Within a provider window that contains reported buckets, an omitted sparse day counts as zero. The previous period must contain at least one observed bucket and a non-zero token total. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
+_Avoid_: Cost trend, spend change, price change
+
 **Token Score**:
 The unweighted sum of observed tokens for a Tokenmaxxer, time range, and provider scope. It is the sole Doomerboard ordering metric.
 _Avoid_: Usage score, productivity score, points
