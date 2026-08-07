@@ -332,10 +332,6 @@ fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, ()
 fn validate_capture_schema(connection: &Connection) -> Result<(), ()> {
     let expected = [
         (
-            "claude_status_line_bridge",
-            vec!["singleton", "upstream_command"],
-        ),
-        (
             "claude_quota_observation",
             vec![
                 "singleton",
@@ -384,10 +380,6 @@ fn ensure_capture_schema(
                module TEXT PRIMARY KEY,
                version INTEGER NOT NULL CHECK (version >= 1)
              );
-             CREATE TABLE claude_status_line_bridge (
-               singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
-               upstream_command TEXT
-             );
              CREATE TABLE claude_quota_observation (
                singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
                observed_at TEXT NOT NULL,
@@ -413,31 +405,6 @@ fn ensure_capture_schema(
         .map_err(|_| ())?;
     transaction.commit().map_err(|_| ())?;
     validate_capture_schema(connection)
-}
-
-#[cfg(any(test, not(debug_assertions)))]
-fn store_upstream_command(database_path: &Path, command: Option<&str>) -> Result<(), ()> {
-    let connection = open_capture_database(database_path)?;
-    connection
-        .execute(
-            "INSERT INTO claude_status_line_bridge(singleton, upstream_command) VALUES(1, ?1)
-             ON CONFLICT(singleton) DO UPDATE SET upstream_command=excluded.upstream_command",
-            [command],
-        )
-        .map_err(|_| ())?;
-    Ok(())
-}
-
-fn load_upstream_command(database_path: &Path) -> Result<Option<Option<String>>, ()> {
-    let connection = open_capture_database(database_path)?;
-    connection
-        .query_row(
-            "SELECT upstream_command FROM claude_status_line_bridge WHERE singleton = 1",
-            [],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .optional()
-        .map_err(|_| ())
 }
 
 fn capture_status_line_payload(
@@ -565,9 +532,8 @@ fn load_quota_observation(database_path: &Path) -> Result<Option<ClaudeQuotaObse
 }
 
 #[cfg(any(test, not(debug_assertions)))]
-fn shell_quote(path: &Path) -> Result<String, ()> {
-    let value = path.to_str().ok_or(())?;
-    Ok(format!("'{}'", value.replace('\'', "'\\''")))
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(any(test, not(debug_assertions)))]
@@ -575,13 +541,22 @@ fn bridge_command(
     executable: &Path,
     database_path: &Path,
     notification_path: &Path,
+    upstream: Option<&str>,
 ) -> Result<String, ()> {
-    Ok(format!(
+    let executable = executable.to_str().ok_or(())?;
+    let database_path = database_path.to_str().ok_or(())?;
+    let notification_path = notification_path.to_str().ok_or(())?;
+    let mut command = format!(
         "{} {STATUS_LINE_ARGUMENT} {} {}",
-        shell_quote(executable)?,
-        shell_quote(database_path)?,
-        shell_quote(notification_path)?,
-    ))
+        shell_quote(executable),
+        shell_quote(database_path),
+        shell_quote(notification_path),
+    );
+    if let Some(upstream) = upstream {
+        command.push_str(" -- ");
+        command.push_str(&shell_quote(upstream));
+    }
+    Ok(command)
 }
 
 #[cfg(any(test, not(debug_assertions)))]
@@ -643,22 +618,12 @@ fn configure_status_line_at(
     database_path: &Path,
     notification_path: &Path,
 ) -> Result<(), ()> {
-    let desired_command = bridge_command(executable, database_path, notification_path)?;
     let mut settings = read_settings(settings_path)?;
     let root = settings.as_object_mut().ok_or(())?;
-    let upstream = match root.get_mut("statusLine") {
-        None => {
-            root.insert(
-                "statusLine".to_owned(),
-                Value::Object(Map::from_iter([
-                    ("type".to_owned(), Value::String("command".to_owned())),
-                    ("command".to_owned(), Value::String(desired_command.clone())),
-                ])),
-            );
-            None
-        }
+    let upstream = match root.get("statusLine") {
+        None => None,
         Some(status_line) => {
-            let status_line = status_line.as_object_mut().ok_or(())?;
+            let status_line = status_line.as_object().ok_or(())?;
             if status_line.get("type").and_then(Value::as_str) != Some("command") {
                 return Err(());
             }
@@ -667,16 +632,36 @@ fn configure_status_line_at(
                 .and_then(Value::as_str)
                 .ok_or(())?
                 .to_owned();
-            let upstream = if is_touchgrassbar_bridge(&current) {
-                load_upstream_command(database_path)?.ok_or(())?
-            } else {
-                Some(current)
-            };
-            status_line.insert("command".to_owned(), Value::String(desired_command));
-            upstream
+            if is_touchgrassbar_bridge(&current) {
+                return Ok(());
+            }
+            Some(current)
         }
     };
-    store_upstream_command(database_path, upstream.as_deref())?;
+    drop(open_capture_database(database_path)?);
+    let desired_command = bridge_command(
+        executable,
+        database_path,
+        notification_path,
+        upstream.as_deref(),
+    )?;
+    match root.get_mut("statusLine") {
+        None => {
+            root.insert(
+                "statusLine".to_owned(),
+                Value::Object(Map::from_iter([
+                    ("type".to_owned(), Value::String("command".to_owned())),
+                    ("command".to_owned(), Value::String(desired_command)),
+                ])),
+            );
+        }
+        Some(status_line) => {
+            status_line
+                .as_object_mut()
+                .ok_or(())?
+                .insert("command".to_owned(), Value::String(desired_command));
+        }
+    }
     write_settings_atomically(settings_path, &settings)
 }
 
@@ -720,14 +705,11 @@ struct StatusLineOutcome {
 fn run_status_line<R: Read, W: Write>(
     database_path: &Path,
     notification_path: &Path,
+    upstream: Option<&str>,
     input: R,
     mut output: W,
     now: OffsetDateTime,
 ) -> StatusLineOutcome {
-    let upstream = load_upstream_command(database_path)
-        .ok()
-        .flatten()
-        .flatten();
     let mut payload = Zeroizing::new(Vec::new());
     let input_read = input
         .take(MAX_STATUS_LINE_BYTES + 1)
@@ -771,12 +753,26 @@ pub(super) fn run_status_line_from_args() -> Option<i32> {
     let Some(notification_path) = arguments.next().map(PathBuf::from) else {
         return Some(1);
     };
-    if arguments.next().is_some() {
-        return Some(1);
-    }
+    let upstream = match arguments.next() {
+        None => None,
+        Some(separator) if separator.as_os_str() == std::ffi::OsStr::new("--") => {
+            let Some(command) = arguments.next() else {
+                return Some(1);
+            };
+            if arguments.next().is_some() {
+                return Some(1);
+            }
+            let Ok(command) = command.into_string() else {
+                return Some(1);
+            };
+            Some(command)
+        }
+        Some(_) => return Some(1),
+    };
     let outcome = run_status_line(
         &database_path,
         &notification_path,
+        upstream.as_deref(),
         std::io::stdin().lock(),
         std::io::stdout().lock(),
         OffsetDateTime::now_utc(),
@@ -826,12 +822,21 @@ mod tests {
         }
 
         fn socket(&self) -> PathBuf {
+            #[cfg(unix)]
+            {
+                return PathBuf::from("/tmp").join(format!(
+                    "tgb-{}.sock",
+                    self.0.file_name().unwrap().to_string_lossy()
+                ));
+            }
+            #[cfg(not(unix))]
             self.0.join("quota.sock")
         }
     }
 
     impl Drop for FixtureDirectory {
         fn drop(&mut self) {
+            let _ = fs::remove_file(self.socket());
             let _ = fs::remove_dir_all(&self.0);
         }
     }
@@ -899,24 +904,50 @@ mod tests {
     fn captures_only_new_complete_response_events_and_sanitizes_the_projection() {
         let fixture = FixtureDirectory::new();
         let database = fixture.database();
-        store_upstream_command(&database, None).unwrap();
+        drop(open_capture_database(&database).unwrap());
+
+        #[cfg(unix)]
+        let notification = {
+            use std::os::unix::net::UnixDatagram;
+
+            let socket = UnixDatagram::bind(fixture.socket()).unwrap();
+            socket
+                .set_read_timeout(Some(StdDuration::from_secs(1)))
+                .unwrap();
+            socket
+        };
 
         let first = run_status_line(
             &database,
             &fixture.socket(),
+            None,
             status_payload(100).as_slice(),
             Vec::new(),
             test_time(),
         );
         assert!(first.captured);
+        #[cfg(unix)]
+        {
+            let mut message = [0_u8; 1];
+            assert_eq!(notification.recv(&mut message).unwrap(), 1);
+            notification
+                .set_read_timeout(Some(StdDuration::from_millis(25)))
+                .unwrap();
+        }
         let duplicate = run_status_line(
             &database,
             &fixture.socket(),
+            None,
             status_payload(100).as_slice(),
             Vec::new(),
             test_time() + time::Duration::minutes(1),
         );
         assert!(!duplicate.captured, "a timer rerun is not a new response");
+        #[cfg(unix)]
+        {
+            let mut message = [0_u8; 1];
+            assert!(notification.recv(&mut message).is_err());
+        }
 
         let mut incomplete: Value = serde_json::from_slice(&status_payload(101)).unwrap();
         incomplete
@@ -929,9 +960,27 @@ mod tests {
             !run_status_line(
                 &database,
                 &fixture.socket(),
+                None,
                 serde_json::to_vec(&incomplete).unwrap().as_slice(),
                 Vec::new(),
                 test_time() + time::Duration::minutes(2),
+            )
+            .captured
+        );
+
+        let mut unknown_rate_limit: Value = serde_json::from_slice(&status_payload(102)).unwrap();
+        unknown_rate_limit["rate_limits"]["unexpected"] = json!({
+            "resets_at": (test_time() + time::Duration::days(1)).unix_timestamp(),
+            "used_percentage": 1
+        });
+        assert!(
+            !run_status_line(
+                &database,
+                &fixture.socket(),
+                None,
+                serde_json::to_vec(&unknown_rate_limit).unwrap().as_slice(),
+                Vec::new(),
+                test_time() + time::Duration::minutes(3),
             )
             .captured
         );
@@ -950,6 +999,29 @@ mod tests {
             )
             .unwrap()
             .unwrap();
+        assert_eq!(
+            observation.quota,
+            ProviderSnapshot::Current {
+                provider: CodingProvider::Claude,
+                observed_at: "2026-08-07T12:00:00Z".to_owned(),
+                quota_lanes: vec![
+                    QuotaLane {
+                        label: "5-hour limit".to_owned(),
+                        unit: "percent".to_owned(),
+                        allowance: Some(100.0),
+                        remaining: Some(76.5),
+                        reset_at: Some("2026-08-07T16:00:00Z".to_owned()),
+                    },
+                    QuotaLane {
+                        label: "Weekly limit".to_owned(),
+                        unit: "percent".to_owned(),
+                        allowance: Some(100.0),
+                        remaining: Some(58.75),
+                        reset_at: Some("2026-08-13T12:00:00Z".to_owned()),
+                    },
+                ],
+            }
+        );
         let serialized = serde_json::to_string(&(observation.quota, observation.usage)).unwrap();
         for sentinel in [
             "REDACTED-CREDENTIAL",
@@ -1007,15 +1079,18 @@ mod tests {
                 .unwrap()
                 .contains(STATUS_LINE_ARGUMENT)
         );
-        assert_eq!(
-            load_upstream_command(&fixture.database()).unwrap(),
-            Some(Some("printf kept".to_owned()))
+        assert!(
+            configured["statusLine"]["command"]
+                .as_str()
+                .unwrap()
+                .contains("printf kept")
         );
 
         let mut output = Vec::new();
         let outcome = run_status_line(
             &fixture.database(),
             &fixture.socket(),
+            Some("printf kept"),
             status_payload(100).as_slice(),
             &mut output,
             test_time(),
@@ -1040,7 +1115,7 @@ mod tests {
         );
         assert_eq!(fs::read(fixture.settings()).unwrap(), unsupported);
 
-        store_upstream_command(&fixture.database(), None).unwrap();
+        drop(open_capture_database(&fixture.database()).unwrap());
         let connection = Connection::open(fixture.database()).unwrap();
         connection
             .execute(
@@ -1049,23 +1124,25 @@ mod tests {
             )
             .unwrap();
         assert!(load_quota_observation(&fixture.database()).is_err());
-        assert!(
-            !run_status_line(
-                &fixture.database(),
-                &fixture.socket(),
-                status_payload(100).as_slice(),
-                Vec::new(),
-                test_time(),
-            )
-            .captured
+        let mut output = Vec::new();
+        let outcome = run_status_line(
+            &fixture.database(),
+            &fixture.socket(),
+            Some("printf kept"),
+            status_payload(100).as_slice(),
+            &mut output,
+            test_time(),
         );
+        assert!(!outcome.captured);
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(output, b"kept");
     }
 
     #[test]
     fn adapter_uses_only_new_live_capture_and_never_renews_cached_freshness() {
         let fixture = FixtureDirectory::new();
         let database = fixture.database();
-        store_upstream_command(&database, None).unwrap();
+        drop(open_capture_database(&database).unwrap());
         assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
         let observation = load_quota_observation(&database).unwrap().unwrap();
         let snapshot = observation.sanitized_snapshot(test_time()).unwrap();
