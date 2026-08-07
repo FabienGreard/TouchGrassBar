@@ -111,6 +111,7 @@ pub(super) fn probe_usage(
     let _ = child.wait();
     drop(writer);
     drop(pair.master);
+    drop(receiver);
     let _ = reader_thread.join();
     result
 }
