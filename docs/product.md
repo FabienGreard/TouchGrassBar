@@ -34,7 +34,7 @@ Equal Token Scores share the same rank. TouchGrass ID provides deterministic dis
 
 API-equivalent cost may appear beside token totals as supporting context but never affects rank. It is always marked as approximate and labeled “API equivalent,” for example: `10.2M tokens · ≈ $31.40 API equivalent`. It must never be presented as money spent or billed. Neither number represents productivity or work quality.
 
-An estimate uses an immutable, effective-dated pricing-catalog version applicable on the usage date and records that basis. A semantic catalog change recomputes only affected model-days still retained locally and records the new basis; it never changes Observed Tokens or rank. If any required model or token-category price is unknown, TouchGrassBar shows the tokens without a monetary estimate and never guesses, substitutes another rate, or presents a misleading partial total.
+An estimate uses an immutable, effective-dated pricing-catalog version applicable on the usage date and records that basis. A semantic catalog change recomputes only affected model-days still retained locally and records the new basis; it never changes Observed Tokens or rank. An unknown model or token-category price leaves only that local detail unpriced. When other priced local evidence supplies a defensible average rate, TouchGrassBar can apply that rate to the authoritative token total and report the priced-detail coverage as a Modeled estimate. Without usable priced evidence, it shows the tokens without a monetary estimate.
 
 Doomerboard periods use UTC boundaries. “Today” is the current UTC day; 7-day and 30-day rankings include the current Ranking Day and the preceding 6 or 29 complete Ranking Days. Every Tokenmaxxer is therefore measured over the same interval. Provider quota reset times remain provider-defined and are displayed in the Mac's local time.
 
@@ -58,7 +58,7 @@ Exactly one source owns each provider and Ranking Day. A provider-account daily 
 
 A Usage Snapshot may replace an earlier provider/day value only with a higher revision. Decreases require explicit stronger evidence from a provider replacement or parser correction; disappearing local logs never reduce a synchronized total. An accepted correction updates the daily total and its derived ranking state together. The revision and reason remain auditable, but “corrected” is not a lasting status or permanent public badge.
 
-Only the provider/day aggregate, evidence basis, coverage, observation time, revision, and complete API-equivalent cost with its pricing basis may synchronize. Raw logs, provider message or session identifiers, credentials, and file paths remain on the Mac.
+Only the provider/day aggregate, evidence basis, coverage, observation time, revision, and best defensible API-equivalent cost with its pricing basis may synchronize. Raw logs, provider message or session identifiers, credentials, and file paths remain on the Mac.
 
 ## Offline behavior
 

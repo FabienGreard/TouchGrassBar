@@ -62,11 +62,11 @@ The unweighted sum of observed tokens for a Tokenmaxxer, time range, and provide
 _Avoid_: Usage score, productivity score, points
 
 **API-Equivalent Cost**:
-An approximate estimate of what observed tokens would cost at the model's published per-token price applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Historical estimates retain that basis unless a catalog correction recomputes affected retained model-days under a new version; an unknown required price produces no estimate rather than a guessed or partial total.
+An approximate estimate of what Observed Tokens would cost at published per-token prices applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Reconciled cost uses local priced detail that equals the authoritative tokens. Modeled cost applies a defensible average rate from priced local detail to the authoritative tokens and reports that priced-detail coverage. Local-only cost uses available local detail when provider-reported usage is unavailable. An unknown price leaves only that detail unpriced; a period with other usable priced evidence may still have a Modeled or Local-only estimate, while a period with no defensible priced evidence has no estimate. A catalog correction recomputes only affected retained model-days and never changes Token Score or Doomerboard rank.
 _Avoid_: Spend, bill, actual cost
 
 **Daily Usage Aggregate**:
-A summary of Observed Usage for one Coding Provider, one Tokenmaxxer, and one Ranking Day. It contains only the aggregate, Usage Evidence Basis, Usage Coverage, observation time, revision, and a complete API-Equivalent Cost with its pricing basis when available. It is the most detailed usage record that may leave the Tokenmaxxer's Mac.
+A summary of Observed Usage for one Coding Provider, one Tokenmaxxer, and one Ranking Day. It contains only the aggregate, Usage Evidence Basis, Usage Coverage, observation time, revision, and the best defensible API-Equivalent Cost with its pricing basis when available. It is the most detailed usage record that may leave the Tokenmaxxer's Mac.
 _Avoid_: Raw usage, usage log
 
 **Usage Snapshot**:
