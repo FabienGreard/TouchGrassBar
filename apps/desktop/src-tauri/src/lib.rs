@@ -76,6 +76,19 @@ pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static s
     }
 }
 
+pub(crate) fn install_tls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("install the native TLS cryptography provider");
+    }
+}
+
+pub(crate) fn native_https_client() -> reqwest::blocking::Client {
+    install_tls_crypto_provider();
+    reqwest::blocking::Client::new()
+}
+
 #[derive(Clone)]
 struct ProfileRetryMailbox {
     pending: Arc<Mutex<bool>>,
@@ -810,6 +823,7 @@ fn hide_surface(window: WebviewWindow) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_tls_crypto_provider();
     let process_started_at = Instant::now();
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
     #[cfg(debug_assertions)]
@@ -1100,6 +1114,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_tls_provider_supports_https_clients() {
+        let _ = native_https_client();
+        let _ = rustls::ClientConfig::builder();
+    }
 
     fn native_config() -> serde_json::Value {
         serde_json::from_str(include_str!("../tauri.conf.json"))

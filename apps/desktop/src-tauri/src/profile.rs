@@ -454,7 +454,7 @@ impl HttpProfileTransport {
         Self {
             auth_site_url: option_env!("CONVEX_SITE_URL").filter(|value| !value.is_empty()),
             convex_url: option_env!("CONVEX_URL").filter(|value| !value.is_empty()),
-            client: reqwest::blocking::Client::new(),
+            client: crate::native_https_client(),
         }
     }
 
@@ -923,7 +923,7 @@ mod tests {
         let transport = HttpProfileTransport {
             auth_site_url: Some(auth_site_url),
             convex_url: None,
-            client: reqwest::blocking::Client::new(),
+            client: crate::native_https_client(),
         };
 
         let prepared = transport.prepare().expect("prepare JSON request");

@@ -23,7 +23,8 @@ convex = { version = "=0.10.4", default-features = false, features = ["rustls-tl
 getrandom = "0.3"
 minisign-verify = "=0.2.5"
 portable-pty = "=0.9.0"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "0.37", features = ["backup", "bundled"] }
 schemars = "=1.2.2"
 semver = "1"
