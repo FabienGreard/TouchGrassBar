@@ -927,6 +927,7 @@ impl RevisionSubscribers {
 }
 
 struct RefreshInbox {
+    admission: Mutex<()>,
     pending_sources: AtomicU8,
     in_flight: AtomicBool,
     paused: AtomicBool,
@@ -962,11 +963,14 @@ impl RefreshInbox {
     }
 
     fn try_start_refresh(&self) -> bool {
-        self.in_flight.store(true, Ordering::Release);
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.paused.load(Ordering::Acquire) {
-            self.in_flight.store(false, Ordering::Release);
             return false;
         }
+        self.in_flight.store(true, Ordering::Release);
         true
     }
 }
@@ -1011,6 +1015,7 @@ impl RefreshCoordinator {
     ) -> Self {
         let (wake, wake_receiver) = mpsc::sync_channel(1);
         let inbox = Arc::new(RefreshInbox {
+            admission: Mutex::new(()),
             pending_sources: AtomicU8::new(0),
             in_flight: AtomicBool::new(false),
             paused: AtomicBool::new(false),
@@ -1058,7 +1063,13 @@ impl RefreshCoordinator {
     }
 
     fn pause_for_update(&self) -> UpdatePauseGuard<'_> {
+        let _admission = self
+            .inbox
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.inbox.paused.store(true, Ordering::Release);
+        drop(_admission);
         let _ = self.inbox.wake.try_send(());
         while self.inbox.in_flight.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(10));
@@ -2392,6 +2403,7 @@ mod tests {
     fn pause_for_update_closes_refresh_admission() {
         let (wake, _receiver) = std::sync::mpsc::sync_channel(1);
         let inbox = RefreshInbox {
+            admission: Mutex::new(()),
             pending_sources: AtomicU8::new(0),
             in_flight: AtomicBool::new(false),
             paused: AtomicBool::new(true),
