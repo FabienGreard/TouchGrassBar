@@ -15,6 +15,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::registry::resolve_provider_executable;
 use super::{ProviderObservation, ProviderObservationAdapter};
+use crate::providers::process::ProviderProcessSupervisor;
 use crate::sanitized::{
     Clock, CodingProvider, ProviderPresentation, ProviderSnapshot, QuotaLane, RefreshAttempt,
     RefreshFailure,
@@ -84,28 +85,39 @@ impl ClaudeQuotaObservation {
 pub(crate) struct ClaudeProviderObservationAdapter {
     clock: Arc<dyn Clock>,
     probe_directory: Option<PathBuf>,
+    processes: ProviderProcessSupervisor,
     #[cfg(test)]
     fixture: Option<ClaudeQuotaObservation>,
 }
 
 impl ClaudeProviderObservationAdapter {
-    pub(crate) fn production(clock: Arc<dyn Clock>, database_path: Option<PathBuf>) -> Self {
+    pub(crate) fn production(
+        clock: Arc<dyn Clock>,
+        database_path: Option<PathBuf>,
+        processes: ProviderProcessSupervisor,
+    ) -> Self {
         Self {
             clock,
             probe_directory: database_path
                 .as_deref()
                 .and_then(Path::parent)
                 .map(|parent| parent.join("claude-quota-probe")),
+            processes,
             #[cfg(test)]
             fixture: None,
         }
     }
 
     #[cfg(test)]
-    pub(super) fn fixture(clock: Arc<dyn Clock>, observation: ClaudeQuotaObservation) -> Self {
+    pub(super) fn fixture(
+        clock: Arc<dyn Clock>,
+        observation: ClaudeQuotaObservation,
+        processes: ProviderProcessSupervisor,
+    ) -> Self {
         Self {
             clock,
             probe_directory: None,
+            processes,
             fixture: Some(observation),
         }
     }
@@ -129,15 +141,21 @@ impl ClaudeProviderObservationAdapter {
             debug_event("cli_probe_unavailable reason=executable_unavailable");
             RefreshFailure::SourceUnavailable
         })?;
-        cli_probe::probe_usage(&executable, probe_directory, now, timeout, cancelled).map_err(
-            |failure| match failure {
-                cli_probe::ProbeFailure::Cancelled => RefreshFailure::Cancelled,
-                cli_probe::ProbeFailure::Unavailable => {
-                    debug_event("cli_probe_unavailable reason=probe_failed");
-                    RefreshFailure::SourceUnavailable
-                }
-            },
+        cli_probe::probe_usage(
+            &self.processes,
+            &executable,
+            probe_directory,
+            now,
+            timeout,
+            cancelled,
         )
+        .map_err(|failure| match failure {
+            cli_probe::ProbeFailure::Cancelled => RefreshFailure::Cancelled,
+            cli_probe::ProbeFailure::Unavailable => {
+                debug_event("cli_probe_unavailable reason=probe_failed");
+                RefreshFailure::SourceUnavailable
+            }
+        })
     }
 }
 
@@ -180,7 +198,9 @@ pub(super) fn debug_live_quota_report(
     now: OffsetDateTime,
 ) -> Result<String, ()> {
     let executable = resolve_provider_executable(CodingProvider::Claude).ok_or(())?;
+    let processes = ProviderProcessSupervisor::default();
     let observation = cli_probe::probe_usage(
+        &processes,
         &executable,
         probe_directory,
         now,
@@ -253,6 +273,7 @@ mod tests {
         let adapter = ClaudeProviderObservationAdapter::fixture(
             Arc::new(FixedClock(now)),
             fixture_observation(now),
+            ProviderProcessSupervisor::default(),
         );
         let cached = ProviderPresentation::unavailable(CodingProvider::Claude);
 
@@ -270,6 +291,7 @@ mod tests {
         let adapter = ClaudeProviderObservationAdapter::fixture(
             Arc::new(FixedClock(now)),
             fixture_observation(now),
+            ProviderProcessSupervisor::default(),
         );
         let cached = ProviderPresentation::unavailable(CodingProvider::Claude);
 

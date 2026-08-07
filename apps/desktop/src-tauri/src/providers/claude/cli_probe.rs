@@ -5,23 +5,26 @@
 
 use std::{
     env, fs,
-    io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{OnceLock, mpsc},
-    thread,
+    sync::OnceLock,
     time::{Duration as StdDuration, Instant},
 };
 
 use chrono::{Datelike, LocalResult, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::PtySize;
 use time::OffsetDateTime;
 use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
 use super::ClaudeQuotaObservation;
+use crate::providers::process::{
+    ProviderCommand, ProviderOutputMode, ProviderProcess, ProviderProcessError,
+    ProviderProcessSupervisor,
+};
 
 const MAX_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
+const CLI_OUTPUT_CHUNK_BYTES: usize = 8 * 1024;
 const STARTUP_DELAY: StdDuration = StdDuration::from_secs(2);
 const PROBE_SESSION_MARKER: &str = ".touchgrassbar-claude-probe-session";
 
@@ -36,6 +39,7 @@ fn probe_event(event: &'static str) {
 }
 
 pub(super) fn probe_usage(
+    processes: &ProviderProcessSupervisor,
     executable: &Path,
     probe_directory: &Path,
     observed_at: OffsetDateTime,
@@ -50,19 +54,7 @@ pub(super) fn probe_usage(
     prepare_probe_directory(probe_directory, session_id).map_err(|()| ProbeFailure::Unavailable)?;
     let _cleanup = ProbeCleanup(probe_directory.to_path_buf());
 
-    let pty = native_pty_system();
-    let pair = pty
-        .openpty(PtySize {
-            rows: 50,
-            cols: 160,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|_| {
-            probe_event("cli_probe_failed stage=pty_open");
-            ProbeFailure::Unavailable
-        })?;
-    let mut command = CommandBuilder::new(executable);
+    let mut command = ProviderCommand::new(executable);
     command.args([
         "--allowed-tools",
         "",
@@ -89,56 +81,38 @@ pub(super) fn probe_usage(
     }
     command.cwd(probe_directory);
 
-    let mut child = ManagedChild::new(pair.slave.spawn_command(command).map_err(|_| {
-        probe_event("cli_probe_failed stage=process_start");
-        ProbeFailure::Unavailable
-    })?);
-    drop(pair.slave);
-    let mut writer = pair.master.take_writer().map_err(|_| {
-        probe_event("cli_probe_failed stage=pty_writer");
-        ProbeFailure::Unavailable
-    })?;
-    let mut reader = pair.master.try_clone_reader().map_err(|_| {
-        probe_event("cli_probe_failed stage=pty_reader");
-        ProbeFailure::Unavailable
-    })?;
-    let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(16);
-    let reader_thread = thread::Builder::new()
-        .name("claude-quota-cli-output".to_owned())
-        .spawn(move || {
-            let mut buffer = [0_u8; 8192];
-            while let Ok(read) = reader.read(&mut buffer) {
-                if read == 0 || sender.send(buffer[..read].to_vec()).is_err() {
-                    break;
-                }
-            }
-            buffer.fill(0);
-        })
+    let process = processes
+        .spawn_pty(
+            command,
+            PtySize {
+                rows: 50,
+                cols: 160,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            ProviderOutputMode::Chunks {
+                chunk_bytes: CLI_OUTPUT_CHUNK_BYTES,
+                max_buffered_bytes: MAX_CLI_OUTPUT_BYTES,
+            },
+            None,
+        )
         .map_err(|_| {
-            probe_event("cli_probe_failed stage=reader_thread");
+            probe_event("cli_probe_failed stage=process_start");
             ProbeFailure::Unavailable
         })?;
 
     let result = capture_usage_output(
-        child.as_mut(),
-        writer.as_mut(),
-        &receiver,
+        &process,
         observed_at,
         timeout.min(StdDuration::from_secs(30)),
         cancelled,
     );
-    drop(child);
-    drop(writer);
-    drop(pair.master);
-    drop(receiver);
-    let _ = reader_thread.join();
+    let _ = process.shutdown();
     result
 }
 
 fn capture_usage_output(
-    child: &mut (dyn portable_pty::Child + Send + Sync),
-    writer: &mut dyn Write,
-    receiver: &mpsc::Receiver<Vec<u8>>,
+    process: &ProviderProcess,
     observed_at: OffsetDateTime,
     timeout: StdDuration,
     cancelled: &dyn Fn() -> bool,
@@ -162,36 +136,36 @@ fn capture_usage_output(
             return Err(ProbeFailure::Unavailable);
         }
         if !usage_sent && now.duration_since(started_at) >= STARTUP_DELAY {
-            writer
-                .write_all(b"/usage\r")
+            process
+                .write_all(b"/usage\r", deadline.saturating_duration_since(now))
                 .map_err(|_| ProbeFailure::Unavailable)?;
-            writer.flush().map_err(|_| ProbeFailure::Unavailable)?;
             usage_sent = true;
         }
-        if child
-            .try_wait()
-            .map_err(|_| ProbeFailure::Unavailable)?
-            .is_some()
-        {
-            probe_event("cli_probe_failed stage=process_exit");
-            return Err(ProbeFailure::Unavailable);
-        }
 
-        match receiver.recv_timeout(StdDuration::from_millis(100)) {
+        match process.receive_timeout(StdDuration::from_millis(100)) {
             Ok(chunk) => {
                 if output.len().saturating_add(chunk.len()) > MAX_CLI_OUTPUT_BYTES {
                     probe_event("cli_probe_failed stage=output_limit");
                     return Err(ProbeFailure::Unavailable);
                 }
                 output.extend_from_slice(&chunk);
-                handle_safe_prompts(&output, writer, &mut accepted_prompts)
-                    .map_err(|()| ProbeFailure::Unavailable)?;
+                handle_safe_prompts(
+                    &output,
+                    process,
+                    &mut accepted_prompts,
+                    deadline.saturating_duration_since(Instant::now()),
+                )
+                .map_err(|()| ProbeFailure::Unavailable)?;
                 if usage_sent && let Ok(observation) = parse_usage_output(&output, observed_at) {
                     return Ok(observation);
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(ProviderProcessError::TimedOut) => {}
+            Err(ProviderProcessError::Cancelled) if cancelled() => {
+                probe_event("cli_probe_failed stage=cancelled");
+                return Err(ProbeFailure::Cancelled);
+            }
+            Err(_) => {
                 probe_event("cli_probe_failed stage=output_closed");
                 return Err(ProbeFailure::Unavailable);
             }
@@ -199,31 +173,11 @@ fn capture_usage_output(
     }
 }
 
-struct ManagedChild(Option<Box<dyn portable_pty::Child + Send + Sync>>);
-
-impl ManagedChild {
-    fn new(child: Box<dyn portable_pty::Child + Send + Sync>) -> Self {
-        Self(Some(child))
-    }
-
-    fn as_mut(&mut self) -> &mut (dyn portable_pty::Child + Send + Sync) {
-        self.0.as_deref_mut().expect("managed child must exist")
-    }
-}
-
-impl Drop for ManagedChild {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 fn handle_safe_prompts(
     output: &[u8],
-    writer: &mut dyn Write,
+    process: &ProviderProcess,
     accepted: &mut [bool; 5],
+    timeout: StdDuration,
 ) -> Result<(), ()> {
     const PROMPTS: [(&str, &[u8]); 5] = [
         ("doyoutrustthefilesinthisfolder?", b"y\r"),
@@ -240,8 +194,7 @@ fn handle_safe_prompts(
         .collect::<String>();
     for (index, (prompt, response)) in PROMPTS.iter().enumerate() {
         if !accepted[index] && normalized.contains(prompt) {
-            writer.write_all(response).map_err(|_| ())?;
-            writer.flush().map_err(|_| ())?;
+            process.write_all(response, timeout).map_err(|_| ())?;
             accepted[index] = true;
         }
     }
@@ -640,7 +593,9 @@ mod tests {
         sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
+            mpsc,
         },
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -841,7 +796,9 @@ mod tests {
         let task_cancelled = Arc::clone(&cancelled);
         let (sender, receiver) = mpsc::channel();
         let task = thread::spawn(move || {
+            let processes = ProviderProcessSupervisor::default();
             let result = probe_usage(
+                &processes,
                 &executable,
                 &probe_directory,
                 test_time(),

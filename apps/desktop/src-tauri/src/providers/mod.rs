@@ -1,5 +1,6 @@
 mod claude;
 mod codex;
+mod process;
 mod registry;
 
 use std::{collections::BTreeSet, path::Path, sync::Arc, thread};
@@ -40,10 +41,19 @@ pub(crate) trait ProviderObservationAdapter: Send + Sync {
 
 pub(crate) struct ProviderObservationCoordinator {
     adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
+    processes: process::ProviderProcessSupervisor,
 }
 
 impl ProviderObservationCoordinator {
+    #[cfg(test)]
     pub(crate) fn new(adapters: Vec<Arc<dyn ProviderObservationAdapter>>) -> Self {
+        Self::with_processes(adapters, process::ProviderProcessSupervisor::default())
+    }
+
+    fn with_processes(
+        adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
+        processes: process::ProviderProcessSupervisor,
+    ) -> Self {
         debug_assert_eq!(
             adapters
                 .iter()
@@ -53,7 +63,10 @@ impl ProviderObservationCoordinator {
             adapters.len(),
             "each provider can have only one observation adapter"
         );
-        Self { adapters }
+        Self {
+            adapters,
+            processes,
+        }
     }
 
     fn normalize_registry(&self, state: &mut SanitizedDesktopStateV3) {
@@ -76,15 +89,20 @@ pub(crate) fn production_observation_coordinator(
     clock: Arc<dyn Clock>,
     database_path: Option<std::path::PathBuf>,
 ) -> ProviderObservationCoordinator {
+    let processes = process::ProviderProcessSupervisor::default();
     let codex: Arc<dyn ProviderObservationAdapter> =
         Arc::new(codex::CodexProviderObservationAdapter::production(
             Arc::clone(&clock),
             database_path.clone(),
+            processes.clone(),
         ));
-    let claude: Arc<dyn ProviderObservationAdapter> = Arc::new(
-        claude::ClaudeProviderObservationAdapter::production(clock, database_path),
-    );
-    ProviderObservationCoordinator::new(vec![codex, claude])
+    let claude: Arc<dyn ProviderObservationAdapter> =
+        Arc::new(claude::ClaudeProviderObservationAdapter::production(
+            clock,
+            database_path,
+            processes.clone(),
+        ));
+    ProviderObservationCoordinator::with_processes(vec![codex, claude], processes)
 }
 
 pub(crate) fn debug_codex_usage_pass(
@@ -107,10 +125,11 @@ pub(crate) fn test_claude_observation_coordinator(
     clock: Arc<dyn Clock>,
 ) -> ProviderObservationCoordinator {
     let observation = claude::fixture_observation(clock.now());
+    let processes = process::ProviderProcessSupervisor::default();
     let claude: Arc<dyn ProviderObservationAdapter> = Arc::new(
-        claude::ClaudeProviderObservationAdapter::fixture(clock, observation),
+        claude::ClaudeProviderObservationAdapter::fixture(clock, observation, processes.clone()),
     );
-    ProviderObservationCoordinator::new(vec![claude])
+    ProviderObservationCoordinator::with_processes(vec![claude], processes)
 }
 
 impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
@@ -178,7 +197,22 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
         cached.refresh_combined_usage();
         Ok((cached != previous).then_some(cached))
     }
+
+    fn shutdown(&self) {
+        let summary = self.processes.shutdown_all();
+        debug_process_shutdown(summary.process_count, summary.deadline_count);
+    }
 }
+
+#[cfg(debug_assertions)]
+fn debug_process_shutdown(process_count: usize, deadline_count: usize) {
+    eprintln!(
+        "[TouchGrassBar][provider-observation] process_shutdown process_count={process_count} deadline_count={deadline_count}"
+    );
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_process_shutdown(_process_count: usize, _deadline_count: usize) {}
 
 #[cfg(debug_assertions)]
 fn debug_refresh_failure(provider: CodingProvider, reason: &str) {
@@ -201,7 +235,88 @@ fn debug_refresh_event(provider: CodingProvider, status: &str) {
 fn debug_refresh_event(_provider: CodingProvider, _status: &str) {}
 
 #[cfg(test)]
+struct DescendantHeldOutputAdapter {
+    processes: process::ProviderProcessSupervisor,
+    ready: std::sync::mpsc::SyncSender<(libc::pid_t, libc::pid_t)>,
+}
+
+#[cfg(test)]
+impl ProviderObservationAdapter for DescendantHeldOutputAdapter {
+    fn provider(&self) -> CodingProvider {
+        CodingProvider::Codex
+    }
+
+    fn refresh(
+        &self,
+        _cached: &ProviderPresentation,
+        _attempt: &RefreshAttempt,
+    ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+        let mut command = process::ProviderCommand::new("/bin/sh");
+        command.args([
+            "-c",
+            "/bin/sh -c 'while [ \"$PPID\" -ne 1 ]; do sleep 0.01; done; printf \"orphaned\\n\"; sleep 30' & printf '%s %s\\n' \"$$\" \"$!\"; exit 0",
+        ]);
+        let child = self
+            .processes
+            .spawn_piped(
+                command,
+                process::ProviderOutputMode::Lines {
+                    max_line_bytes: 1024,
+                    max_buffered_bytes: 4096,
+                },
+                None,
+            )
+            .map_err(|_| RefreshFailure::SourceUnavailable)?;
+        let pids = child
+            .receive_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| RefreshFailure::SourceUnavailable)?;
+        let pids = std::str::from_utf8(&pids)
+            .ok()
+            .and_then(|pids| {
+                let mut pids = pids.split_whitespace();
+                Some((pids.next()?.parse().ok()?, pids.next()?.parse().ok()?))
+            })
+            .ok_or(RefreshFailure::SourceUnavailable)?;
+        let orphaned = child
+            .receive_timeout(std::time::Duration::from_secs(2))
+            .map_err(|_| RefreshFailure::SourceUnavailable)?;
+        if orphaned.as_slice() != b"orphaned" || self.ready.send(pids).is_err() {
+            return Err(RefreshFailure::SourceUnavailable);
+        }
+        match child.receive_timeout(std::time::Duration::from_secs(30)) {
+            Err(process::ProviderProcessError::Cancelled) => Err(RefreshFailure::Cancelled),
+            _ => Err(RefreshFailure::SourceUnavailable),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_descendant_held_output_refresh_adapter() -> (
+    Arc<dyn SnapshotRefreshAdapter>,
+    std::sync::mpsc::Receiver<(libc::pid_t, libc::pid_t)>,
+) {
+    let processes = process::ProviderProcessSupervisor::default();
+    let (ready, receiver) = std::sync::mpsc::sync_channel(1);
+    let adapter: Arc<dyn ProviderObservationAdapter> = Arc::new(DescendantHeldOutputAdapter {
+        processes: processes.clone(),
+        ready,
+    });
+    (
+        Arc::new(ProviderObservationCoordinator::with_processes(
+            vec![adapter],
+            processes,
+        )),
+        receiver,
+    )
+}
+
+#[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Barrier, mpsc},
+        time::Duration as StdDuration,
+    };
+
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
     use super::*;
@@ -302,5 +417,69 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    struct BlockingProcessAdapter {
+        processes: process::ProviderProcessSupervisor,
+        started: Barrier,
+    }
+
+    impl ProviderObservationAdapter for BlockingProcessAdapter {
+        fn provider(&self) -> CodingProvider {
+            CodingProvider::Codex
+        }
+
+        fn refresh(
+            &self,
+            _cached: &ProviderPresentation,
+            _attempt: &RefreshAttempt,
+        ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+            let mut command = process::ProviderCommand::new("/bin/sh");
+            command.args(["-c", "sleep 30"]);
+            let child = self
+                .processes
+                .spawn_piped(
+                    command,
+                    process::ProviderOutputMode::Lines {
+                        max_line_bytes: 1024,
+                        max_buffered_bytes: 4096,
+                    },
+                    None,
+                )
+                .map_err(|_| RefreshFailure::SourceUnavailable)?;
+            self.started.wait();
+            match child.receive_timeout(StdDuration::from_secs(30)) {
+                Err(process::ProviderProcessError::Cancelled) => Err(RefreshFailure::Cancelled),
+                _ => Err(RefreshFailure::SourceUnavailable),
+            }
+        }
+    }
+
+    #[test]
+    fn coordinator_shutdown_unblocks_a_provider_process_read() {
+        let processes = process::ProviderProcessSupervisor::default();
+        let adapter = Arc::new(BlockingProcessAdapter {
+            processes: processes.clone(),
+            started: Barrier::new(2),
+        });
+        let coordinator = Arc::new(ProviderObservationCoordinator::with_processes(
+            vec![adapter.clone()],
+            processes,
+        ));
+        let worker_coordinator = Arc::clone(&coordinator);
+        let (complete, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = worker_coordinator.refresh(unavailable_state(1), &RefreshAttempt::test());
+            let _ = complete.send(result);
+        });
+        adapter.started.wait();
+
+        coordinator.shutdown();
+        let result = completed
+            .recv_timeout(StdDuration::from_secs(2))
+            .expect("provider refresh must stop within the shutdown budget");
+        worker.join().unwrap();
+
+        assert_eq!(result, Err(RefreshFailure::Cancelled));
     }
 }

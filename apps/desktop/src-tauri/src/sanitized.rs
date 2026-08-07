@@ -468,6 +468,12 @@ impl RefreshAttempt {
 pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
     fn install_refresh_trigger(&self, _trigger: RefreshTrigger) {}
 
+    /// Stops resources that can block an active refresh.
+    ///
+    /// The refresh coordinator calls this after it cancels new work and before
+    /// it joins the worker thread.
+    fn shutdown(&self) {}
+
     /// Production adapters must bound each blocking operation by
     /// `attempt.remaining()` and stop when cancellation is observed. This
     /// keeps application shutdown bounded.
@@ -1008,6 +1014,7 @@ impl RefreshInbox {
 struct RefreshCoordinator {
     inbox: Arc<RefreshInbox>,
     cancelled: Arc<AtomicBool>,
+    refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     worker: Mutex<Option<JoinHandle<()>>>,
     subscribers: Arc<RevisionSubscribers>,
 }
@@ -1063,7 +1070,7 @@ impl RefreshCoordinator {
             store,
             Arc::clone(&subscribers),
             clock,
-            refresh_adapter,
+            Arc::clone(&refresh_adapter),
             Arc::clone(&inbox),
             Arc::clone(&cancelled),
         );
@@ -1083,6 +1090,7 @@ impl RefreshCoordinator {
         Self {
             inbox,
             cancelled,
+            refresh_adapter,
             worker: Mutex::new(worker),
             subscribers,
         }
@@ -1114,6 +1122,7 @@ impl RefreshCoordinator {
         self.inbox.stopping.store(true, Ordering::Release);
         self.cancelled.store(true, Ordering::Release);
         let _ = self.inbox.wake.try_send(());
+        self.refresh_adapter.shutdown();
         let mut worker = self
             .worker
             .lock()
@@ -2222,7 +2231,7 @@ mod tests {
         path::PathBuf,
         process,
         sync::{
-            Barrier,
+            Barrier, Condvar,
             atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
         },
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -2859,6 +2868,131 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
         assert!(core.request_refresh(RefreshSource::Manual).is_err());
+    }
+
+    struct ShutdownManagedRefreshSource {
+        started: Barrier,
+        released: (Mutex<bool>, Condvar),
+        shutdown_called: AtomicBool,
+    }
+
+    impl ShutdownManagedRefreshSource {
+        fn new() -> Self {
+            Self {
+                started: Barrier::new(2),
+                released: (Mutex::new(false), Condvar::new()),
+                shutdown_called: AtomicBool::new(false),
+            }
+        }
+
+        fn release(&self) {
+            let (released, changed) = &self.released;
+            let mut released = released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *released = true;
+            changed.notify_all();
+        }
+    }
+
+    impl SnapshotRefreshAdapter for ShutdownManagedRefreshSource {
+        fn refresh(
+            &self,
+            _cached: SanitizedDesktopStateV3,
+            _attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+            self.started.wait();
+            let (released, changed) = &self.released;
+            let mut released = released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*released {
+                released = changed
+                    .wait(released)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            Err(RefreshFailure::Cancelled)
+        }
+
+        fn shutdown(&self) {
+            self.shutdown_called.store(true, Ordering::Release);
+            self.release();
+        }
+    }
+
+    #[test]
+    fn shutdown_stops_adapter_resources_before_it_joins_the_worker() {
+        let source = Arc::new(ShutdownManagedRefreshSource::new());
+        let core = NativeCore::with_refresh_adapter(source.clone());
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        source.started.wait();
+
+        let shutdown_core = core.clone();
+        let (complete, completed) = mpsc::channel();
+        let shutdown_thread = std::thread::spawn(move || {
+            shutdown_core.shutdown();
+            let _ = complete.send(());
+        });
+        let result = completed.recv_timeout(Duration::from_secs(1));
+        if result.is_err() {
+            source.release();
+        }
+        shutdown_thread.join().unwrap();
+
+        assert!(
+            result.is_ok(),
+            "adapter shutdown must run before worker join"
+        );
+        assert!(source.shutdown_called.load(Ordering::Acquire));
+    }
+
+    fn process_exists(pid: libc::pid_t) -> bool {
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[test]
+    fn native_core_shutdown_stops_a_descendant_after_its_root_exits() {
+        let (adapter, ready) = crate::providers::test_descendant_held_output_refresh_adapter();
+        let core = NativeCore::with_refresh_adapter(adapter);
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        let (root_pid, descendant_pid) = ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the provider fixture must reach its orphaned descendant state");
+        assert!(process_exists(root_pid));
+        assert!(process_exists(descendant_pid));
+
+        let shutdown_core = core.clone();
+        let (complete, completed) = mpsc::channel();
+        let started = Instant::now();
+        let shutdown_thread = std::thread::spawn(move || {
+            shutdown_core.shutdown();
+            let _ = complete.send(());
+        });
+        completed
+            .recv_timeout(Duration::from_secs(2))
+            .expect("native shutdown must not wait on descendant-owned output");
+        shutdown_thread.join().unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while (process_exists(root_pid) || process_exists(descendant_pid))
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!process_exists(root_pid));
+        assert!(!process_exists(descendant_pid));
     }
 
     #[test]
