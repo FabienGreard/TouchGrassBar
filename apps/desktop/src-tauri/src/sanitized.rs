@@ -960,6 +960,15 @@ impl RefreshInbox {
     fn take_sources(&self) -> RefreshSources {
         RefreshSources(self.pending_sources.swap(0, Ordering::AcqRel))
     }
+
+    fn try_start_refresh(&self) -> bool {
+        self.in_flight.store(true, Ordering::Release);
+        if self.paused.load(Ordering::Acquire) {
+            self.in_flight.store(false, Ordering::Release);
+            return false;
+        }
+        true
+    }
 }
 
 struct RefreshCoordinator {
@@ -1174,7 +1183,12 @@ impl CoordinatorWorker {
                 continue;
             }
 
-            self.inbox.in_flight.store(true, Ordering::Release);
+            if !self.inbox.try_start_refresh() {
+                self.inbox
+                    .pending_sources
+                    .fetch_or(sources.0, Ordering::AcqRel);
+                continue;
+            }
             let refresh_started = Instant::now();
             let result = self.refresh_once(sources);
             // User requests that race with admission join this active attempt.
@@ -2372,6 +2386,21 @@ mod tests {
             );
             thread::yield_now();
         }
+    }
+
+    #[test]
+    fn pause_for_update_closes_refresh_admission() {
+        let (wake, _receiver) = std::sync::mpsc::sync_channel(1);
+        let inbox = RefreshInbox {
+            pending_sources: AtomicU8::new(0),
+            in_flight: AtomicBool::new(false),
+            paused: AtomicBool::new(true),
+            stopping: AtomicBool::new(false),
+            wake,
+        };
+
+        assert!(!inbox.try_start_refresh());
+        assert!(!inbox.in_flight.load(Ordering::Acquire));
     }
 
     fn observed_state(

@@ -64,6 +64,23 @@ describe("update experience", () => {
     );
     expect(markup).toContain("motion-reduce:transition-none");
     expect(markup).toContain("contrast-more:border-pearl-ink");
+
+    const settingsMarkup = renderToStaticMarkup(
+      <UpdateExperience
+        onInstall={() => undefined}
+        state={{
+          ...available,
+          update: {
+            presentation: "row",
+            status: "available",
+            version: "1.4.0",
+          },
+        }}
+        surface="settings"
+      />,
+    );
+    expect(settingsMarkup).toContain('data-slot="update-row"');
+    expect(settingsMarkup).not.toContain('data-slot="update-sheet"');
   });
 
   test("all required failures keep Retry and DMG recovery without raw detail", () => {

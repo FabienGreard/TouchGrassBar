@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -145,7 +145,7 @@ fn validated_policy(
 }
 
 struct UpdatePersistence {
-    connection: Option<Mutex<Connection>>,
+    connection: Mutex<Connection>,
     memory: Mutex<PersistedUpdateState>,
 }
 
@@ -153,102 +153,150 @@ struct UpdatePersistence {
 struct PersistedUpdateState {
     deferred_version: Option<String>,
     last_automatic_check_at: Option<i64>,
+    minimum_required_version: Option<String>,
 }
 
 impl UpdatePersistence {
-    fn open(path: Option<&Path>) -> Self {
-        let connection = path.and_then(|path| {
-            let connection = Connection::open(path).ok()?;
+    fn open(path: Option<&Path>) -> Result<Self, ()> {
+        let path = path.ok_or(())?;
+        let connection = Connection::open(path).map_err(|_| ())?;
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = FULL;
+                 CREATE TABLE IF NOT EXISTS touchgrassbar_update_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   last_automatic_check_at INTEGER,
+                   deferred_version TEXT CHECK (
+                     deferred_version IS NULL OR
+                     length(deferred_version) BETWEEN 1 AND 64
+                   ),
+                   minimum_required_version TEXT CHECK (
+                     minimum_required_version IS NULL OR
+                     length(minimum_required_version) BETWEEN 1 AND 64
+                   )
+                 );",
+            )
+            .map_err(|_| ())?;
+        let has_minimum_column = connection
+            .query_row(
+                "SELECT EXISTS (
+                   SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
+                   WHERE name = 'minimum_required_version'
+                 )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|_| ())?;
+        if !has_minimum_column {
             connection
                 .execute_batch(
-                    "PRAGMA journal_mode = WAL;
-                     PRAGMA synchronous = FULL;
-                     CREATE TABLE IF NOT EXISTS touchgrassbar_update_state (
-                       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                       last_automatic_check_at INTEGER,
-                       deferred_version TEXT CHECK (
-                         deferred_version IS NULL OR
-                         length(deferred_version) BETWEEN 1 AND 64
-                       )
-                     );
-                     INSERT OR IGNORE INTO touchgrassbar_update_state (
-                       singleton, last_automatic_check_at, deferred_version
-                     ) VALUES (1, NULL, NULL);",
+                    "ALTER TABLE touchgrassbar_update_state
+                     ADD COLUMN minimum_required_version TEXT CHECK (
+                       minimum_required_version IS NULL OR
+                       length(minimum_required_version) BETWEEN 1 AND 64
+                     );",
                 )
-                .ok()?;
-            Some(Mutex::new(connection))
-        });
-        let persisted = connection
-            .as_ref()
-            .and_then(|connection| connection.lock().ok())
-            .and_then(|connection| {
-                connection
-                    .query_row(
-                        "SELECT last_automatic_check_at, deferred_version
-                         FROM touchgrassbar_update_state WHERE singleton = 1",
-                        [],
-                        |row| {
-                            Ok(PersistedUpdateState {
-                                last_automatic_check_at: row.get(0)?,
-                                deferred_version: row.get(1)?,
-                            })
-                        },
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-            })
-            .unwrap_or_default();
-        Self {
-            connection,
-            memory: Mutex::new(persisted),
+                .map_err(|_| ())?;
         }
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO touchgrassbar_update_state (
+                   singleton, last_automatic_check_at, deferred_version,
+                   minimum_required_version
+                 ) VALUES (1, NULL, NULL, NULL)",
+                [],
+            )
+            .map_err(|_| ())?;
+        let persisted = connection
+            .query_row(
+                "SELECT last_automatic_check_at, deferred_version,
+                        minimum_required_version
+                 FROM touchgrassbar_update_state WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(PersistedUpdateState {
+                        last_automatic_check_at: row.get(0)?,
+                        deferred_version: row.get(1)?,
+                        minimum_required_version: row.get(2)?,
+                    })
+                },
+            )
+            .map_err(|_| ())?;
+        Ok(Self {
+            connection: Mutex::new(connection),
+            memory: Mutex::new(persisted),
+        })
     }
 
-    fn snapshot(&self) -> PersistedUpdateState {
+    fn snapshot(&self) -> Result<PersistedUpdateState, ()> {
         self.memory
             .lock()
             .map(|state| state.clone())
-            .unwrap_or_default()
+            .map_err(|_| ())
     }
 
-    fn claim_automatic_check(&self, now: i64) -> bool {
-        let Ok(mut memory) = self.memory.lock() else {
-            return false;
-        };
+    fn claim_automatic_check(&self, now: i64) -> Result<bool, ()> {
+        let mut memory = self.memory.lock().map_err(|_| ())?;
         if memory
             .last_automatic_check_at
             .is_some_and(|last| now.saturating_sub(last) < AUTOMATIC_CHECK_INTERVAL_SECONDS)
         {
-            return false;
+            return Ok(false);
         }
-        memory.last_automatic_check_at = Some(now);
-        if let Some(connection) = &self.connection {
-            let Ok(connection) = connection.lock() else {
-                return true;
-            };
-            let _ = connection.execute(
+        let connection = self.connection.lock().map_err(|_| ())?;
+        let changed = connection
+            .execute(
                 "UPDATE touchgrassbar_update_state
                  SET last_automatic_check_at = ?1 WHERE singleton = 1",
                 [now],
-            );
+            )
+            .map_err(|_| ())?;
+        if changed != 1 {
+            return Err(());
         }
-        true
+        memory.last_automatic_check_at = Some(now);
+        Ok(true)
     }
 
-    fn set_deferred_version(&self, version: Option<&str>) {
-        if let Ok(mut memory) = self.memory.lock() {
-            memory.deferred_version = version.map(str::to_owned);
+    fn set_offer(
+        &self,
+        deferred_version: Option<&str>,
+        minimum_required_version: Option<&str>,
+    ) -> Result<(), ()> {
+        let mut memory = self.memory.lock().map_err(|_| ())?;
+        let connection = self.connection.lock().map_err(|_| ())?;
+        let changed = connection
+            .execute(
+                "UPDATE touchgrassbar_update_state
+                 SET deferred_version = ?1, minimum_required_version = ?2
+                 WHERE singleton = 1",
+                params![deferred_version, minimum_required_version],
+            )
+            .map_err(|_| ())?;
+        if changed != 1 {
+            return Err(());
         }
-        if let Some(connection) = &self.connection
-            && let Ok(connection) = connection.lock()
-        {
-            let _ = connection.execute(
+        memory.deferred_version = deferred_version.map(str::to_owned);
+        memory.minimum_required_version = minimum_required_version.map(str::to_owned);
+        Ok(())
+    }
+
+    fn set_deferred_version(&self, version: Option<&str>) -> Result<(), ()> {
+        let mut memory = self.memory.lock().map_err(|_| ())?;
+        let connection = self.connection.lock().map_err(|_| ())?;
+        let changed = connection
+            .execute(
                 "UPDATE touchgrassbar_update_state
                  SET deferred_version = ?1 WHERE singleton = 1",
                 params![version],
-            );
+            )
+            .map_err(|_| ())?;
+        if changed != 1 {
+            return Err(());
         }
+        memory.deferred_version = version.map(str::to_owned);
+        Ok(())
     }
 }
 
@@ -266,7 +314,7 @@ pub struct UpdateRuntime {
     gate: OnlineFeatureGate,
     install_after_check: Arc<std::sync::atomic::AtomicBool>,
     pending: Arc<Mutex<Option<PendingUpdate>>>,
-    persistence: Arc<UpdatePersistence>,
+    persistence: Option<Arc<UpdatePersistence>>,
     retry: Arc<Mutex<RetryAction>>,
     state: Arc<Mutex<UpdateStateV1>>,
 }
@@ -279,13 +327,22 @@ impl UpdateRuntime {
         available: bool,
     ) -> Self {
         let current_version = app.package_info().version.clone();
-        let persistence = Arc::new(UpdatePersistence::open(database_path));
-        let initial_update = if !available {
+        let persistence = available
+            .then(|| UpdatePersistence::open(database_path))
+            .and_then(Result::ok)
+            .map(Arc::new);
+        let persisted = persistence
+            .as_ref()
+            .and_then(|persistence| persistence.snapshot().ok());
+        let minimum_required = persisted
+            .as_ref()
+            .is_some_and(|persisted| persisted_minimum_required(persisted, &current_version));
+        gate.set_paused(minimum_required);
+        let initial_update = if !available || persistence.is_none() || persisted.is_none() {
             UpdateStatus::Unavailable
-        } else if let Some(version) = persistence
-            .snapshot()
-            .deferred_version
-            .filter(|version| valid_version(version))
+        } else if let Some(version) = persisted
+            .and_then(|persisted| persisted.deferred_version)
+            .filter(|version| version_is_newer(version, &current_version))
         {
             UpdateStatus::Available {
                 version,
@@ -294,6 +351,8 @@ impl UpdateRuntime {
         } else {
             UpdateStatus::Idle
         };
+        let mut state = UpdateStateV1::new(current_version.to_string(), initial_update);
+        state.online_features_paused = minimum_required;
         Self {
             app,
             current_version: current_version.clone(),
@@ -302,10 +361,7 @@ impl UpdateRuntime {
             pending: Arc::new(Mutex::new(None)),
             persistence,
             retry: Arc::new(Mutex::new(RetryAction::Check)),
-            state: Arc::new(Mutex::new(UpdateStateV1::new(
-                current_version.to_string(),
-                initial_update,
-            ))),
+            state: Arc::new(Mutex::new(state)),
         }
     }
 
@@ -338,9 +394,20 @@ impl UpdateRuntime {
         ) {
             return self.state();
         }
-        if kind == CheckKind::Automatic && !self.persistence.claim_automatic_check(unix_timestamp())
-        {
-            return self.state();
+        if kind == CheckKind::Automatic {
+            let claim = self
+                .persistence
+                .as_ref()
+                .ok_or(())
+                .and_then(|persistence| persistence.claim_automatic_check(unix_timestamp()));
+            match claim {
+                Ok(true) => {}
+                Ok(false) => return self.state(),
+                Err(()) => {
+                    self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
+                    return self.state();
+                }
+            }
         }
         self.publish(UpdateStatus::Checking, self.gate.is_paused());
         let runtime = self.clone();
@@ -368,9 +435,34 @@ impl UpdateRuntime {
                     self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
                     return;
                 }
-                let minimum_required =
-                    validated_policy(&update.raw_json, &self.current_version, &version).is_some();
+                let minimum_required_version =
+                    validated_policy(&update.raw_json, &self.current_version, &version)
+                        .map(|policy| policy.minimum_supported_version.to_string());
+                let minimum_required = minimum_required_version.is_some();
                 self.gate.set_paused(minimum_required);
+                let Some(persistence) = &self.persistence else {
+                    self.fail(
+                        Some(version.to_string()),
+                        UpdateFailure::Unavailable,
+                        RetryAction::Check,
+                    );
+                    return;
+                };
+                let deferred_version = minimum_required.then_some(version.to_string());
+                if persistence
+                    .set_offer(
+                        deferred_version.as_deref(),
+                        minimum_required_version.as_deref(),
+                    )
+                    .is_err()
+                {
+                    self.fail(
+                        Some(version.to_string()),
+                        UpdateFailure::Unavailable,
+                        RetryAction::Check,
+                    );
+                    return;
+                }
                 if let Ok(mut pending) = self.pending.lock() {
                     *pending = Some(PendingUpdate {
                         update,
@@ -378,7 +470,6 @@ impl UpdateRuntime {
                         minimum_required,
                     });
                 }
-                self.persistence.set_deferred_version(None);
                 self.publish(
                     UpdateStatus::Available {
                         version: version.to_string(),
@@ -400,7 +491,15 @@ impl UpdateRuntime {
                 if let Ok(mut pending) = self.pending.lock() {
                     *pending = None;
                 }
-                self.persistence.set_deferred_version(None);
+                let cleared = self
+                    .persistence
+                    .as_ref()
+                    .ok_or(())
+                    .and_then(|persistence| persistence.set_offer(None, None));
+                if cleared.is_err() {
+                    self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
+                    return;
+                }
                 self.publish(UpdateStatus::UpToDate, false);
             }
             Err(error) => self.fail(None, classify_error(&error, false), RetryAction::Check),
@@ -410,7 +509,19 @@ impl UpdateRuntime {
     pub fn defer(&self) -> UpdateStateV1 {
         let current = self.state();
         if let UpdateStatus::Available { version, .. } = current.update {
-            self.persistence.set_deferred_version(Some(&version));
+            let persisted = self
+                .persistence
+                .as_ref()
+                .ok_or(())
+                .and_then(|persistence| persistence.set_deferred_version(Some(&version)));
+            if persisted.is_err() {
+                self.fail(
+                    Some(version),
+                    UpdateFailure::Unavailable,
+                    RetryAction::Check,
+                );
+                return self.state();
+            }
             self.publish(
                 UpdateStatus::Available {
                     version,
@@ -530,7 +641,6 @@ impl UpdateRuntime {
                     .map_err(|error| classify_error(&error, true))
             },
             |(profile_pause, core_pause)| {
-                self.persistence.set_deferred_version(None);
                 profile_pause.keep_paused();
                 core_pause.keep_paused();
             },
@@ -661,8 +771,21 @@ fn unix_timestamp() -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn valid_version(version: &str) -> bool {
     version.len() <= MAX_VERSION_LENGTH && Version::parse(version).is_ok()
+}
+
+fn version_is_newer(version: &str, current_version: &Version) -> bool {
+    version.len() <= MAX_VERSION_LENGTH
+        && Version::parse(version).is_ok_and(|version| version > *current_version)
+}
+
+fn persisted_minimum_required(persisted: &PersistedUpdateState, current_version: &Version) -> bool {
+    persisted
+        .minimum_required_version
+        .as_deref()
+        .is_some_and(|version| version_is_newer(version, current_version))
 }
 
 pub fn update_state_schema() -> Schema {
@@ -707,33 +830,121 @@ mod tests {
     #[test]
     fn automatic_check_claim_is_persistent_and_manual_checks_are_independent() {
         let database = TestDatabase::new();
-        let first = UpdatePersistence::open(Some(&database.0));
-        assert!(first.claim_automatic_check(10_000));
-        assert!(!first.claim_automatic_check(10_001));
-        assert!(!first.claim_automatic_check(10_000 + AUTOMATIC_CHECK_INTERVAL_SECONDS - 1));
+        let first = UpdatePersistence::open(Some(&database.0)).unwrap();
+        assert!(first.claim_automatic_check(10_000).unwrap());
+        assert!(!first.claim_automatic_check(10_001).unwrap());
+        assert!(
+            !first
+                .claim_automatic_check(10_000 + AUTOMATIC_CHECK_INTERVAL_SECONDS - 1)
+                .unwrap()
+        );
         drop(first);
 
-        let reopened = UpdatePersistence::open(Some(&database.0));
-        assert!(!reopened.claim_automatic_check(10_000 + AUTOMATIC_CHECK_INTERVAL_SECONDS - 1));
-        assert!(reopened.claim_automatic_check(10_000 + AUTOMATIC_CHECK_INTERVAL_SECONDS));
+        let reopened = UpdatePersistence::open(Some(&database.0)).unwrap();
+        assert!(
+            !reopened
+                .claim_automatic_check(10_000 + AUTOMATIC_CHECK_INTERVAL_SECONDS - 1)
+                .unwrap()
+        );
+        assert!(
+            reopened
+                .claim_automatic_check(10_000 + AUTOMATIC_CHECK_INTERVAL_SECONDS)
+                .unwrap()
+        );
         assert_eq!(CheckKind::Manual, CheckKind::Manual);
     }
 
     #[test]
     fn later_persists_only_a_bounded_semver_for_the_row() {
         let database = TestDatabase::new();
-        let persistence = UpdatePersistence::open(Some(&database.0));
-        persistence.set_deferred_version(Some("1.4.0"));
+        let persistence = UpdatePersistence::open(Some(&database.0)).unwrap();
+        persistence.set_deferred_version(Some("1.4.0")).unwrap();
         drop(persistence);
 
-        let reopened = UpdatePersistence::open(Some(&database.0));
+        let reopened = UpdatePersistence::open(Some(&database.0)).unwrap();
         assert_eq!(
-            reopened.snapshot().deferred_version.as_deref(),
+            reopened.snapshot().unwrap().deferred_version.as_deref(),
             Some("1.4.0")
         );
         assert!(valid_version("1.4.0"));
         assert!(!valid_version("latest"));
         assert!(!valid_version(&"1".repeat(MAX_VERSION_LENGTH + 1)));
+        let recovered_version = Version::parse("1.5.0").unwrap();
+        assert!(!version_is_newer("1.4.0", &recovered_version));
+    }
+
+    #[test]
+    fn minimum_version_policy_and_deferred_offer_survive_restart() {
+        let database = TestDatabase::new();
+        let persistence = UpdatePersistence::open(Some(&database.0)).unwrap();
+        persistence.set_offer(Some("1.4.0"), Some("1.3.0")).unwrap();
+        drop(persistence);
+
+        let reopened = UpdatePersistence::open(Some(&database.0)).unwrap();
+        assert_eq!(
+            reopened.snapshot().unwrap(),
+            PersistedUpdateState {
+                deferred_version: Some("1.4.0".to_owned()),
+                last_automatic_check_at: None,
+                minimum_required_version: Some("1.3.0".to_owned()),
+            }
+        );
+        assert!(persisted_minimum_required(
+            &reopened.snapshot().unwrap(),
+            &Version::parse("1.2.0").unwrap(),
+        ));
+        assert!(!persisted_minimum_required(
+            &reopened.snapshot().unwrap(),
+            &Version::parse("1.4.0").unwrap(),
+        ));
+    }
+
+    #[test]
+    fn legacy_update_state_adds_minimum_column_without_losing_state() {
+        let database = TestDatabase::new();
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_update_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   last_automatic_check_at INTEGER,
+                   deferred_version TEXT
+                 );
+                 INSERT INTO touchgrassbar_update_state (
+                   singleton, last_automatic_check_at, deferred_version
+                 ) VALUES (1, 10000, '1.4.0');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let migrated = UpdatePersistence::open(Some(&database.0)).unwrap();
+        assert_eq!(
+            migrated.snapshot().unwrap(),
+            PersistedUpdateState {
+                deferred_version: Some("1.4.0".to_owned()),
+                last_automatic_check_at: Some(10_000),
+                minimum_required_version: None,
+            }
+        );
+    }
+
+    #[test]
+    fn persistence_failures_do_not_claim_or_change_durable_state() {
+        let database = TestDatabase::new();
+        let persistence = UpdatePersistence::open(Some(&database.0)).unwrap();
+        persistence
+            .connection
+            .lock()
+            .unwrap()
+            .execute("DROP TABLE touchgrassbar_update_state", [])
+            .unwrap();
+
+        assert_eq!(persistence.claim_automatic_check(10_000), Err(()));
+        assert_eq!(persistence.set_deferred_version(Some("1.4.0")), Err(()));
+        assert_eq!(
+            persistence.snapshot().unwrap(),
+            PersistedUpdateState::default()
+        );
     }
 
     #[test]

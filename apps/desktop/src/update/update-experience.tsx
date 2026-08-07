@@ -80,12 +80,16 @@ function AvailableUpdate({
   surface: "panel" | "settings";
   version: string;
 }) {
-  const row = presentation === "row" && surface === "panel";
+  const row = presentation === "row";
   if (row) {
     return (
       <section
         aria-label={`TouchGrassBar ${version} update available`}
-        className="flex items-center justify-between gap-3 border-b border-pearl-line bg-green-50/75 px-4 py-2.5 contrast-more:border-pearl-ink contrast-more:bg-white"
+        className={
+          surface === "panel"
+            ? "flex items-center justify-between gap-3 border-b border-pearl-line bg-green-50/75 px-4 py-2.5 contrast-more:border-pearl-ink contrast-more:bg-white"
+            : "flex items-center justify-between gap-3 rounded-[14px] border border-sheet-line bg-green-50/75 px-4 py-3 contrast-more:border-sheet-ink contrast-more:bg-white"
+        }
         data-slot="update-row"
       >
         <span className="min-w-0">
