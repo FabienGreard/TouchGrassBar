@@ -58,10 +58,9 @@ describe("update delivery", () => {
 
   test("queues a follow-up read when a notice arrives during a pending read", async () => {
     const native = port();
-    let completeFirstRead: (outcome: {
-      ok: true;
-      value: unknown;
-    }) => void = () => undefined;
+    let completeFirstRead:
+      | ((outcome: { ok: true; value: unknown }) => void)
+      | undefined;
     const firstRead = new Promise<{ ok: true; value: unknown }>((resolve) => {
       completeFirstRead = resolve;
     });
@@ -74,6 +73,7 @@ describe("update delivery", () => {
     const activation = delivery.activate();
     await vi.waitFor(() => expect(native.read).toHaveBeenCalledOnce());
     native.changed();
+    if (!completeFirstRead) throw new Error("first update read did not start");
     completeFirstRead({ ok: true, value: idleState });
     await activation;
 
