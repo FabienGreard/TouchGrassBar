@@ -11,23 +11,3 @@ export function gardenTimeForHour(hour: number): GardenTime {
   if (hour >= 17 && hour < 21) return "golden";
   return "night";
 }
-
-export function applyGardenTime(documentObject: Document, date = new Date()) {
-  const gardenTime = gardenTimeForHour(date.getHours());
-  documentObject.documentElement.dataset.gardenTime = gardenTime;
-  for (const label of documentObject.querySelectorAll<HTMLElement>(
-    "[data-garden-time-label]",
-  )) {
-    label.textContent = gardenTime;
-  }
-  return gardenTime;
-}
-
-export function installGardenTime(documentObject: Document) {
-  applyGardenTime(documentObject);
-  const timer = window.setInterval(
-    () => applyGardenTime(documentObject),
-    60_000,
-  );
-  return () => window.clearInterval(timer);
-}

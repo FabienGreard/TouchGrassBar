@@ -1,7 +1,7 @@
 import type { ComponentProps } from "react";
 
-import claudeLogo from "../assets/providers/claude.svg";
-import codexLogo from "../assets/providers/codex-color.svg";
+import claudeLogo from "../assets/providers/claude.svg?url";
+import codexLogo from "../assets/providers/codex-color.svg?url";
 import { cn } from "#lib/utils";
 
 type ProviderMarkProps = Omit<ComponentProps<"img">, "src"> & {

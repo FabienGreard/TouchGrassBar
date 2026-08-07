@@ -26,7 +26,7 @@ type FetchLatestRelease = (
   },
 ) => Promise<FetchResponse>;
 
-function record(value: unknown): Record<string, unknown> | null {
+function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)
     : null;
@@ -35,10 +35,11 @@ function record(value: unknown): Record<string, unknown> | null {
 export function approvedDownloadFromRelease(
   input: unknown,
 ): ApprovedDownload | null {
-  const release = record(input);
+  const release = asRecord(input);
   if (
     !release ||
     release.draft !== false ||
+    release.immutable !== true ||
     release.prerelease !== false ||
     typeof release.tag_name !== "string" ||
     !stableTagPattern.test(release.tag_name) ||
@@ -50,18 +51,32 @@ export function approvedDownloadFromRelease(
   }
 
   const version = release.tag_name.slice(1);
-  const assetName = `TouchGrassBar_${version}_aarch64.dmg`;
-  const expectedUrl = `${releaseRoot}/${release.tag_name}/${assetName}`;
-  const approvedAsset = release.assets.find((value) => {
-    const asset = record(value);
+  const updaterArchive = `TouchGrassBar_${version}_aarch64.app.tar.gz`;
+  const requiredAssetNames = [
+    "latest.json",
+    `release-trust-${version}.json`,
+    "SHA256SUMS",
+    `TouchGrassBar_${version}_aarch64.dmg`,
+    updaterArchive,
+    `${updaterArchive}.sig`,
+  ];
+  const approvedAssets = new Map(
+    release.assets.flatMap((value) => {
+      const asset = asRecord(value);
+      return typeof asset?.name === "string" ? [[asset.name, asset]] : [];
+    }),
+  );
+  const completeRelease = requiredAssetNames.every((assetName) => {
+    const asset = approvedAssets.get(assetName);
+    const expectedUrl = `${releaseRoot}/${release.tag_name}/${assetName}`;
     return (
-      asset?.name === assetName &&
-      asset.state === "uploaded" &&
-      asset.browser_download_url === expectedUrl
+      asset?.state === "uploaded" && asset.browser_download_url === expectedUrl
     );
   });
+  const dmgName = `TouchGrassBar_${version}_aarch64.dmg`;
+  const dmgUrl = `${releaseRoot}/${release.tag_name}/${dmgName}`;
 
-  return approvedAsset ? { url: expectedUrl, version } : null;
+  return completeRelease ? { url: dmgUrl, version } : null;
 }
 
 export async function resolveApprovedDownload(
@@ -86,25 +101,13 @@ export async function installDownloadResolver(
   const links = documentObject.querySelectorAll<HTMLAnchorElement>(
     "[data-download-link]",
   );
-  const statuses = documentObject.querySelectorAll<HTMLElement>(
-    "[data-download-status]",
-  );
   const approvedDownload = await resolveApprovedDownload(fetchLatestRelease);
 
-  if (!approvedDownload) {
-    for (const status of statuses) {
-      status.textContent =
-        "The exact download is not available. The GitHub Release page will open.";
-    }
-    return null;
-  }
+  if (!approvedDownload) return null;
 
   for (const link of links) {
     link.href = approvedDownload.url;
     link.dataset.downloadVersion = approvedDownload.version;
-  }
-  for (const status of statuses) {
-    status.textContent = `TouchGrassBar ${approvedDownload.version} for Apple silicon.`;
   }
   return approvedDownload;
 }
