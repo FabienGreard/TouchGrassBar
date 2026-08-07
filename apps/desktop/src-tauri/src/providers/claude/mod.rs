@@ -727,7 +727,7 @@ fn run_status_line<R: Read, W: Write>(
             exit_code: 0,
         };
     };
-    match run_upstream(&upstream, &payload) {
+    match run_upstream(upstream, &payload) {
         Ok((exit_code, upstream_output)) => {
             let _ = output.write_all(&upstream_output);
             StatusLineOutcome {
@@ -824,10 +824,10 @@ mod tests {
         fn socket(&self) -> PathBuf {
             #[cfg(unix)]
             {
-                return PathBuf::from("/tmp").join(format!(
+                PathBuf::from("/tmp").join(format!(
                     "tgb-{}.sock",
                     self.0.file_name().unwrap().to_string_lossy()
-                ));
+                ))
             }
             #[cfg(not(unix))]
             self.0.join("quota.sock")
