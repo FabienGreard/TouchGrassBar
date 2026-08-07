@@ -19,6 +19,7 @@ import {
   parseCodeSigningIdentities,
   signingTeamIdentifier,
 } from "../apps/desktop/src/dev/dev-signing";
+import { parseStableReleaseTag } from "./release-contract";
 
 const bundleIdentifier = "app.touchgrass.bar";
 const productName = "TouchGrassBar";
@@ -261,6 +262,7 @@ function verifyProfile(signingIdentity: string, temporaryDirectory: string) {
 async function writeProductionConfiguration(
   teamIdentifier: string,
   applicationOnly: boolean,
+  version: string,
 ) {
   mkdirSync(generatedDirectory, { recursive: true });
   const embeddedProfileSource = join(
@@ -279,7 +281,9 @@ async function writeProductionConfiguration(
     configPath,
     `${JSON.stringify(
       {
+        version,
         bundle: {
+          createUpdaterArtifacts: true,
           macOS: {
             entitlements: ".dev-instance/prod-entitlements.plist",
             files: {
@@ -527,6 +531,7 @@ async function main() {
   if (process.platform !== "darwin") {
     throw new Error("The local production app supports macOS only.");
   }
+  const release = parseStableReleaseTag(Bun.env.GITHUB_REF_NAME?.trim() ?? "");
   if (mode === "--release" && appIsRunning()) {
     throw new Error("Quit every TouchGrassBar instance before running prod.");
   }
@@ -544,6 +549,7 @@ async function main() {
     await writeProductionConfiguration(
       teamIdentifier,
       mode === "--release",
+      release.version,
     );
     if (mode === "--prepare") {
       console.log("Production entitlement binding: prepared");

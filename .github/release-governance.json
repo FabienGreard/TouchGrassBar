@@ -1,0 +1,56 @@
+{
+  "schema_version": "touchgrass.release-governance.v1",
+  "reviewer": "FabienGreard",
+  "environments": {
+    "macos-release": {
+      "administrators_can_bypass": false,
+      "deployment_tag_patterns": ["v*"],
+      "prevent_self_review": false,
+      "required_reviewers": ["FabienGreard"],
+      "secrets": [
+        "APPLE_CERTIFICATE",
+        "APPLE_CERTIFICATE_PASSWORD",
+        "APPLE_NOTARY_KEY",
+        "APPLE_PROVISIONING_PROFILE_BASE64",
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+      ],
+      "variables": [
+        "APPLE_API_KEY_ID",
+        "APPLE_API_ISSUER",
+        "APPLE_SIGNING_IDENTITY",
+        "TOUCHGRASS_AUTH_SITE_URL",
+        "TOUCHGRASS_CONVEX_URL"
+      ],
+      "wait_timer_minutes": 0
+    },
+    "public-release": {
+      "administrators_can_bypass": false,
+      "deployment_tag_patterns": ["v*"],
+      "prevent_self_review": false,
+      "required_reviewers": ["FabienGreard"],
+      "secrets": [],
+      "variables": [],
+      "wait_timer_minutes": 0
+    }
+  },
+  "actions": {
+    "allowed_actions": "selected",
+    "github_owned_allowed": true,
+    "patterns_allowed": [
+      "Swatinem/rust-cache@*",
+      "apple-actions/import-codesign-certs@*",
+      "dtolnay/rust-toolchain@*",
+      "oven-sh/setup-bun@*"
+    ],
+    "sha_pinning_required": false,
+    "verified_allowed": false
+  },
+  "tag_ruleset": {
+    "bypass_actors": [],
+    "enforcement": "active",
+    "include": ["refs/tags/v*"],
+    "rules": ["update", "deletion"]
+  },
+  "immutable_releases": true
+}

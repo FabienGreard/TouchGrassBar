@@ -4720,8 +4720,10 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 name = "touchgrassbar"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "convex",
  "getrandom 0.3.4",
+ "minisign-verify",
  "objc2-app-kit",
  "reqwest",
  "rusqlite",

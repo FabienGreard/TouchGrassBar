@@ -8,6 +8,4 @@ These product and technical decisions remain unresolved. Resolve them before the
 
 ## Distribution and operations
 
-- What update endpoint, signed manifest format, and public key will automatic updates use?
-- Which GitHub environments and approval rules protect Developer ID and notarization secrets?
 - What are the release thresholds for cold startup, panel latency, idle CPU, memory, and app size?

@@ -52,7 +52,10 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "TOUCHGRASSBAR_UPDATER_PUBLIC_KEY_NOT_CONFIGURED"
+      "pubkey": "TOUCHGRASSBAR_UPDATER_PUBLIC_KEY_NOT_CONFIGURED",
+      "endpoints": [
+        "https://github.com/FabienGreard/TouchGrassBar/releases/latest/download/latest.json"
+      ]
     }
   },
   "bundle": {
