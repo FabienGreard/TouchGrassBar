@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use time::{Date, Duration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Date, Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 use crate::sanitized::{
     ApiEquivalentCostQuality, UsageCoverage, UsageEvidenceBasis, UsagePeriods, UsageScanStatus,
@@ -176,7 +176,7 @@ fn project_period(
     now: OffsetDateTime,
     length: i64,
 ) -> UsageTotal {
-    let today = now.date();
+    let today = now.to_offset(UtcOffset::UTC).date();
     let provider_period = evidence
         .provider_reported_tokens
         .as_ref()
@@ -763,6 +763,37 @@ mod tests {
             panic!("provider-reported seven-day usage must remain available");
         };
         assert_eq!(observed_tokens, 900);
+    }
+
+    #[test]
+    fn period_selection_converts_offset_clocks_to_the_utc_ranking_day() {
+        let now = OffsetDateTime::parse("2026-08-06T00:30:00+02:00", &Rfc3339).unwrap();
+        let utc_today = Date::from_calendar_date(2026, time::Month::August, 5).unwrap();
+        let local_calendar_day = Date::from_calendar_date(2026, time::Month::August, 6).unwrap();
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(BTreeMap::from([
+                (utc_today, 100),
+                (local_calendar_day, 900),
+            ])),
+            provider_observed_at: Some(now),
+            local_cost_evidence: BTreeMap::new(),
+            local_evidence_available: false,
+            local_observed_at: None,
+            pricing_basis: None,
+            scan_status: UsageScanStatus::Unavailable,
+            today_scan_status: UsageScanStatus::Unavailable,
+            seven_day_scan_status: UsageScanStatus::Unavailable,
+            thirty_day_scan_status: UsageScanStatus::Unavailable,
+        };
+
+        let periods = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current {
+            observed_tokens, ..
+        } = periods.today
+        else {
+            panic!("the current UTC Ranking Day must be available");
+        };
+        assert_eq!(observed_tokens, 100);
     }
 
     #[test]

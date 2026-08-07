@@ -38,6 +38,8 @@ const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const ROLLOUT_PARSER_VERSION: i64 = 7;
 const UNKNOWN_MODEL: &str = "__unknown__";
+const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
+const USAGE_INDEX_SCHEMA_VERSION: i64 = 1;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -124,8 +126,9 @@ pub(crate) fn parse_account_usage(payload: &str) -> Result<AccountUsageObservati
 pub(crate) fn load_cached_account_usage(
     database_path: Option<&Path>,
 ) -> Option<CachedAccountUsageObservation> {
-    let connection = Connection::open(database_path?).ok()?;
-    ensure_index_schema(&connection).ok()?;
+    let database_path = database_path?;
+    let mut connection = Connection::open(database_path).ok()?;
+    ensure_index_schema(&mut connection, Some(database_path)).ok()?;
     let observed_at = connection
         .query_row(
             "SELECT observed_at FROM codex_account_usage_meta WHERE singleton = 1",
@@ -158,8 +161,9 @@ pub(crate) fn store_cached_account_usage(
     observation: &AccountUsageObservation,
     observed_at: OffsetDateTime,
 ) -> Result<(), ()> {
-    let connection = Connection::open(database_path.ok_or(())?).map_err(|_| ())?;
-    ensure_index_schema(&connection)?;
+    let database_path = database_path.ok_or(())?;
+    let mut connection = Connection::open(database_path).map_err(|_| ())?;
+    ensure_index_schema(&mut connection, Some(database_path))?;
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
     transaction
         .execute("DELETE FROM codex_account_usage_days", [])
@@ -412,7 +416,10 @@ fn pricing_manifest_fingerprint(basis: &str, models: &[PricedModel]) -> String {
         })
         .collect::<Vec<_>>();
     model_parts.sort();
-    let canonical = format!("{basis}||{}", model_parts.join("||"));
+    stable_pricing_fingerprint(&format!("{basis}||{}", model_parts.join("||")))
+}
+
+fn stable_pricing_fingerprint(canonical: &str) -> String {
     let hash = canonical
         .bytes()
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
@@ -543,6 +550,79 @@ fn price_usage_tier_with_manifest(
             + cache_write)
         + output_multiplier * per_million(billable.output, entry.output_usd_per_million);
     cost.is_finite().then_some(cost)
+}
+
+fn pricing_rule_fingerprint(
+    manifest: &PricingManifest,
+    model: &str,
+    day: Date,
+    usage: TokenUsage,
+    pricing_input_tokens: u64,
+) -> String {
+    let billable = match usage.billable() {
+        Ok(billable) => billable,
+        Err(()) => return stable_pricing_fingerprint("unavailable:invalid-token-arithmetic"),
+    };
+    let entry = match pricing_catalog_entry(manifest, model, day) {
+        Ok(entry) => entry,
+        Err(PricingLookupFailure::UnknownModel) => {
+            return stable_pricing_fingerprint(&format!("unavailable:unknown-model:{model}"));
+        }
+        Err(PricingLookupFailure::MissingApplicablePrice) => {
+            return stable_pricing_fingerprint(&format!(
+                "unavailable:missing-applicable-price:{model}:{day}"
+            ));
+        }
+        Err(PricingLookupFailure::MissingCacheWritePrice) => {
+            return stable_pricing_fingerprint(&format!(
+                "unavailable:missing-cache-write-price:{model}:{day}"
+            ));
+        }
+    };
+    if billable.cache_write_input > 0 && entry.cache_write_usd_per_million.is_none() {
+        return stable_pricing_fingerprint(&format!(
+            "unavailable:missing-cache-write-price:{model}:{day}"
+        ));
+    }
+    let long_context = pricing_input_tokens > entry.long_context_input_tokens_above;
+    let input_multiplier = if long_context {
+        entry.long_context_input_multiplier
+    } else {
+        1.0
+    };
+    let output_multiplier = if long_context {
+        entry.long_context_output_multiplier
+    } else {
+        1.0
+    };
+    let applicable_rate = |tokens: u64, rate: f64, multiplier: f64| {
+        (tokens > 0).then(|| format!("{:016x}", (rate * multiplier).to_bits()))
+    };
+    stable_pricing_fingerprint(&format!(
+        "priced:standard={}:cached={}:cache-write={}:output={}",
+        applicable_rate(
+            billable.standard_input,
+            entry.input_usd_per_million,
+            input_multiplier
+        )
+        .unwrap_or_else(|| "unused".to_owned()),
+        applicable_rate(
+            billable.cached_input,
+            entry.cached_input_usd_per_million,
+            input_multiplier
+        )
+        .unwrap_or_else(|| "unused".to_owned()),
+        entry
+            .cache_write_usd_per_million
+            .and_then(|rate| applicable_rate(billable.cache_write_input, rate, input_multiplier))
+            .unwrap_or_else(|| "unused".to_owned()),
+        applicable_rate(
+            billable.output,
+            entry.output_usd_per_million,
+            output_multiplier
+        )
+        .unwrap_or_else(|| "unused".to_owned()),
+    ))
 }
 
 type LocalUsageDay = DailyCostEvidence;
@@ -1229,10 +1309,115 @@ fn process_index_line(
     }
 }
 
-fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
+fn usage_index_schema_version(connection: &Connection) -> Result<i64, ()> {
+    let schema_table_exists = connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'touchgrassbar_schema_versions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|_| ())?;
+    if !schema_table_exists {
+        return Ok(0);
+    }
     connection
+        .query_row(
+            "SELECT version FROM touchgrassbar_schema_versions WHERE module = ?1",
+            [USAGE_INDEX_SCHEMA_MODULE],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|version| version.unwrap_or(0))
+        .map_err(|_| ())
+}
+
+fn usage_index_backup_path(path: &Path, source_version: i64) -> PathBuf {
+    path.with_extension(format!("sqlite3.codex-usage-v{source_version}.backup"))
+}
+
+fn usage_index_backup_partial_path(path: &Path, source_version: i64) -> PathBuf {
+    path.with_extension(format!(
+        "sqlite3.codex-usage-v{source_version}.backup.partial"
+    ))
+}
+
+fn usage_index_backup_is_valid(connection: &Connection, source_version: i64) -> Result<bool, ()> {
+    let integrity = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|_| ())?;
+    Ok(integrity == "ok" && usage_index_schema_version(connection)? == source_version)
+}
+
+fn backup_usage_index_before_migration(
+    connection: &Connection,
+    path: &Path,
+    source_version: i64,
+) -> Result<(), ()> {
+    let backup_path = usage_index_backup_path(path, source_version);
+    if backup_path.exists() {
+        let backup =
+            Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|_| ())?;
+        return usage_index_backup_is_valid(&backup, source_version)?
+            .then_some(())
+            .ok_or(());
+    }
+
+    let partial_path = usage_index_backup_partial_path(path, source_version);
+    if partial_path.exists() {
+        fs::remove_file(&partial_path).map_err(|_| ())?;
+    }
+    connection
+        .backup(rusqlite::MAIN_DB, &partial_path, None)
+        .map_err(|_| ())?;
+    let backup =
+        Connection::open_with_flags(&partial_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| ())?;
+    if !usage_index_backup_is_valid(&backup, source_version)? {
+        return Err(());
+    }
+    drop(backup);
+    fs::rename(partial_path, backup_path).map_err(|_| ())
+}
+
+fn table_columns(connection: &Connection, table: &str) -> Result<Vec<String>, ()> {
+    connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|_| ())?
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| ())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())
+}
+
+fn ensure_index_schema(
+    connection: &mut Connection,
+    database_path: Option<&Path>,
+) -> Result<(), ()> {
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|_| ())?;
+    let source_version = usage_index_schema_version(connection)?;
+    if source_version > USAGE_INDEX_SCHEMA_VERSION {
+        return Err(());
+    }
+    if source_version == USAGE_INDEX_SCHEMA_VERSION {
+        return Ok(());
+    }
+    if let Some(database_path) = database_path {
+        backup_usage_index_before_migration(connection, database_path, source_version)?;
+    }
+
+    let transaction = connection.transaction().map_err(|_| ())?;
+    transaction
         .execute_batch(
-            "PRAGMA foreign_keys = ON;
+            "CREATE TABLE IF NOT EXISTS touchgrassbar_schema_versions (
+               module TEXT PRIMARY KEY,
+               version INTEGER NOT NULL CHECK (version >= 1)
+             );
              CREATE TABLE IF NOT EXISTS codex_usage_index_meta (
                key TEXT PRIMARY KEY NOT NULL,
                value TEXT NOT NULL
@@ -1301,18 +1486,12 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
              );",
         )
         .map_err(|_| ())?;
-    let file_columns = connection
-        .prepare("PRAGMA table_info(codex_usage_files)")
-        .map_err(|_| ())?
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|_| ())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ())?;
+    let file_columns = table_columns(&transaction, "codex_usage_files")?;
     if !file_columns
         .iter()
         .any(|column| column == "history_start_ordinal")
     {
-        connection
+        transaction
             .execute(
                 "ALTER TABLE codex_usage_files ADD COLUMN history_start_ordinal INTEGER",
                 [],
@@ -1320,7 +1499,7 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
             .map_err(|_| ())?;
     }
     if !file_columns.iter().any(|column| column == "record_ordinal") {
-        connection
+        transaction
             .execute(
                 "ALTER TABLE codex_usage_files ADD COLUMN record_ordinal INTEGER NOT NULL DEFAULT 0",
                 [],
@@ -1328,7 +1507,7 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
             .map_err(|_| ())?;
     }
     if !file_columns.iter().any(|column| column == "usage_excluded") {
-        connection
+        transaction
             .execute(
                 "ALTER TABLE codex_usage_files ADD COLUMN usage_excluded INTEGER NOT NULL DEFAULT 0",
                 [],
@@ -1339,24 +1518,18 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
         .iter()
         .any(|column| column == "parsed_prefix_anchor")
     {
-        connection
+        transaction
             .execute(
                 "ALTER TABLE codex_usage_files ADD COLUMN parsed_prefix_anchor TEXT",
                 [],
             )
             .map_err(|_| ())?;
     }
-    let has_pricing_fingerprint = connection
-        .prepare("PRAGMA table_info(codex_usage_file_model_days)")
-        .map_err(|_| ())?
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|_| ())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ())?
+    let has_pricing_fingerprint = table_columns(&transaction, "codex_usage_file_model_days")?
         .iter()
         .any(|column| column == "pricing_fingerprint");
     if !has_pricing_fingerprint {
-        connection
+        transaction
             .execute(
                 "ALTER TABLE codex_usage_file_model_days
                  ADD COLUMN pricing_fingerprint TEXT",
@@ -1364,14 +1537,26 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
             )
             .map_err(|_| ())?;
     }
-    connection
+    let file_day_columns = table_columns(&transaction, "codex_usage_file_days")?;
+    if !file_day_columns
+        .iter()
+        .any(|column| column == "pricing_fingerprint")
+    {
+        transaction
+            .execute(
+                "ALTER TABLE codex_usage_file_days ADD COLUMN pricing_fingerprint TEXT",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
+    transaction
         .execute(
             "CREATE INDEX IF NOT EXISTS codex_usage_model_days_by_day
              ON codex_usage_file_model_days(day)",
             [],
         )
         .map_err(|_| ())?;
-    connection
+    transaction
         .execute(
             "CREATE INDEX IF NOT EXISTS codex_usage_unpriced_model_days
              ON codex_usage_file_model_days(day, model, cache_write_input_tokens)
@@ -1379,7 +1564,26 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
             [],
         )
         .map_err(|_| ())?;
-    Ok(())
+    transaction
+        .execute(
+            "DELETE FROM codex_usage_index_meta
+             WHERE key IN (
+               'file_day_summary_version',
+               'pricing_complete_fingerprint',
+               'pricing_reprice_cursor',
+               'pricing_reprice_target_fingerprint'
+             )",
+            [],
+        )
+        .map_err(|_| ())?;
+    transaction
+        .execute(
+            "INSERT INTO touchgrassbar_schema_versions(module, version) VALUES(?1, ?2)
+             ON CONFLICT(module) DO UPDATE SET version = excluded.version",
+            params![USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION],
+        )
+        .map_err(|_| ())?;
+    transaction.commit().map_err(|_| ())
 }
 
 fn to_i64(value: u64) -> Result<i64, ()> {
@@ -1407,12 +1611,7 @@ fn reprice_index_with_manifest(
     Ok(())
 }
 
-fn rebuild_file_day_summary(
-    connection: &Connection,
-    path: &str,
-    day: Date,
-    manifest: &PricingManifest,
-) -> Result<(), ()> {
+fn rebuild_file_day_summary(connection: &Connection, path: &str, day: Date) -> Result<(), ()> {
     connection
         .execute(
             "DELETE FROM codex_usage_file_days WHERE path = ?1 AND day = ?2",
@@ -1427,33 +1626,26 @@ fn rebuild_file_day_summary(
              )
              SELECT path, day, SUM(observed_tokens),
                     SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?3
                              THEN observed_tokens ELSE 0 END),
                     SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?3
                              THEN cost_usd ELSE 0.0 END),
                     MIN(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?3
                              THEN 1 ELSE 0 END),
                     MAX(observed_through),
                     MAX(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?3
                              THEN observed_through END),
-                    ?3
+                    NULL
              FROM codex_usage_file_model_days
              WHERE path = ?1 AND day = ?2
              GROUP BY path, day",
-            params![path, day.to_string(), manifest.fingerprint.as_str()],
+            params![path, day.to_string()],
         )
         .map_err(|_| ())?;
     Ok(())
 }
 
-fn ensure_file_day_summaries(
-    connection: &Connection,
-    manifest: &PricingManifest,
-) -> Result<(), ()> {
-    const SUMMARY_VERSION: &str = "1";
+fn ensure_file_day_summaries(connection: &Connection) -> Result<(), ()> {
+    const SUMMARY_VERSION: &str = "2";
     let current_version = connection
         .query_row(
             "SELECT value FROM codex_usage_index_meta WHERE key = 'file_day_summary_version'",
@@ -1477,21 +1669,17 @@ fn ensure_file_day_summaries(
              )
              SELECT path, day, SUM(observed_tokens),
                     SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?1
                              THEN observed_tokens ELSE 0 END),
                     SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?1
                              THEN cost_usd ELSE 0.0 END),
                     MIN(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?1
                              THEN 1 ELSE 0 END),
                     MAX(observed_through),
                     MAX(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
-                                  AND pricing_fingerprint = ?1
                              THEN observed_through END),
-                    ?1
+                    NULL
              FROM codex_usage_file_model_days GROUP BY path, day",
-            [manifest.fingerprint.as_str()],
+            [],
         )
         .map_err(|_| ())?;
     transaction
@@ -1522,41 +1710,66 @@ fn reprice_index_batch_with_manifest(
     if completed_fingerprint.as_deref() == Some(manifest.fingerprint.as_str()) {
         return Ok(true);
     }
+    if max_rows == 0 {
+        return Err(());
+    }
+    let target_fingerprint = connection
+        .query_row(
+            "SELECT value FROM codex_usage_index_meta
+             WHERE key = 'pricing_reprice_target_fingerprint'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| ())?;
+    let cursor = if target_fingerprint.as_deref() == Some(manifest.fingerprint.as_str()) {
+        connection
+            .query_row(
+                "SELECT value FROM codex_usage_index_meta WHERE key = 'pricing_reprice_cursor'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|_| ())?
+            .map_or(Ok(0_i64), |value| value.parse::<i64>().map_err(|_| ()))?
+    } else {
+        0
+    };
     let mut statement = connection
         .prepare(
-            "SELECT path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+            "SELECT rowid, path, day, model, pricing_input_tokens,
+                    input_tokens, cached_input_tokens,
                     cache_write_input_tokens, output_tokens, reasoning_output_tokens,
-                    observed_tokens
+                    observed_tokens, pricing_basis, pricing_fingerprint
              FROM codex_usage_file_model_days
-             WHERE pricing_basis IS NOT ?1 OR pricing_fingerprint IS NOT ?2
-             ORDER BY day, path, model, pricing_input_tokens
-             LIMIT ?3",
+             WHERE rowid > ?1
+             ORDER BY rowid
+             LIMIT ?2",
         )
         .map_err(|_| ())?;
     let rows = statement
         .query_map(
-            params![
-                manifest.basis.as_str(),
-                manifest.fingerprint.as_str(),
-                i64::try_from(max_rows).map_err(|_| ())?
-            ],
+            params![cursor, i64::try_from(max_rows).map_err(|_| ())?],
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    from_i64(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    row.get::<_, String>(3)?,
+                    from_i64(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
                     TokenUsage {
-                        input: from_i64(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        cached_input: from_i64(row.get(5)?)
+                        input: from_i64(row.get(5)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        cached_input: from_i64(row.get(6)?)
                             .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        cache_write_input: from_i64(row.get(6)?)
+                        cache_write_input: from_i64(row.get(7)?)
                             .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        output: from_i64(row.get(7)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        reasoning_output: from_i64(row.get(8)?)
+                        output: from_i64(row.get(8)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        reasoning_output: from_i64(row.get(9)?)
                             .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                        total: from_i64(row.get(9)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        total: from_i64(row.get(10)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
                     },
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             },
         )
@@ -1565,32 +1778,54 @@ fn reprice_index_batch_with_manifest(
         .map_err(|_| ())?;
     drop(statement);
     let batch_complete = rows.len() < max_rows;
+    let next_cursor = rows.last().map_or(cursor, |row| row.0);
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
     let mut affected_file_days = BTreeSet::new();
-    for (path, day, model, pricing_input_tokens, usage) in rows {
+    for (_, path, day, model, pricing_input_tokens, usage, stored_basis, stored_rule_fingerprint) in
+        rows
+    {
         let day = parse_ranking_day(&day)?;
-        affected_file_days.insert((path.clone(), day));
-        let cost =
-            price_usage_tier_with_manifest(manifest, &model, day, usage, pricing_input_tokens);
-        transaction
-            .execute(
-                "UPDATE codex_usage_file_model_days
-                 SET cost_usd = ?1, pricing_basis = ?2, pricing_fingerprint = ?3
-                 WHERE path = ?4 AND day = ?5 AND model = ?6 AND pricing_input_tokens = ?7",
-                params![
-                    cost,
-                    manifest.basis.as_str(),
-                    manifest.fingerprint.as_str(),
-                    path.as_str(),
-                    day.to_string(),
-                    model.as_str(),
-                    to_i64(pricing_input_tokens)?
-                ],
-            )
-            .map_err(|_| ())?;
+        let rule_fingerprint =
+            pricing_rule_fingerprint(manifest, &model, day, usage, pricing_input_tokens);
+        if stored_rule_fingerprint.as_deref() != Some(rule_fingerprint.as_str()) {
+            let cost =
+                price_usage_tier_with_manifest(manifest, &model, day, usage, pricing_input_tokens);
+            transaction
+                .execute(
+                    "UPDATE codex_usage_file_model_days
+                     SET cost_usd = ?1, pricing_basis = ?2, pricing_fingerprint = ?3
+                     WHERE path = ?4 AND day = ?5 AND model = ?6 AND pricing_input_tokens = ?7",
+                    params![
+                        cost,
+                        manifest.basis.as_str(),
+                        rule_fingerprint,
+                        path.as_str(),
+                        day.to_string(),
+                        model.as_str(),
+                        to_i64(pricing_input_tokens)?
+                    ],
+                )
+                .map_err(|_| ())?;
+            affected_file_days.insert((path.clone(), day));
+        } else if stored_basis.as_deref() != Some(manifest.basis.as_str()) {
+            transaction
+                .execute(
+                    "UPDATE codex_usage_file_model_days
+                     SET pricing_basis = ?1
+                     WHERE path = ?2 AND day = ?3 AND model = ?4 AND pricing_input_tokens = ?5",
+                    params![
+                        manifest.basis.as_str(),
+                        path.as_str(),
+                        day.to_string(),
+                        model.as_str(),
+                        to_i64(pricing_input_tokens)?
+                    ],
+                )
+                .map_err(|_| ())?;
+        }
     }
     for (path, day) in affected_file_days {
-        rebuild_file_day_summary(&transaction, &path, day, manifest)?;
+        rebuild_file_day_summary(&transaction, &path, day)?;
     }
     transaction
         .execute(
@@ -1616,19 +1851,41 @@ fn reprice_index_batch_with_manifest(
                 [manifest.fingerprint.as_str()],
             )
             .map_err(|_| ())?;
+        transaction
+            .execute(
+                "DELETE FROM codex_usage_index_meta
+                 WHERE key IN ('pricing_reprice_cursor', 'pricing_reprice_target_fingerprint')",
+                [],
+            )
+            .map_err(|_| ())?;
+    } else {
+        transaction
+            .execute(
+                "INSERT INTO codex_usage_index_meta(key, value)
+                 VALUES('pricing_reprice_target_fingerprint', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [manifest.fingerprint.as_str()],
+            )
+            .map_err(|_| ())?;
+        transaction
+            .execute(
+                "INSERT INTO codex_usage_index_meta(key, value)
+                 VALUES('pricing_reprice_cursor', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [next_cursor.to_string()],
+            )
+            .map_err(|_| ())?;
     }
     transaction.commit().map_err(|_| ())?;
     Ok(batch_complete)
 }
 
-fn prune_expired_model_days(connection: &Connection, cutoff: Date) -> Result<bool, ()> {
+fn prune_expired_index(
+    connection: &Connection,
+    cutoff: Date,
+    cutoff_modified_ns: i64,
+) -> Result<bool, ()> {
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
-    transaction
-        .execute(
-            "DELETE FROM codex_usage_file_days WHERE day < ?1",
-            [cutoff.to_string()],
-        )
-        .map_err(|_| ())?;
     transaction
         .execute(
             "DELETE FROM codex_usage_file_model_days
@@ -1642,8 +1899,42 @@ fn prune_expired_model_days(connection: &Connection, cutoff: Date) -> Result<boo
         )
         .map_err(|_| ())?;
     let model_days_complete = transaction.changes() < PRUNE_ROWS_PER_PASS as u64;
+    transaction
+        .execute(
+            "DELETE FROM codex_usage_file_days
+             WHERE rowid IN (
+               SELECT rowid FROM codex_usage_file_days WHERE day < ?1 LIMIT ?2
+             )",
+            params![
+                cutoff.to_string(),
+                i64::try_from(PRUNE_ROWS_PER_PASS).map_err(|_| ())?
+            ],
+        )
+        .map_err(|_| ())?;
+    let file_days_complete = transaction.changes() < PRUNE_ROWS_PER_PASS as u64;
+    transaction
+        .execute(
+            "DELETE FROM codex_usage_files
+             WHERE path IN (
+               SELECT f.path
+               FROM codex_usage_files f
+               WHERE f.modified_ns < ?1
+                 AND NOT EXISTS (
+                   SELECT 1 FROM codex_usage_file_model_days d
+                   WHERE d.path = f.path AND d.day >= ?2
+                 )
+               LIMIT ?3
+             )",
+            params![
+                cutoff_modified_ns,
+                cutoff.to_string(),
+                i64::try_from(PRUNE_ROWS_PER_PASS).map_err(|_| ())?
+            ],
+        )
+        .map_err(|_| ())?;
+    let files_complete = transaction.changes() < PRUNE_ROWS_PER_PASS as u64;
     transaction.commit().map_err(|_| ())?;
-    Ok(model_days_complete)
+    Ok(model_days_complete && file_days_complete && files_complete)
 }
 
 #[cfg(debug_assertions)]
@@ -1947,6 +2238,15 @@ fn commit_file_progress(
                 key.pricing_input_tokens,
             )
         });
+        let pricing_fingerprint = manifest.map(|manifest| {
+            pricing_rule_fingerprint(
+                manifest,
+                &key.model,
+                key.day,
+                delta.usage,
+                key.pricing_input_tokens,
+            )
+        });
         let file_day = file_days.entry(key.day).or_insert(FileDayDelta {
             observed_tokens: 0,
             priced_tokens: 0,
@@ -2011,7 +2311,7 @@ fn commit_file_progress(
                     to_i64(delta.usage.total)?,
                     cost,
                     manifest.map(|manifest| manifest.basis.as_str()),
-                    manifest.map(|manifest| manifest.fingerprint.as_str()),
+                    pricing_fingerprint,
                     delta.complete,
                     delta.observed_through.format(&Rfc3339).map_err(|_| ())?,
                 ],
@@ -2050,7 +2350,7 @@ fn commit_file_progress(
                         .map(|value| value.format(&Rfc3339))
                         .transpose()
                         .map_err(|_| ())?,
-                    manifest.map(|manifest| manifest.fingerprint.as_str()),
+                    Option::<&str>::None,
                 ],
             )
             .map_err(|_| ())?;
@@ -2219,17 +2519,12 @@ fn read_indexed_usage(
     let mut statement = connection
         .prepare(
             "SELECT d.day, SUM(d.observed_tokens),
-                    SUM(CASE WHEN d.pricing_fingerprint = ?4
-                             THEN d.priced_tokens ELSE 0 END),
-                    SUM(CASE WHEN d.pricing_fingerprint = ?4
-                             THEN d.cost_usd ELSE 0.0 END),
-                    MIN(CASE WHEN f.completion_state = 'complete'
-                                  AND d.complete = 1
-                                  AND d.pricing_fingerprint = ?4
+                    SUM(d.priced_tokens),
+                    SUM(d.cost_usd),
+                    MIN(CASE WHEN f.completion_state = 'complete' AND d.complete = 1
                              THEN 1 ELSE 0 END),
                     MAX(d.observed_through),
-                    MAX(CASE WHEN d.pricing_fingerprint = ?4
-                             THEN d.priced_observed_through END)
+                    MAX(d.priced_observed_through)
              FROM codex_usage_file_days d
              JOIN codex_usage_files f ON f.path = d.path
              WHERE f.parser_version = ?1 AND d.day >= ?2 AND d.day <= ?3
@@ -2241,8 +2536,7 @@ fn read_indexed_usage(
             params![
                 ROLLOUT_PARSER_VERSION,
                 cutoff.to_string(),
-                today.to_string(),
-                pricing_manifest().map(|manifest| manifest.fingerprint.as_str())
+                today.to_string()
             ],
             |row| {
                 let day = parse_ranking_day(&row.get::<_, String>(0)?)
@@ -2340,15 +2634,15 @@ fn index_local_usage_with_budget(
     debug_usage_event(&format!(
         "scan_pass_started max_bytes={max_bytes} max_file_bytes={max_file_bytes} max_millis={max_millis}"
     ));
-    let connection = Connection::open(database_path).ok()?;
-    ensure_index_schema(&connection).ok()?;
+    let mut connection = Connection::open(database_path).ok()?;
+    ensure_index_schema(&mut connection, Some(database_path)).ok()?;
     let today = utc_ranking_day(now);
     let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
-    let retention_complete = prune_expired_model_days(&connection, cutoff).ok()?;
+    let cutoff_modified_ns =
+        i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).ok()?;
+    let retention_complete = prune_expired_index(&connection, cutoff, cutoff_modified_ns).ok()?;
     let pricing_complete = reprice_index(&connection).ok()?;
-    let summaries_complete = pricing_complete
-        && pricing_manifest()
-            .is_some_and(|manifest| ensure_file_day_summaries(&connection, manifest).is_ok());
+    let summaries_complete = pricing_complete && ensure_file_day_summaries(&connection).is_ok();
     if !retention_complete || !pricing_complete || !summaries_complete {
         debug_usage_event(&format!(
             "scan_pass_completed stop=maintenance elapsed_ms={} retention_complete={retention_complete} pricing_complete={pricing_complete} summaries_complete={summaries_complete}",
@@ -2378,8 +2672,6 @@ fn index_local_usage_with_budget(
     if !found_root {
         return None;
     }
-    let cutoff_modified_ns =
-        i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).ok()?;
     let stored_files = load_file_summaries(&connection).ok()?;
     let mut ordered_files = Vec::with_capacity(files.len());
     for path in files {
@@ -2730,10 +3022,8 @@ fn render_debug_usage_report(
                     SUM(d.cache_write_input_tokens), SUM(d.output_tokens),
                     SUM(d.reasoning_output_tokens), SUM(d.observed_tokens),
                     SUM(CASE WHEN d.complete = 1 AND d.cost_usd IS NOT NULL
-                                  AND d.pricing_fingerprint = ?4
                              THEN d.observed_tokens ELSE 0 END),
                     SUM(CASE WHEN d.complete = 1 AND d.cost_usd IS NOT NULL
-                                  AND d.pricing_fingerprint = ?4
                              THEN d.cost_usd ELSE 0.0 END),
                     MIN(d.complete)
              FROM codex_usage_file_model_days d
@@ -2748,8 +3038,7 @@ fn render_debug_usage_report(
             params![
                 ROLLOUT_PARSER_VERSION,
                 cutoff.to_string(),
-                today.to_string(),
-                manifest.map(|manifest| manifest.fingerprint.as_str())
+                today.to_string()
             ],
             |row| {
                 Ok((
@@ -2934,6 +3223,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     struct TempUsage {
         root: PathBuf,
@@ -2943,10 +3233,12 @@ mod tests {
 
     impl TempUsage {
         fn new() -> Self {
+            static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
             let root = env::temp_dir().join(format!(
-                "touchgrassbar-codex-usage-{}-{}",
+                "touchgrassbar-codex-usage-{}-{}-{}",
                 std::process::id(),
-                OffsetDateTime::now_utc().unix_timestamp_nanos()
+                OffsetDateTime::now_utc().unix_timestamp_nanos(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
             ));
             let sessions = root.join("sessions");
             fs::create_dir_all(&sessions).unwrap();
@@ -3070,6 +3362,110 @@ mod tests {
                 observation,
                 observed_at,
             })
+        );
+    }
+
+    #[test]
+    fn usage_index_migration_is_versioned_transactional_and_backed_up() {
+        let fixture = TempUsage::new();
+        let connection = Connection::open(&fixture.database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE codex_usage_index_meta (
+                   key TEXT PRIMARY KEY NOT NULL,
+                   value TEXT NOT NULL
+                 );
+                 CREATE TABLE codex_usage_files (
+                   path TEXT PRIMARY KEY NOT NULL,
+                   file_identity TEXT NOT NULL,
+                   size_bytes INTEGER NOT NULL,
+                   modified_ns INTEGER NOT NULL,
+                   parsed_offset INTEGER NOT NULL,
+                   parser_version INTEGER NOT NULL,
+                   completion_state TEXT NOT NULL,
+                   active_model TEXT,
+                   baseline_is_inherited INTEGER,
+                   schema_supported INTEGER NOT NULL,
+                   previous_input INTEGER,
+                   previous_cached_input INTEGER,
+                   previous_cache_write_input INTEGER,
+                   previous_output INTEGER,
+                   previous_reasoning_output INTEGER,
+                   previous_total INTEGER
+                 );
+                 CREATE TABLE codex_usage_file_model_days (
+                   path TEXT NOT NULL,
+                   day TEXT NOT NULL,
+                   model TEXT NOT NULL,
+                   pricing_input_tokens INTEGER NOT NULL,
+                   input_tokens INTEGER NOT NULL,
+                   cached_input_tokens INTEGER NOT NULL,
+                   cache_write_input_tokens INTEGER NOT NULL,
+                   output_tokens INTEGER NOT NULL,
+                   reasoning_output_tokens INTEGER NOT NULL,
+                   observed_tokens INTEGER NOT NULL,
+                   cost_usd REAL,
+                   pricing_basis TEXT,
+                   complete INTEGER NOT NULL,
+                   observed_through TEXT NOT NULL,
+                   PRIMARY KEY (path, day, model, pricing_input_tokens),
+                   FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+                 );
+                 INSERT INTO codex_usage_files(
+                   path, file_identity, size_bytes, modified_ns, parsed_offset,
+                   parser_version, completion_state, schema_supported
+                 ) VALUES('private-rollout', '1:2', 10, 20, 10, 6, 'complete', 1);",
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut connection = Connection::open(&fixture.database).unwrap();
+        ensure_index_schema(&mut connection, Some(&fixture.database)).unwrap();
+
+        assert_eq!(
+            usage_index_schema_version(&connection).unwrap(),
+            USAGE_INDEX_SCHEMA_VERSION
+        );
+        let file_columns = table_columns(&connection, "codex_usage_files").unwrap();
+        for required in [
+            "history_start_ordinal",
+            "record_ordinal",
+            "usage_excluded",
+            "parsed_prefix_anchor",
+        ] {
+            assert!(file_columns.iter().any(|column| column == required));
+        }
+        assert!(
+            table_columns(&connection, "codex_usage_file_model_days")
+                .unwrap()
+                .iter()
+                .any(|column| column == "pricing_fingerprint")
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM codex_usage_files WHERE path = 'private-rollout'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        let backup_path = usage_index_backup_path(&fixture.database, 0);
+        assert!(backup_path.is_file());
+        assert!(!usage_index_backup_partial_path(&fixture.database, 0).exists());
+        let backup =
+            Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        assert_eq!(usage_index_schema_version(&backup).unwrap(), 0);
+        assert_eq!(
+            backup
+                .query_row("SELECT COUNT(*) FROM codex_usage_files", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
         );
     }
 
@@ -3573,6 +3969,119 @@ mod tests {
     }
 
     #[test]
+    fn semantic_manifest_change_reprices_only_affected_model_days() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let (path, day, pricing_input_tokens, usage, complete, observed_through) = connection
+            .query_row(
+                "SELECT path, day, pricing_input_tokens, input_tokens, cached_input_tokens,
+                        cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                        observed_tokens, complete, observed_through
+                 FROM codex_usage_file_model_days",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        from_i64(row.get(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        TokenUsage {
+                            input: from_i64(row.get(3)?)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            cached_input: from_i64(row.get(4)?)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            cache_write_input: from_i64(row.get(5)?)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            output: from_i64(row.get(6)?)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            reasoning_output: from_i64(row.get(7)?)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                            total: from_i64(row.get(8)?)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        },
+                        row.get::<_, bool>(9)?,
+                        row.get::<_, String>(10)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let day = parse_ranking_day(&day).unwrap();
+        let manifest = pricing_manifest().unwrap();
+        let terra_cost = price_usage_tier_with_manifest(
+            manifest,
+            "gpt-5.6-terra",
+            day,
+            usage,
+            pricing_input_tokens,
+        )
+        .unwrap();
+        let terra_fingerprint =
+            pricing_rule_fingerprint(manifest, "gpt-5.6-terra", day, usage, pricing_input_tokens);
+        connection
+            .execute(
+                "INSERT INTO codex_usage_file_model_days(
+                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                   observed_tokens, cost_usd, pricing_basis, pricing_fingerprint,
+                   complete, observed_through
+                 ) VALUES(?1, ?2, 'gpt-5.6-terra', ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                          ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    path,
+                    day.to_string(),
+                    to_i64(pricing_input_tokens).unwrap(),
+                    to_i64(usage.input).unwrap(),
+                    to_i64(usage.cached_input).unwrap(),
+                    to_i64(usage.cache_write_input).unwrap(),
+                    to_i64(usage.output).unwrap(),
+                    to_i64(usage.reasoning_output).unwrap(),
+                    to_i64(usage.total).unwrap(),
+                    terra_cost,
+                    manifest.basis.as_str(),
+                    terra_fingerprint,
+                    complete,
+                    observed_through,
+                ],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE repriced_model_days(model TEXT NOT NULL);
+                 CREATE TEMP TRIGGER record_model_day_reprice
+                 AFTER UPDATE OF cost_usd ON codex_usage_file_model_days
+                 BEGIN
+                   INSERT INTO repriced_model_days(model) VALUES(NEW.model);
+                 END;",
+            )
+            .unwrap();
+
+        let changed = changed_pricing_manifest("openai-standard-2026-08-06-v1", 60.0);
+        reprice_index_with_manifest(&connection, &changed).unwrap();
+
+        let repriced = connection
+            .prepare("SELECT model FROM repriced_model_days ORDER BY model")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(repriced, vec!["gpt-5.6-sol"]);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pricing_fingerprint FROM codex_usage_file_model_days
+                     WHERE model = 'gpt-5.6-terra'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            pricing_rule_fingerprint(&changed, "gpt-5.6-terra", day, usage, pricing_input_tokens,)
+        );
+    }
+
+    #[test]
     fn basis_only_change_updates_stored_rows_without_rescanning() {
         let fixture = TempUsage::new();
         fs::write(&fixture.rollout, root_rollout(100)).unwrap();
@@ -3610,7 +4119,7 @@ mod tests {
     }
 
     #[test]
-    fn index_prunes_private_model_days_outside_the_retention_window() {
+    fn index_prunes_private_detail_and_checkpoints_outside_the_retention_window() {
         let fixture = TempUsage::new();
         fs::write(&fixture.rollout, root_rollout(100)).unwrap();
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
@@ -3630,6 +4139,15 @@ mod tests {
                 [path],
             )
             .unwrap();
+        connection
+            .execute(
+                "INSERT INTO codex_usage_files(
+                   path, file_identity, size_bytes, modified_ns, parsed_offset,
+                   parser_version, completion_state, schema_supported
+                 ) VALUES('expired-rollout', 'old-file', 0, 0, 0, ?1, 'complete', 1)",
+                [ROLLOUT_PARSER_VERSION],
+            )
+            .unwrap();
         drop(connection);
 
         index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
@@ -3642,6 +4160,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(expired_rows, 0);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM codex_usage_files WHERE path = 'expired-rollout'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

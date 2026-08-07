@@ -1461,8 +1461,12 @@ impl NativeCore {
         }
     }
 
+    /// Returns the complete panel projection with provider visibility already
+    /// applied by the native policy.
     pub fn panel_state(&self) -> Result<SanitizedDesktopStateV3, &'static str> {
-        self.inner.projection.snapshot()
+        let mut snapshot = self.inner.projection.snapshot()?;
+        snapshot.providers.retain(ProviderPresentation::is_visible);
+        Ok(snapshot)
     }
 
     pub fn set_profile_outcome(
@@ -2444,6 +2448,8 @@ mod tests {
             &after.provider(CodingProvider::Codex).unwrap().usage.today,
             UsageTotal::Current { .. }
         ));
+        assert_eq!(after.providers.len(), 1);
+        assert!(after.provider(CodingProvider::Claude).is_none());
     }
 
     #[test]
@@ -2897,7 +2903,6 @@ mod tests {
         let migrated = core.panel_state().unwrap();
 
         assert_eq!(migrated.revision, "1");
-        assert_eq!(migrated.providers.len(), PROVIDER_REGISTRY.len());
         let codex = migrated.provider(CodingProvider::Codex).unwrap();
         assert_eq!(codex.display_name, "Codex");
         assert_eq!(codex.usage.scan_status, UsageScanStatus::Complete);

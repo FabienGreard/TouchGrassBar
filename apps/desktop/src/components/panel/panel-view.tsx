@@ -36,16 +36,6 @@ type PanelViewProps = {
   usagePresentation?: UsagePresentation | undefined;
 };
 
-function providerIsVisible(provider: ProviderPresentation) {
-  return (
-    provider.presence === "detected" ||
-    provider.quota.availability !== "unavailable" ||
-    provider.usage.today.availability !== "unavailable" ||
-    provider.usage.sevenDays.availability !== "unavailable" ||
-    provider.usage.thirtyDays.availability !== "unavailable"
-  );
-}
-
 function PanelView({
   addTokenmaxxerOpen = false,
   currentProfile,
@@ -63,11 +53,7 @@ function PanelView({
   usagePresentation,
 }: PanelViewProps) {
   const panelContainerRef = useRef<HTMLElement>(null);
-  const visibleProviders =
-    state?.providers.reduce<ProviderPresentation[]>((providers, provider) => {
-      if (providerIsVisible(provider)) providers.push(provider);
-      return providers;
-    }, []) ?? [];
+  const visibleProviders: ProviderPresentation[] = state?.providers ?? [];
 
   return (
     <>

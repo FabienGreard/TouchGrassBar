@@ -9,10 +9,11 @@ date ranges, and release a new application version. On the first run of that
 version, TouchGrassBar reprices the private SQLite model-day rows. It does not
 rescan rollout files for a price-only change.
 
-The index also stores a semantic fingerprint of the validated manifest. This
-causes repricing if a price changes but the basis was not changed by mistake.
-The basis remains the readable price-book version that the application can
-show in sanitized output.
+The index stores a semantic fingerprint of the validated manifest to detect an
+update even if the basis was not changed by mistake. Each private model-day row
+also stores the fingerprint of its applicable pricing rule. A manifest update
+recalculates only rows whose applicable rule changed. The basis remains the
+readable price-book version that the application can show in sanitized output.
 
 The Rust parser rejects unknown fields and invalid manifests. Keep the format
 suitable for a future signed remote manifest, but do not add remote updates as
@@ -27,6 +28,9 @@ cached-input, cache-write, output, effective-date, and long-context rule. Add
 an alias only when an official source defines it.
 
 If any required price or alias is missing, leave the model out of the manifest.
-The API-equivalent cost stays unavailable while the account Observed Tokens
-remain visible. Updating the manifest and releasing the application are manual
-operations.
+That model's local tokens stay unpriced. A period can still show a modeled best
+estimate when other priced local evidence supplies a defensible rate; its
+coverage reports how much local detail was priced. If the period has no usable
+priced evidence, API-equivalent cost stays unavailable while account Observed
+Tokens remain visible. Updating the manifest and releasing the application are
+manual operations.

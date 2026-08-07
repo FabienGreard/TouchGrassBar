@@ -251,18 +251,11 @@ describe("panel states", () => {
     expect(markup).not.toContain("My Tokenmaxxers");
   });
 
-  test("shows only detected providers or providers with a previous valid value", async () => {
+  test("renders the provider visibility selected by the native snapshot", async () => {
     const hiddenState = await deliveredBrowserFixture("current");
-    const hiddenClaude = hiddenState.providers.find(
-      (provider) => provider.provider === "claude",
+    hiddenState.providers = hiddenState.providers.filter(
+      (provider) => provider.provider !== "claude",
     );
-    if (!hiddenClaude) throw new Error("Claude fixture unavailable");
-    hiddenClaude.presence = "not-detected";
-    hiddenClaude.quota = {
-      availability: "unavailable",
-      provider: "claude",
-      quotaLanes: [],
-    };
     const hiddenMarkup = renderToStaticMarkup(
       <PanelView
         error={false}

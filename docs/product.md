@@ -66,7 +66,7 @@ Provider detection, Quota Snapshots, local usage history, and API-Equivalent Cos
 
 Offline operation is temporary local-first behavior, not a private Profile mode. Pending Daily Usage Aggregates synchronize after connectivity returns and only while the Mac remains the Profile's Active Mac.
 
-TouchGrassBar retains 60 UTC Ranking Days of local aggregate history for corrections and pricing updates. Creating a Profile queues only the approved 30-day backfill. Pending Usage Snapshots are bound to the current Active Mac generation; transfer abandons the previous generation's queue without deleting its device-private history.
+TouchGrassBar retains 60 UTC Ranking Days of sanitized aggregate history for corrections and synchronization. Its provider-private rollout cost-detail index retains only the current UTC Ranking Day and the preceding 29 days. A pricing-manifest update reprices those stored details without reading rollout files again. Creating a Profile queues only the approved 30-day backfill. Pending Usage Snapshots are bound to the current Active Mac generation; transfer abandons the previous generation's queue without deleting its device-private history.
 
 ## Public by design
 
