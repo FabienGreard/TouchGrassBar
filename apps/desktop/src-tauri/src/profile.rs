@@ -13,8 +13,7 @@ use crate::lifecycle::{DesktopLifecycle, SettingsProfileAuthorization};
 use crate::sanitized::SanitizedProfileOutcome;
 
 const KEYCHAIN_SERVICE: &str = "app.touchgrass.bar.profile";
-const ENSURE_PROFILE_MUTATION: &str = "tokenmaxxers:ensureProfile";
-const UPDATE_DISPLAY_NAME_MUTATION: &str = "tokenmaxxers:updateDisplayName";
+const PROFILE_MUTATION: &str = "tokenmaxxers:ensureProfile";
 const PREPARE_PATH: &str = "/api/auth/touchgrass/prepare";
 const SIGN_UP_PATH: &str = "/api/auth/sign-up/email";
 const SIGN_IN_PATH: &str = "/api/auth/sign-in/username";
@@ -300,8 +299,6 @@ trait ProfileTransport: Send + Sync {
         recovery_key: &Secret,
     ) -> Result<SignInOutcome, ProfileError>;
     fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), ProfileError>;
-    fn update_display_name(&self, session: &Secret, display_name: &str)
-    -> Result<(), ProfileError>;
 }
 
 fn profile_mutation_payload(display_name: String) -> BTreeMap<String, Value> {
@@ -401,43 +398,6 @@ impl ProfileCoordinator {
             .ok_or(ProfileError("Recovery Key unavailable"))
     }
 
-    pub(crate) fn update_display_name(
-        &self,
-        authorization: SettingsProfileAuthorization,
-        display_name: &str,
-    ) -> Result<SanitizedProfileOutcome, ProfileError> {
-        if !self.lifecycle.is_current_profile_settings(authorization) {
-            return Err(ProfileError("Display Name update unavailable"));
-        }
-        let display_name = display_name.trim();
-        if display_name.is_empty() || display_name.chars().count() > 40 {
-            return Err(ProfileError("Display Name invalid"));
-        }
-        let touch_grass_id = self
-            .lifecycle
-            .ready_touch_grass_id()
-            .ok_or(ProfileError("Display Name update unavailable"))?;
-        let recovery_key = self
-            .custody
-            .read(SecretKind::RecoveryKey)?
-            .ok_or(ProfileError("Display Name update unavailable"))?;
-        let SignInOutcome::Authenticated(session) =
-            self.transport.sign_in(&touch_grass_id, &recovery_key)?
-        else {
-            return Err(ProfileError("Display Name update unavailable"));
-        };
-        self.custody
-            .write(SecretKind::BetterAuthSession, &session)?;
-        self.transport.update_display_name(&session, display_name)?;
-        self.lifecycle
-            .update_display_name(display_name)
-            .map_err(ProfileError)?;
-        Ok(SanitizedProfileOutcome::Ready {
-            display_name: display_name.to_owned(),
-            touch_grass_id,
-        })
-    }
-
     fn ensure_secret(&self, kind: SecretKind, length: usize) -> Result<Secret, ProfileError> {
         if let Some(value) = self.custody.read(kind)? {
             return Ok(value);
@@ -503,60 +463,6 @@ impl HttpProfileTransport {
             .auth_site_url
             .ok_or(ProfileError("profile service unavailable"))?;
         Ok(format!("{}{path}", base.trim_end_matches('/')))
-    }
-
-    fn mutate_profile(
-        &self,
-        session: &Secret,
-        mutation: &'static str,
-        display_name: &str,
-        failure: &'static str,
-    ) -> Result<(), ProfileError> {
-        let auth_site_url = self
-            .auth_site_url
-            .ok_or(ProfileError("profile service unavailable"))?
-            .trim_end_matches('/')
-            .to_owned();
-        let convex_url = self
-            .convex_url
-            .ok_or(ProfileError("profile service unavailable"))?
-            .to_owned();
-        let session = Arc::new(Zeroizing::new(session.expose().to_owned()));
-        let display_name = display_name.to_owned();
-        tokio::runtime::Runtime::new()
-            .map_err(|_| ProfileError(failure))?
-            .block_on(async move {
-                let mut client = ConvexClient::new(&convex_url)
-                    .await
-                    .map_err(|_| ProfileError(failure))?;
-                let fetcher: convex::AuthTokenFetcher = Box::new(move |_force_refresh| {
-                    let auth_site_url = auth_site_url.clone();
-                    let session = Arc::clone(&session);
-                    Box::pin(async move {
-                        let response = reqwest::Client::new()
-                            .get(format!("{auth_site_url}{CONVEX_TOKEN_PATH}"))
-                            .bearer_auth(session.as_str())
-                            .send()
-                            .await?
-                            .error_for_status()?
-                            .json::<ConvexTokenResponse>()
-                            .await?;
-                        Ok(AuthenticationToken::User(response.token))
-                    })
-                });
-                client.set_auth_callback(Some(fetcher)).await;
-                let result = client
-                    .mutation(mutation, profile_mutation_payload(display_name))
-                    .await
-                    .map_err(|_| ProfileError(failure))?;
-                client.set_auth_callback(None).await;
-                match result {
-                    FunctionResult::Value(_) => Ok(()),
-                    FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-                        Err(ProfileError(failure))
-                    }
-                }
-            })
     }
 }
 
@@ -647,25 +553,51 @@ impl ProfileTransport for HttpProfileTransport {
     }
 
     fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), ProfileError> {
-        self.mutate_profile(
-            session,
-            ENSURE_PROFILE_MUTATION,
-            display_name,
-            "Profile creation pending",
-        )
-    }
-
-    fn update_display_name(
-        &self,
-        session: &Secret,
-        display_name: &str,
-    ) -> Result<(), ProfileError> {
-        self.mutate_profile(
-            session,
-            UPDATE_DISPLAY_NAME_MUTATION,
-            display_name,
-            "Display Name update unavailable",
-        )
+        let auth_site_url = self
+            .auth_site_url
+            .ok_or(ProfileError("profile service unavailable"))?
+            .trim_end_matches('/')
+            .to_owned();
+        let convex_url = self
+            .convex_url
+            .ok_or(ProfileError("profile service unavailable"))?
+            .to_owned();
+        let session = Arc::new(Zeroizing::new(session.expose().to_owned()));
+        let display_name = display_name.to_owned();
+        tokio::runtime::Runtime::new()
+            .map_err(|_| ProfileError("Profile creation pending"))?
+            .block_on(async move {
+                let mut client = ConvexClient::new(&convex_url)
+                    .await
+                    .map_err(|_| ProfileError("Profile creation pending"))?;
+                let fetcher: convex::AuthTokenFetcher = Box::new(move |_force_refresh| {
+                    let auth_site_url = auth_site_url.clone();
+                    let session = Arc::clone(&session);
+                    Box::pin(async move {
+                        let response = reqwest::Client::new()
+                            .get(format!("{auth_site_url}{CONVEX_TOKEN_PATH}"))
+                            .bearer_auth(session.as_str())
+                            .send()
+                            .await?
+                            .error_for_status()?
+                            .json::<ConvexTokenResponse>()
+                            .await?;
+                        Ok(AuthenticationToken::User(response.token))
+                    })
+                });
+                client.set_auth_callback(Some(fetcher)).await;
+                let result = client
+                    .mutation(PROFILE_MUTATION, profile_mutation_payload(display_name))
+                    .await
+                    .map_err(|_| ProfileError("Profile creation pending"))?;
+                client.set_auth_callback(None).await;
+                match result {
+                    FunctionResult::Value(_) => Ok(()),
+                    FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
+                        Err(ProfileError("Profile creation pending"))
+                    }
+                }
+            })
     }
 }
 
@@ -841,18 +773,6 @@ mod tests {
             let jwt = Secret::new(generate_secret(44)?);
             *self.last_jwt.lock().unwrap() = Some(jwt.expose().to_owned());
             self.fixed_profile_mutation.store(true, Ordering::SeqCst);
-            drop(jwt);
-            Ok(())
-        }
-
-        fn update_display_name(
-            &self,
-            _session: &Secret,
-            _display_name: &str,
-        ) -> Result<(), ProfileError> {
-            self.exchange_count.fetch_add(1, Ordering::SeqCst);
-            let jwt = Secret::new(generate_secret(44)?);
-            *self.last_jwt.lock().unwrap() = Some(jwt.expose().to_owned());
             drop(jwt);
             Ok(())
         }
@@ -1088,52 +1008,6 @@ mod tests {
         assert_eq!(fixture.transport.exchange_count(), 1);
         assert!(!fixture.custody.contains(SecretKind::ConvexJwt));
         assert!(fixture.transport.used_fixed_profile_mutation());
-    }
-
-    #[test]
-    fn display_name_update_requires_profile_settings_and_commits_after_transport() {
-        let fixture = ProfileFixture::new();
-        fixture.complete_bootstrap();
-        fixture.coordinator.retry_pending().unwrap();
-        fixture
-            .lifecycle
-            .request_settings_section(crate::lifecycle::SettingsSection::Profile);
-        let authorization = fixture
-            .lifecycle
-            .authorize_profile_settings()
-            .expect("Profile Settings authorization");
-
-        let outcome = fixture
-            .coordinator
-            .update_display_name(authorization, "  New name  ")
-            .unwrap();
-
-        assert_eq!(
-            outcome,
-            SanitizedProfileOutcome::Ready {
-                display_name: "New name".to_owned(),
-                touch_grass_id: fixture.transport.touch_grass_id().to_owned(),
-            }
-        );
-        assert_eq!(
-            fixture.lifecycle.bootstrap_state().display_name.as_deref(),
-            Some("New name")
-        );
-        assert_eq!(fixture.transport.exchange_count(), 2);
-
-        fixture
-            .lifecycle
-            .request_settings_section(crate::lifecycle::SettingsSection::General);
-        assert!(
-            fixture
-                .coordinator
-                .update_display_name(authorization, "Other name")
-                .is_err()
-        );
-        assert_eq!(
-            fixture.lifecycle.bootstrap_state().display_name.as_deref(),
-            Some("New name")
-        );
     }
 
     #[test]

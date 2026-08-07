@@ -49,15 +49,6 @@ function port(): SettingsPort & {
         launchAtLogin: { availability: "available", enabled },
       },
     })),
-    updateDisplayName: vi.fn(async (displayName) => ({
-      ok: true as const,
-      value: {
-        ...settingsState,
-        displayName,
-        profileProvisioning: "ready" as const,
-        touchGrassId: "TG-234567",
-      },
-    })),
     subscribeNavigation: vi.fn(async (receive) => {
       navigate = receive;
       return { ok: true as const, value: () => undefined };
@@ -126,20 +117,6 @@ describe("Settings delivery", () => {
       snapshot: {
         launchAtLogin: { availability: "available", enabled: true },
       },
-    });
-  });
-
-  test("commits a Display Name only after the native confirmation", async () => {
-    const native = port();
-    const delivery = createSettingsDelivery(native);
-    await delivery.activate();
-
-    expect(await delivery.updateDisplayName("New name")).toBe(true);
-    expect(native.updateDisplayName).toHaveBeenCalledWith("New name");
-    expect(delivery.getSnapshot().snapshot).toMatchObject({
-      displayName: "New name",
-      profileProvisioning: "ready",
-      touchGrassId: "TG-234567",
     });
   });
 

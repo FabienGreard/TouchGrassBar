@@ -295,28 +295,6 @@ impl ProfileRuntime {
             .map_err(|_| "Recovery Key unavailable".to_owned())
     }
 
-    fn update_display_name(
-        &self,
-        authorization: SettingsProfileAuthorization,
-        display_name: &str,
-    ) -> Result<(), String> {
-        if self.online_gate.is_paused() {
-            return Err("Display Name update unavailable".to_owned());
-        }
-        let Some(_attempt) = self.admission.try_start() else {
-            return Err("Display Name update unavailable".to_owned());
-        };
-        let profile = self
-            .coordinator
-            .lock()
-            .map_err(|_| "Display Name update unavailable".to_owned())?
-            .update_display_name(authorization, display_name)
-            .map_err(|_| "Display Name update unavailable".to_owned())?;
-        self.core
-            .set_profile_outcome(profile)
-            .map_err(|_| "Display Name update unavailable".to_owned())
-    }
-
     fn recovery_key_suffix(&self) -> Option<String> {
         profile::production_recovery_key_suffix(&self.lifecycle)
     }
@@ -838,28 +816,6 @@ async fn reveal_recovery_key(
 }
 
 #[tauri::command]
-async fn update_profile_display_name(
-    window: WebviewWindow,
-    app: AppHandle,
-    lifecycle: State<'_, DesktopLifecycle>,
-    profile_runtime: State<'_, ProfileRuntime>,
-    display_name: String,
-) -> Result<SettingsStateV3, String> {
-    let authorization = require_profile_settings(&window, &lifecycle)?;
-    let runtime = profile_runtime.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        runtime.update_display_name(authorization, &display_name)
-    })
-    .await
-    .map_err(|_| "Display Name update unavailable".to_owned())??;
-    Ok(settings_state_with_recovery_key_suffix(
-        &lifecycle,
-        launch_at_login_state(&app),
-        &profile_runtime,
-    ))
-}
-
-#[tauri::command]
 fn hide_surface(window: WebviewWindow) -> Result<(), String> {
     require_settings_or_onboarding(&window)?;
     window.hide().map_err(|_| "window unavailable".to_owned())
@@ -938,7 +894,6 @@ pub fn run() {
             retry_update,
             select_settings_section,
             set_launch_at_login,
-            update_profile_display_name,
             take_panel_add_tokenmaxxer_request
         ])
         .setup(move |app| {

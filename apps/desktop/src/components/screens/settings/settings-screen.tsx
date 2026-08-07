@@ -53,9 +53,7 @@ type SettingsScreenProps = {
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
   onOpenLatestDmg?: (() => void) | undefined;
   onOpenSource?: (() => void) | undefined;
-  onProfileDisplayNameChange?:
-    | ((displayName: string) => boolean | Promise<boolean> | void)
-    | undefined;
+  onProfileDisplayNameChange?: ((displayName: string) => void) | undefined;
   onHideRecoveryKey?: (() => void) | undefined;
   onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;

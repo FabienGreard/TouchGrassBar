@@ -30,7 +30,6 @@ describe("Tauri Settings adapter", () => {
 
     await adapter.read();
     await adapter.setLaunchAtLogin(true);
-    await adapter.updateDisplayName("New name");
     await adapter.selectSection("profile");
     expect(await adapter.revealRecoveryKey()).toEqual({
       ok: true,
@@ -54,16 +53,13 @@ describe("Tauri Settings adapter", () => {
     expect(bindings.invoke).toHaveBeenNthCalledWith(2, "set_launch_at_login", {
       enabled: true,
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "update_profile_display_name", {
-      displayName: "New name",
-    });
     expect(bindings.invoke).toHaveBeenNthCalledWith(
-      4,
+      3,
       "select_settings_section",
       { section: "profile" },
     );
     expect(bindings.invoke).toHaveBeenNthCalledWith(
-      5,
+      4,
       "reveal_recovery_key",
       undefined,
     );
@@ -98,10 +94,6 @@ describe("Tauri Settings adapter", () => {
     });
     expect(await adapter.setLaunchAtLogin(true)).toEqual({
       fault: { code: "launch-at-login-unavailable" },
-      ok: false,
-    });
-    expect(await adapter.updateDisplayName("New name")).toEqual({
-      fault: { code: "display-name-update-unavailable" },
       ok: false,
     });
     expect(await adapter.selectSection("profile")).toEqual({
