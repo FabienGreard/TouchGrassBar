@@ -1,4 +1,4 @@
-export const gardenTimes = ["dawn", "day", "golden", "night"] as const;
+const gardenTimes = ["dawn", "day", "golden", "night"] as const;
 
 export type GardenTime = (typeof gardenTimes)[number];
 

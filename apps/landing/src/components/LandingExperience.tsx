@@ -53,6 +53,12 @@ const GLOBAL_ROWS: BoardRow[] = [
   { id: "#TG-AFK404", name: "eli", note: "", rank: 6, score: "4.9M" },
 ];
 
+const USAGE_METRICS = [
+  { detail: "≈ $38.61", fill: 38, label: "Today", tone: "today", trend: "+8%", value: "12.8M" },
+  { detail: "≈ $214.96", fill: 67, label: "7 days", tone: "week", trend: "+14%", value: "71.4M" },
+  { detail: "≈ $856.73", fill: 92, label: "30 days", tone: "month", trend: "+22%", value: "284.6M" },
+] as const;
+
 function readGardenTimeChoice(): GardenTimeChoice {
   if (typeof window === "undefined") return "auto";
   const choice = new URLSearchParams(window.location.search).get("time");
@@ -105,12 +111,6 @@ function ProviderRow({
 }
 
 function UsageOverviewDemo() {
-  const metrics = [
-    { detail: "≈ $38.61", fill: 38, label: "Today", tone: "today", trend: "+8%", value: "12.8M" },
-    { detail: "≈ $214.96", fill: 67, label: "7 days", tone: "week", trend: "+14%", value: "71.4M" },
-    { detail: "≈ $856.73", fill: 92, label: "30 days", tone: "month", trend: "+22%", value: "284.6M" },
-  ] as const;
-
   return (
     <section className="border-b border-pearl-line bg-usage-surface px-4 py-[13px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight">
       <header className="flex items-center justify-between">
@@ -119,7 +119,7 @@ function UsageOverviewDemo() {
       </header>
       <div className="mt-2">
         <MetricCardGroup>
-          {metrics.map((metric) => (
+          {USAGE_METRICS.map((metric) => (
             <MetricCard key={metric.label}>
               <MetricCardLabel>{metric.label}</MetricCardLabel>
               <MetricCardTrend tone="positive">{metric.trend}</MetricCardTrend>
