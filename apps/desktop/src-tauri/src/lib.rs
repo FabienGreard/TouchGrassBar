@@ -897,9 +897,16 @@ pub fn run() {
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
+            #[cfg(debug_assertions)]
+            providers::report_claude_status_line_setup();
             #[cfg(not(debug_assertions))]
-            if let Some(path) = database_path.as_deref() {
-                let _ = providers::configure_claude_status_line(path);
+            match database_path.as_deref() {
+                Some(path) => {
+                    let _ = providers::configure_claude_status_line(path);
+                }
+                None => eprintln!(
+                    "[TouchGrassBar][claude-quota] bridge_setup_failed reason=database_unavailable"
+                ),
             }
             let core = database_path
                 .as_deref()

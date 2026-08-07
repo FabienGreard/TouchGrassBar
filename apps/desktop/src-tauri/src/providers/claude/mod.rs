@@ -37,6 +37,18 @@ const MAX_STATUS_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 256;
 const MAX_RESPONSE_CURSORS: i64 = 32;
 
+#[cfg(debug_assertions)]
+fn debug_event(event: &str) {
+    eprintln!("[TouchGrassBar][claude-quota] {event}");
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_event(_event: &str) {}
+
+fn capture_stored_event() {
+    eprintln!("[TouchGrassBar][claude-quota] capture_stored lane_count=2");
+}
+
 #[derive(Debug, Deserialize)]
 struct ClaudeStatusLineInput {
     cost: ClaudeStatusLineCost,
@@ -127,6 +139,53 @@ impl ClaudeProviderObservationAdapter {
             notification_listener_started: AtomicBool::new(false),
         }
     }
+
+    fn refresh_with_diagnostics(
+        &self,
+        cached: &ProviderPresentation,
+        attempt: &RefreshAttempt,
+        mut report: impl FnMut(&'static str),
+    ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+        if attempt.is_local_usage_only() {
+            report("refresh_skipped reason=local_usage_only");
+            return Ok(None);
+        }
+        attempt.remaining()?;
+        let Some(database_path) = self.database_path.as_deref() else {
+            report("capture_unavailable reason=database_unavailable");
+            return Ok(None);
+        };
+        let observation = match load_quota_observation(database_path) {
+            Ok(Some(observation)) => observation,
+            Ok(None) => {
+                report("capture_unavailable reason=not_observed");
+                return Ok(None);
+            }
+            Err(()) => {
+                report("capture_unavailable reason=storage_unavailable");
+                return Err(RefreshFailure::SourceUnavailable);
+            }
+        };
+        attempt.remaining()?;
+        if cached_observed_at(&cached.quota)
+            .is_some_and(|cached_at| cached_at >= observation.observed_at)
+        {
+            report("capture_unchanged");
+            return Ok(None);
+        }
+        let quota = match observation.sanitized_snapshot(self.clock.now()) {
+            Ok(quota) => quota,
+            Err(()) => {
+                report("capture_unavailable reason=expired_or_invalid");
+                return Err(RefreshFailure::SourceUnavailable);
+            }
+        };
+        report("capture_loaded lane_count=2");
+        Ok(Some(ProviderObservation {
+            quota,
+            usage: cached.usage.clone(),
+        }))
+    }
 }
 
 impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
@@ -152,31 +211,7 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
         cached: &ProviderPresentation,
         attempt: &RefreshAttempt,
     ) -> Result<Option<ProviderObservation>, RefreshFailure> {
-        if attempt.is_local_usage_only() {
-            return Ok(None);
-        }
-        attempt.remaining()?;
-        let Some(database_path) = self.database_path.as_deref() else {
-            return Ok(None);
-        };
-        let Some(observation) =
-            load_quota_observation(database_path).map_err(|_| RefreshFailure::SourceUnavailable)?
-        else {
-            return Ok(None);
-        };
-        attempt.remaining()?;
-        if cached_observed_at(&cached.quota)
-            .is_some_and(|cached_at| cached_at >= observation.observed_at)
-        {
-            return Ok(None);
-        }
-        let quota = observation
-            .sanitized_snapshot(self.clock.now())
-            .map_err(|_| RefreshFailure::SourceUnavailable)?;
-        Ok(Some(ProviderObservation {
-            quota,
-            usage: cached.usage.clone(),
-        }))
+        self.refresh_with_diagnostics(cached, attempt, debug_event)
     }
 }
 
@@ -720,6 +755,7 @@ fn run_status_line<R: Read, W: Write>(
         && capture_status_line_payload(database_path, &payload, now).unwrap_or(false);
     if captured {
         send_notification(notification_path);
+        capture_stored_event();
     }
     let Some(upstream) = upstream else {
         return StatusLineOutcome {
@@ -989,16 +1025,19 @@ mod tests {
             Arc::new(FixedClock(test_time())),
             Some(database),
         );
+        let mut diagnostics = Vec::new();
         let observation = adapter
-            .refresh(
+            .refresh_with_diagnostics(
                 &cached_claude(ProviderSnapshot::Unavailable {
                     provider: CodingProvider::Claude,
                     quota_lanes: [],
                 }),
                 &RefreshAttempt::test(),
+                |event| diagnostics.push(event),
             )
             .unwrap()
             .unwrap();
+        assert_eq!(diagnostics, ["capture_loaded lane_count=2"]);
         assert_eq!(
             observation.quota,
             ProviderSnapshot::Current {
@@ -1124,6 +1163,26 @@ mod tests {
             )
             .unwrap();
         assert!(load_quota_observation(&fixture.database()).is_err());
+        let adapter = ClaudeProviderObservationAdapter::production(
+            Arc::new(FixedClock(test_time())),
+            Some(fixture.database()),
+        );
+        let mut diagnostics = Vec::new();
+        assert!(matches!(
+            adapter.refresh_with_diagnostics(
+                &cached_claude(ProviderSnapshot::Unavailable {
+                    provider: CodingProvider::Claude,
+                    quota_lanes: [],
+                }),
+                &RefreshAttempt::test(),
+                |event| diagnostics.push(event),
+            ),
+            Err(RefreshFailure::SourceUnavailable)
+        ));
+        assert_eq!(
+            diagnostics,
+            ["capture_unavailable reason=storage_unavailable"]
+        );
         let mut output = Vec::new();
         let outcome = run_status_line(
             &fixture.database(),
@@ -1143,20 +1202,43 @@ mod tests {
         let fixture = FixtureDirectory::new();
         let database = fixture.database();
         drop(open_capture_database(&database).unwrap());
-        assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
-        let observation = load_quota_observation(&database).unwrap().unwrap();
-        let snapshot = observation.sanitized_snapshot(test_time()).unwrap();
         let adapter = ClaudeProviderObservationAdapter::production(
             Arc::new(FixedClock(test_time() + time::Duration::minutes(1))),
             Some(database.clone()),
         );
-
+        let unavailable = ProviderSnapshot::Unavailable {
+            provider: CodingProvider::Claude,
+            quota_lanes: [],
+        };
+        let mut diagnostics = Vec::new();
         assert!(
             adapter
-                .refresh(&cached_claude(snapshot.clone()), &RefreshAttempt::test())
+                .refresh_with_diagnostics(
+                    &cached_claude(unavailable.clone()),
+                    &RefreshAttempt::test(),
+                    |event| diagnostics.push(event),
+                )
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(diagnostics, ["capture_unavailable reason=not_observed"]);
+
+        assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
+        let observation = load_quota_observation(&database).unwrap().unwrap();
+        let snapshot = observation.sanitized_snapshot(test_time()).unwrap();
+
+        diagnostics.clear();
+        assert!(
+            adapter
+                .refresh_with_diagnostics(
+                    &cached_claude(snapshot.clone()),
+                    &RefreshAttempt::test(),
+                    |event| diagnostics.push(event),
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(diagnostics, ["capture_unchanged"]);
         let stale = match snapshot {
             ProviderSnapshot::Current {
                 provider,
@@ -1179,6 +1261,19 @@ mod tests {
         let expired_adapter = ClaudeProviderObservationAdapter::production(
             Arc::new(FixedClock(test_time() + time::Duration::hours(5))),
             Some(database),
+        );
+        diagnostics.clear();
+        assert!(matches!(
+            expired_adapter.refresh_with_diagnostics(
+                &cached_claude(unavailable),
+                &RefreshAttempt::test(),
+                |event| diagnostics.push(event),
+            ),
+            Err(RefreshFailure::SourceUnavailable)
+        ));
+        assert_eq!(
+            diagnostics,
+            ["capture_unavailable reason=expired_or_invalid"]
         );
         assert!(
             expired_adapter
