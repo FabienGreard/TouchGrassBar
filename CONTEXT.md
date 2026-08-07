@@ -58,7 +58,7 @@ Token throughput counted under provider-specific rules without double-counting o
 _Avoid_: Billed tokens, normalized tokens, productivity
 
 **Usage Trend**:
-The percentage change in Observed Tokens between one displayed period and the equal period immediately before it. The comparison uses the same selected usage source as the displayed total. Within a provider window that contains reported buckets, an omitted sparse day counts as zero. The previous period must contain at least one observed bucket and a non-zero token total. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
+The percentage change in Observed Tokens between one displayed period and the equal period immediately before it. The comparison uses the same selected usage source as the displayed total. Within a provider window that contains reported buckets, an omitted sparse day counts as zero. The previous period must contain at least one observed bucket and a non-zero token total. A Combined Usage Trend is weighted by each contributing provider's previous Observed Tokens. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
 _Avoid_: Cost trend, spend change, price change
 
 **Token Score**:
