@@ -29,7 +29,7 @@
     "doctor:score": "bunx --bun react-doctor@0.9.3 --yes --json --json-compact",
     "lint": "bunx --bun turbo run lint",
     "test": "bunx --bun turbo run test && bun run test:release",
-    "test:release": "bunx vitest run scripts/release-contract.test.ts scripts/finalize-macos-release.test.ts scripts/release-governance.test.ts",
+    "test:release": "bunx vitest run scripts/release-contract.test.ts scripts/finalize-macos-release.test.ts scripts/release-governance.test.ts scripts/release.test.ts",
     "typecheck": "bunx --bun turbo run typecheck",
     "quality": "bun run contracts:check && bun run quality:code",
     "quality:code": "bun run lint && bun run typecheck && bun run test && bun run build && bun run doctor",
@@ -43,6 +43,7 @@
     "contracts:generate": "bun scripts/generate-native-contract.ts",
     "contracts:check": "bun scripts/generate-native-contract.ts --check",
     "release:governance": "bun scripts/release-governance.ts",
+    "release": "bun scripts/release.ts",
     "storybook:build": "bun run --cwd packages/ui build-storybook"
   },
   "devDependencies": {

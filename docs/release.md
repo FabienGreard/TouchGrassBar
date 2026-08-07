@@ -88,6 +88,18 @@ Use an annotated tag with exact `vMAJOR.MINOR.PATCH` form. Leading zeroes,
 prerelease text, and build text are invalid. The tag commit must be a member of
 `main` and must have a successful exact-head `main` CI run.
 
+Preview the next governed version with one of these commands:
+
+```sh
+bun run release patch
+bun run release minor
+bun run release major
+```
+
+After the automated preview passes and the mandatory administrator-bypass
+check is complete, use the execution command printed by the script. The script
+creates and pushes the annotated tag. The tag starts the release workflow.
+
 The unprivileged `validate` job proves these conditions before GitHub creates a
 `macos-release` approval request. A rejected or failed candidate consumes its
 tag and version. Do not move or delete the tag. Fix the problem and use a

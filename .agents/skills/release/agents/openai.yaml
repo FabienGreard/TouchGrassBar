@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release"
+  short_description: "Create a governed semantic release"
+  default_prompt: "Use $release to create a governed TouchGrassBar patch release."
