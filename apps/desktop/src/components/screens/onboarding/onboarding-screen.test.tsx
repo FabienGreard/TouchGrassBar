@@ -3,9 +3,16 @@ import { describe, expect, test } from "vitest";
 
 import { OnboardingScreen } from "./onboarding-screen";
 
+const providers = [
+  { displayName: "Codex", provider: "codex", state: "unavailable" },
+  { displayName: "Claude", provider: "claude", state: "unavailable" },
+] as const;
+
 describe("onboarding screen", () => {
   test("uses the approved native-sheet composition", () => {
-    const markup = renderToStaticMarkup(<OnboardingScreen />);
+    const markup = renderToStaticMarkup(
+      <OnboardingScreen providers={providers} />,
+    );
     const profileMarkup = renderToStaticMarkup(
       <OnboardingScreen initialStep="profile" />,
     );
@@ -94,5 +101,17 @@ describe("onboarding screen", () => {
     expect(profileMarkup).toContain('value="Fabien"');
     expect(finishMarkup).toContain('data-setup-state="ready"');
     expect(finishMarkup).toContain("Local setup ready");
+  });
+
+  test("renders providers in the order supplied by Rust", () => {
+    const markup = renderToStaticMarkup(
+      <OnboardingScreen providers={[providers[1]]} />,
+    );
+
+    expect(markup).toContain(">Claude<");
+    expect(markup).not.toContain(">Codex<");
+    expect(markup.match(/data-slot="provider-connection-card"/g)).toHaveLength(
+      1,
+    );
   });
 });

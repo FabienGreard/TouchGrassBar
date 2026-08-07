@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { providerAccessStateFromPresence } from "@/components/coding-provider-access-state";
+import { providerAccessPresentations } from "@/components/provider-access/presentation";
 import { createNativeWindowKeyboardHandler } from "@/components/screens/native-window-keyboard";
 import {
   OnboardingScreen,
@@ -87,7 +87,6 @@ function OnboardingCoordinator({
       canComplete={
         view.phase === "ready" && view.snapshot?.persistence === "available"
       }
-      codexState={providerAccessStateFromPresence(providers, "codex")}
       displayName={displayName}
       furthestStep={furthestStep}
       onCheckProvider={() => {
@@ -105,7 +104,7 @@ function OnboardingCoordinator({
         });
       }}
       onStepChange={selectStep}
-      providerState={providerAccessStateFromPresence(providers, "claude")}
+      providers={providerAccessPresentations(providers)}
       setupState={setupState}
       step={step}
       submissionState={submissionState}

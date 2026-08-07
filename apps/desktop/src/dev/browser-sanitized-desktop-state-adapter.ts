@@ -1,31 +1,39 @@
 import type { SanitizedDesktopStatePort } from "@/native-state/sanitized-desktop-state-delivery";
 import type { BrowserFixtureName } from "@/dev/preview-scenario";
 
+function unavailableUsage() {
+  return {
+    scanStatus: "unavailable",
+    sevenDays: { availability: "unavailable" },
+    thirtyDays: { availability: "unavailable" },
+    today: { availability: "unavailable" },
+  };
+}
+
 function unavailableFixture(now: Date): unknown {
   return {
+    combinedUsage: unavailableUsage(),
     contractVersion: 3,
     generatedAt: now.toISOString(),
     profile: { status: "not-authorized" },
     providers: [
-      { availability: "unavailable", provider: "codex", quotaLanes: [] },
-      { availability: "unavailable", provider: "claude", quotaLanes: [] },
+      {
+        displayName: "Codex",
+        presence: "detected",
+        provider: "codex",
+        quota: { availability: "unavailable", provider: "codex", quotaLanes: [] },
+        usage: unavailableUsage(),
+      },
+      {
+        displayName: "Claude",
+        presence: "detected",
+        provider: "claude",
+        quota: { availability: "unavailable", provider: "claude", quotaLanes: [] },
+        usage: unavailableUsage(),
+      },
     ],
     revision: "1",
     sync: { lastSuccessfulAt: null, status: "unavailable" },
-    usage: {
-      claude: {
-        scanStatus: "unavailable",
-        sevenDays: { availability: "unavailable" },
-        thirtyDays: { availability: "unavailable" },
-        today: { availability: "unavailable" },
-      },
-      codex: {
-        scanStatus: "unavailable",
-        sevenDays: { availability: "unavailable" },
-        thirtyDays: { availability: "unavailable" },
-        today: { availability: "unavailable" },
-      },
-    },
   };
 }
 
@@ -57,8 +65,33 @@ function populatedFixture(
   const observedAt = now.toISOString();
   const resetAfter = (minutes: number) =>
     new Date(now.getTime() + minutes * 60_000).toISOString();
+  const codexUsage = {
+    scanStatus: "complete",
+    sevenDays: observedUsage(
+      availability,
+      observedAt,
+      71_400_000,
+      214.96,
+      14,
+    ),
+    thirtyDays: observedUsage(
+      availability,
+      observedAt,
+      284_600_000,
+      856.73,
+      22,
+    ),
+    today: observedUsage(
+      availability,
+      observedAt,
+      12_800_000,
+      38.61,
+      -8,
+    ),
+  };
 
   return {
+    combinedUsage: codexUsage,
     contractVersion: 3,
     generatedAt: observedAt,
     profile: {
@@ -68,84 +101,64 @@ function populatedFixture(
     },
     providers: [
       {
-        availability,
-        observedAt,
+        displayName: "Codex",
+        presence: "detected",
         provider: "codex",
-        quotaLanes: [
-          {
-            allowance: 100,
-            label: "Weekly limit",
-            remaining: 74,
-            resetAt: resetAfter((4 * 24 + 10) * 60),
-            unit: "percent",
-          },
-          {
-            allowance: 100,
-            label: "5-hour limit",
-            remaining: 62,
-            resetAt: resetAfter(4 * 60 + 55),
-            unit: "percent",
-          },
-        ],
+        quota: {
+          availability,
+          observedAt,
+          provider: "codex",
+          quotaLanes: [
+            {
+              allowance: 100,
+              label: "Weekly limit",
+              remaining: 74,
+              resetAt: resetAfter((4 * 24 + 10) * 60),
+              unit: "percent",
+            },
+            {
+              allowance: 100,
+              label: "5-hour limit",
+              remaining: 62,
+              resetAt: resetAfter(4 * 60 + 55),
+              unit: "percent",
+            },
+          ],
+        },
+        usage: codexUsage,
       },
       {
-        availability,
-        observedAt,
+        displayName: "Claude",
+        presence: "detected",
         provider: "claude",
-        quotaLanes: [
-          {
-            allowance: 100,
-            label: "Weekly limit",
-            remaining: 18,
-            resetAt: resetAfter((6 * 24 + 13) * 60 + 15),
-            unit: "percent",
-          },
-          {
-            allowance: 100,
-            label: "5-hour limit",
-            remaining: 43,
-            resetAt: resetAfter(4 * 60 + 35),
-            unit: "percent",
-          },
-        ],
+        quota: {
+          availability,
+          observedAt,
+          provider: "claude",
+          quotaLanes: [
+            {
+              allowance: 100,
+              label: "Weekly limit",
+              remaining: 18,
+              resetAt: resetAfter((6 * 24 + 13) * 60 + 15),
+              unit: "percent",
+            },
+            {
+              allowance: 100,
+              label: "5-hour limit",
+              remaining: 43,
+              resetAt: resetAfter(4 * 60 + 35),
+              unit: "percent",
+            },
+          ],
+        },
+        usage: unavailableUsage(),
       },
     ],
     revision: availability === "current" ? "2" : "3",
     sync: {
       lastSuccessfulAt: observedAt,
       status: availability === "current" ? "synced" : "stale",
-    },
-    usage: {
-      claude: {
-        scanStatus: "unavailable",
-        sevenDays: { availability: "unavailable" },
-        thirtyDays: { availability: "unavailable" },
-        today: { availability: "unavailable" },
-      },
-      codex: {
-        scanStatus: "complete",
-        sevenDays: observedUsage(
-          availability,
-          observedAt,
-          71_400_000,
-          214.96,
-          14,
-        ),
-        thirtyDays: observedUsage(
-          availability,
-          observedAt,
-          284_600_000,
-          856.73,
-          22,
-        ),
-        today: observedUsage(
-          availability,
-          observedAt,
-          12_800_000,
-          38.61,
-          -8,
-        ),
-      },
     },
   };
 }

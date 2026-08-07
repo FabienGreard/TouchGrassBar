@@ -35,13 +35,14 @@ describe("browser sanitized desktop state fixtures", () => {
     await waitForRevision(delivery, "2");
 
     expect(delivery.getSnapshot().snapshot?.providers[0]).toMatchObject({
-      availability: "current",
+      displayName: "Codex",
       provider: "codex",
+      quota: { availability: "current" },
     });
     expect(
       delivery
         .getSnapshot()
-        .snapshot?.providers[1]?.quotaLanes.map((lane) => lane.label),
+        .snapshot?.providers[1]?.quota.quotaLanes.map((lane) => lane.label),
     ).toEqual(["Weekly limit", "5-hour limit"]);
     unsubscribe();
   });

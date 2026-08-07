@@ -8,6 +8,10 @@ TouchGrassBar helps people understand their AI coding consumption and compare se
 An AI coding service whose usage TouchGrassBar can observe. The MVP providers are Codex and Claude.
 _Avoid_: AI, model, vendor
 
+**Provider Presence**:
+Whether a Coding Provider installation is locally detected, not detected, or cannot be checked. Provider Presence does not prove authentication, Quota access, or Observed Usage availability.
+_Avoid_: Provider connection, provider authorization, provider availability
+
 **Quota**:
 A provider-defined allowance for a bounded period. A quota is not the same as locally observed usage.
 _Avoid_: Usage, balance
@@ -34,7 +38,7 @@ A point-in-time collection of a coding provider's Quota Lanes. It can be initial
 _Avoid_: Usage aggregate, balance
 
 **Usage Evidence Basis**:
-Whether Observed Usage is `provider-reported` or `locally-derived`. This describes the selected source, independently of coverage or freshness.
+Whether Observed Usage is `provider-reported` or `locally-derived`, or `mixed` for a Combined provider scope. This describes the selected source, independently of coverage or freshness.
 _Avoid_: Accurate, estimated, quota
 
 **Usage Coverage**:

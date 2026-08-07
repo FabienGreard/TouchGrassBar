@@ -35,49 +35,32 @@ const currencyFormatter = new Intl.NumberFormat("en", {
 
 type GaugeTone = "month" | "today" | "week";
 
-function evidenceLabel(
+function costPresentation(
   total: Exclude<UsageTotal, { availability: "unavailable" }>,
   scanStatus: UsagePeriods["scanStatus"],
 ) {
-  const basis =
-    total.evidenceBasis === "provider-reported"
-      ? "Provider reported"
-      : "Locally derived";
-  const coverage = total.coverage === "complete" ? "Complete" : "Partial";
-  const scan =
-    scanStatus === "indexing"
-      ? " · Indexing"
-      : scanStatus === "unavailable"
-        ? " · Scan unavailable"
-        : "";
-  return `${basis} · ${coverage}${scan}`;
-}
-
-function costLabel(total: Exclude<UsageTotal, { availability: "unavailable" }>) {
-  if (
-    total.apiEquivalentCostUsd === null ||
-    total.apiEquivalentCostUsd === undefined ||
-    !total.apiEquivalentCostBasis ||
-    !total.apiEquivalentCostQuality
-  ) {
-    return "API equivalent unavailable";
+  if (total.apiEquivalentCostUsd !== null && total.apiEquivalentCostUsd !== undefined) {
+    const label = `≈ ${currencyFormatter.format(total.apiEquivalentCostUsd)}`;
+    return {
+      accessibleLabel: total.apiEquivalentCostBasis
+        ? `${label}, pricing basis ${total.apiEquivalentCostBasis}${scanStatus === "indexing" ? ", indexing" : ""}`
+        : `${label}${scanStatus === "indexing" ? ", indexing" : ""}`,
+      label,
+      ready: true,
+    };
   }
-  const price = `≈ ${currencyFormatter.format(total.apiEquivalentCostUsd)}`;
-  if (total.apiEquivalentCostQuality === "reconciled")
-    return `${price} · Reconciled`;
-  if (total.apiEquivalentCostQuality === "local-only")
-    return `${price} · Local only`;
-  const coverage = total.apiEquivalentCostCoveragePercent;
-  if (
-    coverage === null ||
-    coverage === undefined ||
-    !Number.isFinite(coverage) ||
-    coverage < 0 ||
-    coverage > 100
-  ) {
-    return "API equivalent unavailable";
+  if (scanStatus === "indexing") {
+    return {
+      accessibleLabel: "API equivalent indexing",
+      label: "Indexing…",
+      ready: false,
+    };
   }
-  return `${price} · Modeled ${Math.round(coverage)}%`;
+  return {
+    accessibleLabel: "API equivalent not ready",
+    label: "—",
+    ready: false,
+  };
 }
 
 function trendPresentation(
@@ -158,8 +141,10 @@ function UsageMetric({
     );
   }
 
+  const cost = costPresentation(total, scanStatus);
+
   return (
-    <MetricCard className="pb-[27px]">
+    <MetricCard>
       <MetricCardLabel>{label}</MetricCardLabel>
       <MetricCardTrend
         aria-label={
@@ -173,16 +158,11 @@ function UsageMetric({
         {tokenFormatter.format(total.observedTokens)}
       </MetricCardValue>
       <MetricCardDetail
-        className="flex flex-col overflow-visible whitespace-normal"
-        tone="positive"
+        aria-label={cost.accessibleLabel}
+        className="inline-flex items-center gap-0.5"
+        tone={cost.ready ? "positive" : "muted"}
       >
-        <span>{costLabel(total)}</span>
-        <span className="text-pearl-muted contrast-more:text-pearl-ink">
-          Price basis: {total.apiEquivalentCostBasis ?? "Unavailable"}
-        </span>
-        <span className="text-pearl-muted contrast-more:text-pearl-ink">
-          {evidenceLabel(total, scanStatus)}
-        </span>
+        <span className="overflow-hidden text-ellipsis">{cost.label}</span>
       </MetricCardDetail>
       <MetricCardGauge
         aria-label={
@@ -244,21 +224,21 @@ function UsageOverview({
             presentation={resolvedPresentation.today}
             tone="today"
             total={usage.today}
-            scanStatus={usage.scanStatus}
+            scanStatus={usage.todayScanStatus ?? usage.scanStatus}
           />
           <UsageMetric
             label="7 days"
             presentation={resolvedPresentation.sevenDays}
             tone="week"
             total={usage.sevenDays}
-            scanStatus={usage.scanStatus}
+            scanStatus={usage.sevenDayScanStatus ?? usage.scanStatus}
           />
           <UsageMetric
             label="30 days"
             presentation={resolvedPresentation.thirtyDays}
             tone="month"
             total={usage.thirtyDays}
-            scanStatus={usage.scanStatus}
+            scanStatus={usage.thirtyDayScanStatus ?? usage.scanStatus}
           />
         </MetricCardGroup>
       </div>

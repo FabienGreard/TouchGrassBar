@@ -1,10 +1,10 @@
-mod codex_quota;
-mod codex_usage;
+mod daily_usage_aggregate;
 #[cfg(debug_assertions)]
 mod dev_instance;
 pub mod lifecycle;
 mod network;
 pub mod profile;
+mod providers;
 pub mod sanitized;
 
 use std::{
@@ -18,13 +18,13 @@ use std::{
 };
 
 use lifecycle::{
-    BootstrapStateV2, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
+    BootstrapStateV3, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
     SETTINGS_RECOVERY_CLEAR_EVENT, SettingsNavigationRequest, SettingsProfileAuthorization,
-    SettingsSection, SettingsStateV2,
+    SettingsSection, SettingsStateV3,
 };
 use sanitized::{
     NativeCore, PANEL_ADD_TOKENMAXXER_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
-    RevisionNotice, SanitizedDesktopStateV2, SanitizedProfileOutcome,
+    RevisionNotice, SanitizedDesktopStateV3, SanitizedProfileOutcome,
 };
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -43,6 +43,15 @@ const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 const MENU_BAR_ICON: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
+
+#[doc(hidden)]
+pub fn run_codex_usage_debug_pass(
+    database_path: &std::path::Path,
+    codex_home: &std::path::Path,
+) -> Result<String, &'static str> {
+    providers::debug_codex_usage_pass(database_path, codex_home, time::OffsetDateTime::now_utc())
+        .map_err(|()| "Codex usage extraction failed")
+}
 
 #[derive(Default)]
 struct PanelActionState {
@@ -444,7 +453,7 @@ fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
-) -> Result<SanitizedDesktopStateV2, String> {
+) -> Result<SanitizedDesktopStateV3, String> {
     require_panel(&window)?;
     core.panel_state().map_err(str::to_owned)
 }
@@ -498,7 +507,7 @@ fn require_profile_settings(
 fn get_bootstrap_state(
     window: WebviewWindow,
     lifecycle: State<'_, DesktopLifecycle>,
-) -> Result<BootstrapStateV2, String> {
+) -> Result<BootstrapStateV3, String> {
     require_onboarding(&window)?;
     Ok(lifecycle.bootstrap_state())
 }
@@ -508,7 +517,7 @@ async fn complete_bootstrap(
     window: WebviewWindow,
     app: AppHandle,
     display_name: String,
-) -> Result<BootstrapStateV2, String> {
+) -> Result<BootstrapStateV3, String> {
     require_onboarding(&window)?;
     let lifecycle = app.state::<DesktopLifecycle>().inner().clone();
     let current = lifecycle.bootstrap_state();
@@ -549,7 +558,7 @@ fn settings_state_with_recovery_key_suffix(
     lifecycle: &DesktopLifecycle,
     launch_at_login: LaunchAtLoginState,
     profile_runtime: &ProfileRuntime,
-) -> SettingsStateV2 {
+) -> SettingsStateV3 {
     let mut state = lifecycle.settings_state(launch_at_login);
     if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready {
         state.recovery_key_suffix = profile_runtime.recovery_key_suffix();
@@ -563,7 +572,7 @@ fn get_settings_state(
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
-) -> Result<SettingsStateV2, String> {
+) -> Result<SettingsStateV3, String> {
     require_settings(&window)?;
     Ok(settings_state_with_recovery_key_suffix(
         &lifecycle,
@@ -579,7 +588,7 @@ fn set_launch_at_login(
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
     enabled: bool,
-) -> Result<SettingsStateV2, String> {
+) -> Result<SettingsStateV3, String> {
     require_settings(&window)?;
     #[cfg(debug_assertions)]
     if dev_instance::DevelopmentInstance::from_environment().is_some() {

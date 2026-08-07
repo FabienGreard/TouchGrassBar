@@ -9,8 +9,8 @@ import {
 import type { ProfileProvisioningStatus } from "@touchgrass/contracts";
 import { useState } from "react";
 
-import { CodingProviderAccessCard } from "@/components/coding-provider-access";
-import type { CodingProviderAccessState } from "@/components/coding-provider-access-state";
+import { CodingProviderAccessCard } from "@/components/provider-access/card";
+import type { CodingProviderAccessPresentation } from "@/components/provider-access/presentation";
 
 import { ProfileSettings, type SettingsProfile } from "./profile-settings";
 import {
@@ -41,7 +41,6 @@ const settingsSectionDetails: Record<
 type SettingsScreenProps = {
   autoUpdates?: boolean | null | undefined;
   busyProviders?: boolean | undefined;
-  codexState?: CodingProviderAccessState | undefined;
   launchAtLogin?: boolean | null | undefined;
   launchAtLoginSaving?: boolean | undefined;
   onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
@@ -57,7 +56,7 @@ type SettingsScreenProps = {
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
   profileProvisioning?: ProfileProvisioningStatus | undefined;
-  providerState?: CodingProviderAccessState | undefined;
+  providers?: readonly CodingProviderAccessPresentation[] | undefined;
   recoveryKey?: string | null | undefined;
   revealingRecoveryKey?: boolean | undefined;
   section?: SettingsSection | undefined;
@@ -66,7 +65,6 @@ type SettingsScreenProps = {
 function SettingsScreen({
   autoUpdates = null,
   busyProviders = false,
-  codexState = "unavailable",
   launchAtLogin = null,
   launchAtLoginSaving = false,
   onAutoUpdatesChange,
@@ -82,7 +80,7 @@ function SettingsScreen({
   pendingDisplayName = null,
   profile = null,
   profileProvisioning = "not-authorized",
-  providerState = "unavailable",
+  providers = [],
   recoveryKey = null,
   revealingRecoveryKey = false,
   section: controlledSection,
@@ -167,18 +165,16 @@ function SettingsScreen({
           ) : null}
           {section === "providers" ? (
             <div className="grid gap-3">
-              <CodingProviderAccessCard
-                busy={busyProviders}
-                onCheck={onCheckProviders}
-                provider="codex"
-                state={codexState}
-              />
-              <CodingProviderAccessCard
-                busy={busyProviders}
-                onCheck={onCheckProviders}
-                provider="claude"
-                state={providerState}
-              />
+              {providers.map((provider) => (
+                <CodingProviderAccessCard
+                  busy={busyProviders}
+                  displayName={provider.displayName}
+                  key={provider.provider}
+                  onCheck={onCheckProviders}
+                  provider={provider.provider}
+                  state={provider.state}
+                />
+              ))}
             </div>
           ) : null}
           {section === "profile" ? (

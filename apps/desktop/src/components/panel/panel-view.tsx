@@ -1,4 +1,7 @@
-import type { SanitizedDesktopState } from "@touchgrass/contracts";
+import type {
+  ProviderPresentation,
+  SanitizedDesktopState,
+} from "@touchgrass/contracts";
 import { PanelShell } from "@touchgrass/ui";
 import { useRef } from "react";
 
@@ -33,6 +36,16 @@ type PanelViewProps = {
   usagePresentation?: UsagePresentation | undefined;
 };
 
+function providerIsVisible(provider: ProviderPresentation) {
+  return (
+    provider.presence === "detected" ||
+    provider.quota.availability !== "unavailable" ||
+    provider.usage.today.availability !== "unavailable" ||
+    provider.usage.sevenDays.availability !== "unavailable" ||
+    provider.usage.thirtyDays.availability !== "unavailable"
+  );
+}
+
 function PanelView({
   addTokenmaxxerOpen = false,
   currentProfile,
@@ -50,6 +63,11 @@ function PanelView({
   usagePresentation,
 }: PanelViewProps) {
   const panelContainerRef = useRef<HTMLElement>(null);
+  const visibleProviders =
+    state?.providers.reduce<ProviderPresentation[]>((providers, provider) => {
+      if (providerIsVisible(provider)) providers.push(provider);
+      return providers;
+    }, []) ?? [];
 
   return (
     <>
@@ -83,17 +101,21 @@ function PanelView({
         ) : (
           <>
             <div>
-              {state.providers.map((provider) => (
-                <ProviderCard key={provider.provider} provider={provider} />
+              {visibleProviders.map((provider) => (
+                <ProviderCard
+                  key={provider.provider}
+                  presentation={provider}
+                />
               ))}
             </div>
             <UsageOverview
               presentation={usagePresentation}
-              usage={state.usage.codex}
+              usage={state.combinedUsage}
             />
             <Doomerboard
               currentProfile={currentProfile}
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
+              providers={visibleProviders}
               rows={doomerboardRows}
               tokenmaxxerRows={tokenmaxxerRows}
             />

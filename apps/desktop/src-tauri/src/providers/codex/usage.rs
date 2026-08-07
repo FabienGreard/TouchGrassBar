@@ -7,6 +7,9 @@ use std::{
     time::Instant,
 };
 
+#[cfg(debug_assertions)]
+use std::sync::Mutex;
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -14,35 +17,81 @@ use time::{
     Date, Duration, Month, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339,
 };
 
-use crate::sanitized::{
-    ApiEquivalentCostQuality, UsageCoverage, UsageEvidenceBasis, UsagePeriods, UsageScanStatus,
-    UsageTotal,
+use crate::daily_usage_aggregate::{
+    DailyCostEvidence, ProviderUsageEvidence, calculate_usage_periods, checked_sum, period_days,
 };
+use crate::sanitized::{ApiEquivalentCostQuality, UsagePeriods, UsageScanStatus, UsageTotal};
 
-const OPENAI_STANDARD_PRICING_JSON: &str = include_str!("../pricing/openai-standard.json");
+#[cfg(test)]
+use crate::daily_usage_aggregate::preserve_best_known_costs;
+#[cfg(test)]
+use crate::sanitized::{UsageCoverage, UsageEvidenceBasis};
+
+const OPENAI_STANDARD_PRICING_JSON: &str = include_str!("../../../pricing/openai-standard.json");
 const MAX_ROLLOUT_LINE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ROLLOUT_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ROLLOUT_FILE_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ROLLOUT_SCAN_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ROLLOUT_SCAN_MILLIS: u128 = 2_000;
-const RETAINED_RANKING_DAYS: i64 = 60;
+const PREFIX_ANCHOR_SAMPLE_BYTES: u64 = 1_024;
+const LOCAL_USAGE_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
-const ROLLOUT_PARSER_VERSION: i64 = 3;
+const ROLLOUT_PARSER_VERSION: i64 = 7;
 const UNKNOWN_MODEL: &str = "__unknown__";
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
     max_bytes: u64,
+    max_file_bytes: u64,
     max_millis: u128,
 }
 
 const DEFAULT_SCAN_BUDGET: ScanBudget = ScanBudget {
     max_bytes: MAX_ROLLOUT_SCAN_BYTES,
+    max_file_bytes: MAX_ROLLOUT_FILE_SCAN_BYTES,
     max_millis: MAX_ROLLOUT_SCAN_MILLIS,
 };
+
+#[cfg(debug_assertions)]
+fn debug_usage_event(event: &str) {
+    eprintln!("[TouchGrassBar][codex-usage] {event}");
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_usage_event(_event: &str) {}
+
+#[cfg(debug_assertions)]
+fn debug_parser_failure(reason: &str, day: Option<Date>) {
+    static REPORTED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let day = day.map_or_else(|| "unknown".to_owned(), |day| day.to_string());
+    let key = format!("{reason}:{day}");
+    let mut reported = REPORTED
+        .get_or_init(|| Mutex::new(BTreeSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if reported.insert(key) {
+        eprintln!("[TouchGrassBar][codex-usage] parser_unavailable reason={reason} day={day}");
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_parser_failure(_reason: &str, _day: Option<Date>) {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AccountUsageObservation {
     daily_tokens: BTreeMap<Date, u64>,
+}
+
+impl AccountUsageObservation {
+    pub(crate) fn day_count(&self) -> usize {
+        self.daily_tokens.len()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CachedAccountUsageObservation {
+    pub(crate) observation: AccountUsageObservation,
+    pub(crate) observed_at: OffsetDateTime,
 }
 
 #[derive(Deserialize)]
@@ -70,6 +119,67 @@ pub(crate) fn parse_account_usage(payload: &str) -> Result<AccountUsageObservati
         }
     }
     Ok(AccountUsageObservation { daily_tokens })
+}
+
+pub(crate) fn load_cached_account_usage(
+    database_path: Option<&Path>,
+) -> Option<CachedAccountUsageObservation> {
+    let connection = Connection::open(database_path?).ok()?;
+    ensure_index_schema(&connection).ok()?;
+    let observed_at = connection
+        .query_row(
+            "SELECT observed_at FROM codex_account_usage_meta WHERE singleton = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()??;
+    let observed_at = OffsetDateTime::parse(&observed_at, &Rfc3339).ok()?;
+    let daily_tokens = connection
+        .prepare("SELECT day, tokens FROM codex_account_usage_days ORDER BY day")
+        .ok()?
+        .query_map([], |row| {
+            let day = parse_ranking_day(&row.get::<_, String>(0)?)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let tokens = from_i64(row.get(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            Ok((day, tokens))
+        })
+        .ok()?
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .ok()?;
+    Some(CachedAccountUsageObservation {
+        observation: AccountUsageObservation { daily_tokens },
+        observed_at,
+    })
+}
+
+pub(crate) fn store_cached_account_usage(
+    database_path: Option<&Path>,
+    observation: &AccountUsageObservation,
+    observed_at: OffsetDateTime,
+) -> Result<(), ()> {
+    let connection = Connection::open(database_path.ok_or(())?).map_err(|_| ())?;
+    ensure_index_schema(&connection)?;
+    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    transaction
+        .execute("DELETE FROM codex_account_usage_days", [])
+        .map_err(|_| ())?;
+    for (day, tokens) in &observation.daily_tokens {
+        transaction
+            .execute(
+                "INSERT INTO codex_account_usage_days(day, tokens) VALUES(?1, ?2)",
+                params![day.to_string(), to_i64(*tokens)?],
+            )
+            .map_err(|_| ())?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO codex_account_usage_meta(singleton, observed_at) VALUES(1, ?1)
+             ON CONFLICT(singleton) DO UPDATE SET observed_at=excluded.observed_at",
+            [observed_at.format(&Rfc3339).map_err(|_| ())?],
+        )
+        .map_err(|_| ())?;
+    transaction.commit().map_err(|_| ())
 }
 
 fn parse_ranking_day(value: &str) -> Result<Date, ()> {
@@ -260,7 +370,7 @@ fn parse_pricing_manifest(source: &str) -> Result<PricingManifest, ()> {
     if models.is_empty() {
         return Err(());
     }
-    let fingerprint = pricing_manifest_fingerprint(&models);
+    let fingerprint = pricing_manifest_fingerprint(&raw.basis, &models);
     Ok(PricingManifest {
         basis: raw.basis,
         fingerprint,
@@ -268,7 +378,7 @@ fn parse_pricing_manifest(source: &str) -> Result<PricingManifest, ()> {
     })
 }
 
-fn pricing_manifest_fingerprint(models: &[PricedModel]) -> String {
+fn pricing_manifest_fingerprint(basis: &str, models: &[PricedModel]) -> String {
     let mut model_parts = models
         .iter()
         .map(|model| {
@@ -302,7 +412,7 @@ fn pricing_manifest_fingerprint(models: &[PricedModel]) -> String {
         })
         .collect::<Vec<_>>();
     model_parts.sort();
-    let canonical = model_parts.join("||");
+    let canonical = format!("{basis}||{}", model_parts.join("||"));
     let hash = canonical
         .bytes()
         .fold(0xcbf29ce484222325_u64, |hash, byte| {
@@ -319,16 +429,62 @@ fn pricing_manifest() -> Option<&'static PricingManifest> {
         .ok()
 }
 
-fn catalog_entry(manifest: &PricingManifest, model: &str, day: Date) -> Option<PriceCatalogEntry> {
-    manifest
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PricingLookupFailure {
+    MissingApplicablePrice,
+    MissingCacheWritePrice,
+    UnknownModel,
+}
+
+fn pricing_catalog_entry(
+    manifest: &PricingManifest,
+    model: &str,
+    day: Date,
+) -> Result<PriceCatalogEntry, PricingLookupFailure> {
+    let model = manifest
         .models
         .iter()
-        .find(|entry| entry.names.iter().any(|name| name == model))?
+        .find(|entry| entry.names.iter().any(|name| name == model))
+        .ok_or(PricingLookupFailure::UnknownModel)?;
+    model
         .periods
         .iter()
         .copied()
         .find(|entry| entry.applies_to(day))
+        .ok_or(PricingLookupFailure::MissingApplicablePrice)
 }
+
+#[cfg(test)]
+fn catalog_entry(manifest: &PricingManifest, model: &str, day: Date) -> Option<PriceCatalogEntry> {
+    pricing_catalog_entry(manifest, model, day).ok()
+}
+
+#[cfg(debug_assertions)]
+fn debug_pricing_lookup_failure(model: &str, day: Date, failure: PricingLookupFailure) {
+    static REPORTED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+    let reason = if model == UNKNOWN_MODEL {
+        "model_not_observed"
+    } else {
+        match failure {
+            PricingLookupFailure::MissingApplicablePrice => "missing_applicable_price",
+            PricingLookupFailure::MissingCacheWritePrice => "missing_cache_write_price",
+            PricingLookupFailure::UnknownModel => "unknown_model",
+        }
+    };
+    let key = format!("{reason}:{model}");
+    let mut reported = REPORTED
+        .get_or_init(|| Mutex::new(BTreeSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if reported.insert(key) {
+        eprintln!(
+            "[TouchGrassBar][codex-usage] pricing_unavailable reason={reason} model={model} day={day}"
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_pricing_lookup_failure(_model: &str, _day: Date, _failure: PricingLookupFailure) {}
 
 #[cfg(test)]
 fn price_usage(model: &str, day: Date, usage: TokenUsage) -> Option<f64> {
@@ -352,7 +508,13 @@ fn price_usage_tier_with_manifest(
     usage: TokenUsage,
     pricing_input_tokens: u64,
 ) -> Option<f64> {
-    let entry = catalog_entry(manifest, model, day)?;
+    let entry = match pricing_catalog_entry(manifest, model, day) {
+        Ok(entry) => entry,
+        Err(failure) => {
+            debug_pricing_lookup_failure(model, day, failure);
+            return None;
+        }
+    };
     let billable = usage.billable().ok()?;
     let long_context = pricing_input_tokens > entry.long_context_input_tokens_above;
     let input_multiplier = if long_context {
@@ -369,10 +531,11 @@ fn price_usage_tier_with_manifest(
     let cache_write = if billable.cache_write_input == 0 {
         0.0
     } else {
-        per_million(
-            billable.cache_write_input,
-            entry.cache_write_usd_per_million?,
-        )
+        let Some(rate) = entry.cache_write_usd_per_million else {
+            debug_pricing_lookup_failure(model, day, PricingLookupFailure::MissingCacheWritePrice);
+            return None;
+        };
+        per_million(billable.cache_write_input, rate)
     };
     let cost = input_multiplier
         * (per_million(billable.standard_input, entry.input_usd_per_million)
@@ -382,29 +545,34 @@ fn price_usage_tier_with_manifest(
     cost.is_finite().then_some(cost)
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct LocalUsageDay {
-    observed_tokens: u64,
-    api_equivalent_cost_usd: Option<f64>,
-    complete: bool,
-    observed_through: Option<OffsetDateTime>,
-}
-
-impl Default for LocalUsageDay {
-    fn default() -> Self {
-        Self {
-            observed_tokens: 0,
-            api_equivalent_cost_usd: Some(0.0),
-            complete: true,
-            observed_through: None,
-        }
-    }
-}
+type LocalUsageDay = DailyCostEvidence;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LocalUsageObservation {
     daily: BTreeMap<Date, LocalUsageDay>,
     scan_status: UsageScanStatus,
+    latest_pending_modified_at: Option<OffsetDateTime>,
+    latest_error_modified_at: Option<OffsetDateTime>,
+    scan_scope_known: bool,
+}
+
+fn period_scan_status(
+    scan_status: UsageScanStatus,
+    latest_pending_modified_at: Option<OffsetDateTime>,
+    latest_error_modified_at: Option<OffsetDateTime>,
+    period_start: OffsetDateTime,
+    scan_scope_known: bool,
+) -> UsageScanStatus {
+    if !scan_scope_known {
+        return scan_status;
+    }
+    if latest_pending_modified_at.is_some_and(|modified_at| modified_at >= period_start) {
+        return UsageScanStatus::Indexing;
+    }
+    if latest_error_modified_at.is_some_and(|modified_at| modified_at >= period_start) {
+        return UsageScanStatus::Unavailable;
+    }
+    UsageScanStatus::Complete
 }
 
 impl Default for LocalUsageObservation {
@@ -412,7 +580,23 @@ impl Default for LocalUsageObservation {
         Self {
             daily: BTreeMap::new(),
             scan_status: UsageScanStatus::Unavailable,
+            latest_pending_modified_at: None,
+            latest_error_modified_at: None,
+            scan_scope_known: false,
         }
+    }
+}
+
+impl LocalUsageObservation {
+    fn period_scan_status(&self, today: Date, length: i64) -> UsageScanStatus {
+        let period_start = (today - Duration::days(length - 1)).midnight().assume_utc();
+        period_scan_status(
+            self.scan_status,
+            self.latest_pending_modified_at,
+            self.latest_error_modified_at,
+            period_start,
+            self.scan_scope_known,
+        )
     }
 }
 
@@ -482,14 +666,74 @@ struct RawSessionMeta {
     cli_version: String,
     #[serde(default)]
     forked_from_id: Option<String>,
+    #[serde(default)]
+    thread_source: Option<RawThreadSource>,
+    #[serde(default)]
+    source: Option<RawThreadSource>,
+    #[serde(default)]
+    subagent_history_start_ordinal: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawThreadSource {
+    Name(String),
+    Details(RawThreadSourceDetails),
+    Other(IgnoredAny),
+}
+
+#[derive(Deserialize)]
+struct RawThreadSourceDetails {
+    #[serde(default)]
+    subagent: Option<IgnoredAny>,
+}
+
+impl RawThreadSource {
+    fn is_subagent(&self) -> bool {
+        match self {
+            Self::Name(name) => name == "subagent",
+            Self::Details(details) => details.subagent.is_some(),
+            Self::Other(value) => {
+                let _ = value;
+                false
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 struct RolloutScanState {
     active_model: Option<String>,
     baseline_is_inherited: Option<bool>,
+    history_start_ordinal: Option<u64>,
+    record_ordinal: u64,
+    exclude_usage: bool,
     previous: Option<TokenUsage>,
     schema_supported: bool,
+}
+
+fn apply_session_metadata(
+    state: &mut RolloutScanState,
+    metadata: RawSessionMeta,
+) -> Result<(), ()> {
+    state.schema_supported = is_supported_cli_version(&metadata.cli_version);
+    if state.baseline_is_inherited.is_none() {
+        let is_subagent = metadata
+            .thread_source
+            .as_ref()
+            .into_iter()
+            .chain(metadata.source.as_ref())
+            .any(RawThreadSource::is_subagent);
+        let is_inherited = metadata.forked_from_id.is_some() || is_subagent;
+        state.baseline_is_inherited = Some(is_inherited);
+        state.history_start_ordinal = metadata.subagent_history_start_ordinal;
+        state.exclude_usage = is_inherited && state.history_start_ordinal.is_none();
+    }
+    // An unresolved inherited rollout is safe to exclude without reading its
+    // version-specific token records.
+    (state.schema_supported || state.exclude_usage)
+        .then_some(())
+        .ok_or(())
 }
 
 fn is_supported_cli_version(version: &str) -> bool {
@@ -501,7 +745,7 @@ fn is_supported_cli_version(version: &str) -> bool {
         return false;
     };
     let remainder = parts.collect::<Vec<_>>().join(".");
-    (130..=146).contains(&minor)
+    (130..=147).contains(&minor)
         && !remainder.is_empty()
         && remainder
             .bytes()
@@ -518,6 +762,17 @@ fn valid_model_name(model: &str) -> bool {
 
 fn parse_rollout_timestamp(timestamp: &str) -> Result<OffsetDateTime, ()> {
     OffsetDateTime::parse(timestamp, &Rfc3339).map_err(|_| ())
+}
+
+fn oversized_record_is_ignorable(prefix: &[u8]) -> bool {
+    const PREFIX_LIMIT: usize = 4 * 1024;
+    const IGNORED_TYPES: [&[u8]; 2] = [b"\"type\":\"compacted\"", b"\"type\":\"response_item\""];
+    let prefix = &prefix[..prefix.len().min(PREFIX_LIMIT)];
+    IGNORED_TYPES.iter().any(|record_type| {
+        prefix
+            .windows(record_type.len())
+            .any(|part| part == *record_type)
+    })
 }
 
 #[cfg(test)]
@@ -569,6 +824,8 @@ fn scan_rollout_reader(
         if line.is_empty() {
             continue;
         }
+        let record_ordinal = state.record_ordinal;
+        state.record_ordinal = state.record_ordinal.saturating_add(1);
         if line.len() > MAX_ROLLOUT_LINE_BYTES {
             complete = false;
             continue;
@@ -589,41 +846,44 @@ fn scan_rollout_reader(
             }
         };
         let day = utc_ranking_day(timestamp);
-        if day < cutoff {
-            continue;
-        }
+        let in_retention = day >= cutoff;
         match header.record_type.as_str() {
             "session_meta" => {
                 let Ok(line) = serde_json::from_slice::<RawSessionMetaLine>(&line) else {
-                    mark_incomplete(days, day);
+                    if in_retention {
+                        mark_incomplete(days, day);
+                    }
                     complete = false;
                     continue;
                 };
                 let _ = (line.timestamp, line.record_type);
-                let meta = line.payload;
-                state.schema_supported = is_supported_cli_version(&meta.cli_version);
-                state.baseline_is_inherited = Some(meta.forked_from_id.is_some());
-                if !state.schema_supported {
-                    mark_incomplete(days, day);
+                if apply_session_metadata(&mut state, line.payload).is_err() {
+                    if in_retention {
+                        mark_incomplete(days, day);
+                    }
                     complete = false;
                 }
             }
             "turn_context" => {
                 let Ok(line) = serde_json::from_slice::<RawTurnContextLine>(&line) else {
-                    mark_incomplete(days, day);
+                    if in_retention {
+                        mark_incomplete(days, day);
+                    }
                     complete = false;
                     continue;
                 };
                 let _ = (line.timestamp, line.record_type);
                 let context = line.payload;
                 state.active_model = valid_model_name(&context.model).then_some(context.model);
-                if state.active_model.is_none() {
+                if in_retention && state.active_model.is_none() {
                     mark_incomplete(days, day);
                 }
             }
             "event_msg" => {
                 let Ok(line) = serde_json::from_slice::<RawEventLine>(&line) else {
-                    mark_incomplete(days, day);
+                    if in_retention {
+                        mark_incomplete(days, day);
+                    }
                     complete = false;
                     continue;
                 };
@@ -637,7 +897,9 @@ fn scan_rollout_reader(
                     rate_limits,
                 );
                 if !state.schema_supported {
-                    mark_incomplete(days, day);
+                    if in_retention {
+                        mark_incomplete(days, day);
+                    }
                     complete = false;
                     continue;
                 }
@@ -653,11 +915,21 @@ fn scan_rollout_reader(
                     }
                     None => {
                         state.previous = Some(current);
-                        mark_incomplete(days, day);
+                        if in_retention {
+                            mark_incomplete(days, day);
+                        }
                         continue;
                     }
                 };
                 state.previous = Some(current);
+                if !in_retention
+                    || state.exclude_usage
+                    || state
+                        .history_start_ordinal
+                        .is_some_and(|history_start| record_ordinal < history_start)
+                {
+                    continue;
+                }
                 match delta.and_then(|delta| {
                     add_delta(days, timestamp, state.active_model.as_deref(), delta)
                 }) {
@@ -709,9 +981,31 @@ struct FileCursor {
     size: u64,
     modified_ns: i64,
     parsed_offset: u64,
+    parsed_prefix_anchor: Option<String>,
     completion_state: String,
     parser_version: i64,
     parser_state: RolloutScanState,
+}
+
+#[derive(Clone, Debug)]
+struct StoredFileSummary {
+    identity: String,
+    size: u64,
+    modified_ns: i64,
+    parsed_offset: u64,
+    completion_state: String,
+    parser_version: i64,
+}
+
+impl StoredFileSummary {
+    fn needs_work(&self, identity: &str, size: u64, modified_ns: i64) -> bool {
+        self.parser_version != ROLLOUT_PARSER_VERSION
+            || self.identity != identity
+            || self.size != size
+            || self.modified_ns != modified_ns
+            || self.parsed_offset != size
+            || !matches!(self.completion_state.as_str(), "complete" | "error")
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -726,6 +1020,16 @@ struct ModelDayDelta {
     usage: TokenUsage,
     complete: bool,
     observed_through: OffsetDateTime,
+}
+
+#[derive(Clone, Debug)]
+struct FileDayDelta {
+    observed_tokens: u64,
+    priced_tokens: u64,
+    cost_usd: f64,
+    complete: bool,
+    observed_through: OffsetDateTime,
+    priced_observed_through: Option<OffsetDateTime>,
 }
 
 fn checked_add_usage(current: TokenUsage, delta: TokenUsage) -> Result<TokenUsage, ()> {
@@ -797,55 +1101,73 @@ fn mark_model_day_incomplete(
 fn process_index_line(
     line: &[u8],
     cutoff: Date,
+    record_ordinal: u64,
     state: &mut RolloutScanState,
     rows: &mut BTreeMap<ModelDayKey, ModelDayDelta>,
 ) -> bool {
     if line.len() > MAX_ROLLOUT_LINE_BYTES {
+        debug_parser_failure("line_too_large", None);
         return false;
     }
     let header: RawRolloutHeader = match serde_json::from_slice(line) {
         Ok(header) => header,
-        Err(_) => return false,
+        Err(_) => {
+            debug_parser_failure("header_schema", None);
+            return false;
+        }
     };
     let timestamp = match parse_rollout_timestamp(&header.timestamp) {
         Ok(timestamp) => timestamp,
-        Err(_) => return false,
+        Err(_) => {
+            debug_parser_failure("timestamp", None);
+            return false;
+        }
     };
     let _ = header.payload;
-    if utc_ranking_day(timestamp) < cutoff {
-        return true;
-    }
+    let day = utc_ranking_day(timestamp);
+    let in_retention = day >= cutoff;
     match header.record_type.as_str() {
         "session_meta" => {
             let Ok(line) = serde_json::from_slice::<RawSessionMetaLine>(line) else {
-                mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                if in_retention {
+                    mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                }
+                debug_parser_failure("session_meta_schema", in_retention.then_some(day));
                 return false;
             };
             let _ = (line.timestamp, line.record_type);
-            state.schema_supported = is_supported_cli_version(&line.payload.cli_version);
-            state.baseline_is_inherited = Some(line.payload.forked_from_id.is_some());
-            if !state.schema_supported {
-                mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+            if apply_session_metadata(state, line.payload).is_err() {
+                if in_retention {
+                    mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                }
+                debug_parser_failure("session_metadata", in_retention.then_some(day));
             }
-            state.schema_supported
+            state.schema_supported || state.exclude_usage
         }
         "turn_context" => {
             let Ok(line) = serde_json::from_slice::<RawTurnContextLine>(line) else {
-                mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                if in_retention {
+                    mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                }
+                debug_parser_failure("turn_context_schema", in_retention.then_some(day));
                 return false;
             };
             let _ = (line.timestamp, line.record_type);
             state.active_model =
                 valid_model_name(&line.payload.model).then_some(line.payload.model);
-            if state.active_model.is_none() {
+            if in_retention && state.active_model.is_none() {
                 mark_model_day_incomplete(rows, timestamp, None);
+                debug_parser_failure("model_name", Some(day));
                 return false;
             }
             true
         }
         "event_msg" => {
             let Ok(line) = serde_json::from_slice::<RawEventLine>(line) else {
-                mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                if in_retention {
+                    mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                }
+                debug_parser_failure("event_schema", in_retention.then_some(day));
                 return false;
             };
             let _ = (line.timestamp, line.record_type);
@@ -858,7 +1180,10 @@ fn process_index_line(
                 rate_limits,
             );
             if !state.schema_supported {
-                mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                if in_retention {
+                    mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                }
+                debug_parser_failure("schema_not_initialized", in_retention.then_some(day));
                 return false;
             }
             let current = info.total_token_usage;
@@ -873,17 +1198,29 @@ fn process_index_line(
                 }
                 None => {
                     state.previous = Some(current);
-                    mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                    if in_retention {
+                        mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                    }
+                    debug_parser_failure("baseline", in_retention.then_some(day));
                     return false;
                 }
             };
             state.previous = Some(current);
+            if !in_retention
+                || state.exclude_usage
+                || state
+                    .history_start_ordinal
+                    .is_some_and(|history_start| record_ordinal < history_start)
+            {
+                return true;
+            }
             match delta.and_then(|delta| {
                 add_model_day_delta(rows, timestamp, state.active_model.as_deref(), delta)
             }) {
                 Ok(()) => true,
                 Err(()) => {
                     mark_model_day_incomplete(rows, timestamp, state.active_model.as_deref());
+                    debug_parser_failure("token_arithmetic", Some(day));
                     false
                 }
             }
@@ -900,16 +1237,28 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
                key TEXT PRIMARY KEY NOT NULL,
                value TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS codex_account_usage_meta (
+               singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+               observed_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS codex_account_usage_days (
+               day TEXT PRIMARY KEY NOT NULL,
+               tokens INTEGER NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS codex_usage_files (
                path TEXT PRIMARY KEY NOT NULL,
                file_identity TEXT NOT NULL,
                size_bytes INTEGER NOT NULL,
                modified_ns INTEGER NOT NULL,
                parsed_offset INTEGER NOT NULL,
+               parsed_prefix_anchor TEXT,
                parser_version INTEGER NOT NULL,
                completion_state TEXT NOT NULL,
                active_model TEXT,
                baseline_is_inherited INTEGER,
+               history_start_ordinal INTEGER,
+               record_ordinal INTEGER NOT NULL DEFAULT 0,
+               usage_excluded INTEGER NOT NULL DEFAULT 0,
                schema_supported INTEGER NOT NULL,
                previous_input INTEGER,
                previous_cached_input INTEGER,
@@ -936,9 +1285,67 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
                observed_through TEXT NOT NULL,
                PRIMARY KEY (path, day, model, pricing_input_tokens),
                FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS codex_usage_file_days (
+               path TEXT NOT NULL,
+               day TEXT NOT NULL,
+               observed_tokens INTEGER NOT NULL,
+               priced_tokens INTEGER NOT NULL,
+               cost_usd REAL NOT NULL,
+               complete INTEGER NOT NULL,
+               observed_through TEXT NOT NULL,
+               priced_observed_through TEXT,
+               pricing_fingerprint TEXT,
+               PRIMARY KEY (path, day),
+               FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
              );",
         )
         .map_err(|_| ())?;
+    let file_columns = connection
+        .prepare("PRAGMA table_info(codex_usage_files)")
+        .map_err(|_| ())?
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| ())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())?;
+    if !file_columns
+        .iter()
+        .any(|column| column == "history_start_ordinal")
+    {
+        connection
+            .execute(
+                "ALTER TABLE codex_usage_files ADD COLUMN history_start_ordinal INTEGER",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
+    if !file_columns.iter().any(|column| column == "record_ordinal") {
+        connection
+            .execute(
+                "ALTER TABLE codex_usage_files ADD COLUMN record_ordinal INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
+    if !file_columns.iter().any(|column| column == "usage_excluded") {
+        connection
+            .execute(
+                "ALTER TABLE codex_usage_files ADD COLUMN usage_excluded INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
+    if !file_columns
+        .iter()
+        .any(|column| column == "parsed_prefix_anchor")
+    {
+        connection
+            .execute(
+                "ALTER TABLE codex_usage_files ADD COLUMN parsed_prefix_anchor TEXT",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
     let has_pricing_fingerprint = connection
         .prepare("PRAGMA table_info(codex_usage_file_model_days)")
         .map_err(|_| ())?
@@ -957,6 +1364,21 @@ fn ensure_index_schema(connection: &Connection) -> Result<(), ()> {
             )
             .map_err(|_| ())?;
     }
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS codex_usage_model_days_by_day
+             ON codex_usage_file_model_days(day)",
+            [],
+        )
+        .map_err(|_| ())?;
+    connection
+        .execute(
+            "CREATE INDEX IF NOT EXISTS codex_usage_unpriced_model_days
+             ON codex_usage_file_model_days(day, model, cache_write_input_tokens)
+             WHERE cost_usd IS NULL",
+            [],
+        )
+        .map_err(|_| ())?;
     Ok(())
 }
 
@@ -985,11 +1407,121 @@ fn reprice_index_with_manifest(
     Ok(())
 }
 
+fn rebuild_file_day_summary(
+    connection: &Connection,
+    path: &str,
+    day: Date,
+    manifest: &PricingManifest,
+) -> Result<(), ()> {
+    connection
+        .execute(
+            "DELETE FROM codex_usage_file_days WHERE path = ?1 AND day = ?2",
+            params![path, day.to_string()],
+        )
+        .map_err(|_| ())?;
+    connection
+        .execute(
+            "INSERT INTO codex_usage_file_days(
+               path, day, observed_tokens, priced_tokens, cost_usd, complete,
+               observed_through, priced_observed_through, pricing_fingerprint
+             )
+             SELECT path, day, SUM(observed_tokens),
+                    SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?3
+                             THEN observed_tokens ELSE 0 END),
+                    SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?3
+                             THEN cost_usd ELSE 0.0 END),
+                    MIN(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?3
+                             THEN 1 ELSE 0 END),
+                    MAX(observed_through),
+                    MAX(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?3
+                             THEN observed_through END),
+                    ?3
+             FROM codex_usage_file_model_days
+             WHERE path = ?1 AND day = ?2
+             GROUP BY path, day",
+            params![path, day.to_string(), manifest.fingerprint.as_str()],
+        )
+        .map_err(|_| ())?;
+    Ok(())
+}
+
+fn ensure_file_day_summaries(
+    connection: &Connection,
+    manifest: &PricingManifest,
+) -> Result<(), ()> {
+    const SUMMARY_VERSION: &str = "1";
+    let current_version = connection
+        .query_row(
+            "SELECT value FROM codex_usage_index_meta WHERE key = 'file_day_summary_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| ())?;
+    if current_version.as_deref() == Some(SUMMARY_VERSION) {
+        return Ok(());
+    }
+    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    transaction
+        .execute("DELETE FROM codex_usage_file_days", [])
+        .map_err(|_| ())?;
+    transaction
+        .execute(
+            "INSERT INTO codex_usage_file_days(
+               path, day, observed_tokens, priced_tokens, cost_usd, complete,
+               observed_through, priced_observed_through, pricing_fingerprint
+             )
+             SELECT path, day, SUM(observed_tokens),
+                    SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?1
+                             THEN observed_tokens ELSE 0 END),
+                    SUM(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?1
+                             THEN cost_usd ELSE 0.0 END),
+                    MIN(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?1
+                             THEN 1 ELSE 0 END),
+                    MAX(observed_through),
+                    MAX(CASE WHEN complete = 1 AND cost_usd IS NOT NULL
+                                  AND pricing_fingerprint = ?1
+                             THEN observed_through END),
+                    ?1
+             FROM codex_usage_file_model_days GROUP BY path, day",
+            [manifest.fingerprint.as_str()],
+        )
+        .map_err(|_| ())?;
+    transaction
+        .execute(
+            "INSERT INTO codex_usage_index_meta(key, value)
+             VALUES('file_day_summary_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [SUMMARY_VERSION],
+        )
+        .map_err(|_| ())?;
+    transaction.commit().map_err(|_| ())
+}
+
 fn reprice_index_batch_with_manifest(
     connection: &Connection,
     manifest: &PricingManifest,
     max_rows: usize,
 ) -> Result<bool, ()> {
+    let completed_fingerprint = connection
+        .query_row(
+            "SELECT value FROM codex_usage_index_meta
+             WHERE key = 'pricing_complete_fingerprint'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| ())?;
+    if completed_fingerprint.as_deref() == Some(manifest.fingerprint.as_str()) {
+        return Ok(true);
+    }
     let mut statement = connection
         .prepare(
             "SELECT path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
@@ -1034,8 +1566,10 @@ fn reprice_index_batch_with_manifest(
     drop(statement);
     let batch_complete = rows.len() < max_rows;
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let mut affected_file_days = BTreeSet::new();
     for (path, day, model, pricing_input_tokens, usage) in rows {
         let day = parse_ranking_day(&day)?;
+        affected_file_days.insert((path.clone(), day));
         let cost =
             price_usage_tier_with_manifest(manifest, &model, day, usage, pricing_input_tokens);
         transaction
@@ -1047,13 +1581,16 @@ fn reprice_index_batch_with_manifest(
                     cost,
                     manifest.basis.as_str(),
                     manifest.fingerprint.as_str(),
-                    path,
+                    path.as_str(),
                     day.to_string(),
-                    model,
+                    model.as_str(),
                     to_i64(pricing_input_tokens)?
                 ],
             )
             .map_err(|_| ())?;
+    }
+    for (path, day) in affected_file_days {
+        rebuild_file_day_summary(&transaction, &path, day, manifest)?;
     }
     transaction
         .execute(
@@ -1070,14 +1607,28 @@ fn reprice_index_batch_with_manifest(
             [manifest.fingerprint.as_str()],
         )
         .map_err(|_| ())?;
+    if batch_complete {
+        transaction
+            .execute(
+                "INSERT INTO codex_usage_index_meta(key, value)
+                 VALUES('pricing_complete_fingerprint', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [manifest.fingerprint.as_str()],
+            )
+            .map_err(|_| ())?;
+    }
     transaction.commit().map_err(|_| ())?;
     Ok(batch_complete)
 }
 
 fn prune_expired_model_days(connection: &Connection, cutoff: Date) -> Result<bool, ()> {
-    let cutoff_modified_ns =
-        i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).map_err(|_| ())?;
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    transaction
+        .execute(
+            "DELETE FROM codex_usage_file_days WHERE day < ?1",
+            [cutoff.to_string()],
+        )
+        .map_err(|_| ())?;
     transaction
         .execute(
             "DELETE FROM codex_usage_file_model_days
@@ -1091,27 +1642,60 @@ fn prune_expired_model_days(connection: &Connection, cutoff: Date) -> Result<boo
         )
         .map_err(|_| ())?;
     let model_days_complete = transaction.changes() < PRUNE_ROWS_PER_PASS as u64;
-    transaction
-        .execute(
-            "DELETE FROM codex_usage_files
-             WHERE rowid IN (
-               SELECT f.rowid FROM codex_usage_files f
-               WHERE f.modified_ns < ?1
-                 AND NOT EXISTS (
-                   SELECT 1 FROM codex_usage_file_model_days d WHERE d.path = f.path
-                 )
-               LIMIT ?2
-             )",
-            params![
-                cutoff_modified_ns,
-                i64::try_from(PRUNE_ROWS_PER_PASS).map_err(|_| ())?
-            ],
-        )
-        .map_err(|_| ())?;
-    let files_complete = transaction.changes() < PRUNE_ROWS_PER_PASS as u64;
     transaction.commit().map_err(|_| ())?;
-    Ok(model_days_complete && files_complete)
+    Ok(model_days_complete)
 }
+
+#[cfg(debug_assertions)]
+fn debug_unpriced_model_days(connection: &Connection, cutoff: Date, today: Date) {
+    static SCANNED: OnceLock<()> = OnceLock::new();
+    if SCANNED.set(()).is_err() {
+        return;
+    }
+    let Some(manifest) = pricing_manifest() else {
+        return;
+    };
+    let Ok(mut statement) = connection.prepare(
+        "SELECT DISTINCT model, day, cache_write_input_tokens > 0
+         FROM codex_usage_file_model_days
+         WHERE day >= ?1 AND day <= ?2 AND cost_usd IS NULL
+         LIMIT 256",
+    ) else {
+        return;
+    };
+    let Ok(rows) = statement.query_map(params![cutoff.to_string(), today.to_string()], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, bool>(2)?,
+        ))
+    }) else {
+        return;
+    };
+    for row in rows.flatten() {
+        let (model, day, has_cache_write) = row;
+        let Ok(day) = parse_ranking_day(&day) else {
+            continue;
+        };
+        if model == UNKNOWN_MODEL {
+            continue;
+        }
+        match pricing_catalog_entry(manifest, &model, day) {
+            Err(failure) => debug_pricing_lookup_failure(&model, day, failure),
+            Ok(entry) if has_cache_write && entry.cache_write_usd_per_million.is_none() => {
+                debug_pricing_lookup_failure(
+                    &model,
+                    day,
+                    PricingLookupFailure::MissingCacheWritePrice,
+                );
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_unpriced_model_days(_connection: &Connection, _cutoff: Date, _today: Date) {}
 
 fn file_modified_ns(metadata: &fs::Metadata) -> Result<i64, ()> {
     let duration = metadata
@@ -1133,30 +1717,93 @@ fn file_identity(metadata: &fs::Metadata) -> String {
     format!("{}", metadata.len())
 }
 
+fn parsed_prefix_anchor(path: &Path, parsed_offset: u64) -> Result<Option<String>, ()> {
+    if parsed_offset == 0 {
+        return Ok(None);
+    }
+    let sample_length = PREFIX_ANCHOR_SAMPLE_BYTES.min(parsed_offset);
+    let mut starts = BTreeSet::from([
+        0,
+        parsed_offset / 4,
+        parsed_offset / 2,
+        parsed_offset.saturating_mul(3) / 4,
+        parsed_offset.saturating_sub(sample_length),
+    ]);
+    starts = starts
+        .into_iter()
+        .map(|start| start.min(parsed_offset.saturating_sub(sample_length)))
+        .collect();
+    let mut file = fs::File::open(path).map_err(|_| ())?;
+    let mut hash = 0xcbf29ce484222325_u64;
+    for start in starts {
+        file.seek(SeekFrom::Start(start)).map_err(|_| ())?;
+        let length = sample_length.min(parsed_offset.saturating_sub(start));
+        let mut sample = vec![0; usize::try_from(length).map_err(|_| ())?];
+        file.read_exact(&mut sample).map_err(|_| ())?;
+        for byte in start
+            .to_le_bytes()
+            .into_iter()
+            .chain(length.to_le_bytes())
+            .chain(sample)
+        {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+    Ok(Some(format!("fnv1a64:{hash:016x}:{parsed_offset}")))
+}
+
+fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, StoredFileSummary>, ()> {
+    connection
+        .prepare(
+            "SELECT path, file_identity, size_bytes, modified_ns, parsed_offset,
+                    completion_state, parser_version
+             FROM codex_usage_files",
+        )
+        .map_err(|_| ())?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                StoredFileSummary {
+                    identity: row.get(1)?,
+                    size: from_i64(row.get(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    modified_ns: row.get(3)?,
+                    parsed_offset: from_i64(row.get(4)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    completion_state: row.get(5)?,
+                    parser_version: row.get(6)?,
+                },
+            ))
+        })
+        .map_err(|_| ())?
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(|_| ())
+}
+
 fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCursor>, ()> {
     connection
         .query_row(
             "SELECT file_identity, size_bytes, modified_ns, parsed_offset, completion_state,
-                    active_model, baseline_is_inherited, schema_supported,
-                    parser_version,
+                    active_model, baseline_is_inherited, history_start_ordinal,
+                    record_ordinal, usage_excluded, schema_supported, parser_version,
                     previous_input, previous_cached_input, previous_cache_write_input,
-                    previous_output, previous_reasoning_output, previous_total
+                    previous_output, previous_reasoning_output, previous_total,
+                    parsed_prefix_anchor
              FROM codex_usage_files WHERE path = ?1",
             [path],
             |row| {
-                let previous_total = row.get::<_, Option<i64>>(14)?;
+                let previous_total = row.get::<_, Option<i64>>(17)?;
                 let previous = previous_total
                     .map(|total| {
                         Ok::<TokenUsage, rusqlite::Error>(TokenUsage {
-                            input: from_i64(row.get(9)?)
+                            input: from_i64(row.get(12)?)
                                 .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                            cached_input: from_i64(row.get(10)?)
+                            cached_input: from_i64(row.get(13)?)
                                 .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                            cache_write_input: from_i64(row.get(11)?)
+                            cache_write_input: from_i64(row.get(14)?)
                                 .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                            output: from_i64(row.get(12)?)
+                            output: from_i64(row.get(15)?)
                                 .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                            reasoning_output: from_i64(row.get(13)?)
+                            reasoning_output: from_i64(row.get(16)?)
                                 .map_err(|_| rusqlite::Error::InvalidQuery)?,
                             total: from_i64(total).map_err(|_| rusqlite::Error::InvalidQuery)?,
                         })
@@ -1171,12 +1818,21 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                     modified_ns: row.get(2)?,
                     parsed_offset: from_i64(row.get(3)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    parsed_prefix_anchor: row.get(18)?,
                     completion_state: row.get(4)?,
-                    parser_version: row.get(8)?,
+                    parser_version: row.get(11)?,
                     parser_state: RolloutScanState {
                         active_model: row.get(5)?,
                         baseline_is_inherited: row.get::<_, Option<bool>>(6)?,
-                        schema_supported: row.get(7)?,
+                        history_start_ordinal: row
+                            .get::<_, Option<i64>>(7)?
+                            .map(from_i64)
+                            .transpose()
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        record_ordinal: from_i64(row.get(8)?)
+                            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        exclude_usage: row.get(9)?,
+                        schema_supported: row.get(10)?,
                         previous,
                     },
                 })
@@ -1205,22 +1861,28 @@ fn commit_file_progress(
         .execute(
             "INSERT INTO codex_usage_files(
                path, file_identity, size_bytes, modified_ns, parsed_offset, parser_version,
-               completion_state, active_model, baseline_is_inherited, schema_supported,
+               completion_state, active_model, baseline_is_inherited, history_start_ordinal,
+               record_ordinal, usage_excluded, schema_supported,
                previous_input, previous_cached_input, previous_cache_write_input,
-               previous_output, previous_reasoning_output, previous_total
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+               previous_output, previous_reasoning_output, previous_total,
+               parsed_prefix_anchor
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
              ON CONFLICT(path) DO UPDATE SET
                file_identity=excluded.file_identity, size_bytes=excluded.size_bytes,
                modified_ns=excluded.modified_ns, parsed_offset=excluded.parsed_offset,
                parser_version=excluded.parser_version, completion_state=excluded.completion_state,
                active_model=excluded.active_model,
                baseline_is_inherited=excluded.baseline_is_inherited,
+               history_start_ordinal=excluded.history_start_ordinal,
+               record_ordinal=excluded.record_ordinal,
+               usage_excluded=excluded.usage_excluded,
                schema_supported=excluded.schema_supported, previous_input=excluded.previous_input,
                previous_cached_input=excluded.previous_cached_input,
                previous_cache_write_input=excluded.previous_cache_write_input,
                previous_output=excluded.previous_output,
                previous_reasoning_output=excluded.previous_reasoning_output,
-               previous_total=excluded.previous_total",
+               previous_total=excluded.previous_total,
+               parsed_prefix_anchor=excluded.parsed_prefix_anchor",
             params![
                 path,
                 cursor.identity,
@@ -1231,6 +1893,14 @@ fn commit_file_progress(
                 cursor.completion_state,
                 cursor.parser_state.active_model,
                 cursor.parser_state.baseline_is_inherited,
+                cursor
+                    .parser_state
+                    .history_start_ordinal
+                    .map(to_i64)
+                    .transpose()
+                    ?,
+                to_i64(cursor.parser_state.record_ordinal)?,
+                cursor.parser_state.exclude_usage,
                 cursor.parser_state.schema_supported,
                 cursor
                     .parser_state
@@ -1262,9 +1932,11 @@ fn commit_file_progress(
                     .previous
                     .map(|usage| to_i64(usage.total))
                     .transpose()?,
+                cursor.parsed_prefix_anchor,
             ],
         )
         .map_err(|_| ())?;
+    let mut file_days = BTreeMap::<Date, FileDayDelta>::new();
     for (key, delta) in rows {
         let cost = manifest.and_then(|manifest| {
             price_usage_tier_with_manifest(
@@ -1275,6 +1947,37 @@ fn commit_file_progress(
                 key.pricing_input_tokens,
             )
         });
+        let file_day = file_days.entry(key.day).or_insert(FileDayDelta {
+            observed_tokens: 0,
+            priced_tokens: 0,
+            cost_usd: 0.0,
+            complete: true,
+            observed_through: delta.observed_through,
+            priced_observed_through: None,
+        });
+        file_day.observed_tokens = file_day
+            .observed_tokens
+            .checked_add(delta.usage.total)
+            .ok_or(())?;
+        file_day.observed_through = file_day.observed_through.max(delta.observed_through);
+        if delta.complete
+            && let Some(cost) = cost
+        {
+            file_day.priced_tokens = file_day
+                .priced_tokens
+                .checked_add(delta.usage.total)
+                .ok_or(())?;
+            file_day.cost_usd += cost;
+            file_day.priced_observed_through = Some(
+                file_day
+                    .priced_observed_through
+                    .map_or(delta.observed_through, |current| {
+                        current.max(delta.observed_through)
+                    }),
+            );
+        } else {
+            file_day.complete = false;
+        }
         transaction
             .execute(
                 "INSERT INTO codex_usage_file_model_days(
@@ -1315,6 +2018,43 @@ fn commit_file_progress(
             )
             .map_err(|_| ())?;
     }
+    for (day, delta) in file_days {
+        transaction
+            .execute(
+                "INSERT INTO codex_usage_file_days(
+                   path, day, observed_tokens, priced_tokens, cost_usd, complete,
+                   observed_through, priced_observed_through, pricing_fingerprint
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(path, day) DO UPDATE SET
+                   observed_tokens=observed_tokens + excluded.observed_tokens,
+                   priced_tokens=priced_tokens + excluded.priced_tokens,
+                   cost_usd=cost_usd + excluded.cost_usd,
+                   complete=complete AND excluded.complete,
+                   observed_through=MAX(observed_through, excluded.observed_through),
+                   priced_observed_through=CASE
+                     WHEN priced_observed_through IS NULL THEN excluded.priced_observed_through
+                     WHEN excluded.priced_observed_through IS NULL THEN priced_observed_through
+                     ELSE MAX(priced_observed_through, excluded.priced_observed_through)
+                   END,
+                   pricing_fingerprint=excluded.pricing_fingerprint",
+                params![
+                    path,
+                    day.to_string(),
+                    to_i64(delta.observed_tokens)?,
+                    to_i64(delta.priced_tokens)?,
+                    delta.cost_usd,
+                    delta.complete,
+                    delta.observed_through.format(&Rfc3339).map_err(|_| ())?,
+                    delta
+                        .priced_observed_through
+                        .map(|value| value.format(&Rfc3339))
+                        .transpose()
+                        .map_err(|_| ())?,
+                    manifest.map(|manifest| manifest.fingerprint.as_str()),
+                ],
+            )
+            .map_err(|_| ())?;
+    }
     transaction.commit().map_err(|_| ())
 }
 
@@ -1338,13 +2078,22 @@ fn index_file(
         return Ok(true);
     }
     let stored = load_file_cursor(connection, &path_value)?;
-    let rebuild = stored.as_ref().is_some_and(|cursor| {
+    let metadata_requires_rebuild = stored.as_ref().is_some_and(|cursor| {
         cursor.parser_version != ROLLOUT_PARSER_VERSION
             || cursor.identity != identity
             || size < cursor.size
             || size < cursor.parsed_offset
             || (size == cursor.size && modified_ns != cursor.modified_ns)
     });
+    let prefix_matches = if metadata_requires_rebuild {
+        true
+    } else if let Some(cursor) = &stored {
+        parsed_prefix_anchor(path, cursor.parsed_offset)?.as_deref()
+            == cursor.parsed_prefix_anchor.as_deref()
+    } else {
+        true
+    };
+    let rebuild = metadata_requires_rebuild || !prefix_matches;
     if rebuild {
         reset_file(connection, &path_value)?;
     }
@@ -1353,7 +2102,7 @@ fn index_file(
         && cursor.parsed_offset == size
         && cursor.size == size
         && cursor.modified_ns == modified_ns
-        && cursor.completion_state == "complete"
+        && matches!(cursor.completion_state.as_str(), "complete" | "error")
     {
         return Ok(true);
     }
@@ -1365,6 +2114,7 @@ fn index_file(
         size,
         modified_ns,
         parsed_offset: 0,
+        parsed_prefix_anchor: None,
         completion_state: "indexing".to_owned(),
         parser_version: ROLLOUT_PARSER_VERSION,
         parser_state: RolloutScanState::default(),
@@ -1381,6 +2131,10 @@ fn index_file(
         cursor.completion_state != "error" && cursor.completion_state != "discarding-overlong-line";
     let mut discarding_overlong_line = cursor.completion_state == "discarding-overlong-line";
     loop {
+        if cursor.parser_state.exclude_usage {
+            cursor.parsed_offset = size;
+            break;
+        }
         if *remaining_bytes == 0 || started.elapsed().as_millis() >= max_millis {
             break;
         }
@@ -1407,7 +2161,12 @@ fn index_file(
             let hit_line_limit =
                 read_limit == (MAX_ROLLOUT_LINE_BYTES as u64) + 1 && bytes == read_limit;
             if hit_line_limit {
-                parser_complete = false;
+                cursor.parser_state.record_ordinal =
+                    cursor.parser_state.record_ordinal.saturating_add(1);
+                if !oversized_record_is_ignorable(&line) {
+                    parser_complete = false;
+                    debug_parser_failure("line_too_large", None);
+                }
                 discarding_overlong_line = true;
                 *remaining_bytes -= bytes;
                 cursor.parsed_offset = cursor.parsed_offset.checked_add(bytes).ok_or(())?;
@@ -1422,8 +2181,16 @@ fn index_file(
             line.pop();
         }
         if !line.is_empty() {
-            parser_complete &=
-                process_index_line(&line, cutoff, &mut cursor.parser_state, &mut rows);
+            let record_ordinal = cursor.parser_state.record_ordinal;
+            cursor.parser_state.record_ordinal =
+                cursor.parser_state.record_ordinal.saturating_add(1);
+            parser_complete &= process_index_line(
+                &line,
+                cutoff,
+                record_ordinal,
+                &mut cursor.parser_state,
+                &mut rows,
+            );
         }
     }
     cursor.completion_state = if discarding_overlong_line && cursor.parsed_offset < size {
@@ -1434,6 +2201,7 @@ fn index_file(
         "indexing"
     }
     .to_owned();
+    cursor.parsed_prefix_anchor = parsed_prefix_anchor(path, cursor.parsed_offset)?;
     commit_file_progress(connection, &path_value, &cursor, rows)?;
     Ok(cursor.parsed_offset == size)
 }
@@ -1443,22 +2211,32 @@ fn read_indexed_usage(
     cutoff: Date,
     today: Date,
     scan_status: UsageScanStatus,
+    scan_scope_known: bool,
+    latest_pending_modified_hint: Option<OffsetDateTime>,
 ) -> Result<LocalUsageObservation, ()> {
+    let cutoff_modified_ns =
+        i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).map_err(|_| ())?;
     let mut statement = connection
         .prepare(
-            "SELECT d.day, SUM(d.observed_tokens), SUM(d.cost_usd),
+            "SELECT d.day, SUM(d.observed_tokens),
+                    SUM(CASE WHEN d.pricing_fingerprint = ?4
+                             THEN d.priced_tokens ELSE 0 END),
+                    SUM(CASE WHEN d.pricing_fingerprint = ?4
+                             THEN d.cost_usd ELSE 0.0 END),
                     MIN(CASE WHEN f.completion_state = 'complete'
-                                  AND d.complete = 1 AND d.cost_usd IS NOT NULL
+                                  AND d.complete = 1
                                   AND d.pricing_fingerprint = ?4
                              THEN 1 ELSE 0 END),
-                    MAX(d.observed_through)
-             FROM codex_usage_file_model_days d
+                    MAX(d.observed_through),
+                    MAX(CASE WHEN d.pricing_fingerprint = ?4
+                             THEN d.priced_observed_through END)
+             FROM codex_usage_file_days d
              JOIN codex_usage_files f ON f.path = d.path
              WHERE f.parser_version = ?1 AND d.day >= ?2 AND d.day <= ?3
              GROUP BY d.day ORDER BY d.day",
         )
         .map_err(|_| ())?;
-    let rows = statement
+    let mut rows = statement
         .query_map(
             params![
                 ROLLOUT_PARSER_VERSION,
@@ -1471,17 +2249,28 @@ fn read_indexed_usage(
                     .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 let observed_tokens =
                     from_i64(row.get(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
-                let cost = row.get::<_, Option<f64>>(2)?;
-                let complete = row.get::<_, bool>(3)?;
-                let observed_through = OffsetDateTime::parse(&row.get::<_, String>(4)?, &Rfc3339)
+                let priced_tokens =
+                    from_i64(row.get(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let cost = (priced_tokens > 0)
+                    .then(|| row.get::<_, f64>(3))
+                    .transpose()?;
+                let complete = row.get::<_, bool>(4)?;
+                let observed_through = OffsetDateTime::parse(&row.get::<_, String>(5)?, &Rfc3339)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let priced_observed_through = row
+                    .get::<_, Option<String>>(6)?
+                    .map(|value| OffsetDateTime::parse(&value, &Rfc3339))
+                    .transpose()
                     .map_err(|_| rusqlite::Error::InvalidQuery)?;
                 Ok((
                     day,
                     LocalUsageDay {
                         observed_tokens,
+                        priced_tokens,
                         api_equivalent_cost_usd: cost,
                         complete,
                         observed_through: Some(observed_through),
+                        priced_observed_through,
                     },
                 ))
             },
@@ -1489,9 +2278,44 @@ fn read_indexed_usage(
         .map_err(|_| ())?
         .collect::<Result<BTreeMap<_, _>, _>>()
         .map_err(|_| ())?;
+    let (latest_pending_modified_ns, latest_error_modified_ns, has_excluded_files) = connection
+        .query_row(
+            "SELECT
+               MAX(CASE WHEN completion_state NOT IN ('complete', 'error') THEN modified_ns END),
+               MAX(CASE WHEN completion_state = 'error' THEN modified_ns END),
+               COALESCE(MAX(usage_excluded), 0)
+             FROM codex_usage_files
+             WHERE modified_ns >= ?1",
+            [cutoff_modified_ns],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
+        )
+        .map_err(|_| ())?;
+    if has_excluded_files {
+        for detail in rows.values_mut() {
+            detail.complete = false;
+        }
+    }
+    let parse_modified_at = |value: Option<i64>| {
+        value
+            .map(|value| OffsetDateTime::from_unix_timestamp_nanos(i128::from(value)))
+            .transpose()
+            .map_err(|_| ())
+    };
     Ok(LocalUsageObservation {
         daily: rows,
         scan_status,
+        latest_pending_modified_at: parse_modified_at(latest_pending_modified_ns)?
+            .into_iter()
+            .chain(latest_pending_modified_hint)
+            .max(),
+        latest_error_modified_at: parse_modified_at(latest_error_modified_ns)?,
+        scan_scope_known,
     })
 }
 
@@ -1510,19 +2334,39 @@ fn index_local_usage_with_budget(
     budget: ScanBudget,
 ) -> Option<LocalUsageObservation> {
     let started = Instant::now();
+    let max_bytes = budget.max_bytes.min(MAX_ROLLOUT_SCAN_BYTES);
+    let max_file_bytes = budget.max_file_bytes.min(MAX_ROLLOUT_FILE_SCAN_BYTES);
+    let max_millis = budget.max_millis.min(MAX_ROLLOUT_SCAN_MILLIS);
+    debug_usage_event(&format!(
+        "scan_pass_started max_bytes={max_bytes} max_file_bytes={max_file_bytes} max_millis={max_millis}"
+    ));
     let connection = Connection::open(database_path).ok()?;
     ensure_index_schema(&connection).ok()?;
     let today = utc_ranking_day(now);
-    let cutoff = today - Duration::days(RETAINED_RANKING_DAYS - 1);
+    let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
     let retention_complete = prune_expired_model_days(&connection, cutoff).ok()?;
     let pricing_complete = reprice_index(&connection).ok()?;
-    if !retention_complete || !pricing_complete {
-        return read_indexed_usage(&connection, cutoff, today, UsageScanStatus::Indexing).ok();
+    let summaries_complete = pricing_complete
+        && pricing_manifest()
+            .is_some_and(|manifest| ensure_file_day_summaries(&connection, manifest).is_ok());
+    if !retention_complete || !pricing_complete || !summaries_complete {
+        debug_usage_event(&format!(
+            "scan_pass_completed stop=maintenance elapsed_ms={} retention_complete={retention_complete} pricing_complete={pricing_complete} summaries_complete={summaries_complete}",
+            started.elapsed().as_millis()
+        ));
+        return read_indexed_usage(
+            &connection,
+            cutoff,
+            today,
+            UsageScanStatus::Indexing,
+            false,
+            None,
+        )
+        .ok();
     }
     let mut files = Vec::new();
     let mut found_root = false;
     let mut traversal_complete = true;
-    let max_millis = budget.max_millis.min(MAX_ROLLOUT_SCAN_MILLIS);
     for directory in ["sessions", "archived_sessions"] {
         let root = home.join(directory);
         if !root.is_dir() {
@@ -1534,88 +2378,152 @@ fn index_local_usage_with_budget(
     if !found_root {
         return None;
     }
+    let cutoff_modified_ns =
+        i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).ok()?;
+    let stored_files = load_file_summaries(&connection).ok()?;
     let mut ordered_files = Vec::with_capacity(files.len());
     for path in files {
         if started.elapsed().as_millis() >= max_millis {
             traversal_complete = false;
             break;
         }
-        match fs::metadata(&path).and_then(|metadata| metadata.modified()) {
-            Ok(modified) => ordered_files.push((modified, path)),
-            Err(_) => traversal_complete = false,
+        let Ok(metadata) = fs::metadata(&path) else {
+            traversal_complete = false;
+            continue;
+        };
+        let Ok(modified_ns) = file_modified_ns(&metadata) else {
+            traversal_complete = false;
+            continue;
+        };
+        let identity = file_identity(&metadata);
+        let path_value = path.to_string_lossy().into_owned();
+        let needs_work = modified_ns >= cutoff_modified_ns
+            && stored_files
+                .get(&path_value)
+                .is_none_or(|stored| stored.needs_work(&identity, metadata.len(), modified_ns));
+        ordered_files.push((needs_work, identity, modified_ns, metadata.len(), path));
+    }
+    ordered_files.sort_by_key(|entry| (!entry.0, std::cmp::Reverse(entry.2)));
+    let present = ordered_files
+        .iter()
+        .map(|(_, _, _, _, path)| path.to_string_lossy().into_owned())
+        .collect::<BTreeSet<_>>();
+    if traversal_complete {
+        for missing in stored_files.keys().filter(|path| !present.contains(*path)) {
+            reset_file(&connection, missing).ok()?;
         }
     }
-    ordered_files.sort_by(|left, right| right.0.cmp(&left.0));
     let files = ordered_files
         .into_iter()
-        .map(|(_, path)| path)
+        .filter(|(needs_work, _, _, _, _)| *needs_work)
         .collect::<Vec<_>>();
-    let present = files
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect::<BTreeSet<_>>();
-    let stored_paths = connection
-        .prepare("SELECT path FROM codex_usage_files")
-        .ok()?
-        .query_map([], |row| row.get::<_, String>(0))
-        .ok()?
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    if traversal_complete {
-        for missing in stored_paths
-            .into_iter()
-            .filter(|path| !present.contains(path))
-        {
-            reset_file(&connection, &missing).ok()?;
-        }
-    }
-    let mut remaining_bytes = budget.max_bytes.min(MAX_ROLLOUT_SCAN_BYTES);
+    let mut remaining_bytes = max_bytes;
     let mut all_complete = traversal_complete;
     let mut failed = false;
-    for path in files {
+    let mut visited_files = 0_u64;
+    let mut completed_files = 0_u64;
+    for (_, _, _, _, path) in &files {
         if started.elapsed().as_millis() >= max_millis {
             all_complete = false;
             break;
         }
+        let file_allowance = remaining_bytes.min(max_file_bytes);
+        if file_allowance == 0 {
+            all_complete = false;
+            break;
+        }
+        let mut file_remaining_bytes = file_allowance;
+        visited_files = visited_files.saturating_add(1);
         match index_file(
             &connection,
-            &path,
+            path,
             cutoff,
             started,
             max_millis,
-            &mut remaining_bytes,
+            &mut file_remaining_bytes,
         ) {
-            Ok(complete) => all_complete &= complete,
+            Ok(complete) => {
+                all_complete &= complete;
+                completed_files = completed_files.saturating_add(u64::from(complete));
+            }
             Err(()) => {
                 failed = true;
                 all_complete = false;
             }
         }
+        remaining_bytes = remaining_bytes.saturating_sub(file_allowance - file_remaining_bytes);
         if remaining_bytes == 0 {
             all_complete = false;
             break;
         }
     }
-    let has_errors = connection
+    let (error_files, pending_files, excluded_files) = connection
         .query_row(
-            "SELECT EXISTS(
-               SELECT 1 FROM codex_usage_files
-               WHERE parser_version = ?1 AND completion_state = 'error'
-             )",
-            [ROLLOUT_PARSER_VERSION],
-            |row| row.get::<_, bool>(0),
+            "SELECT
+               COALESCE(SUM(CASE WHEN completion_state = 'error' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state NOT IN ('complete', 'error') THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN usage_excluded = 1 THEN 1 ELSE 0 END), 0)
+             FROM codex_usage_files WHERE parser_version = ?1 AND modified_ns >= ?2",
+            params![ROLLOUT_PARSER_VERSION, cutoff_modified_ns],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                ))
+            },
         )
-        .unwrap_or(true);
+        .unwrap_or((1, 1, 0));
     let scan_status = if failed {
         UsageScanStatus::Unavailable
     } else if !all_complete {
         UsageScanStatus::Indexing
-    } else if has_errors {
+    } else if error_files > 0 {
         UsageScanStatus::Unavailable
     } else {
         UsageScanStatus::Complete
     };
-    read_indexed_usage(&connection, cutoff, today, scan_status).ok()
+    let stop = if failed {
+        "error"
+    } else if scan_status == UsageScanStatus::Complete {
+        "complete"
+    } else if pending_files == 0 && error_files > 0 {
+        "parser_errors"
+    } else if started.elapsed().as_millis() >= max_millis {
+        "time"
+    } else if remaining_bytes == 0 {
+        "bytes"
+    } else {
+        "pending"
+    };
+    debug_usage_event(&format!(
+        "scan_pass_completed stop={stop} bytes_read={} elapsed_ms={} visited_files={visited_files} completed_files={completed_files} pending_files={pending_files} error_files={error_files} excluded_inherited_files={excluded_files} traversal_complete={traversal_complete}",
+        max_bytes.saturating_sub(remaining_bytes),
+        started.elapsed().as_millis()
+    ));
+    debug_unpriced_model_days(&connection, cutoff, today);
+    let indexed_files = load_file_summaries(&connection).ok()?;
+    let latest_pending_modified_at = files
+        .iter()
+        .filter(|(_, identity, modified_ns, size, path)| {
+            let path_value = path.to_string_lossy();
+            indexed_files
+                .get(path_value.as_ref())
+                .is_none_or(|stored| stored.needs_work(identity, *size, *modified_ns))
+        })
+        .filter_map(|(_, _, modified_ns, _, _)| {
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(*modified_ns)).ok()
+        })
+        .max();
+    read_indexed_usage(
+        &connection,
+        cutoff,
+        today,
+        scan_status,
+        traversal_complete && !failed,
+        latest_pending_modified_at,
+    )
+    .ok()
 }
 
 pub(crate) fn scan_local_usage(
@@ -1625,202 +2533,346 @@ pub(crate) fn scan_local_usage(
     index_local_usage_at(database_path?, &codex_data_home()?, now)
 }
 
-fn period_days(today: Date, length: i64, offset: i64) -> impl Iterator<Item = Date> {
-    (0..length).map(move |index| today - Duration::days(offset + index))
-}
-
-fn checked_sum<'a>(mut values: impl Iterator<Item = &'a u64>) -> Option<u64> {
-    values.try_fold(0_u64, |total, value| total.checked_add(*value))
-}
-
-fn trend_percent(current: u64, previous: u64) -> Option<f64> {
-    if previous == 0 {
-        return None;
+fn debug_cost_quality(quality: Option<ApiEquivalentCostQuality>) -> &'static str {
+    match quality {
+        Some(ApiEquivalentCostQuality::Reconciled) => "reconciled",
+        Some(ApiEquivalentCostQuality::Modeled) => "modeled",
+        Some(ApiEquivalentCostQuality::LocalOnly) => "local-only",
+        None => "unavailable",
     }
-    let trend = ((current as f64 - previous as f64) / previous as f64) * 100.0;
-    trend.is_finite().then_some(trend)
 }
 
-#[derive(Clone, Copy)]
-struct CostProjection {
-    usd: f64,
-    quality: ApiEquivalentCostQuality,
-    coverage_percent: Option<f64>,
-}
-
-fn account_cost(
-    account_tokens: &BTreeMap<Date, u64>,
-    days: impl Iterator<Item = Date>,
-    local: Option<&LocalUsageObservation>,
-    account_observed_at: OffsetDateTime,
-) -> Option<CostProjection> {
-    let local = local?;
-    let mut usd = 0.0;
-    let mut covered_tokens = 0_u64;
-    let mut total_tokens = 0_u64;
-    let mut modeled = false;
-    for (day, account_tokens) in
-        days.filter_map(|day| account_tokens.get(&day).map(|tokens| (day, *tokens)))
-    {
-        total_tokens = total_tokens.checked_add(account_tokens)?;
-        if account_tokens == 0 {
-            if local
-                .daily
-                .get(&day)
-                .is_some_and(|detail| detail.observed_tokens > 0)
-            {
-                return None;
-            }
-            continue;
+fn debug_period_projection(
+    total: &UsageTotal,
+) -> (Option<u64>, Option<f64>, &'static str, Option<f64>) {
+    match total {
+        UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
         }
-        let detail = local.daily.get(&day)?;
-        if !detail.complete
-            || detail.observed_tokens == 0
-            || detail.observed_tokens > account_tokens
-            || detail.observed_through? > account_observed_at
-        {
-            return None;
-        }
-        let local_cost = detail.api_equivalent_cost_usd?;
-        covered_tokens = covered_tokens.checked_add(detail.observed_tokens)?;
-        if detail.observed_tokens == account_tokens {
-            usd += local_cost;
-        } else {
-            modeled = true;
-            usd += local_cost * (account_tokens as f64 / detail.observed_tokens as f64);
-        }
+        | UsageTotal::Stale {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } => (
+            Some(*observed_tokens),
+            *api_equivalent_cost_usd,
+            debug_cost_quality(*api_equivalent_cost_quality),
+            *api_equivalent_cost_coverage_percent,
+        ),
+        UsageTotal::Unavailable => (None, None, "unavailable", None),
     }
-    if !usd.is_finite() {
-        return None;
-    }
-    let coverage_percent = modeled.then(|| (covered_tokens as f64 / total_tokens as f64) * 100.0);
-    Some(CostProjection {
-        usd,
-        quality: if modeled {
-            ApiEquivalentCostQuality::Modeled
-        } else {
-            ApiEquivalentCostQuality::Reconciled
-        },
-        coverage_percent,
-    })
 }
 
-fn local_cost(
-    local: &LocalUsageObservation,
-    days: impl Iterator<Item = Date>,
-) -> Option<CostProjection> {
-    let usd = days
-        .filter_map(|day| local.daily.get(&day))
-        .try_fold(0.0, |total, detail| {
-            detail
-                .complete
-                .then_some(total + detail.api_equivalent_cost_usd?)
-        })?;
-    usd.is_finite().then_some(CostProjection {
-        usd,
-        quality: ApiEquivalentCostQuality::LocalOnly,
-        coverage_percent: None,
-    })
-}
-
-fn project_period(
-    account: Option<&AccountUsageObservation>,
-    local: Option<&LocalUsageObservation>,
-    now: OffsetDateTime,
+fn debug_period_line(
+    label: &str,
     length: i64,
-) -> UsageTotal {
-    let today = utc_ranking_day(now);
-    let (tokens, evidence_basis, coverage, cost) = if let Some(account) = account {
-        let expected = usize::try_from(length).unwrap_or(usize::MAX);
-        let observed_days = period_days(today, length, 0)
-            .filter(|day| account.daily_tokens.contains_key(day))
-            .count();
-        let Some(tokens) = checked_sum(
-            period_days(today, length, 0).filter_map(|day| account.daily_tokens.get(&day)),
-        ) else {
-            return UsageTotal::Unavailable;
-        };
-        if observed_days == 0 {
-            return UsageTotal::Unavailable;
-        }
-        (
-            tokens,
-            UsageEvidenceBasis::ProviderReported,
-            if observed_days == expected {
-                UsageCoverage::Complete
-            } else {
-                UsageCoverage::Partial
-            },
-            account_cost(
-                &account.daily_tokens,
-                period_days(today, length, 0),
-                local,
-                now,
-            ),
-        )
-    } else if let Some(local) = local {
-        let observed_days = period_days(today, length, 0)
-            .filter(|day| local.daily.contains_key(day))
-            .count();
-        let Some(tokens) = checked_sum(
-            period_days(today, length, 0)
-                .filter_map(|day| local.daily.get(&day).map(|detail| &detail.observed_tokens)),
-        ) else {
-            return UsageTotal::Unavailable;
-        };
-        if observed_days == 0 {
-            return UsageTotal::Unavailable;
-        }
-        (
-            tokens,
-            UsageEvidenceBasis::LocallyDerived,
-            UsageCoverage::Partial,
-            local_cost(local, period_days(today, length, 0)),
-        )
-    } else {
-        return UsageTotal::Unavailable;
+    today: Date,
+    account: Option<&AccountUsageObservation>,
+    local: &LocalUsageObservation,
+    projected: &UsageTotal,
+) -> String {
+    let days = period_days(today, length, 0).collect::<Vec<_>>();
+    let account_tokens = account.and_then(|account| {
+        checked_sum(days.iter().filter_map(|day| account.daily_tokens.get(day)))
+    });
+    let local_tokens = checked_sum(
+        days.iter()
+            .filter_map(|day| local.daily.get(day).map(|detail| &detail.observed_tokens)),
+    );
+    let priced_tokens = checked_sum(
+        days.iter()
+            .filter_map(|day| local.daily.get(day).map(|detail| &detail.priced_tokens)),
+    );
+    let relation = match (account_tokens, local_tokens) {
+        (Some(account), Some(local)) if local > account => "local-above-account",
+        (Some(account), Some(local)) if local < account => "local-below-account",
+        (Some(_), Some(_)) => "equal",
+        (None, Some(_)) => "account-unavailable",
+        (Some(_), None) => "local-unavailable",
+        (None, None) => "unavailable",
     };
+    let (observed_tokens, cost, quality, coverage) = debug_period_projection(projected);
+    format!(
+        "[TouchGrassBar][codex-usage-report] period={label} account_tokens={} local_detail_tokens={} priced_local_tokens={} relation={relation} authoritative_tokens={} projected_cost_usd={} quality={quality} coverage_percent={}",
+        account_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
+        local_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
+        priced_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
+        observed_tokens.map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
+        cost.map_or_else(|| "unavailable".to_owned(), |value| format!("{value:.6}")),
+        coverage.map_or_else(|| "unavailable".to_owned(), |value| format!("{value:.2}")),
+    )
+}
 
-    let trend = if coverage == UsageCoverage::Complete {
-        let source = account.map(|account| &account.daily_tokens);
-        source.and_then(|daily| {
-            let previous_days = period_days(today, length, length).collect::<Vec<_>>();
-            (previous_days.iter().all(|day| daily.contains_key(day)))
-                .then(|| checked_sum(previous_days.iter().filter_map(|day| daily.get(day))))
-                .flatten()
-                .and_then(|previous| trend_percent(tokens, previous))
-        })
-    } else {
-        None
+fn debug_catalog_description(
+    manifest: Option<&PricingManifest>,
+    model: &str,
+    day: Date,
+    has_cache_write: bool,
+) -> String {
+    if model == UNKNOWN_MODEL {
+        return "status=model-not-observed".to_owned();
+    }
+    let Some(manifest) = manifest else {
+        return "status=manifest-unavailable".to_owned();
     };
-    let observed_at = now
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned());
-    UsageTotal::Current {
-        evidence_basis,
-        coverage,
-        observed_at,
-        observed_tokens: tokens,
-        api_equivalent_cost_usd: cost.map(|cost| cost.usd),
-        trend_percent: trend,
-        api_equivalent_cost_basis: cost
-            .and_then(|_| pricing_manifest().map(|manifest| manifest.basis.clone())),
-        api_equivalent_cost_quality: cost.map(|cost| cost.quality),
-        api_equivalent_cost_coverage_percent: cost.and_then(|cost| cost.coverage_percent),
+    match pricing_catalog_entry(manifest, model, day) {
+        Err(PricingLookupFailure::UnknownModel) => "status=unknown-model".to_owned(),
+        Err(PricingLookupFailure::MissingApplicablePrice) => {
+            "status=missing-effective-price".to_owned()
+        }
+        Err(PricingLookupFailure::MissingCacheWritePrice) => {
+            "status=missing-cache-write-price".to_owned()
+        }
+        Ok(entry) if has_cache_write && entry.cache_write_usd_per_million.is_none() => {
+            "status=missing-cache-write-price".to_owned()
+        }
+        Ok(entry) => format!(
+            "status=known input_usd_per_million={:.6} cached_input_usd_per_million={:.6} cache_write_usd_per_million={} output_usd_per_million={:.6} effective_from={} effective_until={} long_context_input_above={} long_context_input_multiplier={:.6} long_context_output_multiplier={:.6}",
+            entry.input_usd_per_million,
+            entry.cached_input_usd_per_million,
+            entry
+                .cache_write_usd_per_million
+                .map_or_else(|| "not-published".to_owned(), |value| format!("{value:.6}")),
+            entry.output_usd_per_million,
+            entry.effective_from,
+            entry
+                .effective_until
+                .map_or_else(|| "open".to_owned(), |value| value.to_string()),
+            entry.long_context_input_tokens_above,
+            entry.long_context_input_multiplier,
+            entry.long_context_output_multiplier,
+        ),
     }
 }
 
+fn render_debug_usage_report(
+    connection: &Connection,
+    account: Option<&CachedAccountUsageObservation>,
+    local: &LocalUsageObservation,
+    periods: &UsagePeriods,
+    today: Date,
+) -> Result<String, ()> {
+    let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
+    let cutoff_modified_ns =
+        i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).map_err(|_| ())?;
+    let (complete_files, pending_files, error_files, excluded_files) = connection
+        .query_row(
+            "SELECT
+               COALESCE(SUM(CASE WHEN completion_state = 'complete' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state NOT IN ('complete', 'error') THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state = 'error' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN usage_excluded = 1 THEN 1 ELSE 0 END), 0)
+             FROM codex_usage_files WHERE parser_version = ?1 AND modified_ns >= ?2",
+            params![ROLLOUT_PARSER_VERSION, cutoff_modified_ns],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
+            },
+        )
+        .map_err(|_| ())?;
+    let manifest = pricing_manifest();
+    let mut lines = vec![format!(
+        "[TouchGrassBar][codex-usage-report] retention_days={} pricing_basis={} account_observed_at={} scan={:?} today_scan={:?} seven_day_scan={:?} thirty_day_scan={:?} complete_files={complete_files} pending_files={pending_files} error_files={error_files} excluded_inherited_files={excluded_files}",
+        LOCAL_USAGE_RETENTION_DAYS,
+        manifest.map_or("unavailable", |manifest| manifest.basis.as_str()),
+        account.map_or_else(
+            || "unavailable".to_owned(),
+            |account| account
+                .observed_at
+                .format(&Rfc3339)
+                .unwrap_or_else(|_| "unavailable".to_owned())
+        ),
+        periods.scan_status,
+        periods.today_scan_status,
+        periods.seven_day_scan_status,
+        periods.thirty_day_scan_status,
+    )];
+    let account_observation = account.map(|account| &account.observation);
+    lines.push(debug_period_line(
+        "today",
+        1,
+        today,
+        account_observation,
+        local,
+        &periods.today,
+    ));
+    lines.push(debug_period_line(
+        "7-day",
+        7,
+        today,
+        account_observation,
+        local,
+        &periods.seven_days,
+    ));
+    lines.push(debug_period_line(
+        "30-day",
+        30,
+        today,
+        account_observation,
+        local,
+        &periods.thirty_days,
+    ));
+
+    let mut statement = connection
+        .prepare(
+            "SELECT d.day, d.model,
+                    SUM(d.input_tokens), SUM(d.cached_input_tokens),
+                    SUM(d.cache_write_input_tokens), SUM(d.output_tokens),
+                    SUM(d.reasoning_output_tokens), SUM(d.observed_tokens),
+                    SUM(CASE WHEN d.complete = 1 AND d.cost_usd IS NOT NULL
+                                  AND d.pricing_fingerprint = ?4
+                             THEN d.observed_tokens ELSE 0 END),
+                    SUM(CASE WHEN d.complete = 1 AND d.cost_usd IS NOT NULL
+                                  AND d.pricing_fingerprint = ?4
+                             THEN d.cost_usd ELSE 0.0 END),
+                    MIN(d.complete)
+             FROM codex_usage_file_model_days d
+             JOIN codex_usage_files f ON f.path = d.path
+             WHERE f.parser_version = ?1 AND d.day >= ?2 AND d.day <= ?3
+             GROUP BY d.day, d.model
+             ORDER BY d.day DESC, SUM(d.observed_tokens) DESC",
+        )
+        .map_err(|_| ())?;
+    let rows = statement
+        .query_map(
+            params![
+                ROLLOUT_PARSER_VERSION,
+                cutoff.to_string(),
+                today.to_string(),
+                manifest.map(|manifest| manifest.fingerprint.as_str())
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, u64>(4)?,
+                    row.get::<_, u64>(5)?,
+                    row.get::<_, u64>(6)?,
+                    row.get::<_, u64>(7)?,
+                    row.get::<_, u64>(8)?,
+                    row.get::<_, f64>(9)?,
+                    row.get::<_, bool>(10)?,
+                ))
+            },
+        )
+        .map_err(|_| ())?;
+    for row in rows {
+        let (
+            day,
+            model,
+            input,
+            cached_input,
+            cache_write_input,
+            output,
+            reasoning_output,
+            observed,
+            priced,
+            cost,
+            complete,
+        ) = row.map_err(|_| ())?;
+        let day = parse_ranking_day(&day)?;
+        let catalog = debug_catalog_description(manifest, &model, day, cache_write_input > 0);
+        lines.push(format!(
+            "[TouchGrassBar][codex-usage-report] day={day} model={model} observed_tokens={observed} input_tokens={input} cached_input_subset={cached_input} cache_write_input_subset={cache_write_input} output_tokens={output} reasoning_output_subset={reasoning_output} priced_tokens={priced} local_cost_usd={:.6} detail_complete={complete} catalog_{catalog}",
+            cost
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+pub(crate) fn debug_usage_pass(
+    database_path: &Path,
+    codex_home: &Path,
+    now: OffsetDateTime,
+) -> Result<String, ()> {
+    let local = index_local_usage_at(database_path, codex_home, now).ok_or(())?;
+    let account = load_cached_account_usage(Some(database_path));
+    let periods = project_usage_periods_with_account_time(
+        account.as_ref().map(|cached| &cached.observation),
+        Some(&local),
+        now,
+        account.as_ref().map_or(now, |cached| cached.observed_at),
+    );
+    let cost_available = |total: &UsageTotal| {
+        matches!(
+            total,
+            UsageTotal::Current {
+                api_equivalent_cost_usd: Some(_),
+                ..
+            } | UsageTotal::Stale {
+                api_equivalent_cost_usd: Some(_),
+                ..
+            }
+        )
+    };
+    debug_usage_event(&format!(
+        "projection_updated scan={:?} today_scan={:?} seven_day_scan={:?} thirty_day_scan={:?} account_cached={} today_cost={} seven_day_cost={} thirty_day_cost={}",
+        periods.scan_status,
+        periods.today_scan_status,
+        periods.seven_day_scan_status,
+        periods.thirty_day_scan_status,
+        account.is_some(),
+        cost_available(&periods.today),
+        cost_available(&periods.seven_days),
+        cost_available(&periods.thirty_days)
+    ));
+    let connection = Connection::open(database_path).map_err(|_| ())?;
+    render_debug_usage_report(
+        &connection,
+        account.as_ref(),
+        &local,
+        &periods,
+        utc_ranking_day(now),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn project_usage_periods(
     account: Option<&AccountUsageObservation>,
     local: Option<&LocalUsageObservation>,
     now: OffsetDateTime,
 ) -> UsagePeriods {
-    UsagePeriods {
+    project_usage_periods_with_account_time(account, local, now, now)
+}
+
+pub(crate) fn project_usage_periods_with_account_time(
+    account: Option<&AccountUsageObservation>,
+    local: Option<&LocalUsageObservation>,
+    now: OffsetDateTime,
+    account_observed_at: OffsetDateTime,
+) -> UsagePeriods {
+    let today = utc_ranking_day(now);
+    let evidence = ProviderUsageEvidence {
+        provider_reported_tokens: account.map(|account| account.daily_tokens.clone()),
+        provider_observed_at: account.map(|_| account_observed_at),
+        local_cost_evidence: local.map_or_else(BTreeMap::new, |local| local.daily.clone()),
+        local_evidence_available: local.is_some(),
+        local_observed_at: local.map(|_| now),
+        pricing_basis: pricing_manifest().map(|manifest| manifest.basis.clone()),
         scan_status: local.map_or(UsageScanStatus::Unavailable, |local| local.scan_status),
-        today: project_period(account, local, now, 1),
-        seven_days: project_period(account, local, now, 7),
-        thirty_days: project_period(account, local, now, 30),
-    }
+        today_scan_status: local.map_or(UsageScanStatus::Unavailable, |local| {
+            local.period_scan_status(today, 1)
+        }),
+        seven_day_scan_status: local.map_or(UsageScanStatus::Unavailable, |local| {
+            local.period_scan_status(today, 7)
+        }),
+        thirty_day_scan_status: local.map_or(UsageScanStatus::Unavailable, |local| {
+            local.period_scan_status(today, 30)
+        }),
+    };
+    calculate_usage_periods(&evidence, now)
 }
 
 impl TokenUsage {
@@ -2000,6 +3052,28 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_account_usage_cache_round_trips_private_daily_buckets() {
+        let fixture = TempUsage::new();
+        let observed_at = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let observation = AccountUsageObservation {
+            daily_tokens: BTreeMap::from([
+                (observed_at.date() - Duration::days(1), 120),
+                (observed_at.date(), 340),
+            ]),
+        };
+
+        store_cached_account_usage(Some(&fixture.database), &observation, observed_at).unwrap();
+
+        assert_eq!(
+            load_cached_account_usage(Some(&fixture.database)),
+            Some(CachedAccountUsageObservation {
+                observation,
+                observed_at,
+            })
+        );
+    }
+
+    #[test]
     fn sqlite_index_skips_unchanged_files_and_resumes_appends() {
         let fixture = TempUsage::new();
         fs::write(&fixture.rollout, root_rollout(100)).unwrap();
@@ -2019,6 +3093,24 @@ mod tests {
 
         let unchanged = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
         assert_eq!(unchanged.daily[&now.date()].observed_tokens, 100);
+        let connection = Connection::open(&fixture.database).unwrap();
+        let unchanged_cursor: (i64, i64, i64, String, i64) = connection
+            .query_row(
+                "SELECT size_bytes, modified_ns, parsed_offset, completion_state, parser_version FROM codex_usage_files",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        let unchanged_tokens: i64 = connection
+            .query_row(
+                "SELECT SUM(observed_tokens) FROM codex_usage_file_model_days",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unchanged_cursor, first_cursor);
+        assert_eq!(unchanged_tokens, 100);
+        drop(connection);
         let mut file = fs::OpenOptions::new()
             .append(true)
             .open(&fixture.rollout)
@@ -2042,6 +3134,136 @@ mod tests {
         assert!(cursor.0 > first_cursor.0);
         assert_eq!(cursor.0, cursor.2);
         assert_eq!(cursor.3, "complete");
+    }
+
+    #[test]
+    fn sqlite_index_rebuilds_a_replaced_file_with_the_same_size_and_modified_time() {
+        let fixture = TempUsage::new();
+        let original = root_rollout(100);
+        let replacement = root_rollout(101);
+        assert_eq!(original.len(), replacement.len());
+        fs::write(&fixture.rollout, original).unwrap();
+        let original_modified = fs::metadata(&fixture.rollout).unwrap().modified().unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        assert_eq!(
+            index_local_usage_at(&fixture.database, &fixture.root, now)
+                .unwrap()
+                .daily[&now.date()]
+                .observed_tokens,
+            100
+        );
+
+        let replacement_path = fixture.root.join("replacement.jsonl");
+        fs::write(&replacement_path, replacement).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&replacement_path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .unwrap();
+        fs::rename(&replacement_path, &fixture.rollout).unwrap();
+        assert_eq!(
+            fs::metadata(&fixture.rollout).unwrap().modified().unwrap(),
+            original_modified
+        );
+
+        let rebuilt = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(rebuilt.daily[&now.date()].observed_tokens, 101);
+    }
+
+    #[test]
+    fn sqlite_index_rebuilds_an_in_place_rewrite_that_grows() {
+        let fixture = TempUsage::new();
+        let original = root_rollout(100);
+        fs::write(&fixture.rollout, &original).unwrap();
+        let original_metadata = fs::metadata(&fixture.rollout).unwrap();
+        let original_identity = file_identity(&original_metadata);
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        assert_eq!(
+            index_local_usage_at(&fixture.database, &fixture.root, now)
+                .unwrap()
+                .daily[&now.date()]
+                .observed_tokens,
+            100
+        );
+
+        let replacement = format!("{}{}", root_rollout(50), appended_total(80));
+        assert!(replacement.len() > original.len());
+        fs::write(&fixture.rollout, replacement).unwrap();
+        #[cfg(unix)]
+        assert_eq!(
+            file_identity(&fs::metadata(&fixture.rollout).unwrap()),
+            original_identity
+        );
+
+        let rebuilt = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(rebuilt.daily[&now.date()].observed_tokens, 80);
+    }
+
+    #[test]
+    fn sqlite_index_ignores_an_oversized_compacted_record() {
+        let fixture = TempUsage::new();
+        let mut rollout = root_rollout(100);
+        rollout.push_str(r#"{"timestamp":"2026-08-06T10:02:00Z","type":"compacted","payload":""#);
+        rollout.extend(std::iter::repeat_n('x', MAX_ROLLOUT_LINE_BYTES + 1));
+        rollout.push_str("\"}\n");
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let completion_state: String = connection
+            .query_row(
+                "SELECT completion_state FROM codex_usage_files",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(completion_state, "complete");
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+    }
+
+    #[test]
+    fn sqlite_index_cleanly_fast_forwards_an_unresolved_subagent_from_an_unreviewed_version() {
+        let fixture = TempUsage::new();
+        let mut rollout = json!({
+            "timestamp": "2026-08-06T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "cli_version": "0.148.0-alpha.1",
+                "source": { "subagent": { "thread_spawn": {} } }
+            }
+        })
+        .to_string();
+        rollout.push('\n');
+        rollout.extend(std::iter::repeat_n('x', 1024 * 1024));
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let (size, offset, completion, excluded): (i64, i64, String, bool) = connection
+            .query_row(
+                "SELECT size_bytes, parsed_offset, completion_state, usage_excluded FROM codex_usage_files",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let detail_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM codex_usage_file_model_days",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(indexed.daily.is_empty());
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(size, offset);
+        assert_eq!(completion, "complete");
+        assert!(excluded);
+        assert_eq!(detail_rows, 0);
     }
 
     #[test]
@@ -2145,6 +3367,7 @@ mod tests {
             now,
             ScanBudget {
                 max_bytes: MAX_ROLLOUT_SCAN_BYTES,
+                max_file_bytes: MAX_ROLLOUT_FILE_SCAN_BYTES,
                 max_millis: 0,
             },
         )
@@ -2157,6 +3380,7 @@ mod tests {
             now,
             ScanBudget {
                 max_bytes: 1,
+                max_file_bytes: 1,
                 max_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
@@ -2166,6 +3390,78 @@ mod tests {
 
         let complete = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
         assert_eq!(complete.daily[&now.date()].observed_tokens, 300);
+    }
+
+    #[test]
+    fn debug_report_is_sanitized_and_keeps_token_subsets_out_of_observed_tokens() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let account_observation = AccountUsageObservation {
+            daily_tokens: BTreeMap::from([(now.date(), 100)]),
+        };
+        store_cached_account_usage(
+            Some(&fixture.database),
+            &account_observation,
+            now - Duration::minutes(1),
+        )
+        .unwrap();
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let account = load_cached_account_usage(Some(&fixture.database)).unwrap();
+        let periods = project_usage_periods_with_account_time(
+            Some(&account.observation),
+            Some(&local),
+            now,
+            account.observed_at,
+        );
+        let connection = Connection::open(&fixture.database).unwrap();
+
+        let report =
+            render_debug_usage_report(&connection, Some(&account), &local, &periods, now.date())
+                .unwrap();
+
+        assert!(report.contains("retention_days=30"));
+        assert!(report.contains("model=gpt-5.6-sol observed_tokens=100 input_tokens=70"));
+        assert!(report.contains("output_tokens=30"));
+        assert!(report.contains("catalog_status=known"));
+        assert!(!report.contains(fixture.root.to_string_lossy().as_ref()));
+        for private_field in [
+            "parsed_offset",
+            "parsed_prefix_anchor",
+            "parser_version",
+            "active_model",
+            "file_identity",
+        ] {
+            assert!(!report.contains(private_field));
+        }
+    }
+
+    #[test]
+    fn debug_catalog_distinguishes_each_missing_price_reason() {
+        let manifest = pricing_manifest().unwrap();
+        let current = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        let before_release = Date::from_calendar_date(2026, Month::June, 1).unwrap();
+
+        assert_eq!(
+            debug_catalog_description(Some(manifest), UNKNOWN_MODEL, current, false),
+            "status=model-not-observed"
+        );
+        assert_eq!(
+            debug_catalog_description(Some(manifest), "future-model", current, false),
+            "status=unknown-model"
+        );
+        assert_eq!(
+            debug_catalog_description(Some(manifest), "gpt-5.6-sol", before_release, false),
+            "status=missing-effective-price"
+        );
+        assert_eq!(
+            debug_catalog_description(Some(manifest), "gpt-5.5", current, true),
+            "status=missing-cache-write-price"
+        );
+        assert_eq!(
+            debug_catalog_description(None, "gpt-5.6-sol", current, false),
+            "status=manifest-unavailable"
+        );
     }
 
     #[test]
@@ -2194,6 +3490,13 @@ mod tests {
                 },
             )
             .unwrap();
+        let before_summary: (i64, f64) = connection
+            .query_row(
+                "SELECT observed_tokens, cost_usd FROM codex_usage_file_days",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         let changed = changed_pricing_manifest("test-price-basis-v2", 60.0);
         reprice_index_with_manifest(&connection, &changed).unwrap();
         let after: (i64, i64, i64, i64, i64, i64, f64, String) = connection
@@ -2217,6 +3520,13 @@ mod tests {
                 },
             )
             .unwrap();
+        let after_summary: (i64, f64) = connection
+            .query_row(
+                "SELECT observed_tokens, cost_usd FROM codex_usage_file_days",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(before.0, after.0, "rollout cursor must not move");
         assert_eq!(before.1, after.1, "input tokens are ranking evidence");
         assert_eq!(before.2, after.2, "cached tokens remain subordinate");
@@ -2227,6 +3537,8 @@ mod tests {
             "Observed Tokens and Token Score input do not change"
         );
         assert_ne!(before.6, after.6, "only cost must be repriced");
+        assert_eq!(before_summary.0, after_summary.0);
+        assert_ne!(before_summary.1, after_summary.1);
         assert_eq!(after.7, "test-price-basis-v2");
     }
 
@@ -2261,6 +3573,43 @@ mod tests {
     }
 
     #[test]
+    fn basis_only_change_updates_stored_rows_without_rescanning() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let before: (i64, i64, f64, String) = connection
+            .query_row(
+                "SELECT f.parsed_offset, d.observed_tokens, d.cost_usd, d.pricing_basis
+                 FROM codex_usage_file_model_days d JOIN codex_usage_files f ON f.path = d.path",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
+        value["basis"] = json!("test-basis-only-v2");
+        let changed = parse_pricing_manifest(&value.to_string()).unwrap();
+
+        reprice_index_with_manifest(&connection, &changed).unwrap();
+
+        let after: (i64, i64, f64, String) = connection
+            .query_row(
+                "SELECT f.parsed_offset, d.observed_tokens, d.cost_usd, d.pricing_basis
+                 FROM codex_usage_file_model_days d JOIN codex_usage_files f ON f.path = d.path",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(before.0, after.0, "rollout cursor must not move");
+        assert_eq!(before.1, after.1, "Observed Tokens must not change");
+        assert_eq!(before.2, after.2, "numeric prices did not change");
+        assert_ne!(before.3, after.3, "stored basis must be refreshed");
+        assert_eq!(after.3, "test-basis-only-v2");
+    }
+
+    #[test]
     fn index_prunes_private_model_days_outside_the_retention_window() {
         let fixture = TempUsage::new();
         fs::write(&fixture.rollout, root_rollout(100)).unwrap();
@@ -2287,7 +3636,7 @@ mod tests {
         let connection = Connection::open(&fixture.database).unwrap();
         let expired_rows: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM codex_usage_file_model_days WHERE day < '2026-06-08'",
+                "SELECT COUNT(*) FROM codex_usage_file_model_days WHERE day < '2026-07-08'",
                 [],
                 |row| row.get(0),
             )
@@ -2389,8 +3738,9 @@ mod tests {
         assert!(is_supported_cli_version("0.130.0-alpha.5"));
         assert!(is_supported_cli_version("0.145.0"));
         assert!(is_supported_cli_version("0.146.0-alpha.9.2"));
+        assert!(is_supported_cli_version("0.147.0-alpha.6.5"));
         assert!(!is_supported_cli_version("0.129.9"));
-        assert!(!is_supported_cli_version("0.147.0"));
+        assert!(!is_supported_cli_version("0.148.0"));
         assert!(!is_supported_cli_version("1.0.0"));
         assert!(!is_supported_cli_version("private value"));
     }
@@ -2431,6 +3781,14 @@ mod tests {
 
         assert!(price_usage("gpt-5.6-sol", before_release, usage).is_none());
         assert!(price_usage("future-model", after_release, usage).is_none());
+        assert!(matches!(
+            pricing_catalog_entry(pricing_manifest().unwrap(), "future-model", after_release),
+            Err(PricingLookupFailure::UnknownModel)
+        ));
+        assert!(matches!(
+            pricing_catalog_entry(pricing_manifest().unwrap(), "gpt-5.6-sol", before_release),
+            Err(PricingLookupFailure::MissingApplicablePrice)
+        ));
         assert_eq!(price_usage("gpt-5.6-sol", after_release, usage), Some(0.62));
     }
 
@@ -2473,7 +3831,7 @@ mod tests {
     }
 
     #[test]
-    fn rollout_scan_uses_the_first_fork_total_as_a_baseline() {
+    fn rollout_scan_excludes_an_inherited_fork_without_a_proven_boundary() {
         let fixture = concat!(
             r#"{"timestamp":"2026-08-06T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.145.0","forked_from_id":"private-parent"}}"#,
             "\n",
@@ -2488,8 +3846,65 @@ mod tests {
         let mut days = BTreeMap::new();
 
         assert!(scan_rollout_reader(fixture.as_bytes(), day, &mut days));
+        assert!(days.is_empty());
+    }
+
+    #[test]
+    fn rollout_scan_excludes_a_subagent_without_a_proven_history_boundary() {
+        let fixture = concat!(
+            r#"{"timestamp":"2026-08-06T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.146.0-alpha.3.1","timestamp":"2026-08-06T10:00:00Z","thread_source":"subagent"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T09:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T09:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":700,"cached_input_tokens":200,"output_tokens":300,"reasoning_output_tokens":100,"total_tokens":1000},"model_context_window":1050000,"total_token_usage":{"input_tokens":700,"cached_input_tokens":200,"output_tokens":300,"reasoning_output_tokens":100,"total_tokens":1000}},"rate_limits":null}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":100},"model_context_window":1050000,"total_token_usage":{"input_tokens":770,"cached_input_tokens":220,"output_tokens":330,"reasoning_output_tokens":110,"total_tokens":1100}},"rate_limits":null}}"#,
+            "\n",
+        );
+        let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        let mut days = BTreeMap::new();
+
+        assert!(scan_rollout_reader(fixture.as_bytes(), day, &mut days));
+        assert!(days.is_empty());
+    }
+
+    #[test]
+    fn rollout_scan_uses_an_explicit_subagent_history_ordinal() {
+        let fixture = concat!(
+            r#"{"timestamp":"2026-08-06T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.146.0-alpha.3.1","thread_source":"subagent","subagent_history_start_ordinal":3}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T09:00:00Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T09:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":700,"cached_input_tokens":200,"output_tokens":300,"reasoning_output_tokens":100,"total_tokens":1000},"model_context_window":1050000,"total_token_usage":{"input_tokens":700,"cached_input_tokens":200,"output_tokens":300,"reasoning_output_tokens":100,"total_tokens":1000}},"rate_limits":null}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":100},"model_context_window":1050000,"total_token_usage":{"input_tokens":770,"cached_input_tokens":220,"output_tokens":330,"reasoning_output_tokens":110,"total_tokens":1100}},"rate_limits":null}}"#,
+            "\n",
+        );
+        let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        let mut days = BTreeMap::new();
+
+        assert!(scan_rollout_reader(fixture.as_bytes(), day, &mut days));
         assert_eq!(days[&day].observed_tokens, 100);
-        assert!(days[&day].complete);
+    }
+
+    #[test]
+    fn rollout_scan_restores_parser_state_before_the_retention_cutoff() {
+        let fixture = concat!(
+            r#"{"timestamp":"2026-08-05T23:58:00Z","type":"session_meta","payload":{"cli_version":"0.145.0"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T23:58:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-05T23:59:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":700,"cached_input_tokens":200,"output_tokens":300,"reasoning_output_tokens":100,"total_tokens":1000},"model_context_window":1050000,"total_token_usage":{"input_tokens":700,"cached_input_tokens":200,"output_tokens":300,"reasoning_output_tokens":100,"total_tokens":1000}},"rate_limits":null}}"#,
+            "\n",
+            r#"{"timestamp":"2026-08-06T00:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":70,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":10,"total_tokens":100},"model_context_window":1050000,"total_token_usage":{"input_tokens":770,"cached_input_tokens":220,"output_tokens":330,"reasoning_output_tokens":110,"total_tokens":1100}},"rate_limits":null}}"#,
+            "\n",
+        );
+        let cutoff = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        let mut days = BTreeMap::new();
+
+        assert!(scan_rollout_reader(fixture.as_bytes(), cutoff, &mut days));
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[&cutoff].observed_tokens, 100);
     }
 
     #[test]
@@ -2520,12 +3935,15 @@ mod tests {
                 day,
                 LocalUsageDay {
                     observed_tokens: 600,
+                    priced_tokens: 600,
                     api_equivalent_cost_usd: Some(1.0),
                     complete: true,
                     observed_through: Some(now - Duration::minutes(1)),
+                    priced_observed_through: Some(now - Duration::minutes(1)),
                 },
             )]),
             scan_status: UsageScanStatus::Indexing,
+            ..LocalUsageObservation::default()
         };
 
         let projected = project_usage_periods(Some(&account), Some(&local), now);
@@ -2551,6 +3969,146 @@ mod tests {
     }
 
     #[test]
+    fn committed_partial_rows_supply_an_ongoing_modeled_estimate() {
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let account = AccountUsageObservation {
+            daily_tokens: BTreeMap::from([(now.date(), 1_000)]),
+        };
+        let local = LocalUsageObservation {
+            daily: BTreeMap::from([(
+                now.date(),
+                LocalUsageDay {
+                    observed_tokens: 400,
+                    priced_tokens: 400,
+                    api_equivalent_cost_usd: Some(0.8),
+                    complete: false,
+                    observed_through: Some(now - Duration::minutes(1)),
+                    priced_observed_through: Some(now - Duration::minutes(1)),
+                },
+            )]),
+            scan_status: UsageScanStatus::Indexing,
+            ..LocalUsageObservation::default()
+        };
+
+        let projected = project_usage_periods(Some(&account), Some(&local), now);
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = projected.today
+        else {
+            panic!("expected current usage");
+        };
+        assert_eq!(api_equivalent_cost_usd, Some(2.0));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(40.0));
+    }
+
+    #[test]
+    fn a_recent_period_does_not_wait_for_older_pending_files() {
+        let period_start = OffsetDateTime::parse("2026-08-06T00:00:00Z", &Rfc3339).unwrap();
+
+        assert_eq!(
+            period_scan_status(
+                UsageScanStatus::Indexing,
+                Some(period_start - Duration::days(1)),
+                None,
+                period_start,
+                true,
+            ),
+            UsageScanStatus::Complete
+        );
+    }
+
+    #[test]
+    fn a_finished_period_reports_unavailable_when_recent_parser_evidence_failed() {
+        let period_start = OffsetDateTime::parse("2026-08-06T00:00:00Z", &Rfc3339).unwrap();
+
+        assert_eq!(
+            period_scan_status(
+                UsageScanStatus::Unavailable,
+                Some(period_start - Duration::days(1)),
+                Some(period_start + Duration::hours(1)),
+                period_start,
+                true,
+            ),
+            UsageScanStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn indexing_preserves_the_last_cost_without_replacing_new_account_tokens() {
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let previous_account = AccountUsageObservation {
+            daily_tokens: BTreeMap::from([(now.date(), 100)]),
+        };
+        let previous_local = LocalUsageObservation {
+            daily: BTreeMap::from([(
+                now.date(),
+                LocalUsageDay {
+                    observed_tokens: 100,
+                    priced_tokens: 100,
+                    api_equivalent_cost_usd: Some(1.25),
+                    complete: true,
+                    observed_through: Some(now - Duration::minutes(2)),
+                    priced_observed_through: Some(now - Duration::minutes(2)),
+                },
+            )]),
+            scan_status: UsageScanStatus::Complete,
+            ..LocalUsageObservation::default()
+        };
+        let previous = project_usage_periods(
+            Some(&previous_account),
+            Some(&previous_local),
+            now - Duration::minutes(1),
+        );
+        let current_account = AccountUsageObservation {
+            daily_tokens: BTreeMap::from([(now.date(), 200)]),
+        };
+        let current_local = LocalUsageObservation {
+            daily: BTreeMap::from([(
+                now.date(),
+                LocalUsageDay {
+                    observed_tokens: 201,
+                    priced_tokens: 0,
+                    api_equivalent_cost_usd: None,
+                    complete: false,
+                    observed_through: Some(now - Duration::minutes(1)),
+                    priced_observed_through: Some(now - Duration::minutes(1)),
+                },
+            )]),
+            scan_status: UsageScanStatus::Indexing,
+            ..LocalUsageObservation::default()
+        };
+
+        let current = project_usage_periods(Some(&current_account), Some(&current_local), now);
+        let preserved = preserve_best_known_costs(current, &previous);
+        let UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = preserved.today
+        else {
+            panic!("expected current account usage");
+        };
+
+        assert_eq!(observed_tokens, 200);
+        assert_eq!(api_equivalent_cost_usd, Some(2.5));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(50.0));
+        assert_eq!(preserved.scan_status, UsageScanStatus::Indexing);
+    }
+
+    #[test]
     fn exact_local_reconciliation_supplies_complete_cost_for_account_tokens() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let day = now.date();
@@ -2562,12 +4120,15 @@ mod tests {
                 day,
                 LocalUsageDay {
                     observed_tokens: 1_000,
+                    priced_tokens: 1_000,
                     api_equivalent_cost_usd: Some(1.25),
                     complete: true,
                     observed_through: Some(now - Duration::minutes(1)),
+                    priced_observed_through: Some(now - Duration::minutes(1)),
                 },
             )]),
             scan_status: UsageScanStatus::Complete,
+            ..LocalUsageObservation::default()
         };
 
         let projected = project_usage_periods(Some(&account), Some(&local), now);
@@ -2639,19 +4200,22 @@ mod tests {
     }
 
     #[test]
-    fn local_rollouts_are_a_partial_fallback_only_when_account_usage_is_unavailable() {
+    fn local_rollouts_are_a_partial_fallback_when_account_usage_is_unavailable() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let local = LocalUsageObservation {
             daily: BTreeMap::from([(
                 now.date(),
                 LocalUsageDay {
                     observed_tokens: 600,
+                    priced_tokens: 600,
                     api_equivalent_cost_usd: Some(1.0),
                     complete: true,
                     observed_through: Some(now - Duration::minutes(1)),
+                    priced_observed_through: Some(now - Duration::minutes(1)),
                 },
             )]),
             scan_status: UsageScanStatus::Indexing,
+            ..LocalUsageObservation::default()
         };
 
         let projected = project_usage_periods(None, Some(&local), now);
@@ -2675,41 +4239,45 @@ mod tests {
     }
 
     #[test]
-    fn local_tokens_above_account_or_after_account_observation_make_cost_unavailable() {
+    fn local_tokens_above_account_are_scaled_to_the_authoritative_account_total() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let account = AccountUsageObservation {
             daily_tokens: BTreeMap::from([(now.date(), 100)]),
         };
-        for local in [
-            LocalUsageDay {
-                observed_tokens: 101,
-                api_equivalent_cost_usd: Some(1.0),
-                complete: true,
-                observed_through: Some(now - Duration::minutes(1)),
-            },
-            LocalUsageDay {
-                observed_tokens: 80,
-                api_equivalent_cost_usd: Some(1.0),
-                complete: true,
-                observed_through: Some(now + Duration::minutes(1)),
-            },
-        ] {
-            let local = LocalUsageObservation {
-                daily: BTreeMap::from([(now.date(), local)]),
-                scan_status: UsageScanStatus::Indexing,
-            };
-            let projected = project_usage_periods(Some(&account), Some(&local), now);
-            let UsageTotal::Current {
-                observed_tokens,
-                api_equivalent_cost_usd,
-                ..
-            } = projected.today
-            else {
-                panic!("expected account usage");
-            };
-            assert_eq!(observed_tokens, 100);
-            assert_eq!(api_equivalent_cost_usd, None);
-        }
+        let local = LocalUsageObservation {
+            daily: BTreeMap::from([(
+                now.date(),
+                LocalUsageDay {
+                    observed_tokens: 202,
+                    priced_tokens: 202,
+                    api_equivalent_cost_usd: Some(2.02),
+                    complete: true,
+                    observed_through: Some(now + Duration::minutes(1)),
+                    priced_observed_through: Some(now + Duration::minutes(1)),
+                },
+            )]),
+            scan_status: UsageScanStatus::Indexing,
+            ..LocalUsageObservation::default()
+        };
+
+        let projected = project_usage_periods(Some(&account), Some(&local), now);
+        let UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = projected.today
+        else {
+            panic!("expected account usage");
+        };
+        assert_eq!(observed_tokens, 100);
+        assert_eq!(api_equivalent_cost_usd, Some(1.0));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
     }
 
     #[test]
@@ -2721,9 +4289,11 @@ mod tests {
         };
         let detail = |tokens, cost| LocalUsageDay {
             observed_tokens: tokens,
+            priced_tokens: tokens,
             api_equivalent_cost_usd: Some(cost),
             complete: true,
             observed_through: Some(now - Duration::minutes(1)),
+            priced_observed_through: Some(now - Duration::minutes(1)),
         };
         let local = LocalUsageObservation {
             daily: BTreeMap::from([
@@ -2731,6 +4301,7 @@ mod tests {
                 (yesterday, detail(450, 4.5)),
             ]),
             scan_status: UsageScanStatus::Indexing,
+            ..LocalUsageObservation::default()
         };
 
         let projected = project_usage_periods(Some(&account), Some(&local), now);

@@ -9,31 +9,39 @@ import {
   type SanitizedDesktopStatePortOutcome,
 } from "@/native-state/sanitized-desktop-state-delivery";
 
+function unavailableUsage() {
+  return {
+    scanStatus: "unavailable" as const,
+    thirtyDays: { availability: "unavailable" as const },
+    sevenDays: { availability: "unavailable" as const },
+    today: { availability: "unavailable" as const },
+  };
+}
+
 function state(revision: string): SanitizedDesktopState {
   return {
+    combinedUsage: unavailableUsage(),
     contractVersion: 3,
     generatedAt: "2026-08-03T00:00:00.000Z",
     profile: { status: "not-authorized" },
     revision,
     providers: [
-      { availability: "unavailable", provider: "codex", quotaLanes: [] },
-      { availability: "unavailable", provider: "claude", quotaLanes: [] },
+      {
+        displayName: "Codex",
+        presence: "not-detected",
+        provider: "codex",
+        quota: { availability: "unavailable", provider: "codex", quotaLanes: [] },
+        usage: unavailableUsage(),
+      },
+      {
+        displayName: "Claude",
+        presence: "not-detected",
+        provider: "claude",
+        quota: { availability: "unavailable", provider: "claude", quotaLanes: [] },
+        usage: unavailableUsage(),
+      },
     ],
     sync: { lastSuccessfulAt: null, status: "unavailable" },
-    usage: {
-      claude: {
-        scanStatus: "unavailable",
-        thirtyDays: { availability: "unavailable" },
-        sevenDays: { availability: "unavailable" },
-        today: { availability: "unavailable" },
-      },
-      codex: {
-        scanStatus: "unavailable",
-        thirtyDays: { availability: "unavailable" },
-        sevenDays: { availability: "unavailable" },
-        today: { availability: "unavailable" },
-      },
-    },
   };
 }
 

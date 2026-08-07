@@ -1,24 +1,26 @@
 import { Button, ProviderConnectionCard } from "@touchgrass/ui";
+import type { CodingProvider } from "@touchgrass/contracts";
 
 import {
   codingProviderAccessStates,
   type CodingProviderAccessState,
-} from "@/components/coding-provider-access-state";
+} from "@/components/provider-access/presentation";
 
 function CodingProviderAccessCard({
   busy = false,
+  displayName: label,
   onCheck,
   onViewInstallationSteps,
   provider,
   state,
 }: {
   busy?: boolean;
+  displayName: string;
   onCheck?: (() => void) | undefined;
   onViewInstallationSteps?: (() => void) | undefined;
-  provider: "claude" | "codex";
+  provider: CodingProvider;
   state: CodingProviderAccessState;
 }) {
-  const label = provider === "codex" ? "Codex" : "Claude";
   let copy: string;
   if (state === "unavailable") {
     copy = "Provider detection is not connected in this build.";
