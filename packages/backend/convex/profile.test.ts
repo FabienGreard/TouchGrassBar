@@ -206,6 +206,14 @@ test("Recovery Key signup is short-lived, hashed, and session-validating", async
     displayName: "Fabien",
     touchGrassId: prepared.touchGrassId,
   });
+  await expect(
+    authenticated.mutation(api.tokenmaxxers.updateDisplayName, {
+      displayName: "New name",
+    }),
+  ).resolves.toEqual({
+    displayName: "New name",
+    touchGrassId: prepared.touchGrassId,
+  });
 
   const signOut = await authFetch(t, "/api/auth/sign-out", {
     headers: bearer(sessionToken),

@@ -493,6 +493,28 @@ impl SqliteLifecycleStore {
             .ok_or("profile lifecycle unavailable")
     }
 
+    fn update_display_name(&self, display_name: &str) -> Result<(), &'static str> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() || display_name.chars().count() > 40 {
+            return Err("display name invalid");
+        }
+        let updated = self
+            .connection
+            .lock()
+            .map_err(|_| "lifecycle persistence unavailable")?
+            .execute(
+                "UPDATE lifecycle_state
+                 SET display_name = ?1
+                 WHERE singleton = 1
+                   AND profile_provisioning = 'ready'",
+                [display_name],
+            )
+            .map_err(|_| "lifecycle persistence unavailable")?;
+        (updated == 1)
+            .then_some(())
+            .ok_or("profile lifecycle unavailable")
+    }
+
     fn flush(&self) -> Result<(), &'static str> {
         self.connection
             .lock()
@@ -640,6 +662,13 @@ impl DesktopLifecycle {
     pub(crate) fn mark_profile_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
         match &self.inner.store {
             LifecycleStore::Persistent(store) => store.mark_profile_ready(touch_grass_id),
+            LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
+        }
+    }
+
+    pub(crate) fn update_display_name(&self, display_name: &str) -> Result<(), &'static str> {
+        match &self.inner.store {
+            LifecycleStore::Persistent(store) => store.update_display_name(display_name),
             LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
         }
     }

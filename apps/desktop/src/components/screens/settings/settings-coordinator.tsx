@@ -123,6 +123,9 @@ function SettingsCoordinator({
       onOpenLatestDmg={() => {
         void updates.openLatestDmg();
       }}
+      onProfileDisplayNameChange={(displayName) =>
+        delivery.updateDisplayName(displayName)
+      }
       onHideRecoveryKey={() => {
         void delivery.hideRecoveryKey();
       }}

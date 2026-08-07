@@ -6,6 +6,7 @@ import {
 } from "@touchgrass/contracts";
 
 type SettingsPortFaultCode =
+  | "display-name-update-unavailable"
   | "launch-at-login-unavailable"
   | "navigation-stream-unavailable"
   | "recovery-clear-stream-unavailable"
@@ -26,6 +27,9 @@ type SettingsPort = {
     section: SettingsSection,
   ) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
+  updateDisplayName: (
+    displayName: string,
+  ) => Promise<SettingsPortOutcome<unknown>>;
   subscribeNavigation: (
     receive: (payload: unknown) => void,
   ) => Promise<SettingsPortOutcome<() => void>>;
@@ -56,6 +60,8 @@ function createSettingsDelivery(port: SettingsPort) {
   let revealInFlight: Promise<boolean> | null = null;
   let recoveryRevision = 0;
   let saveInFlight: Promise<boolean> | null = null;
+  let displayNameSaveInFlight: Promise<boolean> | null = null;
+  let optimisticDisplayName: string | null = null;
   let sectionSelection = Promise.resolve(true);
   let sectionRevision = 0;
   let selectedSection: SettingsSection | null = null;
@@ -87,6 +93,9 @@ function createSettingsDelivery(port: SettingsPort) {
     selectedSection = section;
     const snapshot = {
       ...parsed.data,
+      ...(optimisticDisplayName === null
+        ? {}
+        : { displayName: optimisticDisplayName }),
       recoveryKeySuffix: recoveryClearAvailable
         ? parsed.data.recoveryKeySuffix
         : null,
@@ -117,6 +126,19 @@ function createSettingsDelivery(port: SettingsPort) {
       snapshot,
     });
     return true;
+  };
+
+  const publishDisplayName = (
+    displayName: SettingsState["displayName"],
+  ) => {
+    if (current.snapshot === null) return;
+    const snapshot = { ...current.snapshot };
+    if (displayName === undefined) {
+      delete snapshot.displayName;
+    } else {
+      snapshot.displayName = displayName;
+    }
+    publish({ ...current, snapshot });
   };
 
   const read = () => {
@@ -252,6 +274,26 @@ function createSettingsDelivery(port: SettingsPort) {
         saveInFlight = null;
       });
       return saveInFlight;
+    },
+    updateDisplayName(displayName: string) {
+      if (displayNameSaveInFlight !== null) return displayNameSaveInFlight;
+      const previousDisplayName = current.snapshot?.displayName;
+      optimisticDisplayName = displayName;
+      publishDisplayName(displayName);
+      displayNameSaveInFlight = (async () => {
+        try {
+          const outcome = await port.updateDisplayName(displayName);
+          optimisticDisplayName = null;
+          if (outcome.ok && accept(outcome.value)) return true;
+        } catch {
+          optimisticDisplayName = null;
+        }
+        publishDisplayName(previousDisplayName);
+        return false;
+      })().finally(() => {
+        displayNameSaveInFlight = null;
+      });
+      return displayNameSaveInFlight;
     },
     subscribe(listener: () => void) {
       listeners.add(listener);

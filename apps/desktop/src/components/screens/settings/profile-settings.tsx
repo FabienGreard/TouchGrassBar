@@ -27,7 +27,9 @@ function ProfileSettings({
   recoveryKey = null,
   revealingRecoveryKey = false,
 }: {
-  onDisplayNameChange?: ((displayName: string) => void) | undefined;
+  onDisplayNameChange?:
+    | ((displayName: string) => boolean | Promise<boolean> | void)
+    | undefined;
   onHideRecoveryKey?: (() => void) | undefined;
   onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
