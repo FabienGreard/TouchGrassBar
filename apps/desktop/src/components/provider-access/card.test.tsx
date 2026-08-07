@@ -6,8 +6,8 @@ import type { CodingProviderAccessState } from "@/components/provider-access/pre
 
 const states = [
   {
-    action: null,
-    copy: "Provider detection is not connected in this build.",
+    action: "Check again",
+    copy: "TouchGrassBar could not check Codex on this Mac. It will try again.",
     detail: null,
     label: "Unavailable",
     state: "unavailable",
@@ -16,15 +16,8 @@ const states = [
     action: "Check again",
     copy: "Codex was detected on this Mac.",
     detail: null,
-    label: "Detected",
-    state: "detected",
-  },
-  {
-    action: "Check now",
-    copy: "Detected locally and reporting provider limits.",
-    detail: null,
     label: "Ready",
-    state: "ready",
+    state: "detected",
   },
   {
     action: "Check again",
@@ -55,7 +48,6 @@ describe("coding provider access", () => {
         <CodingProviderAccessCard
           displayName="Codex"
           onCheck={() => undefined}
-          onViewInstallationSteps={() => undefined}
           provider="codex"
           state={state.state}
         />,
@@ -79,5 +71,133 @@ describe("coding provider access", () => {
         expect(markup).toContain(`>${state.action}<`);
       }
     }
+  });
+
+  test("keeps the Settings control alone at the top-right", () => {
+    const markup = renderToStaticMarkup(
+      <CodingProviderAccessCard
+        displayName="Claude"
+        enabled
+        onCheck={() => undefined}
+        onEnabledChange={() => undefined}
+        provider="claude"
+        state="detected"
+      />,
+    );
+
+    expect(markup).toContain("absolute right-5 top-5");
+    expect(markup).toContain(
+      'aria-label="Show Claude and include its quota and usage in totals"',
+    );
+    expect(markup).not.toContain("Show and include");
+    expect(markup).toContain("mt-auto flex items-center justify-end");
+    expect(markup).toContain("pt-1");
+    expect(markup).not.toContain("pt-2.5");
+    expect(markup).not.toContain("absolute bottom-4 right-5");
+    expect(markup).toContain('class="-mr-9 flex h-5 items-center"');
+    expect(markup).toContain('data-slot="provider-action-spacer"');
+    expect(markup).toContain('aria-label="Check Claude again"');
+    expect(markup).toContain("-mr-1.5 mb-1");
+  });
+
+  test("keeps Ready, Excluded, and Unavailable compact", () => {
+    const enabled = renderToStaticMarkup(
+      <CodingProviderAccessCard
+        displayName="Claude"
+        enabled
+        onCheck={() => undefined}
+        onEnabledChange={() => undefined}
+        provider="claude"
+        state="not-installed"
+      />,
+    );
+    const excluded = renderToStaticMarkup(
+      <CodingProviderAccessCard
+        displayName="Claude"
+        enabled={false}
+        onCheck={() => undefined}
+        onEnabledChange={() => undefined}
+        provider="claude"
+        state="not-installed"
+      />,
+    );
+    const unavailable = renderToStaticMarkup(
+      <CodingProviderAccessCard
+        displayName="Claude"
+        enabled
+        onCheck={() => undefined}
+        onEnabledChange={() => undefined}
+        provider="claude"
+        state="unavailable"
+      />,
+    );
+    const ready = renderToStaticMarkup(
+      <CodingProviderAccessCard
+        displayName="Claude"
+        enabled
+        onEnabledChange={() => undefined}
+        provider="claude"
+        state="detected"
+      />,
+    );
+
+    expect(enabled).toContain("min-h-[188px]");
+    expect(excluded).toContain("h-[108px]");
+    expect(unavailable).toContain("h-[108px]");
+    expect(unavailable).toContain('aria-label="Check Claude again"');
+    expect(ready).toContain("h-[108px]");
+    expect(excluded).toContain('data-slot="provider-action-spacer"');
+    expect(excluded).not.toContain("Connect Claude");
+    expect(excluded).not.toContain('aria-label="Check Claude again"');
+  });
+
+  test("keeps expanded card actions below their detail panel", () => {
+    for (const state of ["needs-access", "not-installed"] as const) {
+      const markup = renderToStaticMarkup(
+        <CodingProviderAccessCard
+          displayName="Claude"
+          enabled
+          onCheck={() => undefined}
+          onEnabledChange={() => undefined}
+          provider="claude"
+          state={state}
+        />,
+      );
+
+      expect(markup).toContain("min-h-[188px]");
+      expect(markup).toContain(
+        'class="-mr-9 mt-1.5 flex h-5 items-center"',
+      );
+      expect(markup).toContain('data-slot="provider-expanded-action"');
+      expect(markup).not.toContain(
+        'aria-label="Check Claude again" class="absolute bottom-4 right-5"',
+      );
+    }
+  });
+
+  test("links each missing provider to its official installation guide", () => {
+    const claude = renderToStaticMarkup(
+      <CodingProviderAccessCard
+        displayName="Claude"
+        provider="claude"
+        state="not-installed"
+      />,
+    );
+    const codex = renderToStaticMarkup(
+      <CodingProviderAccessCard
+        displayName="Codex"
+        provider="codex"
+        state="not-installed"
+      />,
+    );
+
+    expect(claude).toContain(
+      'href="https://docs.anthropic.com/en/docs/claude-code/getting-started"',
+    );
+    expect(codex).toContain(
+      'href="https://developers.openai.com/codex/cli/"',
+    );
+    expect(claude).toContain('target="_blank"');
+    expect(claude).toContain("Official installation guide");
   });
 });

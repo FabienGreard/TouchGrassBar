@@ -1,0 +1,313 @@
+{
+  "schemaVersion": 1,
+  "basis": "anthropic-standard-2026-08-07-v1",
+  "batchFactor": 0.5,
+  "usInferenceFactor": 1.1,
+  "webSearchUsdPerThousand": 10.0,
+  "models": [
+    {
+      "name": "claude-fable-5",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-06-09",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 10.0,
+          "cacheWrite5mUsdPerMillion": 12.5,
+          "cacheWrite1hUsdPerMillion": 20.0,
+          "cacheReadUsdPerMillion": 1.0,
+          "outputUsdPerMillion": 50.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-mythos-5",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-06-09",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 10.0,
+          "cacheWrite5mUsdPerMillion": 12.5,
+          "cacheWrite1hUsdPerMillion": 20.0,
+          "cacheReadUsdPerMillion": 1.0,
+          "outputUsdPerMillion": 50.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-opus-5",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-07-24",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 5.0,
+          "cacheWrite5mUsdPerMillion": 6.25,
+          "cacheWrite1hUsdPerMillion": 10.0,
+          "cacheReadUsdPerMillion": 0.5,
+          "outputUsdPerMillion": 25.0
+        }
+      ],
+      "fastPeriods": [
+        {
+          "effectiveFrom": "2026-07-24",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 10.0,
+          "cacheWrite5mUsdPerMillion": 12.5,
+          "cacheWrite1hUsdPerMillion": 20.0,
+          "cacheReadUsdPerMillion": 1.0,
+          "outputUsdPerMillion": 50.0
+        }
+      ]
+    },
+    {
+      "name": "claude-opus-4-8",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-05-28",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 5.0,
+          "cacheWrite5mUsdPerMillion": 6.25,
+          "cacheWrite1hUsdPerMillion": 10.0,
+          "cacheReadUsdPerMillion": 0.5,
+          "outputUsdPerMillion": 25.0
+        }
+      ],
+      "fastPeriods": [
+        {
+          "effectiveFrom": "2026-05-28",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 10.0,
+          "cacheWrite5mUsdPerMillion": 12.5,
+          "cacheWrite1hUsdPerMillion": 20.0,
+          "cacheReadUsdPerMillion": 1.0,
+          "outputUsdPerMillion": 50.0
+        }
+      ]
+    },
+    {
+      "name": "claude-opus-4-7",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-04-16",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 5.0,
+          "cacheWrite5mUsdPerMillion": 6.25,
+          "cacheWrite1hUsdPerMillion": 10.0,
+          "cacheReadUsdPerMillion": 0.5,
+          "outputUsdPerMillion": 25.0
+        }
+      ],
+      "fastPeriods": [
+        {
+          "effectiveFrom": "2026-05-12",
+          "effectiveUntil": "2026-07-24",
+          "inputUsdPerMillion": 30.0,
+          "cacheWrite5mUsdPerMillion": 37.5,
+          "cacheWrite1hUsdPerMillion": 60.0,
+          "cacheReadUsdPerMillion": 3.0,
+          "outputUsdPerMillion": 150.0
+        }
+      ]
+    },
+    {
+      "name": "claude-opus-4-6",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-02-05",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 5.0,
+          "cacheWrite5mUsdPerMillion": 6.25,
+          "cacheWrite1hUsdPerMillion": 10.0,
+          "cacheReadUsdPerMillion": 0.5,
+          "outputUsdPerMillion": 25.0
+        }
+      ],
+      "fastPeriods": [
+        {
+          "effectiveFrom": "2026-02-07",
+          "effectiveUntil": "2026-06-29",
+          "inputUsdPerMillion": 30.0,
+          "cacheWrite5mUsdPerMillion": 37.5,
+          "cacheWrite1hUsdPerMillion": 60.0,
+          "cacheReadUsdPerMillion": 3.0,
+          "outputUsdPerMillion": 150.0
+        }
+      ]
+    },
+    {
+      "name": "claude-opus-4-5-20251101",
+      "aliases": ["claude-opus-4-5"],
+      "supportsUsInference": false,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2025-11-24",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 5.0,
+          "cacheWrite5mUsdPerMillion": 6.25,
+          "cacheWrite1hUsdPerMillion": 10.0,
+          "cacheReadUsdPerMillion": 0.5,
+          "outputUsdPerMillion": 25.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-opus-4-1-20250805",
+      "aliases": ["claude-opus-4-1"],
+      "supportsUsInference": false,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2025-08-05",
+          "effectiveUntil": "2026-08-05",
+          "inputUsdPerMillion": 15.0,
+          "cacheWrite5mUsdPerMillion": 18.75,
+          "cacheWrite1hUsdPerMillion": 30.0,
+          "cacheReadUsdPerMillion": 1.5,
+          "outputUsdPerMillion": 75.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-opus-4-20250514",
+      "aliases": ["claude-opus-4-0"],
+      "supportsUsInference": false,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2025-05-22",
+          "effectiveUntil": "2026-06-15",
+          "inputUsdPerMillion": 15.0,
+          "cacheWrite5mUsdPerMillion": 18.75,
+          "cacheWrite1hUsdPerMillion": 30.0,
+          "cacheReadUsdPerMillion": 1.5,
+          "outputUsdPerMillion": 75.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-sonnet-5",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-06-30",
+          "effectiveUntil": "2026-09-01",
+          "inputUsdPerMillion": 2.0,
+          "cacheWrite5mUsdPerMillion": 2.5,
+          "cacheWrite1hUsdPerMillion": 4.0,
+          "cacheReadUsdPerMillion": 0.2,
+          "outputUsdPerMillion": 10.0
+        },
+        {
+          "effectiveFrom": "2026-09-01",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 3.0,
+          "cacheWrite5mUsdPerMillion": 3.75,
+          "cacheWrite1hUsdPerMillion": 6.0,
+          "cacheReadUsdPerMillion": 0.3,
+          "outputUsdPerMillion": 15.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-sonnet-4-6",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-02-17",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 3.0,
+          "cacheWrite5mUsdPerMillion": 3.75,
+          "cacheWrite1hUsdPerMillion": 6.0,
+          "cacheReadUsdPerMillion": 0.3,
+          "outputUsdPerMillion": 15.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-sonnet-4-5-20250929",
+      "aliases": ["claude-sonnet-4-5"],
+      "supportsUsInference": false,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2025-09-29",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 3.0,
+          "cacheWrite5mUsdPerMillion": 3.75,
+          "cacheWrite1hUsdPerMillion": 6.0,
+          "cacheReadUsdPerMillion": 0.3,
+          "outputUsdPerMillion": 15.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-sonnet-4-20250514",
+      "aliases": ["claude-sonnet-4-0"],
+      "supportsUsInference": false,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2025-05-22",
+          "effectiveUntil": "2026-06-15",
+          "inputUsdPerMillion": 3.0,
+          "cacheWrite5mUsdPerMillion": 3.75,
+          "cacheWrite1hUsdPerMillion": 6.0,
+          "cacheReadUsdPerMillion": 0.3,
+          "outputUsdPerMillion": 15.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-haiku-4-5-20251001",
+      "aliases": ["claude-haiku-4-5"],
+      "supportsUsInference": false,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2025-10-15",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 1.0,
+          "cacheWrite5mUsdPerMillion": 1.25,
+          "cacheWrite1hUsdPerMillion": 2.0,
+          "cacheReadUsdPerMillion": 0.1,
+          "outputUsdPerMillion": 5.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-3-5-haiku-20241022",
+      "aliases": ["claude-3-5-haiku-latest"],
+      "supportsUsInference": false,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2024-10-22",
+          "effectiveUntil": "2026-02-19",
+          "inputUsdPerMillion": 0.8,
+          "cacheWrite5mUsdPerMillion": 1.0,
+          "cacheWrite1hUsdPerMillion": 1.6,
+          "cacheReadUsdPerMillion": 0.08,
+          "outputUsdPerMillion": 4.0
+        }
+      ],
+      "fastPeriods": []
+    }
+  ]
+}

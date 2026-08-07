@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { providerAccessPresentations } from "@/components/provider-access/presentation";
+import { settingsProviderAccessPresentations } from "@/components/provider-access/presentation";
 import { createNativeWindowKeyboardHandler } from "@/components/screens/native-window-keyboard";
 import { bindRecoveryKeyClearEvents } from "@/components/screens/settings/recovery-key-input";
 import { SettingsScreen } from "@/components/screens/settings/settings-screen";
@@ -126,6 +126,9 @@ function SettingsCoordinator({
       onProfileDisplayNameChange={(displayName) =>
         delivery.updateDisplayName(displayName)
       }
+      onProviderEnabledChange={(provider, enabled) => {
+        void delivery.setProviderEnabled(provider, enabled);
+      }}
       onHideRecoveryKey={() => {
         void delivery.hideRecoveryKey();
       }}
@@ -139,10 +142,11 @@ function SettingsCoordinator({
       pendingDisplayName={state?.displayName}
       profile={profile}
       profileProvisioning={state?.profileProvisioning}
-      providers={providerAccessPresentations(providers)}
+      providers={settingsProviderAccessPresentations(providers)}
       recoveryKey={view.recoveryKey}
       revealingRecoveryKey={view.revealingRecoveryKey}
       section={state?.section}
+      savingProviders={view.savingProviders}
       updateState={updateView.state}
     />
   );

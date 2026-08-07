@@ -26,7 +26,7 @@ use crate::providers::process::{
 const MAX_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
 const CLI_OUTPUT_CHUNK_BYTES: usize = 8 * 1024;
 const STARTUP_DELAY: StdDuration = StdDuration::from_secs(2);
-const PROBE_SESSION_MARKER: &str = ".touchgrassbar-claude-probe-session";
+pub(super) const PROBE_SESSION_MARKER: &str = ".touchgrassbar-claude-probe-session";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ProbeFailure {
@@ -300,6 +300,41 @@ fn cleanup_probe_session_artifacts_at(probe_directory: &Path, config_root: &Path
     }
     cleanup_probe_directory(probe_directory, transcript_absent);
     transcript_absent
+}
+
+pub(super) enum ProbeTranscriptExclusion {
+    None,
+    Exact(PathBuf),
+    UnsafeProject(PathBuf),
+}
+
+pub(super) fn probe_transcript_exclusion(
+    probe_directory: &Path,
+    config_root: &Path,
+) -> ProbeTranscriptExclusion {
+    if !probe_session_marker_exists(probe_directory) {
+        return ProbeTranscriptExclusion::None;
+    }
+    let project_directory = config_root
+        .join("projects")
+        .join(claude_project_directory_name(probe_directory));
+    match read_probe_session_marker(probe_directory) {
+        Some(session_id) => ProbeTranscriptExclusion::Exact(
+            project_directory.join(format!("{}.jsonl", session_id.as_str())),
+        ),
+        None => ProbeTranscriptExclusion::UnsafeProject(project_directory),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn pending_probe_transcript(
+    probe_directory: &Path,
+    config_root: &Path,
+) -> Option<PathBuf> {
+    match probe_transcript_exclusion(probe_directory, config_root) {
+        ProbeTranscriptExclusion::Exact(path) => Some(path),
+        ProbeTranscriptExclusion::None | ProbeTranscriptExclusion::UnsafeProject(_) => None,
+    }
 }
 
 fn probe_session_marker_exists(probe_directory: &Path) -> bool {

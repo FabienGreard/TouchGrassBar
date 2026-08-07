@@ -18,14 +18,17 @@ use time::{
 };
 
 use crate::daily_usage_aggregate::{
-    DailyCostEvidence, ProviderUsageEvidence, calculate_usage_periods, checked_sum, period_days,
+    DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_usage_periods,
+    checked_sum, period_days,
 };
-use crate::sanitized::{ApiEquivalentCostQuality, UsagePeriods, UsageScanStatus, UsageTotal};
+use crate::sanitized::{
+    ApiEquivalentCostQuality, UsageCoverage, UsagePeriods, UsageScanStatus, UsageTotal,
+};
 
 #[cfg(test)]
 use crate::daily_usage_aggregate::preserve_best_known_costs;
 #[cfg(test)]
-use crate::sanitized::{UsageCoverage, UsageEvidenceBasis};
+use crate::sanitized::UsageEvidenceBasis;
 
 const OPENAI_STANDARD_PRICING_JSON: &str = include_str!("../../../pricing/openai-standard.json");
 const MAX_ROLLOUT_LINE_BYTES: usize = 4 * 1024 * 1024;
@@ -3345,6 +3348,22 @@ pub(crate) fn project_usage_periods_with_account_time(
     let evidence = ProviderUsageEvidence {
         provider_reported_tokens: account.map(|account| account.daily_tokens.clone()),
         provider_observed_at: account.map(|_| account_observed_at),
+        local_usage_evidence: local.map_or_else(BTreeMap::new, |local| {
+            local
+                .daily
+                .iter()
+                .map(|(day, detail)| {
+                    (
+                        *day,
+                        DailyUsageEvidence {
+                            observed_tokens: detail.observed_tokens,
+                            coverage: UsageCoverage::Partial,
+                            observed_through: detail.observed_through,
+                        },
+                    )
+                })
+                .collect()
+        }),
         local_cost_evidence: local.map_or_else(BTreeMap::new, |local| local.daily.clone()),
         local_evidence_available: local.is_some(),
         local_observed_at: local.map(|_| now),

@@ -12,6 +12,10 @@ _Avoid_: AI, model, vendor
 Whether a Coding Provider installation is locally detected, not detected, or cannot be checked. Provider Presence does not prove authentication, Quota access, or Observed Usage availability.
 _Avoid_: Provider connection, provider authorization, provider availability
 
+**Provider Enablement**:
+Whether a Coding Provider is active in TouchGrassBar. Providers are enabled by default. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Observed Usage and API-Equivalent Cost do not contribute to Combined totals. Disabling a provider does not delete its local history.
+_Avoid_: Provider Presence, provider authentication, data deletion
+
 **Quota**:
 A provider-defined allowance for a bounded period. A quota is not the same as locally observed usage.
 _Avoid_: Usage, balance

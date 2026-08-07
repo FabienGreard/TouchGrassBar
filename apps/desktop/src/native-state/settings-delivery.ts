@@ -1,6 +1,7 @@
 import {
   settingsNavigationRequestSchema,
   settingsStateSchema,
+  type CodingProvider,
   type SettingsSection,
   type SettingsState,
 } from "@touchgrass/contracts";
@@ -9,6 +10,7 @@ type SettingsPortFaultCode =
   | "display-name-update-unavailable"
   | "launch-at-login-unavailable"
   | "navigation-stream-unavailable"
+  | "provider-setting-unavailable"
   | "recovery-clear-stream-unavailable"
   | "recovery-key-unavailable"
   | "settings-section-unavailable"
@@ -30,6 +32,10 @@ type SettingsPort = {
   updateDisplayName: (
     displayName: string,
   ) => Promise<SettingsPortOutcome<unknown>>;
+  setProviderEnabled: (
+    provider: CodingProvider,
+    enabled: boolean,
+  ) => Promise<SettingsPortOutcome<unknown>>;
   subscribeNavigation: (
     receive: (payload: unknown) => void,
   ) => Promise<SettingsPortOutcome<() => void>>;
@@ -43,6 +49,7 @@ type SettingsDeliverySnapshot = {
   recoveryKey: string | null;
   revealingRecoveryKey: boolean;
   savingLaunchAtLogin: boolean;
+  savingProviders: readonly CodingProvider[];
   snapshot: SettingsState | null;
 };
 
@@ -53,6 +60,7 @@ function createSettingsDelivery(port: SettingsPort) {
     recoveryKey: null,
     revealingRecoveryKey: false,
     savingLaunchAtLogin: false,
+    savingProviders: [],
     snapshot: null,
   };
   let readInFlight: Promise<void> | null = null;
@@ -62,6 +70,12 @@ function createSettingsDelivery(port: SettingsPort) {
   let saveInFlight: Promise<boolean> | null = null;
   let displayNameSaveInFlight: Promise<boolean> | null = null;
   let optimisticDisplayName: string | null = null;
+  let providerConfirmationRevision = 0;
+  const providerConfirmationRevisions = new Map<CodingProvider, number>();
+  const providerSavesInFlight = new Map<
+    CodingProvider,
+    Promise<boolean>
+  >();
   let sectionSelection = Promise.resolve(true);
   let sectionRevision = 0;
   let selectedSection: SettingsSection | null = null;
@@ -83,7 +97,11 @@ function createSettingsDelivery(port: SettingsPort) {
     }
   };
 
-  const accept = (value: unknown, savingLaunchAtLogin = false) => {
+  const accept = (
+    value: unknown,
+    savingLaunchAtLogin = false,
+    observedProviderRevision = providerConfirmationRevision,
+  ) => {
     const parsed = settingsStateSchema.safeParse(value);
     if (!parsed.success) {
       publish({ ...current, phase: "degraded", savingLaunchAtLogin });
@@ -91,11 +109,23 @@ function createSettingsDelivery(port: SettingsPort) {
     }
     const section = selectedSection ?? parsed.data.section;
     selectedSection = section;
+    const providers = parsed.data.providers.map((provider) => {
+      const confirmationRevision =
+        providerConfirmationRevisions.get(provider.provider) ?? 0;
+      if (confirmationRevision <= observedProviderRevision) return provider;
+      const lastConfirmed = current.snapshot?.providers.find(
+        (item) => item.provider === provider.provider,
+      );
+      return lastConfirmed === undefined
+        ? provider
+        : { ...provider, enabled: lastConfirmed.enabled };
+    });
     const snapshot = {
       ...parsed.data,
       ...(optimisticDisplayName === null
         ? {}
         : { displayName: optimisticDisplayName }),
+      providers,
       recoveryKeySuffix: recoveryClearAvailable
         ? parsed.data.recoveryKeySuffix
         : null,
@@ -123,6 +153,7 @@ function createSettingsDelivery(port: SettingsPort) {
       recoveryKey: current.recoveryKey,
       revealingRecoveryKey: current.revealingRecoveryKey,
       savingLaunchAtLogin,
+      savingProviders: current.savingProviders,
       snapshot,
     });
     return true;
@@ -143,13 +174,14 @@ function createSettingsDelivery(port: SettingsPort) {
 
   const read = () => {
     if (readInFlight !== null) return readInFlight;
+    const observedProviderRevision = providerConfirmationRevision;
     readInFlight = (async () => {
       const outcome = await port.read();
       if (!outcome.ok) {
         publish({ ...current, phase: "degraded", savingLaunchAtLogin: false });
         return;
       }
-      accept(outcome.value);
+      accept(outcome.value, false, observedProviderRevision);
     })().finally(() => {
       readInFlight = null;
     });
@@ -258,6 +290,7 @@ function createSettingsDelivery(port: SettingsPort) {
     },
     setLaunchAtLogin(enabled: boolean) {
       if (saveInFlight !== null) return saveInFlight;
+      const observedProviderRevision = providerConfirmationRevision;
       publish({ ...current, savingLaunchAtLogin: true });
       saveInFlight = (async () => {
         const outcome = await port.setLaunchAtLogin(enabled);
@@ -269,7 +302,7 @@ function createSettingsDelivery(port: SettingsPort) {
           });
           return false;
         }
-        return accept(outcome.value);
+        return accept(outcome.value, false, observedProviderRevision);
       })().finally(() => {
         saveInFlight = null;
       });
@@ -294,6 +327,73 @@ function createSettingsDelivery(port: SettingsPort) {
         displayNameSaveInFlight = null;
       });
       return displayNameSaveInFlight;
+    },
+    setProviderEnabled(provider: CodingProvider, enabled: boolean) {
+      const existing = providerSavesInFlight.get(provider);
+      if (existing !== undefined) return existing;
+
+      publish({
+        ...current,
+        savingProviders: [...current.savingProviders, provider],
+      });
+      const save = (async () => {
+        const outcome = await port.setProviderEnabled(provider, enabled);
+        if (!outcome.ok) {
+          publish({ ...current, phase: "degraded" });
+          return false;
+        }
+        const parsed = settingsStateSchema.safeParse(outcome.value);
+        const confirmedProvider = parsed.success
+          ? parsed.data.providers.find((item) => item.provider === provider)
+          : undefined;
+        if (
+          !parsed.success ||
+          confirmedProvider === undefined ||
+          confirmedProvider.enabled !== enabled
+        ) {
+          publish({ ...current, phase: "degraded" });
+          return false;
+        }
+
+        if (
+          current.snapshot !== null &&
+          !current.snapshot.providers.some((item) => item.provider === provider)
+        ) {
+          publish({ ...current, phase: "degraded" });
+          return false;
+        }
+        providerConfirmationRevision += 1;
+        providerConfirmationRevisions.set(
+          provider,
+          providerConfirmationRevision,
+        );
+        if (current.snapshot === null) {
+          return accept(parsed.data);
+        }
+        publish({
+          ...current,
+          phase: "ready",
+          snapshot: {
+            ...current.snapshot,
+            providers: current.snapshot.providers.map((item) =>
+              item.provider === provider ? confirmedProvider : item,
+            ),
+          },
+        });
+        return true;
+      })().finally(() => {
+        providerSavesInFlight.delete(provider);
+        if (current.savingProviders.includes(provider)) {
+          publish({
+            ...current,
+            savingProviders: current.savingProviders.filter(
+              (item) => item !== provider,
+            ),
+          });
+        }
+      });
+      providerSavesInFlight.set(provider, save);
+      return save;
     },
     subscribe(listener: () => void) {
       listeners.add(listener);

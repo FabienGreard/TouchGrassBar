@@ -17,6 +17,8 @@
     "dev:landing": "bun --env-file=.env.local scripts/run-dev.ts landing",
     "dev:ui": "bun --env-file=.env.local scripts/run-dev.ts ui",
     "debug:claude-quota": "bun scripts/debug-claude-quota.ts",
+    "debug:claude": "bun scripts/debug-claude-usage.ts",
+    "debug:claude-usage": "bun scripts/debug-claude-usage.ts",
     "debug:codex-usage": "bun scripts/debug-codex-usage.ts",
     "desktop:bundle": "bun --env-file=.env.local scripts/run-desktop-dev.ts --bundle",
     "desktop:release": "bun --no-env-file scripts/run-desktop-prod.ts",

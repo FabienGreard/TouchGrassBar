@@ -100,4 +100,22 @@ describe("development preview switcher", () => {
     expect(markup).toContain("No update");
     expect(markup).toContain("Available");
   });
+
+  test("offers the Settings-only excluded provider preview", () => {
+    const markup = renderToStaticMarkup(
+      <DevPreviewSwitcher
+        activeFixture="unavailable"
+        activeSurface="settings"
+        settingsProviderEnabled={false}
+        settingsProviderPreviewState="not-installed"
+      />,
+    );
+
+    expect(markup).toContain(
+      'href="?window=settings&amp;fixture=unavailable&amp;providerState=excluded#settings-providers"',
+    );
+    expect(markup).toContain(">Excluded<");
+    expect(markup).toContain(">Ready<");
+    expect(markup).not.toContain(">Detected<");
+  });
 });

@@ -16,18 +16,31 @@ describe("development preview scenarios", () => {
   test("owns surface and onboarding query parsing outside production", () => {
     expect(
       resolveDevPreviewScenario(
-        "?window=onboarding&onboardingStep=profile&codexState=needs-access&providerState=ready&setupState=profile-pending",
+        "?window=onboarding&onboardingStep=profile&codexState=needs-access&providerState=detected&setupState=profile-pending",
       ),
     ).toMatchObject({
       onboarding: {
         codexState: "needs-access",
         initialStep: "profile",
-        providerState: "ready",
+        providerState: "detected",
         setupState: "profile-pending",
       },
       settingsProfileState: "saved",
-      settingsProviderState: "ready",
+      settingsProviderEnabled: true,
+      settingsProviderState: "detected",
       surface: "onboarding",
+    });
+  });
+
+  test("resolves the Settings-only excluded provider state", () => {
+    expect(
+      resolveDevPreviewScenario(
+        "?window=settings&providerState=excluded",
+      ),
+    ).toMatchObject({
+      settingsProviderEnabled: false,
+      settingsProviderState: "not-installed",
+      surface: "settings",
     });
   });
 

@@ -21,7 +21,7 @@ use std::{
 use lifecycle::{
     BootstrapStateV3, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
     SETTINGS_RECOVERY_CLEAR_EVENT, SettingsNavigationRequest, SettingsProfileAuthorization,
-    SettingsSection, SettingsStateV3,
+    SettingsSection, SettingsStateV4,
 };
 use sanitized::{
     NativeCore, PANEL_ADD_TOKENMAXXER_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
@@ -53,6 +53,21 @@ pub fn run_codex_usage_debug_pass(
 ) -> Result<String, &'static str> {
     providers::debug_codex_usage_pass(database_path, codex_home, time::OffsetDateTime::now_utc())
         .map_err(|()| "Codex usage extraction failed")
+}
+
+#[doc(hidden)]
+pub fn run_claude_usage_debug_pass(
+    database_path: &std::path::Path,
+    config_root: &std::path::Path,
+    probe_directory: &std::path::Path,
+) -> Result<String, &'static str> {
+    providers::debug_claude_usage_pass(
+        database_path,
+        config_root,
+        probe_directory,
+        time::OffsetDateTime::now_utc(),
+    )
+    .map_err(|()| "Claude usage extraction failed")
 }
 
 #[doc(hidden)]
@@ -756,7 +771,7 @@ fn settings_state_with_recovery_key_suffix(
     lifecycle: &DesktopLifecycle,
     launch_at_login: LaunchAtLoginState,
     profile_runtime: &ProfileRuntime,
-) -> SettingsStateV3 {
+) -> SettingsStateV4 {
     let mut state = lifecycle.settings_state(launch_at_login);
     if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready {
         state.recovery_key_suffix = profile_runtime.recovery_key_suffix();
@@ -770,7 +785,7 @@ fn get_settings_state(
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
-) -> Result<SettingsStateV3, String> {
+) -> Result<SettingsStateV4, String> {
     require_settings(&window)?;
     Ok(settings_state_with_recovery_key_suffix(
         &lifecycle,
@@ -786,7 +801,7 @@ fn set_launch_at_login(
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
     enabled: bool,
-) -> Result<SettingsStateV3, String> {
+) -> Result<SettingsStateV4, String> {
     require_settings(&window)?;
     #[cfg(debug_assertions)]
     if dev_instance::DevelopmentInstance::from_environment().is_some() {
@@ -809,6 +824,30 @@ fn set_launch_at_login(
     Ok(settings_state_with_recovery_key_suffix(
         &lifecycle,
         launch_at_login,
+        &profile_runtime,
+    ))
+}
+
+#[tauri::command]
+fn set_provider_enabled(
+    window: WebviewWindow,
+    app: AppHandle,
+    lifecycle: State<'_, DesktopLifecycle>,
+    profile_runtime: State<'_, ProfileRuntime>,
+    core: State<'_, NativeCore>,
+    provider: providers::CodingProvider,
+    enabled: bool,
+) -> Result<SettingsStateV4, String> {
+    require_settings(&window)?;
+    lifecycle
+        .set_provider_enabled(provider, enabled)
+        .map_err(str::to_owned)?;
+    core.provider_enablement_changed(provider, enabled)
+        .map_err(str::to_owned)?;
+    core.request_provider_refresh().map_err(str::to_owned)?;
+    Ok(settings_state_with_recovery_key_suffix(
+        &lifecycle,
+        launch_at_login_state(&app),
         &profile_runtime,
     ))
 }
@@ -844,7 +883,7 @@ async fn update_profile_display_name(
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
     display_name: String,
-) -> Result<SettingsStateV3, String> {
+) -> Result<SettingsStateV4, String> {
     let authorization = require_profile_settings(&window, &lifecycle)?;
     let runtime = profile_runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -938,6 +977,7 @@ pub fn run() {
             retry_update,
             select_settings_section,
             set_launch_at_login,
+            set_provider_enabled,
             update_profile_display_name,
             take_panel_add_tokenmaxxer_request
         ])
@@ -962,10 +1002,26 @@ pub fn run() {
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
-            let core = database_path
-                .as_deref()
-                .and_then(|path| NativeCore::open(path).ok())
-                .unwrap_or_else(NativeCore::unavailable);
+            let provider_enablement: Arc<dyn providers::ProviderEnablementPolicy> =
+                Arc::new(lifecycle.clone());
+            let core = database_path.as_deref().map_or_else(
+                || {
+                    NativeCore::unavailable_with_provider_enablement(Arc::clone(
+                        &provider_enablement,
+                    ))
+                },
+                |path| {
+                    NativeCore::open_with_provider_enablement(
+                        path,
+                        Arc::clone(&provider_enablement),
+                    )
+                    .unwrap_or_else(|_| {
+                        NativeCore::unavailable_with_provider_enablement(Arc::clone(
+                            &provider_enablement,
+                        ))
+                    })
+                },
+            );
             let show_bootstrap = should_show_bootstrap_on_start(
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,

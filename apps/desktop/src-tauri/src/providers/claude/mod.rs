@@ -4,6 +4,8 @@
 //! the two supported quota lanes, and discards the terminal output.
 
 mod cli_probe;
+mod pricing;
+mod usage;
 
 use std::{
     path::{Path, PathBuf},
@@ -84,10 +86,15 @@ impl ClaudeQuotaObservation {
 
 pub(crate) struct ClaudeProviderObservationAdapter {
     clock: Arc<dyn Clock>,
+    database_path: Option<PathBuf>,
     probe_directory: Option<PathBuf>,
     processes: ProviderProcessSupervisor,
     #[cfg(test)]
     fixture: Option<ClaudeQuotaObservation>,
+    #[cfg(test)]
+    fixture_failure: Option<RefreshFailure>,
+    #[cfg(test)]
+    fixture_usage: Option<crate::sanitized::UsagePeriods>,
 }
 
 impl ClaudeProviderObservationAdapter {
@@ -98,6 +105,7 @@ impl ClaudeProviderObservationAdapter {
     ) -> Self {
         Self {
             clock,
+            database_path: database_path.clone(),
             probe_directory: database_path
                 .as_deref()
                 .and_then(Path::parent)
@@ -105,6 +113,10 @@ impl ClaudeProviderObservationAdapter {
             processes,
             #[cfg(test)]
             fixture: None,
+            #[cfg(test)]
+            fixture_failure: None,
+            #[cfg(test)]
+            fixture_usage: None,
         }
     }
 
@@ -116,9 +128,33 @@ impl ClaudeProviderObservationAdapter {
     ) -> Self {
         Self {
             clock,
+            database_path: None,
             probe_directory: None,
             processes,
             fixture: Some(observation),
+            fixture_failure: None,
+            fixture_usage: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn fixture_with_usage(
+        clock: Arc<dyn Clock>,
+        observation: Result<ClaudeQuotaObservation, RefreshFailure>,
+        fixture_usage: crate::sanitized::UsagePeriods,
+    ) -> Self {
+        let (fixture, fixture_failure) = match observation {
+            Ok(observation) => (Some(observation), None),
+            Err(failure) => (None, Some(failure)),
+        };
+        Self {
+            clock,
+            database_path: None,
+            probe_directory: None,
+            processes: ProviderProcessSupervisor::default(),
+            fixture,
+            fixture_failure,
+            fixture_usage: Some(fixture_usage),
         }
     }
 
@@ -128,6 +164,11 @@ impl ClaudeProviderObservationAdapter {
         timeout: StdDuration,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<ClaudeQuotaObservation, RefreshFailure> {
+        #[cfg(test)]
+        if let Some(failure) = self.fixture_failure {
+            return Err(failure);
+        }
+
         #[cfg(test)]
         if let Some(observation) = &self.fixture {
             return Ok(observation.clone());
@@ -157,6 +198,21 @@ impl ClaudeProviderObservationAdapter {
             }
         })
     }
+
+    fn observe_usage(&self, now: OffsetDateTime) -> Option<crate::sanitized::UsagePeriods> {
+        #[cfg(test)]
+        if let Some(usage) = &self.fixture_usage {
+            return Some(usage.clone());
+        }
+
+        usage::scan_local_usage(
+            self.database_path.as_deref(),
+            self.probe_directory.as_deref(),
+            now,
+        )
+        .as_ref()
+        .map(|local| usage::project_usage_periods(Some(local), now))
+    }
 }
 
 impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
@@ -169,27 +225,51 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
         cached: &ProviderPresentation,
         attempt: &RefreshAttempt,
     ) -> Result<Option<ProviderObservation>, RefreshFailure> {
-        if attempt.should_skip_claude_quota_probe() {
+        let skip_quota = attempt.should_skip_claude_quota_probe();
+        let scan_usage = !skip_quota || attempt.includes_local_usage_catch_up();
+        if skip_quota && !scan_usage {
             debug_event("refresh_skipped reason=claude_irrelevant_sources");
             return Ok(None);
         }
-        let timeout = attempt.remaining()?;
         let now = self.clock.now();
-        debug_event("cli_probe_started");
-        let observation = self.observe(now, timeout, &|| attempt.is_cancelled())?;
-        let quota = observation.sanitized_snapshot(now).map_err(|()| {
-            debug_event("cli_probe_unavailable reason=invalid_quota");
-            RefreshFailure::SourceUnavailable
-        })?;
-        if cached.quota == quota {
-            debug_event("cli_probe_unchanged");
+        let projected_usage = if scan_usage {
+            attempt.remaining()?;
+            self.observe_usage(now)
+        } else {
+            None
+        };
+        let usage = projected_usage.unwrap_or_else(|| cached.usage.clone());
+        let mut quota_failed = false;
+        let quota = if skip_quota {
+            cached.quota.clone()
+        } else {
+            let timeout = attempt.remaining()?;
+            debug_event("cli_probe_started");
+            match self.observe(now, timeout, &|| attempt.is_cancelled()) {
+                Ok(observation) => match observation.sanitized_snapshot(now) {
+                    Ok(snapshot) => snapshot,
+                    Err(()) => {
+                        debug_event("cli_probe_unavailable reason=invalid_quota");
+                        quota_failed = true;
+                        cached.quota.clone()
+                    }
+                },
+                Err(RefreshFailure::SourceUnavailable) => {
+                    quota_failed = true;
+                    cached.quota.clone()
+                }
+                Err(failure) => return Err(failure),
+            }
+        };
+        if cached.quota == quota && cached.usage == usage {
+            if quota_failed {
+                return Err(RefreshFailure::SourceUnavailable);
+            }
+            debug_event("refresh_unchanged");
             return Ok(None);
         }
-        debug_event("cli_probe_loaded lane_count=2");
-        Ok(Some(ProviderObservation {
-            quota,
-            usage: cached.usage.clone(),
-        }))
+        debug_event("refresh_loaded");
+        Ok(Some(ProviderObservation { quota, usage }))
     }
 }
 
@@ -209,6 +289,15 @@ pub(super) fn debug_live_quota_report(
     )
     .map_err(|_| ())?;
     format_debug_quota_report(&observation, now)
+}
+
+pub(super) fn debug_usage_report(
+    database_path: &Path,
+    config_root: &Path,
+    probe_directory: &Path,
+    now: OffsetDateTime,
+) -> Result<String, ()> {
+    usage::debug_usage_report(database_path, config_root, probe_directory, now)
 }
 
 fn format_debug_quota_report(
@@ -258,12 +347,40 @@ pub(super) fn fixture_observation(now: OffsetDateTime) -> ClaudeQuotaObservation
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sanitized::{
+        ApiEquivalentCostQuality, UsageCoverage, UsageEvidenceBasis, UsagePeriods, UsageScanStatus,
+        UsageTotal,
+    };
 
     struct FixedClock(OffsetDateTime);
 
     impl Clock for FixedClock {
         fn now(&self) -> OffsetDateTime {
             self.0
+        }
+    }
+
+    fn fixture_usage(now: OffsetDateTime, observed_tokens: u64) -> UsagePeriods {
+        let total = UsageTotal::Current {
+            evidence_basis: UsageEvidenceBasis::LocallyDerived,
+            coverage: UsageCoverage::Partial,
+            observed_at: now.format(&Rfc3339).unwrap(),
+            observed_tokens,
+            api_equivalent_cost_usd: Some(1.25),
+            trend_percent: None,
+            trend_previous_tokens: None,
+            api_equivalent_cost_basis: Some("anthropic-standard-test".to_owned()),
+            api_equivalent_cost_quality: Some(ApiEquivalentCostQuality::LocalOnly),
+            api_equivalent_cost_coverage_percent: Some(100.0),
+        };
+        UsagePeriods {
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+            today: total.clone(),
+            seven_days: total.clone(),
+            thirty_days: total,
         }
     }
 
@@ -286,23 +403,67 @@ mod tests {
     }
 
     #[test]
-    fn joined_codex_notification_and_local_usage_do_not_refresh_claude() {
+    fn joined_codex_notification_and_local_usage_refresh_only_claude_usage() {
         let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
-        let adapter = ClaudeProviderObservationAdapter::fixture(
+        let expected_usage = fixture_usage(now, 321);
+        let adapter = ClaudeProviderObservationAdapter::fixture_with_usage(
             Arc::new(FixedClock(now)),
-            fixture_observation(now),
-            ProviderProcessSupervisor::default(),
+            Ok(fixture_observation(now)),
+            expected_usage.clone(),
         );
         let cached = ProviderPresentation::unavailable(CodingProvider::Claude);
 
-        assert_eq!(
-            adapter
-                .refresh(
-                    &cached,
-                    &RefreshAttempt::test_provider_notification_with_local_usage(),
-                )
-                .unwrap(),
-            None
+        let observation = adapter
+            .refresh(
+                &cached,
+                &RefreshAttempt::test_provider_notification_with_local_usage(),
+            )
+            .unwrap()
+            .expect("local usage catch-up must publish Claude usage");
+
+        assert_eq!(observation.quota, cached.quota);
+        assert_eq!(observation.usage, expected_usage);
+    }
+
+    #[test]
+    fn quota_failure_does_not_block_a_claude_usage_update() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let expected_usage = fixture_usage(now, 654);
+        let adapter = ClaudeProviderObservationAdapter::fixture_with_usage(
+            Arc::new(FixedClock(now)),
+            Err(RefreshFailure::SourceUnavailable),
+            expected_usage.clone(),
         );
+        let cached = ProviderPresentation::unavailable(CodingProvider::Claude);
+
+        let observation = adapter
+            .refresh(&cached, &RefreshAttempt::test())
+            .unwrap()
+            .expect("usage must publish when the independent quota probe fails");
+
+        assert_eq!(observation.quota, cached.quota);
+        assert_eq!(observation.usage, expected_usage);
+    }
+
+    #[test]
+    fn invalid_quota_does_not_block_a_claude_usage_update() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let expected_usage = fixture_usage(now, 777);
+        let mut invalid_quota = fixture_observation(now);
+        invalid_quota.five_hour.used_percentage = 101.0;
+        let adapter = ClaudeProviderObservationAdapter::fixture_with_usage(
+            Arc::new(FixedClock(now)),
+            Ok(invalid_quota),
+            expected_usage.clone(),
+        );
+        let cached = ProviderPresentation::unavailable(CodingProvider::Claude);
+
+        let observation = adapter
+            .refresh(&cached, &RefreshAttempt::test())
+            .unwrap()
+            .expect("usage must publish when the independent quota result is invalid");
+
+        assert_eq!(observation.quota, cached.quota);
+        assert_eq!(observation.usage, expected_usage);
     }
 }
