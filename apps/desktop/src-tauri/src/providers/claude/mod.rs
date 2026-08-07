@@ -17,6 +17,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::registry::resolve_provider_executable;
 use super::{ProviderObservation, ProviderObservationAdapter};
+use crate::daily_usage_aggregate::preserve_best_known_costs;
 use crate::providers::process::ProviderProcessSupervisor;
 use crate::sanitized::{
     Clock, CodingProvider, ProviderPresentation, ProviderSnapshot, QuotaLane, RefreshAttempt,
@@ -238,7 +239,9 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
         } else {
             None
         };
-        let usage = projected_usage.unwrap_or_else(|| cached.usage.clone());
+        let usage = projected_usage
+            .map(|usage| preserve_best_known_costs(usage, &cached.usage))
+            .unwrap_or_else(|| cached.usage.clone());
         let mut quota_failed = false;
         let quota = if skip_quota {
             cached.quota.clone()
@@ -371,7 +374,7 @@ mod tests {
             trend_previous_tokens: None,
             api_equivalent_cost_basis: Some("anthropic-standard-test".to_owned()),
             api_equivalent_cost_quality: Some(ApiEquivalentCostQuality::LocalOnly),
-            api_equivalent_cost_coverage_percent: Some(100.0),
+            api_equivalent_cost_coverage_percent: None,
         };
         UsagePeriods {
             scan_status: UsageScanStatus::Complete,
@@ -423,6 +426,127 @@ mod tests {
 
         assert_eq!(observation.quota, cached.quota);
         assert_eq!(observation.usage, expected_usage);
+    }
+
+    #[test]
+    fn incomplete_usage_refresh_keeps_the_last_valid_cost() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let mut cached = ProviderPresentation::unavailable(CodingProvider::Claude);
+        cached.usage = fixture_usage(now, 321);
+        let mut incomplete = fixture_usage(now, 321);
+        incomplete.scan_status = UsageScanStatus::Indexing;
+        incomplete.today_scan_status = UsageScanStatus::Indexing;
+        incomplete.seven_day_scan_status = UsageScanStatus::Indexing;
+        incomplete.thirty_day_scan_status = UsageScanStatus::Indexing;
+        for total in [
+            &mut incomplete.today,
+            &mut incomplete.seven_days,
+            &mut incomplete.thirty_days,
+        ] {
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
+                ..
+            } = total
+            else {
+                panic!("fixture usage must be current");
+            };
+            *api_equivalent_cost_usd = None;
+            *api_equivalent_cost_basis = None;
+            *api_equivalent_cost_quality = None;
+            *api_equivalent_cost_coverage_percent = None;
+        }
+        let adapter = ClaudeProviderObservationAdapter::fixture_with_usage(
+            Arc::new(FixedClock(now)),
+            Ok(fixture_observation(now)),
+            incomplete,
+        );
+
+        let observation = adapter
+            .refresh(&cached, &RefreshAttempt::test())
+            .unwrap()
+            .expect("incomplete Claude evidence must publish");
+
+        for total in [
+            observation.usage.today,
+            observation.usage.seven_days,
+            observation.usage.thirty_days,
+        ] {
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                ..
+            } = total
+            else {
+                panic!("fixture usage must remain current");
+            };
+            assert_eq!(api_equivalent_cost_usd, Some(1.25));
+        }
+    }
+
+    #[test]
+    fn incomplete_usage_refresh_models_a_carried_cost_when_tokens_change() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let mut cached = ProviderPresentation::unavailable(CodingProvider::Claude);
+        cached.usage = fixture_usage(now, 321);
+        let mut incomplete = fixture_usage(now, 642);
+        incomplete.scan_status = UsageScanStatus::Indexing;
+        incomplete.today_scan_status = UsageScanStatus::Indexing;
+        incomplete.seven_day_scan_status = UsageScanStatus::Indexing;
+        incomplete.thirty_day_scan_status = UsageScanStatus::Indexing;
+        for total in [
+            &mut incomplete.today,
+            &mut incomplete.seven_days,
+            &mut incomplete.thirty_days,
+        ] {
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
+                ..
+            } = total
+            else {
+                panic!("fixture usage must be current");
+            };
+            *api_equivalent_cost_usd = None;
+            *api_equivalent_cost_basis = None;
+            *api_equivalent_cost_quality = None;
+            *api_equivalent_cost_coverage_percent = None;
+        }
+        let adapter = ClaudeProviderObservationAdapter::fixture_with_usage(
+            Arc::new(FixedClock(now)),
+            Ok(fixture_observation(now)),
+            incomplete,
+        );
+
+        let observation = adapter
+            .refresh(&cached, &RefreshAttempt::test())
+            .unwrap()
+            .expect("incomplete Claude evidence must publish");
+
+        for total in [
+            observation.usage.today,
+            observation.usage.seven_days,
+            observation.usage.thirty_days,
+        ] {
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
+                ..
+            } = total
+            else {
+                panic!("fixture usage must remain current");
+            };
+            assert_eq!(api_equivalent_cost_usd, Some(2.5));
+            assert_eq!(
+                api_equivalent_cost_quality,
+                Some(ApiEquivalentCostQuality::Modeled)
+            );
+            assert_eq!(api_equivalent_cost_coverage_percent, Some(50.0));
+        }
     }
 
     #[test]

@@ -145,6 +145,7 @@ function UsageMetric({
   scanStatus: UsagePeriods["scanStatus"];
 }) {
   if (total.availability === "unavailable") {
+    const detail = scanStatus === "indexing" ? "Indexing…" : "Not observed";
     return (
       <MetricCard>
         <MetricCardLabel>{label}</MetricCardLabel>
@@ -162,7 +163,7 @@ function UsageMetric({
         >
           —
         </MetricCardValue>
-        <MetricCardDetail>Not observed</MetricCardDetail>
+        <MetricCardDetail>{detail}</MetricCardDetail>
         <MetricCardGauge
           aria-label={
             presentation

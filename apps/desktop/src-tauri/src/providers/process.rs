@@ -297,6 +297,14 @@ impl ProviderProcessSupervisor {
     }
 
     pub(crate) fn shutdown_all(&self) -> ShutdownSummary {
+        self.stop_all(true)
+    }
+
+    pub(crate) fn cancel_active(&self) -> ShutdownSummary {
+        self.stop_all(false)
+    }
+
+    fn stop_all(&self, stop_accepting: bool) -> ShutdownSummary {
         let deadline = Instant::now() + SHUTDOWN_BUDGET;
         let processes = {
             let Ok(mut registry) = self.inner.registry.lock() else {
@@ -305,7 +313,9 @@ impl ProviderProcessSupervisor {
                     deadline_count: 1,
                 };
             };
-            registry.accepting = false;
+            if stop_accepting {
+                registry.accepting = false;
+            }
             for pending in registry.pending.values() {
                 pending.store(true, Ordering::Release);
             }
@@ -1549,6 +1559,32 @@ mod tests {
         assert!(first.root_reaped);
         assert!(second.root_reaped);
         assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn cancelling_active_processes_allows_a_fresh_process() {
+        let supervisor = ProviderProcessSupervisor::default();
+        let active = supervisor
+            .spawn_piped(shell("sleep 30"), lines(), None)
+            .unwrap();
+
+        let summary = supervisor.cancel_active();
+
+        assert_eq!(summary.process_count, 1);
+        assert_eq!(
+            active.receive_timeout(Duration::from_millis(50)),
+            Err(ProviderProcessError::Cancelled)
+        );
+        let fresh = supervisor
+            .spawn_piped(shell("printf 'fresh\\n'"), lines(), None)
+            .unwrap();
+        assert_eq!(
+            fresh
+                .receive_timeout(Duration::from_secs(1))
+                .unwrap()
+                .as_slice(),
+            b"fresh"
+        );
     }
 
     #[test]

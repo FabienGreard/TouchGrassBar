@@ -3,7 +3,15 @@ mod codex;
 mod process;
 mod registry;
 
-use std::{collections::BTreeSet, path::Path, sync::Arc, thread};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+};
 
 use crate::sanitized::{
     Clock, ProviderPresentation, ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshTrigger,
@@ -48,6 +56,8 @@ pub(crate) trait ProviderObservationAdapter: Send + Sync {
 
     fn install_refresh_trigger(&self, _trigger: RefreshTrigger) {}
 
+    fn reset_after_cancellation(&self) {}
+
     fn refresh(
         &self,
         cached: &ProviderPresentation,
@@ -57,14 +67,15 @@ pub(crate) trait ProviderObservationAdapter: Send + Sync {
 
 pub(crate) struct ProviderObservationCoordinator {
     adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
-    processes: process::ProviderProcessSupervisor,
+    processes: BTreeMap<CodingProvider, process::ProviderProcessSupervisor>,
+    cancellation_generations: BTreeMap<CodingProvider, Arc<AtomicU64>>,
     enablement: Arc<dyn ProviderEnablementPolicy>,
 }
 
 impl ProviderObservationCoordinator {
     #[cfg(test)]
     pub(crate) fn new(adapters: Vec<Arc<dyn ProviderObservationAdapter>>) -> Self {
-        Self::with_processes_and_enablement(
+        Self::with_shared_processes_and_enablement(
             adapters,
             process::ProviderProcessSupervisor::default(),
             all_providers_enabled_policy(),
@@ -76,7 +87,11 @@ impl ProviderObservationCoordinator {
         adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
         processes: process::ProviderProcessSupervisor,
     ) -> Self {
-        Self::with_processes_and_enablement(adapters, processes, all_providers_enabled_policy())
+        Self::with_shared_processes_and_enablement(
+            adapters,
+            processes,
+            all_providers_enabled_policy(),
+        )
     }
 
     #[cfg(test)]
@@ -84,16 +99,29 @@ impl ProviderObservationCoordinator {
         adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
         enablement: Arc<dyn ProviderEnablementPolicy>,
     ) -> Self {
-        Self::with_processes_and_enablement(
+        Self::with_shared_processes_and_enablement(
             adapters,
             process::ProviderProcessSupervisor::default(),
             enablement,
         )
     }
 
-    fn with_processes_and_enablement(
+    #[cfg(test)]
+    fn with_shared_processes_and_enablement(
         adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
         processes: process::ProviderProcessSupervisor,
+        enablement: Arc<dyn ProviderEnablementPolicy>,
+    ) -> Self {
+        let processes = adapters
+            .iter()
+            .map(|adapter| (adapter.provider(), processes.clone()))
+            .collect();
+        Self::with_processes_and_enablement(adapters, processes, enablement)
+    }
+
+    fn with_processes_and_enablement(
+        adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
+        processes: BTreeMap<CodingProvider, process::ProviderProcessSupervisor>,
         enablement: Arc<dyn ProviderEnablementPolicy>,
     ) -> Self {
         debug_assert_eq!(
@@ -105,9 +133,14 @@ impl ProviderObservationCoordinator {
             adapters.len(),
             "each provider can have only one observation adapter"
         );
+        let cancellation_generations = adapters
+            .iter()
+            .map(|adapter| (adapter.provider(), Arc::new(AtomicU64::new(0))))
+            .collect();
         Self {
             adapters,
             processes,
+            cancellation_generations,
             enablement,
         }
     }
@@ -134,22 +167,26 @@ pub(crate) fn production_observation_coordinator(
     database_path: Option<std::path::PathBuf>,
     enablement: Arc<dyn ProviderEnablementPolicy>,
 ) -> ProviderObservationCoordinator {
-    let processes = process::ProviderProcessSupervisor::default();
+    let codex_processes = process::ProviderProcessSupervisor::default();
+    let claude_processes = process::ProviderProcessSupervisor::default();
     let codex: Arc<dyn ProviderObservationAdapter> =
         Arc::new(codex::CodexProviderObservationAdapter::production(
             Arc::clone(&clock),
             database_path.clone(),
-            processes.clone(),
+            codex_processes.clone(),
         ));
     let claude: Arc<dyn ProviderObservationAdapter> =
         Arc::new(claude::ClaudeProviderObservationAdapter::production(
             clock,
             database_path,
-            processes.clone(),
+            claude_processes.clone(),
         ));
     ProviderObservationCoordinator::with_processes_and_enablement(
         vec![codex, claude],
-        processes,
+        BTreeMap::from([
+            (CodingProvider::Codex, codex_processes),
+            (CodingProvider::Claude, claude_processes),
+        ]),
         enablement,
     )
 }
@@ -203,6 +240,16 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
         attempt: &RefreshAttempt,
     ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
         attempt.remaining()?;
+        let cancellation_generations = self
+            .cancellation_generations
+            .iter()
+            .map(|(provider, generation)| {
+                (
+                    *provider,
+                    (Arc::clone(generation), generation.load(Ordering::Acquire)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let previous = cached.clone();
         self.normalize_registry(&mut cached);
 
@@ -216,20 +263,34 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
                         return None;
                     }
                     let presentation = cached.provider(provider)?;
-                    let attempt = attempt.clone();
+                    let (generation, expected_generation) =
+                        cancellation_generations.get(&provider)?.clone();
+                    let provider_attempt =
+                        attempt.with_provider_cancellation(generation, expected_generation);
+                    let worker_attempt = provider_attempt.clone();
                     debug_refresh_event(provider, "started");
                     Some((
                         provider,
-                        scope.spawn(move || adapter.refresh(presentation, &attempt)),
+                        provider_attempt,
+                        scope.spawn(move || adapter.refresh(presentation, &worker_attempt)),
                     ))
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
-                .map(|(provider, handle)| (provider, handle.join()))
+                .map(|(provider, provider_attempt, handle)| {
+                    (provider, provider_attempt, handle.join())
+                })
                 .collect::<Vec<_>>()
         });
 
-        for (provider, result) in results {
+        for (provider, provider_attempt, result) in results {
+            if attempt.is_cancelled() {
+                return Err(RefreshFailure::Cancelled);
+            }
+            if provider_attempt.is_cancelled() {
+                debug_refresh_event(provider, "cancelled");
+                continue;
+            }
             match result {
                 Ok(Ok(Some(observation))) => {
                     if observation.quota.provider() != provider {
@@ -279,8 +340,38 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
         Ok((cached != previous).then_some(cached))
     }
 
+    fn cancel_provider(&self, provider: CodingProvider) {
+        if let Some(generation) = self.cancellation_generations.get(&provider) {
+            generation.fetch_add(1, Ordering::AcqRel);
+        }
+        // Stop process I/O before provider cleanup. Codex cleanup can wait for
+        // a session lock that an active refresh holds.
+        if let Some(processes) = self.processes.get(&provider) {
+            let summary = processes.cancel_active();
+            debug_process_shutdown(summary.process_count, summary.deadline_count);
+        }
+        if let Some(adapter) = self
+            .adapters
+            .iter()
+            .find(|adapter| adapter.provider() == provider)
+        {
+            adapter.reset_after_cancellation();
+        }
+    }
+
     fn shutdown(&self) {
-        let summary = self.processes.shutdown_all();
+        let summary = self.processes.values().fold(
+            process::ShutdownSummary::default(),
+            |mut summary, processes| {
+                let provider = processes.shutdown_all();
+                summary.process_count =
+                    summary.process_count.saturating_add(provider.process_count);
+                summary.deadline_count = summary
+                    .deadline_count
+                    .saturating_add(provider.deadline_count);
+                summary
+            },
+        );
         debug_process_shutdown(summary.process_count, summary.deadline_count);
     }
 }
@@ -399,7 +490,7 @@ mod tests {
             atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc,
         },
-        time::Duration as StdDuration,
+        time::{Duration as StdDuration, Instant},
     };
 
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -460,6 +551,54 @@ mod tests {
         }
     }
 
+    struct CancellationAwareAdapter {
+        provider: CodingProvider,
+        started: Option<mpsc::SyncSender<()>>,
+        saw_cancellation: AtomicBool,
+        runs: AtomicUsize,
+    }
+
+    impl ProviderObservationAdapter for CancellationAwareAdapter {
+        fn provider(&self) -> CodingProvider {
+            self.provider
+        }
+
+        fn refresh(
+            &self,
+            _cached: &ProviderPresentation,
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+            let run = self.runs.fetch_add(1, Ordering::AcqRel);
+            if self.provider == CodingProvider::Claude && run == 0 {
+                self.started
+                    .as_ref()
+                    .expect("Claude start signal")
+                    .send(())
+                    .expect("Claude start receiver");
+                let deadline = Instant::now() + StdDuration::from_millis(250);
+                while Instant::now() < deadline {
+                    if attempt.remaining() == Err(RefreshFailure::Cancelled) {
+                        self.saw_cancellation.store(true, Ordering::Release);
+                        break;
+                    }
+                    thread::yield_now();
+                }
+            }
+            let tokens = match (self.provider, run) {
+                (CodingProvider::Codex, _) => 42,
+                (CodingProvider::Claude, 0) => 999,
+                (CodingProvider::Claude, _) => 58,
+            };
+            Ok(Some(ProviderObservation {
+                quota: ProviderSnapshot::Unavailable {
+                    provider: self.provider,
+                    quota_lanes: [],
+                },
+                usage: usage_with_tokens(tokens),
+            }))
+        }
+    }
+
     fn usage_with_tokens(tokens: u64) -> UsagePeriods {
         let observed_at = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
         UsagePeriods {
@@ -482,6 +621,83 @@ mod tests {
             seven_days: UsageTotal::Unavailable,
             thirty_days: UsageTotal::Unavailable,
         }
+    }
+
+    #[test]
+    fn cancelling_one_provider_attempt_preserves_the_peer_and_allows_a_fresh_attempt() {
+        let (started, receiver) = mpsc::sync_channel(1);
+        let codex = Arc::new(CancellationAwareAdapter {
+            provider: CodingProvider::Codex,
+            started: None,
+            saw_cancellation: AtomicBool::new(false),
+            runs: AtomicUsize::new(0),
+        });
+        let claude = Arc::new(CancellationAwareAdapter {
+            provider: CodingProvider::Claude,
+            started: Some(started),
+            saw_cancellation: AtomicBool::new(false),
+            runs: AtomicUsize::new(0),
+        });
+        let coordinator = Arc::new(ProviderObservationCoordinator::new(vec![
+            codex.clone(),
+            claude.clone(),
+        ]));
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker = thread::spawn(move || {
+            worker_coordinator.refresh(unavailable_state(1), &RefreshAttempt::test())
+        });
+        receiver
+            .recv_timeout(StdDuration::from_secs(1))
+            .expect("Claude refresh must start");
+
+        coordinator.cancel_provider(CodingProvider::Claude);
+        let first = worker
+            .join()
+            .expect("provider refresh thread")
+            .expect("peer refresh must continue")
+            .expect("Codex must change the snapshot");
+
+        assert!(claude.saw_cancellation.load(Ordering::Acquire));
+        assert!(matches!(
+            first
+                .provider(CodingProvider::Claude)
+                .expect("Claude presentation")
+                .usage
+                .today,
+            UsageTotal::Unavailable
+        ));
+        assert!(matches!(
+            first.combined_usage.today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+
+        let second = coordinator
+            .refresh(first, &RefreshAttempt::test())
+            .expect("fresh provider attempt")
+            .expect("Claude must add fresh evidence");
+        assert!(matches!(
+            second
+                .provider(CodingProvider::Claude)
+                .expect("Claude presentation")
+                .usage
+                .today,
+            UsageTotal::Current {
+                observed_tokens: 58,
+                ..
+            }
+        ));
+        assert!(matches!(
+            second.combined_usage.today,
+            UsageTotal::Current {
+                observed_tokens: 100,
+                ..
+            }
+        ));
+        assert_eq!(codex.runs.load(Ordering::Acquire), 2);
+        assert_eq!(claude.runs.load(Ordering::Acquire), 2);
     }
 
     #[test]

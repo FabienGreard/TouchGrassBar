@@ -609,6 +609,13 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
         CodingProvider::Codex
     }
 
+    fn reset_after_cancellation(&self) {
+        self.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     fn install_refresh_trigger(&self, trigger: RefreshTrigger) {
         *self
             .refresh_trigger
@@ -1145,6 +1152,54 @@ mod tests {
             self.reads += 1;
             Ok(self.observation.clone())
         }
+    }
+
+    #[test]
+    fn provider_cancellation_drops_the_retained_session_before_the_next_attempt() {
+        let processes = ProviderProcessSupervisor::default();
+        let mut command = ProviderCommand::new("/bin/sh");
+        command.args(["-c", "sleep 30"]);
+        let process = processes
+            .spawn_piped(
+                command,
+                ProviderOutputMode::Lines {
+                    max_line_bytes: 1024,
+                    max_buffered_bytes: 2048,
+                },
+                None,
+            )
+            .expect("retained app-server process");
+        let adapter = Arc::new(CodexProviderObservationAdapter::production(
+            Arc::new(FixedClock(observed_at())),
+            None,
+            processes.clone(),
+        ));
+        *adapter
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CodexAppServerSession {
+            process,
+            next_request_id: INITIALIZE_REQUEST_ID + 1,
+            observation: None,
+        });
+        let coordinator = crate::providers::ProviderObservationCoordinator::with_processes(
+            vec![adapter.clone()],
+            processes,
+        );
+
+        crate::sanitized::SnapshotRefreshAdapter::cancel_provider(
+            &coordinator,
+            CodingProvider::Codex,
+        );
+
+        assert!(
+            adapter
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "the next refresh must create a new app-server session"
+        );
     }
 
     #[test]

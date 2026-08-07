@@ -254,6 +254,68 @@ describe("Settings delivery", () => {
     });
   });
 
+  test("keeps both providers enabled when their confirmations finish out of order", async () => {
+    const native = port();
+    const bothDisabled = {
+      ...settingsState,
+      providers: settingsState.providers.map((provider) => ({
+        ...provider,
+        enabled: false,
+      })),
+    };
+    native.read = vi.fn(async () => ({
+      ok: true as const,
+      value: bothDisabled,
+    }));
+    const confirmations = new Map<
+      "claude" | "codex",
+      (outcome: SettingsPortOutcome<unknown>) => void
+    >();
+    native.setProviderEnabled = vi.fn(
+      (provider) =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          confirmations.set(provider, resolve);
+        }),
+    );
+    const confirmedProviders = (confirmed: "claude" | "codex") => {
+      const providers = [];
+      for (const provider of bothDisabled.providers) {
+        providers.push(
+          provider.provider === confirmed
+            ? { ...provider, enabled: true }
+            : provider,
+        );
+      }
+      return providers;
+    };
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    const enableCodex = delivery.setProviderEnabled("codex", true);
+    const enableClaude = delivery.setProviderEnabled("claude", true);
+    confirmations.get("claude")?.({
+      ok: true,
+      value: {
+        ...bothDisabled,
+        providers: confirmedProviders("claude"),
+      },
+    });
+    expect(await enableClaude).toBe(true);
+    confirmations.get("codex")?.({
+      ok: true,
+      value: {
+        ...bothDisabled,
+        providers: confirmedProviders("codex"),
+      },
+    });
+    expect(await enableCodex).toBe(true);
+
+    expect(delivery.getSnapshot().snapshot?.providers).toEqual([
+      expect.objectContaining({ enabled: true, provider: "codex" }),
+      expect.objectContaining({ enabled: true, provider: "claude" }),
+    ]);
+  });
+
   test("preserves the last confirmed provider value when a mutation fails", async () => {
     const native = port();
     native.setProviderEnabled = vi.fn(async () => ({

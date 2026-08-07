@@ -406,6 +406,29 @@ fn scan_status(statuses: impl Iterator<Item = UsageScanStatus>) -> UsageScanStat
     }
 }
 
+fn combined_scan_status(
+    statuses: impl Iterator<Item = (UsageScanStatus, bool)>,
+) -> UsageScanStatus {
+    let statuses = statuses.collect::<Vec<_>>();
+    let has_contributor = statuses.iter().any(|(_, contributes)| *contributes);
+    scan_status(
+        statuses
+            .into_iter()
+            .filter(|(_, contributes)| !has_contributor || *contributes)
+            .map(|(status, _)| status),
+    )
+}
+
+fn usage_total_is_available(total: &UsageTotal) -> bool {
+    !matches!(total, UsageTotal::Unavailable)
+}
+
+fn usage_periods_have_available_total(periods: &UsagePeriods) -> bool {
+    usage_total_is_available(&periods.today)
+        || usage_total_is_available(&periods.seven_days)
+        || usage_total_is_available(&periods.thirty_days)
+}
+
 struct AvailableTotal<'a> {
     stale: bool,
     evidence_basis: UsageEvidenceBasis,
@@ -418,6 +441,13 @@ struct AvailableTotal<'a> {
     api_equivalent_cost_basis: Option<&'a str>,
     api_equivalent_cost_quality: Option<ApiEquivalentCostQuality>,
     api_equivalent_cost_coverage_percent: Option<f64>,
+}
+
+struct PricedAvailableTotal<'a> {
+    usd: f64,
+    basis: &'a str,
+    quality: ApiEquivalentCostQuality,
+    coverage_percent: f64,
 }
 
 fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
@@ -501,6 +531,26 @@ fn available_total(total: &UsageTotal) -> Option<AvailableTotal<'_>> {
     })
 }
 
+fn priced_available_total<'a>(total: &AvailableTotal<'a>) -> Option<PricedAvailableTotal<'a>> {
+    let usd = total.api_equivalent_cost_usd?;
+    let basis = total.api_equivalent_cost_basis?;
+    let quality = total.api_equivalent_cost_quality?;
+    let coverage_percent = match quality {
+        ApiEquivalentCostQuality::Modeled => total.api_equivalent_cost_coverage_percent?,
+        ApiEquivalentCostQuality::Reconciled | ApiEquivalentCostQuality::LocalOnly => 100.0,
+    };
+    (usd.is_finite()
+        && usd >= 0.0
+        && coverage_percent.is_finite()
+        && (0.0..=100.0).contains(&coverage_percent))
+    .then_some(PricedAvailableTotal {
+        usd,
+        basis,
+        quality,
+        coverage_percent,
+    })
+}
+
 fn combined_trend(totals: &[AvailableTotal<'_>]) -> (Option<f64>, Option<u64>) {
     if totals.len() == 1 {
         return (totals[0].trend_percent, totals[0].trend_previous_tokens);
@@ -535,24 +585,27 @@ fn combined_cost(totals: &[AvailableTotal<'_>]) -> Option<CostProjection> {
     let mut total_tokens = 0_u64;
     let mut covered_tokens = 0.0;
     let mut quality = ApiEquivalentCostQuality::Reconciled;
+    let mut has_priced_evidence = false;
+    let mut has_unpriced_tokens = false;
     for total in totals {
+        total_tokens = total_tokens.checked_add(total.observed_tokens)?;
         if total.observed_tokens == 0 && total.api_equivalent_cost_usd.is_none() {
             continue;
         }
-        let cost = total.api_equivalent_cost_usd?;
-        let item_quality = total.api_equivalent_cost_quality?;
-        usd += cost;
-        total_tokens = total_tokens.checked_add(total.observed_tokens)?;
-        quality = weakest_cost_quality(quality, item_quality);
-        let coverage = match item_quality {
-            ApiEquivalentCostQuality::Reconciled => 100.0,
-            ApiEquivalentCostQuality::Modeled => total.api_equivalent_cost_coverage_percent?,
-            ApiEquivalentCostQuality::LocalOnly => 0.0,
+        let Some(priced) = priced_available_total(total) else {
+            has_unpriced_tokens |= total.observed_tokens > 0;
+            continue;
         };
-        covered_tokens += coverage * total.observed_tokens as f64;
+        has_priced_evidence = true;
+        usd += priced.usd;
+        quality = weakest_cost_quality(quality, priced.quality);
+        covered_tokens += priced.coverage_percent * total.observed_tokens as f64;
     }
-    if !usd.is_finite() {
+    if !has_priced_evidence || !usd.is_finite() {
         return None;
+    }
+    if has_unpriced_tokens {
+        quality = ApiEquivalentCostQuality::Modeled;
     }
     let coverage_percent = match quality {
         ApiEquivalentCostQuality::Modeled if total_tokens > 0 => {
@@ -573,11 +626,11 @@ fn weakest_cost_quality(
     right: ApiEquivalentCostQuality,
 ) -> ApiEquivalentCostQuality {
     match (left, right) {
-        (ApiEquivalentCostQuality::LocalOnly, _) | (_, ApiEquivalentCostQuality::LocalOnly) => {
-            ApiEquivalentCostQuality::LocalOnly
-        }
         (ApiEquivalentCostQuality::Modeled, _) | (_, ApiEquivalentCostQuality::Modeled) => {
             ApiEquivalentCostQuality::Modeled
+        }
+        (ApiEquivalentCostQuality::LocalOnly, _) | (_, ApiEquivalentCostQuality::LocalOnly) => {
+            ApiEquivalentCostQuality::LocalOnly
         }
         (ApiEquivalentCostQuality::Reconciled, ApiEquivalentCostQuality::Reconciled) => {
             ApiEquivalentCostQuality::Reconciled
@@ -588,10 +641,9 @@ fn weakest_cost_quality(
 fn combined_basis(totals: &[AvailableTotal<'_>]) -> Option<String> {
     let mut bases = BTreeSet::new();
     for total in totals {
-        if total.observed_tokens == 0 && total.api_equivalent_cost_usd.is_none() {
-            continue;
+        if let Some(priced) = priced_available_total(total) {
+            bases.insert(priced.basis);
         }
-        bases.insert(total.api_equivalent_cost_basis?);
     }
     (!bases.is_empty()).then(|| bases.into_iter().collect::<Vec<_>>().join(" + "))
 }
@@ -684,14 +736,30 @@ fn combine_total(totals: &[&UsageTotal]) -> UsageTotal {
 
 pub(crate) fn combine_usage_periods(periods: &[&UsagePeriods]) -> UsagePeriods {
     UsagePeriods {
-        scan_status: scan_status(periods.iter().map(|periods| periods.scan_status)),
-        today_scan_status: scan_status(periods.iter().map(|periods| periods.today_scan_status)),
-        seven_day_scan_status: scan_status(
-            periods.iter().map(|periods| periods.seven_day_scan_status),
-        ),
-        thirty_day_scan_status: scan_status(
-            periods.iter().map(|periods| periods.thirty_day_scan_status),
-        ),
+        scan_status: combined_scan_status(periods.iter().map(|periods| {
+            (
+                periods.scan_status,
+                usage_periods_have_available_total(periods),
+            )
+        })),
+        today_scan_status: combined_scan_status(periods.iter().map(|periods| {
+            (
+                periods.today_scan_status,
+                usage_total_is_available(&periods.today),
+            )
+        })),
+        seven_day_scan_status: combined_scan_status(periods.iter().map(|periods| {
+            (
+                periods.seven_day_scan_status,
+                usage_total_is_available(&periods.seven_days),
+            )
+        })),
+        thirty_day_scan_status: combined_scan_status(periods.iter().map(|periods| {
+            (
+                periods.thirty_day_scan_status,
+                usage_total_is_available(&periods.thirty_days),
+            )
+        })),
         today: combine_total(
             &periods
                 .iter()
@@ -764,7 +832,6 @@ fn preserve_cost_if_missing(current: &mut UsageTotal, previous: &UsageTotal) {
     };
     match current {
         UsageTotal::Current {
-            evidence_basis,
             observed_tokens,
             api_equivalent_cost_usd,
             api_equivalent_cost_basis,
@@ -773,7 +840,6 @@ fn preserve_cost_if_missing(current: &mut UsageTotal, previous: &UsageTotal) {
             ..
         }
         | UsageTotal::Stale {
-            evidence_basis,
             observed_tokens,
             api_equivalent_cost_usd,
             api_equivalent_cost_basis,
@@ -795,31 +861,23 @@ fn preserve_cost_if_missing(current: &mut UsageTotal, previous: &UsageTotal) {
             let (quality, coverage_percent) = if same_total {
                 (previous.quality, previous.coverage_percent)
             } else {
-                match evidence_basis {
-                    UsageEvidenceBasis::ProviderReported | UsageEvidenceBasis::Mixed => {
-                        let previous_coverage = match previous.quality {
-                            Some(ApiEquivalentCostQuality::Modeled) => {
-                                previous.coverage_percent.unwrap_or(0.0)
-                            }
-                            Some(
-                                ApiEquivalentCostQuality::Reconciled
-                                | ApiEquivalentCostQuality::LocalOnly,
-                            ) => 100.0,
-                            None => return,
-                        };
-                        (
-                            Some(ApiEquivalentCostQuality::Modeled),
-                            Some(
-                                (previous.observed_tokens as f64 * previous_coverage
-                                    / *observed_tokens as f64)
-                                    .clamp(0.0, 100.0),
-                            ),
-                        )
+                let previous_coverage = match previous.quality {
+                    Some(ApiEquivalentCostQuality::Modeled) => {
+                        previous.coverage_percent.unwrap_or(0.0)
                     }
-                    UsageEvidenceBasis::LocallyDerived => {
-                        (Some(ApiEquivalentCostQuality::LocalOnly), None)
-                    }
-                }
+                    Some(
+                        ApiEquivalentCostQuality::Reconciled | ApiEquivalentCostQuality::LocalOnly,
+                    ) => 100.0,
+                    None => return,
+                };
+                (
+                    Some(ApiEquivalentCostQuality::Modeled),
+                    Some(
+                        (previous.observed_tokens as f64 * previous_coverage
+                            / *observed_tokens as f64)
+                            .clamp(0.0, 100.0),
+                    ),
+                )
             };
             *api_equivalent_cost_usd = Some(scaled);
             *api_equivalent_cost_basis = previous.basis;
@@ -1482,6 +1540,232 @@ mod tests {
     }
 
     #[test]
+    fn combined_scan_status_ignores_indexing_providers_without_period_evidence() {
+        let observed_at = now().format(&Rfc3339).unwrap();
+        let available_total = || UsageTotal::Current {
+            evidence_basis: UsageEvidenceBasis::ProviderReported,
+            coverage: UsageCoverage::Complete,
+            observed_at: observed_at.clone(),
+            observed_tokens: 100,
+            api_equivalent_cost_usd: Some(2.0),
+            trend_percent: None,
+            trend_previous_tokens: None,
+            api_equivalent_cost_basis: Some("openai-v1".to_owned()),
+            api_equivalent_cost_quality: Some(ApiEquivalentCostQuality::Reconciled),
+            api_equivalent_cost_coverage_percent: None,
+        };
+        let observed = UsagePeriods {
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+            today: available_total(),
+            seven_days: available_total(),
+            thirty_days: available_total(),
+        };
+        let indexing_without_evidence = UsagePeriods {
+            scan_status: UsageScanStatus::Indexing,
+            today_scan_status: UsageScanStatus::Indexing,
+            seven_day_scan_status: UsageScanStatus::Indexing,
+            thirty_day_scan_status: UsageScanStatus::Indexing,
+            today: UsageTotal::Unavailable,
+            seven_days: UsageTotal::Unavailable,
+            thirty_days: UsageTotal::Unavailable,
+        };
+
+        for combined in [
+            combine_usage_periods(&[&observed, &indexing_without_evidence]),
+            combine_usage_periods(&[&indexing_without_evidence, &observed]),
+        ] {
+            assert_eq!(combined.scan_status, UsageScanStatus::Complete);
+            assert_eq!(combined.today_scan_status, UsageScanStatus::Complete);
+            assert_eq!(combined.seven_day_scan_status, UsageScanStatus::Complete);
+            assert_eq!(combined.thirty_day_scan_status, UsageScanStatus::Complete);
+        }
+
+        let combined = combine_usage_periods(&[&indexing_without_evidence]);
+        assert_eq!(combined.scan_status, UsageScanStatus::Indexing);
+        assert_eq!(combined.today_scan_status, UsageScanStatus::Indexing);
+        assert_eq!(combined.seven_day_scan_status, UsageScanStatus::Indexing);
+        assert_eq!(combined.thirty_day_scan_status, UsageScanStatus::Indexing);
+
+        let indexing_today_only = UsagePeriods {
+            scan_status: UsageScanStatus::Indexing,
+            today_scan_status: UsageScanStatus::Indexing,
+            seven_day_scan_status: UsageScanStatus::Indexing,
+            thirty_day_scan_status: UsageScanStatus::Indexing,
+            today: available_total(),
+            seven_days: UsageTotal::Unavailable,
+            thirty_days: UsageTotal::Unavailable,
+        };
+        let combined = combine_usage_periods(&[&observed, &indexing_today_only]);
+        assert_eq!(combined.scan_status, UsageScanStatus::Indexing);
+        assert_eq!(combined.today_scan_status, UsageScanStatus::Indexing);
+        assert_eq!(combined.seven_day_scan_status, UsageScanStatus::Complete);
+        assert_eq!(combined.thirty_day_scan_status, UsageScanStatus::Complete);
+    }
+
+    #[test]
+    fn combined_cost_keeps_priced_evidence_and_reports_modeled_coverage() {
+        let observed_at = now().format(&Rfc3339).unwrap();
+        let periods = |tokens, cost, basis, quality| UsagePeriods {
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Unavailable,
+            thirty_day_scan_status: UsageScanStatus::Unavailable,
+            today: UsageTotal::Current {
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                coverage: UsageCoverage::Complete,
+                observed_at: observed_at.clone(),
+                observed_tokens: tokens,
+                api_equivalent_cost_usd: cost,
+                trend_percent: None,
+                trend_previous_tokens: None,
+                api_equivalent_cost_basis: basis,
+                api_equivalent_cost_quality: quality,
+                api_equivalent_cost_coverage_percent: None,
+            },
+            seven_days: UsageTotal::Unavailable,
+            thirty_days: UsageTotal::Unavailable,
+        };
+        let priced = periods(
+            100,
+            Some(2.0),
+            Some("openai-v1".to_owned()),
+            Some(ApiEquivalentCostQuality::Reconciled),
+        );
+        let unpriced = periods(300, None, None, None);
+
+        for combined in [
+            combine_usage_periods(&[&priced, &unpriced]),
+            combine_usage_periods(&[&unpriced, &priced]),
+        ] {
+            let UsageTotal::Current {
+                observed_tokens,
+                api_equivalent_cost_usd,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
+                ..
+            } = combined.today
+            else {
+                panic!("combined Today usage must be available");
+            };
+            assert_eq!(observed_tokens, 400);
+            assert_eq!(api_equivalent_cost_usd, Some(2.0));
+            assert_eq!(api_equivalent_cost_basis.as_deref(), Some("openai-v1"));
+            assert_eq!(
+                api_equivalent_cost_quality,
+                Some(ApiEquivalentCostQuality::Modeled)
+            );
+            assert_eq!(api_equivalent_cost_coverage_percent, Some(25.0));
+        }
+    }
+
+    #[test]
+    fn combined_cost_keeps_a_local_only_subtotal_when_a_peer_is_unpriced() {
+        let observed_at = now().format(&Rfc3339).unwrap();
+        let total = |tokens, cost, basis, quality| UsageTotal::Current {
+            evidence_basis: UsageEvidenceBasis::LocallyDerived,
+            coverage: UsageCoverage::Complete,
+            observed_at: observed_at.clone(),
+            observed_tokens: tokens,
+            api_equivalent_cost_usd: cost,
+            trend_percent: None,
+            trend_previous_tokens: None,
+            api_equivalent_cost_basis: basis,
+            api_equivalent_cost_quality: quality,
+            api_equivalent_cost_coverage_percent: None,
+        };
+        let periods = |today| UsagePeriods {
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Unavailable,
+            thirty_day_scan_status: UsageScanStatus::Unavailable,
+            today,
+            seven_days: UsageTotal::Unavailable,
+            thirty_days: UsageTotal::Unavailable,
+        };
+        let claude = periods(total(
+            300,
+            Some(6.0),
+            Some("anthropic-v1".to_owned()),
+            Some(ApiEquivalentCostQuality::LocalOnly),
+        ));
+        let unpriced_peer = periods(total(100, None, None, None));
+
+        for combined in [
+            combine_usage_periods(&[&claude, &unpriced_peer]),
+            combine_usage_periods(&[&unpriced_peer, &claude]),
+        ] {
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
+                ..
+            } = combined.today
+            else {
+                panic!("combined Today usage must be available");
+            };
+            assert_eq!(api_equivalent_cost_usd, Some(6.0));
+            assert_eq!(api_equivalent_cost_basis.as_deref(), Some("anthropic-v1"));
+            assert_eq!(
+                api_equivalent_cost_quality,
+                Some(ApiEquivalentCostQuality::Modeled)
+            );
+            assert_eq!(api_equivalent_cost_coverage_percent, Some(75.0));
+        }
+    }
+
+    #[test]
+    fn combined_cost_stays_unavailable_when_no_provider_has_priced_evidence() {
+        let observed_at = now().format(&Rfc3339).unwrap();
+        let unpriced = |tokens| UsagePeriods {
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Unavailable,
+            thirty_day_scan_status: UsageScanStatus::Unavailable,
+            today: UsageTotal::Current {
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                coverage: UsageCoverage::Complete,
+                observed_at: observed_at.clone(),
+                observed_tokens: tokens,
+                api_equivalent_cost_usd: None,
+                trend_percent: None,
+                trend_previous_tokens: None,
+                api_equivalent_cost_basis: None,
+                api_equivalent_cost_quality: None,
+                api_equivalent_cost_coverage_percent: None,
+            },
+            seven_days: UsageTotal::Unavailable,
+            thirty_days: UsageTotal::Unavailable,
+        };
+        let codex = unpriced(100);
+        let claude = unpriced(300);
+
+        for combined in [
+            combine_usage_periods(&[&codex, &claude]),
+            combine_usage_periods(&[&claude, &codex]),
+        ] {
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                api_equivalent_cost_coverage_percent,
+                ..
+            } = combined.today
+            else {
+                panic!("combined Today usage must be available");
+            };
+            assert_eq!(api_equivalent_cost_usd, None);
+            assert_eq!(api_equivalent_cost_basis, None);
+            assert_eq!(api_equivalent_cost_quality, None);
+            assert_eq!(api_equivalent_cost_coverage_percent, None);
+        }
+    }
+
+    #[test]
     fn combined_usage_weights_provider_trends_by_previous_tokens() {
         let observed_at = now().format(&Rfc3339).unwrap();
         let periods = |observed_tokens, trend_percent, trend_previous_tokens| UsagePeriods {
@@ -1596,7 +1880,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_usage_inherits_the_weakest_cost_quality_in_any_provider_order() {
+    fn combined_usage_keeps_modeled_coverage_with_local_only_cost_in_any_provider_order() {
         let observed_at = now().format(&Rfc3339).unwrap();
         let periods = |quality, coverage_percent, cost| UsagePeriods {
             scan_status: UsageScanStatus::Complete,
@@ -1637,9 +1921,9 @@ mod tests {
             assert_eq!(api_equivalent_cost_usd, Some(3.0));
             assert_eq!(
                 api_equivalent_cost_quality,
-                Some(ApiEquivalentCostQuality::LocalOnly)
+                Some(ApiEquivalentCostQuality::Modeled)
             );
-            assert_eq!(api_equivalent_cost_coverage_percent, None);
+            assert_eq!(api_equivalent_cost_coverage_percent, Some(75.0));
         }
     }
 }

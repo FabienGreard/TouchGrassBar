@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -227,6 +227,7 @@ impl ProviderPresentation {
     pub(crate) fn is_visible(&self) -> bool {
         self.presence == ProviderPresenceStatus::Detected
             || !matches!(self.quota, ProviderSnapshot::Unavailable { .. })
+            || self.usage.scan_status == UsageScanStatus::Indexing
             || !matches!(self.usage.today, UsageTotal::Unavailable)
             || !matches!(self.usage.seven_days, UsageTotal::Unavailable)
             || !matches!(self.usage.thirty_days, UsageTotal::Unavailable)
@@ -437,6 +438,7 @@ pub struct RefreshReceipt {
 #[derive(Clone)]
 pub(crate) struct RefreshAttempt {
     cancelled: Arc<AtomicBool>,
+    provider_cancellation: Option<(Arc<AtomicU64>, u64)>,
     deadline: Instant,
     sources: RefreshSources,
 }
@@ -452,9 +454,20 @@ impl RefreshAttempt {
     fn new(cancelled: Arc<AtomicBool>, sources: RefreshSources) -> Self {
         Self {
             cancelled,
+            provider_cancellation: None,
             deadline: Instant::now() + REFRESH_ATTEMPT_TIMEOUT,
             sources,
         }
+    }
+
+    pub(crate) fn with_provider_cancellation(
+        &self,
+        generation: Arc<AtomicU64>,
+        expected_generation: u64,
+    ) -> Self {
+        let mut attempt = self.clone();
+        attempt.provider_cancellation = Some((generation, expected_generation));
+        attempt
     }
 
     pub(crate) fn is_manual(&self) -> bool {
@@ -478,6 +491,12 @@ impl RefreshAttempt {
 
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+            || self
+                .provider_cancellation
+                .as_ref()
+                .is_some_and(|(generation, expected)| {
+                    generation.load(Ordering::Acquire) != *expected
+                })
     }
 
     pub(crate) fn remaining(&self) -> Result<Duration, RefreshFailure> {
@@ -521,6 +540,8 @@ impl RefreshAttempt {
 
 pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
     fn install_refresh_trigger(&self, _trigger: RefreshTrigger) {}
+
+    fn cancel_provider(&self, _provider: CodingProvider) {}
 
     /// Stops resources that can block an active refresh.
     ///
@@ -1080,6 +1101,7 @@ struct RefreshInbox {
     admission: Mutex<()>,
     pending_sources: AtomicU8,
     provider_settings_pending: AtomicBool,
+    provider_settings_generation: AtomicU64,
     in_flight: AtomicBool,
     paused: AtomicBool,
     stopping: AtomicBool,
@@ -1171,6 +1193,7 @@ impl RefreshCoordinator {
             admission: Mutex::new(()),
             pending_sources: AtomicU8::new(0),
             provider_settings_pending: AtomicBool::new(false),
+            provider_settings_generation: AtomicU64::new(0),
             in_flight: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -1234,6 +1257,16 @@ impl RefreshCoordinator {
             .provider_settings_pending
             .store(true, Ordering::Release);
         self.inbox.request(RefreshSource::Manual)
+    }
+
+    fn cancel_provider(&self, provider: CodingProvider) {
+        self.refresh_adapter.cancel_provider(provider);
+    }
+
+    fn note_provider_setting_commit(&self) {
+        self.inbox
+            .provider_settings_generation
+            .fetch_add(1, Ordering::AcqRel);
     }
 
     fn pause_for_update(&self) -> UpdatePauseGuard<'_> {
@@ -1468,6 +1501,10 @@ impl CoordinatorWorker {
     }
 
     fn refresh_once(&mut self, sources: RefreshSources) -> RefreshRunResult {
+        let provider_settings_generation = self
+            .inbox
+            .provider_settings_generation
+            .load(Ordering::Acquire);
         let mut cached = match self.projection.snapshot() {
             Ok(cached) => cached,
             Err(_) => {
@@ -1531,17 +1568,30 @@ impl CoordinatorWorker {
             return RefreshRunResult::Cancelled;
         }
 
-        let commit_result = candidate
-            .map(|candidate| {
-                let mut store = self.store.lock().map_err(|_| "native state unavailable")?;
-                self.projection.commit_refreshed_snapshot(
-                    &mut store,
-                    candidate,
-                    self.enablement.as_ref(),
-                    completed_at,
-                )
-            })
-            .transpose();
+        let commit_result = match candidate {
+            Some(candidate) => {
+                let store = self.store.lock().map_err(|_| "native state unavailable");
+                store.and_then(|mut store| {
+                    if self
+                        .inbox
+                        .provider_settings_generation
+                        .load(Ordering::Acquire)
+                        != provider_settings_generation
+                    {
+                        return Ok(None);
+                    }
+                    self.projection
+                        .commit_refreshed_snapshot(
+                            &mut store,
+                            candidate,
+                            self.enablement.as_ref(),
+                            completed_at,
+                        )
+                        .map(Some)
+                })
+            }
+            None => Ok(None),
+        };
         let failed = pre_refresh_failed
             || source_failed
             || commit_result.is_err()
@@ -1790,8 +1840,13 @@ impl NativeCore {
             Some((provider, enabled)),
             self.inner.clock.now(),
         )?;
+        self.inner.coordinator.note_provider_setting_commit();
+        drop(store);
         if let Some(notice) = outcome.notice {
             self.inner.subscribers.publish(notice);
+        }
+        if !enabled {
+            self.inner.coordinator.cancel_provider(provider);
         }
         Ok(())
     }
@@ -2429,6 +2484,9 @@ pub fn native_contract_export() -> Value {
 }
 
 #[cfg(test)]
+mod product_acceptance;
+
+#[cfg(test)]
 mod tests {
     use std::{
         collections::VecDeque,
@@ -2650,6 +2708,7 @@ mod tests {
             admission: Mutex::new(()),
             pending_sources: AtomicU8::new(0),
             provider_settings_pending: AtomicBool::new(false),
+            provider_settings_generation: AtomicU64::new(0),
             in_flight: AtomicBool::new(false),
             paused: AtomicBool::new(true),
             stopping: AtomicBool::new(false),
@@ -3172,6 +3231,40 @@ mod tests {
         runs: AtomicUsize,
     }
 
+    #[derive(Default)]
+    struct RecordingProviderCancellationSource {
+        cancelled: AtomicU8,
+    }
+
+    impl SnapshotRefreshAdapter for RecordingProviderCancellationSource {
+        fn cancel_provider(&self, provider: CodingProvider) {
+            let bit = match provider {
+                CodingProvider::Codex => 1,
+                CodingProvider::Claude => 2,
+            };
+            self.cancelled.fetch_or(bit, Ordering::AcqRel);
+        }
+
+        fn refresh(
+            &self,
+            _cached: SanitizedDesktopStateV3,
+            _attempt: &RefreshAttempt,
+        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn disabling_provider_cancels_only_its_active_adapter_work() {
+        let source = Arc::new(RecordingProviderCancellationSource::default());
+        let core = NativeCore::with_refresh_adapter(source.clone());
+
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+
+        assert_eq!(source.cancelled.load(Ordering::Acquire), 2);
+    }
+
     impl BlockingRefreshSource {
         fn new() -> Self {
             Self {
@@ -3228,9 +3321,16 @@ mod tests {
             attempt.remaining()?;
             let mut state = observed_state(test_time(), 42);
             if run == 0 {
-                state
-                    .providers
-                    .retain(|provider| provider.provider == CodingProvider::Codex);
+                let stale_usage = state
+                    .provider(CodingProvider::Codex)
+                    .expect("stale fixture Codex")
+                    .usage
+                    .clone();
+                let stale_claude = state
+                    .provider_mut(CodingProvider::Claude)
+                    .expect("stale fixture Claude");
+                stale_claude.presence = ProviderPresenceStatus::Detected;
+                stale_claude.usage = stale_usage;
                 state.refresh_combined_usage();
             }
             Ok(Some(state))
