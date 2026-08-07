@@ -36,6 +36,7 @@ const CAPTURE_SCHEMA_VERSION: i64 = 1;
 const MAX_STATUS_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 256;
 const MAX_RESPONSE_CURSORS: i64 = 32;
+const UPSTREAM_ARGUMENT: &str = "--touchgrassbar-upstream-hex";
 
 #[cfg(debug_assertions)]
 fn debug_event(event: &str) {
@@ -475,6 +476,45 @@ fn capture_status_line_payload(
     if previous_duration.is_some_and(|previous| previous >= api_duration) {
         return Ok(false);
     }
+    let current_quota = transaction
+        .query_row(
+            "SELECT
+               observed_at,
+               five_hour_used_percentage,
+               five_hour_resets_at,
+               seven_day_used_percentage,
+               seven_day_resets_at
+             FROM claude_quota_observation
+             WHERE singleton = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|_| ())?;
+    if let Some((current_at, five_used, five_reset, seven_used, seven_reset)) = current_quota {
+        let current_at = OffsetDateTime::parse(&current_at, &Rfc3339).map_err(|_| ())?;
+        if now <= current_at
+            || (previous_duration.is_none()
+                && !quota_observation_advances(
+                    five_hour,
+                    seven_day,
+                    five_used,
+                    five_reset,
+                    seven_used,
+                    seven_reset,
+                ))
+        {
+            return Ok(false);
+        }
+    }
     transaction
         .execute(
             "INSERT INTO claude_response_cursors(session_id, total_api_duration_ms, observed_at)
@@ -525,6 +565,35 @@ fn capture_status_line_payload(
     Ok(true)
 }
 
+fn quota_observation_advances(
+    five_hour: ClaudeRateLimitWindow,
+    seven_day: ClaudeRateLimitWindow,
+    current_five_used: f64,
+    current_five_reset: i64,
+    current_seven_used: f64,
+    current_seven_reset: i64,
+) -> bool {
+    let progress = [
+        quota_window_progress(five_hour, current_five_used, current_five_reset),
+        quota_window_progress(seven_day, current_seven_used, current_seven_reset),
+    ];
+    !progress.contains(&std::cmp::Ordering::Less) && progress.contains(&std::cmp::Ordering::Greater)
+}
+
+fn quota_window_progress(
+    incoming: ClaudeRateLimitWindow,
+    current_used: f64,
+    current_reset: i64,
+) -> std::cmp::Ordering {
+    match incoming.resets_at.cmp(&current_reset) {
+        std::cmp::Ordering::Equal => incoming
+            .used_percentage
+            .partial_cmp(&current_used)
+            .unwrap_or(std::cmp::Ordering::Less),
+        progress => progress,
+    }
+}
+
 fn load_quota_observation(database_path: &Path) -> Result<Option<ClaudeQuotaObservation>, ()> {
     let connection = open_capture_database(database_path)?;
     let row = connection
@@ -572,6 +641,44 @@ fn shell_quote(value: &str) -> String {
 }
 
 #[cfg(any(test, not(debug_assertions)))]
+fn hex_encode(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(1 + value.len() * 2);
+    encoded.push('x');
+    for byte in value.bytes() {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn hex_decode(value: &str) -> Result<String, ()> {
+    let value = value.strip_prefix('x').ok_or(())?;
+    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(());
+    }
+    let bytes = value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_digit(pair[0])?;
+            let low = hex_digit(pair[1])?;
+            Ok((high << 4) | low)
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    String::from_utf8(bytes).map_err(|_| ())
+}
+
+fn hex_digit(value: u8) -> Result<u8, ()> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(()),
+    }
+}
+
+#[cfg(any(test, not(debug_assertions)))]
 fn bridge_command(
     executable: &Path,
     database_path: &Path,
@@ -588,8 +695,10 @@ fn bridge_command(
         shell_quote(notification_path),
     );
     if let Some(upstream) = upstream {
-        command.push_str(" -- ");
-        command.push_str(&shell_quote(upstream));
+        command.push(' ');
+        command.push_str(UPSTREAM_ARGUMENT);
+        command.push(' ');
+        command.push_str(&hex_encode(upstream));
     }
     Ok(command)
 }
@@ -599,6 +708,21 @@ fn is_touchgrassbar_bridge(command: &str) -> bool {
     command
         .split_whitespace()
         .any(|part| part == STATUS_LINE_ARGUMENT)
+}
+
+#[cfg(any(test, not(debug_assertions)))]
+fn bridge_upstream(command: &str) -> Result<Option<String>, ()> {
+    if !is_touchgrassbar_bridge(command) {
+        return Err(());
+    }
+    let delimiter = format!(" {UPSTREAM_ARGUMENT} ");
+    let Some((_, encoded)) = command.rsplit_once(&delimiter) else {
+        return (!command.contains(" -- ")).then_some(None).ok_or(());
+    };
+    if encoded.contains(char::is_whitespace) {
+        return Err(());
+    }
+    hex_decode(encoded).map(Some)
 }
 
 #[cfg(any(test, not(debug_assertions)))]
@@ -668,9 +792,10 @@ fn configure_status_line_at(
                 .ok_or(())?
                 .to_owned();
             if is_touchgrassbar_bridge(&current) {
-                return Ok(());
+                bridge_upstream(&current)?
+            } else {
+                Some(current)
             }
-            Some(current)
         }
     };
     drop(open_capture_database(database_path)?);
@@ -791,14 +916,17 @@ pub(super) fn run_status_line_from_args() -> Option<i32> {
     };
     let upstream = match arguments.next() {
         None => None,
-        Some(separator) if separator.as_os_str() == std::ffi::OsStr::new("--") => {
-            let Some(command) = arguments.next() else {
+        Some(argument) if argument.as_os_str() == std::ffi::OsStr::new(UPSTREAM_ARGUMENT) => {
+            let Some(encoded) = arguments.next() else {
                 return Some(1);
             };
             if arguments.next().is_some() {
                 return Some(1);
             }
-            let Ok(command) = command.into_string() else {
+            let Ok(encoded) = encoded.into_string() else {
+                return Some(1);
+            };
+            let Ok(command) = hex_decode(&encoded) else {
                 return Some(1);
             };
             Some(command)
@@ -934,6 +1062,19 @@ mod tests {
             "transcript_path": "/redacted/transcript"
         }))
         .unwrap()
+    }
+
+    fn status_payload_for(
+        session_id: &str,
+        api_duration: u64,
+        five_hour_used: f64,
+        seven_day_used: f64,
+    ) -> Vec<u8> {
+        let mut payload: Value = serde_json::from_slice(&status_payload(api_duration)).unwrap();
+        payload["session_id"] = Value::String(session_id.to_owned());
+        payload["rate_limits"]["five_hour"]["used_percentage"] = json!(five_hour_used);
+        payload["rate_limits"]["seven_day"]["used_percentage"] = json!(seven_day_used);
+        serde_json::to_vec(&payload).unwrap()
     }
 
     #[test]
@@ -1090,7 +1231,7 @@ mod tests {
             serde_json::to_vec_pretty(&settings).unwrap(),
         )
         .unwrap();
-        let executable = fixture.0.join("TouchGrassBar");
+        let executable = fixture.0.join("OriginalBinary");
         configure_status_line_at(
             &fixture.settings(),
             &executable,
@@ -1098,9 +1239,10 @@ mod tests {
             &fixture.socket(),
         )
         .unwrap();
+        let moved_executable = fixture.0.join("MovedBinary");
         configure_status_line_at(
             &fixture.settings(),
-            &executable,
+            &moved_executable,
             &fixture.database(),
             &fixture.socket(),
         )
@@ -1118,24 +1260,92 @@ mod tests {
                 .unwrap()
                 .contains(STATUS_LINE_ARGUMENT)
         );
-        assert!(
-            configured["statusLine"]["command"]
-                .as_str()
-                .unwrap()
-                .contains("printf kept")
-        );
+        let bridge = configured["statusLine"]["command"].as_str().unwrap();
+        assert!(bridge.contains(moved_executable.to_str().unwrap()));
+        assert!(!bridge.contains(executable.to_str().unwrap()));
+        let upstream = bridge_upstream(bridge).unwrap();
+        assert_eq!(upstream.as_deref(), Some("printf kept"));
 
         let mut output = Vec::new();
         let outcome = run_status_line(
             &fixture.database(),
             &fixture.socket(),
-            Some("printf kept"),
+            upstream.as_deref(),
             status_payload(100).as_slice(),
             &mut output,
             test_time(),
         );
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(output, b"kept");
+    }
+
+    #[test]
+    fn missing_cursors_and_out_of_order_helpers_cannot_renew_or_roll_back_quota() {
+        let fixture = FixtureDirectory::new();
+        let database = fixture.database();
+        let older = status_payload_for("fixture-older-session", 100, 23.5, 41.25);
+        let newer = status_payload_for("fixture-newer-session", 100, 35.0, 52.0);
+        let delayed = status_payload_for("fixture-delayed-session", 100, 60.0, 70.0);
+
+        assert!(capture_status_line_payload(&database, &older, test_time()).unwrap());
+        assert!(
+            capture_status_line_payload(
+                &database,
+                &newer,
+                test_time() + time::Duration::minutes(1),
+            )
+            .unwrap()
+        );
+        assert!(
+            !capture_status_line_payload(
+                &database,
+                &delayed,
+                test_time() + time::Duration::seconds(30),
+            )
+            .unwrap(),
+            "a delayed helper cannot replace an observation received later"
+        );
+
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute(
+                "DELETE FROM claude_response_cursors WHERE session_id = ?1",
+                ["fixture-older-session"],
+            )
+            .unwrap();
+        assert!(
+            !capture_status_line_payload(
+                &database,
+                &older,
+                test_time() + time::Duration::minutes(2),
+            )
+            .unwrap(),
+            "a lost cursor cannot make an older timer payload current"
+        );
+
+        connection
+            .execute(
+                "DELETE FROM claude_response_cursors WHERE session_id = ?1",
+                ["fixture-newer-session"],
+            )
+            .unwrap();
+        assert!(
+            !capture_status_line_payload(
+                &database,
+                &newer,
+                test_time() + time::Duration::minutes(3),
+            )
+            .unwrap(),
+            "a lost cursor cannot renew unchanged quota"
+        );
+
+        let observation = load_quota_observation(&database).unwrap().unwrap();
+        assert_eq!(
+            observation.observed_at,
+            test_time() + time::Duration::minutes(1)
+        );
+        assert_eq!(observation.five_hour.used_percentage, 35.0);
+        assert_eq!(observation.seven_day.used_percentage, 52.0);
     }
 
     #[test]
