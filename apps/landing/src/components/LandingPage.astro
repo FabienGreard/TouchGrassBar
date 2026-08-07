@@ -1,0 +1,273 @@
+---
+import claudeMark from "../../../../packages/ui/src/assets/providers/claude.svg";
+import codexMark from "../../../../packages/ui/src/assets/providers/codex-color.svg";
+import appArtwork from "../../../../packages/ui/src/assets/brand/glass-grass-hand-frosted-pearl.png";
+import Brand from "./Brand.astro";
+import { downloadFallbackUrl } from "../lib/download-resolver";
+import "../styles/global.css";
+
+type Props = {
+  invitation?: boolean;
+};
+
+const { invitation = false } = Astro.props;
+const title = invitation
+  ? "Join a TouchGrassBar Doomerboard"
+  : "TouchGrassBar — your token problem, in the menu bar";
+const description = invitation
+  ? "Install TouchGrassBar, create your Profile on your Mac, and join the Doomerboard."
+  : "See Codex and Claude limits in the menu bar, then compare your observed tokens on the Doomerboard.";
+---
+
+<!doctype html>
+<html data-garden-time="day" lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="description" content={description} />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4efdf" />
+    <title>{title}</title>
+  </head>
+  <body data-page={invitation ? "invitation" : "landing"}>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <main id="main-content">
+      <section class="garden-hero" aria-labelledby="hero-title">
+        <div class="garden-scene" aria-hidden="true">
+          <div class="garden-scene__sun"></div>
+          <div class="garden-scene__ridge garden-scene__ridge--back"></div>
+          <div class="garden-scene__ridge garden-scene__ridge--front"></div>
+          <div class="garden-scene__mist"></div>
+          <div class="garden-scene__grass">
+            {Array.from({ length: 24 }, (_, index) => (
+              <i style={`--blade-index: ${index}; --blade-offset: ${(index * 37) % 101}%;`}></i>
+            ))}
+          </div>
+        </div>
+
+        <header class="site-header site-shell">
+          <a class="brand-link" href="/" aria-label="TouchGrassBar home">
+            <Brand />
+          </a>
+          <nav aria-label="Primary navigation">
+            <a href={invitation ? "/#privacy" : "#privacy"}>Privacy</a>
+            <a href={invitation ? "/#how-it-works" : "#how-it-works"}>How it works</a>
+            <a
+              class="button button--small download-link"
+              data-download-link
+              href={downloadFallbackUrl}
+            >Download for macOS</a>
+          </nav>
+        </header>
+
+        <div class="hero-layout site-shell">
+          <div class="hero-copy">
+            {invitation && (
+              <p class="invitation-kicker">You were invited to a Doomerboard.</p>
+            )}
+            <p class="time-label" aria-live="polite">
+              <span aria-hidden="true"></span>
+              Local garden: <b data-garden-time-label>day</b>
+            </p>
+            <h1 id="hero-title">
+              Your agents touched grass.<br />
+              <em>You have not.</em>
+            </h1>
+            <p class="hero-summary">
+              TouchGrassBar puts your Codex and Claude limits in the macOS menu
+              bar. Compare observed tokens with other Tokenmaxxers when you need
+              one more reason to go outside.
+            </p>
+            {invitation && (
+              <p class="invitation-note">
+                Install the app, then create or restore your Profile on your Mac.
+                There is no browser account and no public Profile page.
+              </p>
+            )}
+            <div class="hero-actions">
+              <a
+                class="button download-link"
+                data-download-link
+                href={downloadFallbackUrl}
+              >Download for macOS</a>
+              <a class="text-link" href={invitation ? "/#doomerboard" : "#doomerboard"}>
+                See the Doomerboard <span aria-hidden="true">→</span>
+              </a>
+            </div>
+            <p class="download-status" data-download-status>
+              Apple silicon. The GitHub Release page is always available as a fallback.
+            </p>
+          </div>
+
+          <figure class="menu-preview">
+            <div class="menu-preview__bar" aria-hidden="true">
+              <Brand compact />
+              <span class="menu-preview__sync"><i></i> Synced locally</span>
+            </div>
+            <div class="menu-preview__body" aria-hidden="true">
+              <div class="provider-preview">
+                <div class="provider-preview__title">
+                  <span><img src={codexMark.src} alt="" />Codex</span>
+                  <strong>62%</strong>
+                </div>
+                <p>Weekly limit · 2d 4h left · Thu 03:00</p>
+                <div class="provider-preview__track"><i style="width: 62%"></i></div>
+              </div>
+              <div class="provider-preview">
+                <div class="provider-preview__title">
+                  <span><img src={claudeMark.src} alt="" />Claude</span>
+                  <strong>18%</strong>
+                </div>
+                <p>Weekly limit · resets Thursday</p>
+                <div class="provider-preview__track provider-preview__track--warm"><i style="width: 18%"></i></div>
+              </div>
+              <div class="usage-preview">
+                <header><p>Observed tokens</p><small>API equivalent</small></header>
+                <div>
+                  <span><small>Today</small><b>+8%</b><strong>12.8M</strong><i>≈ $38.61</i><u style="--metric-fill: 38%"></u></span>
+                  <span><small>7 days</small><b>+14%</b><strong>71.4M</strong><i>≈ $214.96</i><u style="--metric-fill: 67%"></u></span>
+                  <span><small>30 days</small><b>+22%</b><strong>284.6M</strong><i>≈ $856.73</i><u style="--metric-fill: 92%"></u></span>
+                </div>
+              </div>
+              <div class="mini-board">
+                <div class="mini-board__tabs"><b>My Tokenmaxxers</b><span>Global</span></div>
+                <p>Most <b>Combined</b> tokens in <b>Today</b></p>
+                <ol>
+                  <li><b>1</b> Mara <strong>18.2M</strong></li>
+                  <li class="mini-board__you"><b>2</b> You <strong>12.8M</strong></li>
+                  <li><b>3</b> Noah <strong>9.1M</strong></li>
+                </ol>
+              </div>
+            </div>
+            <figcaption>
+              Product preview. TouchGrassBar opens from one menu-bar item and has
+              no desktop dashboard.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="doomerboard-section" id="doomerboard" aria-labelledby="doomerboard-title">
+        <div class="site-shell section-grid">
+          <div class="section-copy section-copy--reversed">
+            <p class="section-kicker">The end is ranked</p>
+            <h2 id="doomerboard-title">One board to rank them all.</h2>
+            <p>
+              Compare your Token Score with My Tokenmaxxers or everyone else.
+              Choose Codex, Claude, or Combined, then look at Today, 7 days, or 30 days.
+            </p>
+            <p class="privacy-line">Public score. Private work.</p>
+          </div>
+          <div class="board-card" aria-label="Example Doomerboard">
+            <div class="board-card__query" aria-hidden="true">
+              <span>My Tokenmaxxers</span>
+              <p>Most <b>Combined</b> tokens in <b>7 days</b></p>
+            </div>
+            <ol>
+              <li class="rank rank--second"><b>2</b><span>Mara<small>42.1M tokens</small></span></li>
+              <li class="rank rank--first"><b>1</b><span>You<small>61.8M tokens</small></span></li>
+              <li class="rank rank--third"><b>3</b><span>Noah<small>39.6M tokens</small></span></li>
+            </ol>
+            <p class="board-card__note">Only Daily Usage Aggregates and public Profile data take part.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="privacy-section" id="privacy" aria-labelledby="privacy-title">
+        <div class="site-shell privacy-layout">
+          <div class="section-copy">
+            <p class="section-kicker">Public score. Private work.</p>
+            <h2 id="privacy-title">Your work stays on your Mac.</h2>
+            <p>
+              Prompts, conversations, credentials, cookies, provider source material,
+              raw logs, and local paths do not leave your Mac. TouchGrassBar can send
+              only approved Daily Usage Aggregates and public Profile data for rankings.
+            </p>
+          </div>
+          <ul class="privacy-list" aria-label="Local privacy boundary">
+            <li><strong>Local</strong><span>Provider access and source material</span></li>
+            <li><strong>Local</strong><span>Prompts, conversations, and credentials</span></li>
+            <li><strong>Shared</strong><span>Daily Usage Aggregates and public Profile data</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="journey-section" id="how-it-works" aria-labelledby="journey-title">
+        <div class="site-shell">
+          <div class="section-copy section-copy--wide">
+            <p class="section-kicker">One setup. Then the menu bar.</p>
+            <h2 id="journey-title">A small app for a large token problem.</h2>
+            <p>
+              First install uses the signed Apple-silicon DMG. Bootstrap confirms
+              your Coding Providers and creates or restores your Profile. After that,
+              TouchGrassBar lives in the menu bar and offers signed updates there.
+            </p>
+          </div>
+          <ol class="journey-list">
+            <li><span>1</span><h3>Install</h3><p>Open the DMG and move TouchGrassBar to Applications.</p></li>
+            <li><span>2</span><h3>Bootstrap</h3><p>Confirm Codex and Claude, then create or restore your Profile on your Mac.</p></li>
+            <li><span>3</span><h3>Use the menu bar</h3><p>See limits, observed usage, Doomerboards, and verified update notices.</p></li>
+          </ol>
+        </div>
+      </section>
+
+      <section class="invite-section" aria-labelledby="invite-title">
+        <div class="site-shell invite-layout">
+          <img class="app-artwork" src={appArtwork.src} alt="" />
+          <div>
+            <p class="section-kicker">Bring your Tokenmaxxers</p>
+            <h2 id="invite-title">An invitation starts with the same trusted install.</h2>
+            <p>
+              The invitation route does not create a browser account. Install the app,
+              create or restore your Profile on your Mac, then add Tokenmaxxers with a
+              TouchGrass ID.
+            </p>
+          </div>
+          <a class="button button--ink" href="/join">Open the invitation route</a>
+        </div>
+      </section>
+
+      <section class="download-section" id="download" aria-labelledby="download-title">
+        <div class="site-shell download-card">
+          <div>
+            <p class="section-kicker">Fresh grass available</p>
+            <h2 id="download-title">Download the latest approved full release.</h2>
+            <p>
+              The link resolves to the exact versioned Apple-silicon DMG. If resolution
+              is unavailable, it opens the latest full GitHub Release page.
+            </p>
+          </div>
+          <div class="download-card__actions">
+            <img class="download-artwork" src={appArtwork.src} alt="" />
+            <a
+              class="button button--ink download-link"
+              data-download-link
+              href={downloadFallbackUrl}
+            >Download for macOS</a>
+            <a class="text-link" href={downloadFallbackUrl}>View the GitHub Release</a>
+            <p data-download-status>Apple silicon · signed distribution</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="site-shell">
+        <Brand />
+        <p>Open source. Public score. Private work.</p>
+        <nav aria-label="Project links">
+          <a href="https://github.com/FabienGreard/TouchGrassBar">GitHub</a>
+          <a href="#main-content">Back to top</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script>
+      import { installDownloadResolver } from "../lib/download-resolver";
+      import { installGardenTime } from "../lib/garden-time";
+
+      installGardenTime(document);
+      void installDownloadResolver(document, window.fetch.bind(window));
+    </script>
+  </body>
+</html>

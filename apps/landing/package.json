@@ -8,7 +8,7 @@
     "build": "bunx --bun astro build",
     "dev": "bun run --cwd ../.. dev:landing",
     "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src astro.config.ts",
-    "test": "bun -e \"process.exit(0)\"",
+    "test": "bunx vitest run src/landing.test.ts",
     "typecheck": "bunx --bun astro check"
   },
   "dependencies": {

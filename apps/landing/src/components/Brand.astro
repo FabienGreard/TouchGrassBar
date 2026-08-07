@@ -1,0 +1,22 @@
+---
+import grassGlyph from "../../../../packages/ui/src/assets/brand/grass-glyph-white.png";
+
+type Props = {
+  compact?: boolean;
+  reversed?: boolean;
+};
+
+const { compact = false, reversed = false } = Astro.props;
+---
+
+<span
+  aria-label="TouchGrassBar"
+  class:list={["brand", { "brand--compact": compact, "brand--reversed": reversed }]}
+>
+  <span aria-hidden="true" class="brand__mark">
+    <img alt="" src={grassGlyph.src} />
+  </span>
+  <span aria-hidden="true" class="brand__wordmark">
+    <b>TouchGrass</b><b class="brand__bar">Bar</b>
+  </span>
+</span>
