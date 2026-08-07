@@ -103,7 +103,7 @@ function parseCodeSignatureDetails(details: string, expectedIdentity: string) {
 
 function validateUpdaterArchiveEntries(entries: string[]) {
   const normalizedEntries = entries.filter((entry) => entry.length > 0);
-  const binary = "TouchGrassBar.app/Contents/MacOS/TouchGrassBar";
+  const binary = "TouchGrassBar.app/Contents/MacOS/touchgrassbar";
   const valid =
     normalizedEntries.length > 0 &&
     normalizedEntries.includes(binary) &&

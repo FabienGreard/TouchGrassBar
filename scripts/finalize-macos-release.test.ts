@@ -35,7 +35,7 @@ describe("release artifact trust", () => {
     expect(() =>
       validateUpdaterArchiveEntries([
         "TouchGrassBar.app/Contents/Info.plist",
-        "TouchGrassBar.app/Contents/MacOS/TouchGrassBar",
+        "TouchGrassBar.app/Contents/MacOS/touchgrassbar",
       ]),
     ).not.toThrow();
     for (const entries of [
