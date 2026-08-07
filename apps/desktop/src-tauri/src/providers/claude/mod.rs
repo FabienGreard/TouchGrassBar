@@ -13,7 +13,7 @@ use std::{
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -26,7 +26,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::{ProviderObservation, ProviderObservationAdapter};
 use crate::sanitized::{
@@ -37,7 +37,7 @@ use crate::sanitized::{
 const STATUS_LINE_ARGUMENT: &str = "--touchgrassbar-claude-status-line";
 const CAPTURE_SCHEMA_MODULE: &str = "claude-quota-capture";
 const CAPTURE_SCHEMA_VERSION: i64 = 1;
-const MAX_STATUS_LINE_BYTES: u64 = 1024 * 1024;
+const MAX_STATUS_LINE_BYTES: usize = 1024 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 256;
 const MAX_BRIDGE_LAYERS: usize = 8;
 const RESPONSE_CURSOR_RETENTION_DAYS: i64 = 60;
@@ -1119,23 +1119,90 @@ pub(super) fn restore_status_line(owner: &str) -> Result<(), ()> {
     restore_status_line_at(&home.join(".claude/settings.json"), owner)
 }
 
-fn run_upstream(command: &str, input: &[u8]) -> Result<(i32, Vec<u8>), ()> {
-    let mut child = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|_| ())?;
-    child
-        .stdin
-        .take()
-        .ok_or(())?
-        .write_all(input)
-        .map_err(|_| ())?;
-    let output = child.wait_with_output().map_err(|_| ())?;
-    Ok((output.status.code().unwrap_or(1), output.stdout))
+struct RunningUpstream {
+    child: Child,
+    input: Option<ChildStdin>,
+    output: thread::JoinHandle<Result<Vec<u8>, ()>>,
+}
+
+impl RunningUpstream {
+    fn start(command: &str) -> Result<Self, ()> {
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|_| ())?;
+        let input = child.stdin.take().ok_or(())?;
+        let mut stdout = child.stdout.take().ok_or(())?;
+        let output = match thread::Builder::new()
+            .name("claude-status-line-output".to_owned())
+            .spawn(move || {
+                let mut output = Vec::new();
+                stdout.read_to_end(&mut output).map_err(|_| ())?;
+                Ok(output)
+            }) {
+            Ok(output) => output,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(());
+            }
+        };
+        Ok(Self {
+            child,
+            input: Some(input),
+            output,
+        })
+    }
+
+    fn finish<W: Write>(mut self, input_failed: bool, mut output: W) -> Result<i32, ()> {
+        drop(self.input.take());
+        let status = self.child.wait().map_err(|_| ())?;
+        let upstream_output = self.output.join().map_err(|_| ())??;
+        output.write_all(&upstream_output).map_err(|_| ())?;
+        if input_failed {
+            return Err(());
+        }
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
+fn stream_status_line_input<R: Read>(
+    mut input: R,
+    mut upstream: Option<&mut RunningUpstream>,
+) -> (Zeroizing<Vec<u8>>, bool, bool) {
+    let mut capture_payload = Zeroizing::new(Vec::new());
+    let mut input_read = true;
+    let mut upstream_failed = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = match input.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => {
+                input_read = false;
+                break;
+            }
+        };
+        if capture_payload.len() <= MAX_STATUS_LINE_BYTES {
+            let remaining = (MAX_STATUS_LINE_BYTES + 1) - capture_payload.len();
+            capture_payload.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+        if let Some(upstream) = upstream.as_deref_mut()
+            && !upstream_failed
+            && upstream
+                .input
+                .as_mut()
+                .is_none_or(|input| input.write_all(&buffer[..read]).is_err())
+        {
+            upstream_failed = true;
+        }
+    }
+    buffer.zeroize();
+    (capture_payload, input_read, upstream_failed)
 }
 
 struct StatusLineOutcome {
@@ -1167,18 +1234,15 @@ fn run_status_line_with_diagnostics<R: Read, W: Write>(
     notification_path: &Path,
     upstream: Option<&str>,
     input: R,
-    mut output: W,
+    output: W,
     now: OffsetDateTime,
     mut report: impl FnMut(&'static str),
 ) -> StatusLineOutcome {
-    let mut payload = Zeroizing::new(Vec::new());
-    let input_read = input
-        .take(MAX_STATUS_LINE_BYTES + 1)
-        .read_to_end(&mut payload)
-        .is_ok();
-    let capture_result = if input_read
-        && u64::try_from(payload.len()).is_ok_and(|length| length <= MAX_STATUS_LINE_BYTES)
-    {
+    let mut running_upstream = upstream.and_then(|command| RunningUpstream::start(command).ok());
+    let upstream_started = upstream.is_none() || running_upstream.is_some();
+    let (payload, input_read, upstream_input_failed) =
+        stream_status_line_input(input, running_upstream.as_mut());
+    let capture_result = if input_read && payload.len() <= MAX_STATUS_LINE_BYTES {
         capture_status_line_payload(database_path, &payload, now)
     } else {
         Err(())
@@ -1190,20 +1254,17 @@ fn run_status_line_with_diagnostics<R: Read, W: Write>(
     if captured {
         send_notification(notification_path);
     }
-    let Some(upstream) = upstream else {
+    let Some(running_upstream) = running_upstream else {
         return StatusLineOutcome {
             captured,
-            exit_code: 0,
+            exit_code: i32::from(!upstream_started),
         };
     };
-    match run_upstream(upstream, &payload) {
-        Ok((exit_code, upstream_output)) => {
-            let _ = output.write_all(&upstream_output);
-            StatusLineOutcome {
-                captured,
-                exit_code,
-            }
-        }
+    match running_upstream.finish(upstream_input_failed, output) {
+        Ok(exit_code) => StatusLineOutcome {
+            captured,
+            exit_code,
+        },
         Err(()) => StatusLineOutcome {
             captured,
             exit_code: 1,
@@ -1492,7 +1553,26 @@ mod tests {
         assert!(!incomplete_outcome.captured);
         assert_eq!(diagnostics, [CAPTURE_REJECTED_EVENT]);
 
-        let mut unknown_rate_limit: Value = serde_json::from_slice(&status_payload(102)).unwrap();
+        let mut oversized: Value = serde_json::from_slice(&status_payload(102)).unwrap();
+        oversized["padding"] = Value::String("x".repeat(MAX_STATUS_LINE_BYTES));
+        let oversized = serde_json::to_vec(&oversized).unwrap();
+        let mut upstream_output = Vec::new();
+        let mut diagnostics = Vec::new();
+        let oversized_outcome = run_status_line_with_diagnostics(
+            &database,
+            &fixture.socket(),
+            Some("cat"),
+            oversized.as_slice(),
+            &mut upstream_output,
+            test_time() + time::Duration::minutes(3),
+            |event| diagnostics.push(event),
+        );
+        assert!(!oversized_outcome.captured);
+        assert_eq!(oversized_outcome.exit_code, 0);
+        assert_eq!(upstream_output, oversized);
+        assert_eq!(diagnostics, [CAPTURE_REJECTED_EVENT]);
+
+        let mut unknown_rate_limit: Value = serde_json::from_slice(&status_payload(103)).unwrap();
         unknown_rate_limit["rate_limits"]["unexpected"] = json!({
             "resets_at": (test_time() + time::Duration::days(1)).unix_timestamp(),
             "used_percentage": 1
@@ -1504,7 +1584,7 @@ mod tests {
                 None,
                 serde_json::to_vec(&unknown_rate_limit).unwrap().as_slice(),
                 Vec::new(),
-                test_time() + time::Duration::minutes(3),
+                test_time() + time::Duration::minutes(4),
             )
             .captured
         );
