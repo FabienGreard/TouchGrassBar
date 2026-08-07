@@ -686,9 +686,28 @@ fn retry_update(
 }
 
 #[tauri::command]
+fn set_automatic_update_checks(
+    window: WebviewWindow,
+    runtime: State<'_, UpdateRuntime>,
+    enabled: bool,
+) -> Result<UpdateStateV1, String> {
+    require_settings(&window)?;
+    Ok(runtime.set_automatic_checks_enabled(enabled))
+}
+
+#[tauri::command]
 fn open_latest_dmg(window: WebviewWindow, runtime: State<'_, UpdateRuntime>) -> Result<(), String> {
     require_update_surface(&window)?;
     runtime.open_latest_dmg().map_err(str::to_owned)
+}
+
+#[tauri::command]
+fn open_source_repository(
+    window: WebviewWindow,
+    runtime: State<'_, UpdateRuntime>,
+) -> Result<(), String> {
+    require_settings(&window)?;
+    runtime.open_source_repository().map_err(str::to_owned)
 }
 
 fn require_profile_settings(
@@ -931,12 +950,14 @@ pub fn run() {
             hide_panel,
             install_update,
             open_latest_dmg,
+            open_source_repository,
             open_settings,
             request_refresh,
             resize_panel,
             reveal_recovery_key,
             retry_update,
             select_settings_section,
+            set_automatic_update_checks,
             set_launch_at_login,
             update_profile_display_name,
             take_panel_add_tokenmaxxer_request

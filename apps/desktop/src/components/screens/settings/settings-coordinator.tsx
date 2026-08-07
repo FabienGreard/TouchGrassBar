@@ -102,7 +102,7 @@ function SettingsCoordinator({
         updateView.state === null ||
         updateView.state.update.status === "unavailable"
           ? null
-          : true
+          : updateView.state.automaticChecksEnabled
       }
       busyProviders={checkingProviders}
       launchAtLogin={launchAtLogin}
@@ -114,6 +114,9 @@ function SettingsCoordinator({
       onCheckForUpdates={() => {
         void updates.check();
       }}
+      onAutoUpdatesChange={(enabled) => {
+        void updates.setAutomaticChecks(enabled);
+      }}
       onInstallUpdate={() => {
         void updates.install();
       }}
@@ -122,6 +125,9 @@ function SettingsCoordinator({
       }}
       onOpenLatestDmg={() => {
         void updates.openLatestDmg();
+      }}
+      onOpenSource={() => {
+        void updates.openSource();
       }}
       onProfileDisplayNameChange={(displayName) =>
         delivery.updateDisplayName(displayName)

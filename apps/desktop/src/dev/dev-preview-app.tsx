@@ -20,7 +20,8 @@ import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-de
 document.documentElement.dataset.desktopPreview = "true";
 
 const availableUpdate: UpdateState = {
-  contractVersion: 1,
+  automaticChecksEnabled: true,
+  contractVersion: 2,
   currentVersion: "1.3.2",
   onlineFeaturesPaused: false,
   update: {
@@ -30,7 +31,8 @@ const availableUpdate: UpdateState = {
 };
 
 const currentUpdate: UpdateState = {
-  contractVersion: 1,
+  automaticChecksEnabled: true,
+  contractVersion: 2,
   currentVersion: "1.3.2",
   onlineFeaturesPaused: false,
   update: { status: "idle" },

@@ -143,8 +143,10 @@ describe("settings screen", () => {
       <SettingsScreen
         autoUpdates
         onInstallUpdate={() => undefined}
+        onOpenSource={() => undefined}
         updateState={{
-          contractVersion: 1,
+          automaticChecksEnabled: true,
+          contractVersion: 2,
           currentVersion: "1.3.2",
           onlineFeaturesPaused: false,
           update: {
@@ -158,6 +160,7 @@ describe("settings screen", () => {
     expect(markup).toContain("Version 1.3.2");
     expect(markup).toContain("Version 1.4.0 is ready.");
     expect(markup).toContain("Install &amp; Relaunch");
+    expect(markup).toMatch(/<button[^>]*>View on GitHub ↗<\/button>/);
     expect(markup).not.toContain('data-slot="update-sheet"');
 
     const requiredMarkup = renderToStaticMarkup(
@@ -165,7 +168,8 @@ describe("settings screen", () => {
         autoUpdates
         onInstallUpdate={() => undefined}
         updateState={{
-          contractVersion: 1,
+          automaticChecksEnabled: true,
+          contractVersion: 2,
           currentVersion: "1.3.2",
           onlineFeaturesPaused: true,
           update: {
@@ -185,7 +189,8 @@ describe("settings screen", () => {
         onOpenLatestDmg={() => undefined}
         onRetryUpdate={() => undefined}
         updateState={{
-          contractVersion: 1,
+          automaticChecksEnabled: true,
+          contractVersion: 2,
           currentVersion: "1.3.2",
           onlineFeaturesPaused: false,
           update: {
@@ -198,6 +203,30 @@ describe("settings screen", () => {
     );
     expect(failedMarkup).toContain(">Retry</button>");
     expect(failedMarkup).toContain(">Download latest DMG ↗</button>");
+  });
+
+  test("keeps manual checks available when automatic checks are off", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates={false}
+        onAutoUpdatesChange={() => undefined}
+        onCheckForUpdates={() => undefined}
+        updateState={{
+          automaticChecksEnabled: false,
+          contractVersion: 2,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: { status: "idle" },
+        }}
+      />,
+    );
+
+    const automaticSwitch = markup.match(
+      /<button[^>]*role="switch"[^>]*aria-label="Check automatically"[^>]*>/,
+    )?.[0];
+    expect(automaticSwitch).toContain('aria-checked="false"');
+    expect(automaticSwitch).not.toContain('disabled=""');
+    expect(markup).toMatch(/<button[^>]*>Check now<\/button>/);
   });
 
   test("names provider actions independently for VoiceOver", () => {
