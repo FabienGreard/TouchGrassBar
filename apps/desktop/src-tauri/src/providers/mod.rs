@@ -91,19 +91,27 @@ pub(crate) fn run_claude_status_line_from_args() -> Option<i32> {
     claude::run_status_line_from_args()
 }
 
-pub(crate) fn configure_claude_status_line(database_path: &Path) -> Result<(), ()> {
+pub(crate) fn configure_claude_status_line(database_path: &Path, owner: &str) -> Result<(), ()> {
     if detect_provider_presence(CodingProvider::Claude) != ProviderPresenceStatus::Detected {
         eprintln!(
             "[TouchGrassBar][claude-quota] bridge_setup_skipped reason=provider_not_detected"
         );
         return Ok(());
     }
-    let result = claude::configure_status_line(database_path);
+    let result = claude::configure_status_line(database_path, owner);
     match result {
         Ok(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_setup_completed"),
         Err(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_setup_failed"),
     }
     result
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn restore_claude_status_line(owner: &str) {
+    match claude::restore_status_line(owner) {
+        Ok(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_restored"),
+        Err(()) => eprintln!("[TouchGrassBar][claude-quota] bridge_restore_failed"),
+    }
 }
 
 pub(crate) fn debug_codex_usage_pass(

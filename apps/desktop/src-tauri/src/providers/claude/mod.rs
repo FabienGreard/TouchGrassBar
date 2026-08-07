@@ -4,6 +4,11 @@
 //! The bridge keeps that document in native memory only, reduces it to the two
 //! supported quota lanes, and then runs the user's prior status-line command.
 
+#[cfg(unix)]
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 use std::{
     env, fs,
     io::{Read, Write},
@@ -34,7 +39,9 @@ const CAPTURE_SCHEMA_MODULE: &str = "claude-quota-capture";
 const CAPTURE_SCHEMA_VERSION: i64 = 1;
 const MAX_STATUS_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 256;
+const MAX_BRIDGE_LAYERS: usize = 8;
 const RESPONSE_CURSOR_RETENTION_DAYS: i64 = 60;
+const OWNER_ARGUMENT: &str = "--touchgrassbar-owner-hex";
 const UPSTREAM_ARGUMENT: &str = "--touchgrassbar-upstream-hex";
 
 #[cfg(debug_assertions)]
@@ -236,6 +243,17 @@ fn cached_observed_at(snapshot: &ProviderSnapshot) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(observed_at, &Rfc3339).ok()
 }
 
+#[cfg(unix)]
+fn notification_path(database_path: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    database_path.hash(&mut hasher);
+    PathBuf::from("/tmp").join(format!(
+        "touchgrassbar-claude-{:016x}.sock",
+        hasher.finish()
+    ))
+}
+
+#[cfg(not(unix))]
 fn notification_path(database_path: &Path) -> PathBuf {
     database_path.with_extension("claude-quota.sock")
 }
@@ -248,15 +266,24 @@ fn start_notification_listener(path: PathBuf, trigger: RefreshTrigger) {
         .map(|metadata| metadata.file_type().is_socket())
         .unwrap_or(true);
     if !existing_is_socket {
+        eprintln!(
+            "[TouchGrassBar][claude-quota] notification_listener_failed reason=path_conflict"
+        );
         return;
     }
     if path.exists() && fs::remove_file(&path).is_err() {
+        eprintln!(
+            "[TouchGrassBar][claude-quota] notification_listener_failed reason=cleanup_unavailable"
+        );
         return;
     }
     let Ok(socket) = UnixDatagram::bind(&path) else {
+        eprintln!(
+            "[TouchGrassBar][claude-quota] notification_listener_failed reason=bind_unavailable"
+        );
         return;
     };
-    let _ = thread::Builder::new()
+    let listener = thread::Builder::new()
         .name("claude-quota-events".to_owned())
         .spawn(move || {
             let mut message = [0_u8; 1];
@@ -264,6 +291,12 @@ fn start_notification_listener(path: PathBuf, trigger: RefreshTrigger) {
                 trigger();
             }
         });
+    match listener {
+        Ok(_) => eprintln!("[TouchGrassBar][claude-quota] notification_listener_started"),
+        Err(_) => eprintln!(
+            "[TouchGrassBar][claude-quota] notification_listener_failed reason=thread_unavailable"
+        ),
+    }
 }
 
 #[cfg(not(unix))]
@@ -784,16 +817,18 @@ fn bridge_command(
     executable: &Path,
     database_path: &Path,
     notification_path: &Path,
+    owner: &str,
     upstream: Option<&str>,
 ) -> Result<String, ()> {
     let executable = executable.to_str().ok_or(())?;
     let database_path = database_path.to_str().ok_or(())?;
     let notification_path = notification_path.to_str().ok_or(())?;
     let mut command = format!(
-        "{} {STATUS_LINE_ARGUMENT} {} {}",
+        "{} {STATUS_LINE_ARGUMENT} {} {} {OWNER_ARGUMENT} {}",
         shell_quote(executable),
         shell_quote(database_path),
         shell_quote(notification_path),
+        hex_encode(owner),
     );
     if let Some(upstream) = upstream {
         command.push(' ');
@@ -810,6 +845,32 @@ fn is_touchgrassbar_bridge(command: &str) -> bool {
         .any(|part| part == STATUS_LINE_ARGUMENT)
 }
 
+fn bridge_owner(command: &str) -> Result<Option<String>, ()> {
+    if !is_touchgrassbar_bridge(command) {
+        return Err(());
+    }
+    let delimiter = format!(" {OWNER_ARGUMENT} ");
+    let Some((_, owner_and_upstream)) = command.rsplit_once(&delimiter) else {
+        return Ok(None);
+    };
+    let upstream_delimiter = format!(" {UPSTREAM_ARGUMENT} ");
+    let encoded = owner_and_upstream
+        .split_once(&upstream_delimiter)
+        .map_or(owner_and_upstream, |(owner, _)| owner);
+    if encoded.contains(char::is_whitespace) {
+        return Err(());
+    }
+    hex_decode(encoded).map(Some)
+}
+
+fn legacy_bridge_targets_database(command: &str, database_path: &Path) -> Result<bool, ()> {
+    let database_path = database_path.to_str().ok_or(())?;
+    Ok(command.contains(&format!(
+        " {STATUS_LINE_ARGUMENT} {} ",
+        shell_quote(database_path)
+    )))
+}
+
 fn bridge_upstream(command: &str) -> Result<Option<String>, ()> {
     if !is_touchgrassbar_bridge(command) {
         return Err(());
@@ -822,6 +883,46 @@ fn bridge_upstream(command: &str) -> Result<Option<String>, ()> {
         return Err(());
     }
     hex_decode(encoded).map(Some)
+}
+
+fn with_bridge_upstream(command: &str, upstream: Option<&str>) -> Result<String, ()> {
+    if !is_touchgrassbar_bridge(command) {
+        return Err(());
+    }
+    let delimiter = format!(" {UPSTREAM_ARGUMENT} ");
+    let prefix = command
+        .rsplit_once(&delimiter)
+        .map_or(command, |(prefix, _)| prefix);
+    Ok(match upstream {
+        Some(upstream) => format!("{prefix} {UPSTREAM_ARGUMENT} {}", hex_encode(upstream)),
+        None => prefix.to_owned(),
+    })
+}
+
+fn remove_bridge_owner(command: &str, owner: &str) -> Result<Option<String>, ()> {
+    remove_bridge_owner_at_depth(command, owner, 0)
+}
+
+fn remove_bridge_owner_at_depth(
+    command: &str,
+    owner: &str,
+    depth: usize,
+) -> Result<Option<String>, ()> {
+    if depth >= MAX_BRIDGE_LAYERS {
+        return Err(());
+    }
+    if !is_touchgrassbar_bridge(command) {
+        return Ok(Some(command.to_owned()));
+    }
+    let current_owner = bridge_owner(command)?;
+    if current_owner.as_deref() == Some(owner) {
+        return bridge_upstream(command);
+    }
+    let Some(upstream) = bridge_upstream(command)? else {
+        return Ok(Some(command.to_owned()));
+    };
+    let cleaned_upstream = remove_bridge_owner_at_depth(&upstream, owner, depth + 1)?;
+    with_bridge_upstream(command, cleaned_upstream.as_deref()).map(Some)
 }
 
 fn read_settings(path: &Path) -> Result<Value, ()> {
@@ -872,6 +973,7 @@ fn configure_status_line_at(
     executable: &Path,
     database_path: &Path,
     notification_path: &Path,
+    owner: &str,
 ) -> Result<(), ()> {
     let mut settings = read_settings(settings_path)?;
     let root = settings.as_object_mut().ok_or(())?;
@@ -888,7 +990,13 @@ fn configure_status_line_at(
                 .ok_or(())?
                 .to_owned();
             if is_touchgrassbar_bridge(&current) {
-                bridge_upstream(&current)?
+                if bridge_owner(&current)?.is_none()
+                    && legacy_bridge_targets_database(&current, database_path)?
+                {
+                    bridge_upstream(&current)?
+                } else {
+                    remove_bridge_owner(&current, owner)?
+                }
             } else {
                 Some(current)
             }
@@ -899,6 +1007,7 @@ fn configure_status_line_at(
         executable,
         database_path,
         notification_path,
+        owner,
         upstream.as_deref(),
     )?;
     match root.get_mut("statusLine") {
@@ -921,7 +1030,41 @@ fn configure_status_line_at(
     write_settings_atomically(settings_path, &settings)
 }
 
-pub(super) fn configure_status_line(database_path: &Path) -> Result<(), ()> {
+#[cfg(any(test, debug_assertions))]
+fn restore_status_line_at(settings_path: &Path, owner: &str) -> Result<(), ()> {
+    let mut settings = read_settings(settings_path)?;
+    let root = settings.as_object_mut().ok_or(())?;
+    let Some(status_line) = root.get("statusLine") else {
+        return Ok(());
+    };
+    let current = status_line
+        .as_object()
+        .and_then(|status_line| status_line.get("command"))
+        .and_then(Value::as_str)
+        .ok_or(())?
+        .to_owned();
+    if !is_touchgrassbar_bridge(&current) {
+        return Ok(());
+    }
+    let cleaned = remove_bridge_owner(&current, owner)?;
+    if cleaned.as_deref() == Some(current.as_str()) {
+        return Ok(());
+    }
+    match cleaned {
+        Some(command) => {
+            root.get_mut("statusLine")
+                .and_then(Value::as_object_mut)
+                .ok_or(())?
+                .insert("command".to_owned(), Value::String(command));
+        }
+        None => {
+            root.remove("statusLine");
+        }
+    }
+    write_settings_atomically(settings_path, &settings)
+}
+
+pub(super) fn configure_status_line(database_path: &Path, owner: &str) -> Result<(), ()> {
     let home = env::var_os("HOME").map(PathBuf::from).ok_or(())?;
     let settings_path = home.join(".claude/settings.json");
     let executable = env::current_exe().map_err(|_| ())?;
@@ -930,7 +1073,14 @@ pub(super) fn configure_status_line(database_path: &Path) -> Result<(), ()> {
         &executable,
         database_path,
         &notification_path(database_path),
+        owner,
     )
+}
+
+#[cfg(debug_assertions)]
+pub(super) fn restore_status_line(owner: &str) -> Result<(), ()> {
+    let home = env::var_os("HOME").map(PathBuf::from).ok_or(())?;
+    restore_status_line_at(&home.join(".claude/settings.json"), owner)
 }
 
 fn run_upstream(command: &str, input: &[u8]) -> Result<(i32, Vec<u8>), ()> {
@@ -1036,7 +1186,21 @@ pub(super) fn run_status_line_from_args() -> Option<i32> {
     let Some(notification_path) = arguments.next().map(PathBuf::from) else {
         return Some(1);
     };
-    let upstream = match arguments.next() {
+    let mut next_argument = arguments.next();
+    if next_argument.as_deref() == Some(std::ffi::OsStr::new(OWNER_ARGUMENT)) {
+        let Some(encoded_owner) = arguments.next().and_then(|owner| owner.into_string().ok())
+        else {
+            return Some(1);
+        };
+        let Ok(owner) = hex_decode(&encoded_owner) else {
+            return Some(1);
+        };
+        if owner.is_empty() || owner.chars().any(char::is_control) {
+            return Some(1);
+        }
+        next_argument = arguments.next();
+    }
+    let upstream = match next_argument {
         None => None,
         Some(argument) if argument.as_os_str() == std::ffi::OsStr::new(UPSTREAM_ARGUMENT) => {
             let Some(encoded) = arguments.next() else {
@@ -1137,6 +1301,26 @@ mod tests {
 
     fn test_time() -> OffsetDateTime {
         OffsetDateTime::parse("2026-08-07T12:00:00Z", &Rfc3339).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_socket_is_bounded_and_namespaced_for_long_development_paths() {
+        let fixture = FixtureDirectory::new();
+        let first_database = fixture
+            .0
+            .join("a".repeat(256))
+            .join("touchgrassbar.sqlite3");
+        let second_database = fixture
+            .0
+            .join("b".repeat(256))
+            .join("touchgrassbar.sqlite3");
+        let first = notification_path(&first_database);
+        let second = notification_path(&second_database);
+
+        assert!(first.to_str().unwrap().len() < 104);
+        assert!(second.to_str().unwrap().len() < 104);
+        assert_ne!(first, second);
     }
 
     fn unavailable_usage() -> UsagePeriods {
@@ -1396,6 +1580,7 @@ mod tests {
             &executable,
             &fixture.database(),
             &fixture.socket(),
+            "release",
         )
         .unwrap();
         let moved_executable = fixture.0.join("MovedBinary");
@@ -1404,8 +1589,56 @@ mod tests {
             &moved_executable,
             &fixture.database(),
             &fixture.socket(),
+            "release",
         )
         .unwrap();
+
+        let release_configured: Value =
+            serde_json::from_slice(&fs::read(fixture.settings()).unwrap()).unwrap();
+        let release_bridge = release_configured["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(release_bridge.contains(moved_executable.to_str().unwrap()));
+        assert!(!release_bridge.contains(executable.to_str().unwrap()));
+        assert_eq!(
+            bridge_owner(&release_bridge).unwrap().as_deref(),
+            Some("release")
+        );
+
+        let worktree_a = fixture.0.join("WorktreeA");
+        configure_status_line_at(
+            &fixture.settings(),
+            &worktree_a,
+            &fixture.0.join("worktree-a.sqlite3"),
+            &fixture.0.join("worktree-a.sock"),
+            "worktree-a",
+        )
+        .unwrap();
+        let worktree_b = fixture.0.join("WorktreeB");
+        configure_status_line_at(
+            &fixture.settings(),
+            &worktree_b,
+            &fixture.0.join("worktree-b.sqlite3"),
+            &fixture.0.join("worktree-b.sock"),
+            "worktree-b",
+        )
+        .unwrap();
+        restore_status_line_at(&fixture.settings(), "worktree-a").unwrap();
+        let without_worktree_a: Value =
+            serde_json::from_slice(&fs::read(fixture.settings()).unwrap()).unwrap();
+        let worktree_b_bridge = without_worktree_a["statusLine"]["command"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            bridge_owner(worktree_b_bridge).unwrap().as_deref(),
+            Some("worktree-b")
+        );
+        assert_eq!(
+            bridge_upstream(worktree_b_bridge).unwrap().as_deref(),
+            Some(release_bridge.as_str())
+        );
+        restore_status_line_at(&fixture.settings(), "worktree-b").unwrap();
 
         let configured: Value =
             serde_json::from_slice(&fs::read(fixture.settings()).unwrap()).unwrap();
@@ -1420,8 +1653,7 @@ mod tests {
                 .contains(STATUS_LINE_ARGUMENT)
         );
         let bridge = configured["statusLine"]["command"].as_str().unwrap();
-        assert!(bridge.contains(moved_executable.to_str().unwrap()));
-        assert!(!bridge.contains(executable.to_str().unwrap()));
+        assert_eq!(bridge, release_bridge);
         let upstream = bridge_upstream(bridge).unwrap();
         assert_eq!(upstream.as_deref(), Some("printf kept"));
 
@@ -1582,6 +1814,7 @@ mod tests {
                 &fixture.0.join("TouchGrassBar"),
                 &fixture.database(),
                 &fixture.socket(),
+                "release",
             )
             .is_err()
         );

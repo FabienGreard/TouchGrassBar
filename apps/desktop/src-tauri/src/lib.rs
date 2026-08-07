@@ -827,6 +827,14 @@ pub fn run() {
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
     #[cfg(debug_assertions)]
     let development_instance = dev_instance::DevelopmentInstance::from_environment();
+    #[cfg(debug_assertions)]
+    let claude_bridge_owner = development_instance.as_ref().map_or_else(
+        || "app.touchgrass.bar.dev".to_owned(),
+        |instance| instance.namespace().to_owned(),
+    );
+    #[cfg(not(debug_assertions))]
+    let claude_bridge_owner = "app.touchgrass.bar".to_owned();
+    let setup_claude_bridge_owner = claude_bridge_owner.clone();
     let builder = tauri::Builder::default();
     #[cfg(debug_assertions)]
     let builder = if development_instance.is_none() {
@@ -918,7 +926,8 @@ pub fn run() {
                 .unwrap_or_else(DesktopLifecycle::unavailable);
             match database_path.as_deref() {
                 Some(path) => {
-                    let _ = providers::configure_claude_status_line(path);
+                    let _ =
+                        providers::configure_claude_status_line(path, &setup_claude_bridge_owner);
                 }
                 None => eprintln!(
                     "[TouchGrassBar][claude-quota] bridge_setup_failed reason=database_unavailable"
@@ -1103,7 +1112,7 @@ pub fn run() {
         app.set_dock_visibility(false);
     }
 
-    app.run(|app, event| match event {
+    app.run(move |app, event| match event {
         RunEvent::Resumed => {
             if let Some(core) = app.try_state::<NativeCore>() {
                 let _ = core.request_refresh(RefreshSource::Wake);
@@ -1113,6 +1122,8 @@ pub fn run() {
             if let Some(core) = app.try_state::<NativeCore>() {
                 core.shutdown();
             }
+            #[cfg(debug_assertions)]
+            providers::restore_claude_status_line(&claude_bridge_owner);
         }
         _ => {}
     });
