@@ -131,7 +131,7 @@ function SettingsScreen({
           ))}
         </NativeWindowNav>
         <small className="mt-auto px-2 font-mono text-[9px] text-sheet-muted">
-          Version {updateState?.currentVersion ?? "0.0.0"}
+          Version {updateState?.currentVersion ?? "unavailable"}
         </small>
       </NativeWindowSidebar>
 

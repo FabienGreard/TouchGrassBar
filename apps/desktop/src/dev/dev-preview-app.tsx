@@ -24,7 +24,6 @@ const availableUpdate: UpdateState = {
   currentVersion: "1.3.2",
   onlineFeaturesPaused: false,
   update: {
-    presentation: "sheet",
     status: "available",
     version: "1.4.0",
   },

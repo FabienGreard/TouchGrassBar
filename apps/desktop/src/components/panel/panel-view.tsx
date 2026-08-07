@@ -19,6 +19,21 @@ import {
   UsageOverview,
   type UsagePresentation,
 } from "@/components/panel/usage-overview";
+
+function updateActionLabel(updateState: UpdateState | null) {
+  if (updateState?.update.status === "failed") {
+    return updateState.onlineFeaturesPaused
+      ? "Retry required update"
+      : "Retry update";
+  }
+  if (updateState?.update.status === "available") {
+    return updateState.onlineFeaturesPaused
+      ? "Install required update and relaunch"
+      : "Install update and relaunch";
+  }
+  return null;
+}
+
 type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
@@ -66,10 +81,7 @@ function PanelView({
           onUpdate={onUpdate}
           refreshing={refreshing}
           state={state}
-          updateAvailable={
-            updateState?.update.status === "available" ||
-            updateState?.update.status === "failed"
-          }
+          updateActionLabel={updateActionLabel(updateState)}
         />
 
         {!state ? (

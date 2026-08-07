@@ -21,7 +21,7 @@ type PanelHeaderProps = {
   onUpdate: () => void;
   refreshing: boolean;
   state: SanitizedDesktopState | null;
-  updateAvailable: boolean;
+  updateActionLabel: string | null;
 };
 
 function syncLabel(error: boolean, state: SanitizedDesktopState | null) {
@@ -41,7 +41,7 @@ function PanelHeader({
   onUpdate,
   refreshing,
   state,
-  updateAvailable,
+  updateActionLabel,
 }: PanelHeaderProps) {
   return (
     <header className="flex items-center justify-between border-b border-pearl-line bg-panel-header px-4 pt-[15px] pb-3 contrast-more:border-pearl-ink">
@@ -53,13 +53,13 @@ function PanelHeader({
       </div>
 
       <div className="ml-2 flex items-center gap-1">
-        {updateAvailable ? (
+        {updateActionLabel ? (
           <Button
-            aria-label="Install update and relaunch"
+            aria-label={updateActionLabel}
             data-slot="update-action"
             onClick={onUpdate}
             size="icon"
-            title="Install update and relaunch"
+            title={updateActionLabel}
             type="button"
           >
             <DownloadIcon

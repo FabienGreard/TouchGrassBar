@@ -580,15 +580,6 @@ fn check_for_updates(
 }
 
 #[tauri::command]
-fn defer_update(
-    window: WebviewWindow,
-    runtime: State<'_, UpdateRuntime>,
-) -> Result<UpdateStateV1, String> {
-    require_update_surface(&window)?;
-    Ok(runtime.defer())
-}
-
-#[tauri::command]
 fn install_update(
     window: WebviewWindow,
     runtime: State<'_, UpdateRuntime>,
@@ -821,7 +812,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             check_for_updates,
             complete_bootstrap,
-            defer_update,
             get_bootstrap_state,
             get_sanitized_state,
             get_settings_state,

@@ -22,13 +22,6 @@ const MAX_VERSION_LENGTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum UpdatePresentation {
-    Row,
-    Sheet,
-}
-
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum UpdateFailure {
     Download,
     Interrupted,
@@ -54,7 +47,6 @@ pub enum UpdateStatus {
     Available {
         #[schemars(length(min = 1, max = 64))]
         version: String,
-        presentation: UpdatePresentation,
     },
     Downloading {
         #[schemars(length(min = 1, max = 64))]
@@ -151,9 +143,9 @@ struct UpdatePersistence {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PersistedUpdateState {
-    deferred_version: Option<String>,
     last_automatic_check_at: Option<i64>,
     minimum_required_version: Option<String>,
+    offered_version: Option<String>,
 }
 
 impl UpdatePersistence {
@@ -167,9 +159,9 @@ impl UpdatePersistence {
                  CREATE TABLE IF NOT EXISTS touchgrassbar_update_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                    last_automatic_check_at INTEGER,
-                   deferred_version TEXT CHECK (
-                     deferred_version IS NULL OR
-                     length(deferred_version) BETWEEN 1 AND 64
+                   offered_version TEXT CHECK (
+                     offered_version IS NULL OR
+                     length(offered_version) BETWEEN 1 AND 64
                    ),
                    minimum_required_version TEXT CHECK (
                      minimum_required_version IS NULL OR
@@ -178,6 +170,39 @@ impl UpdatePersistence {
                  );",
             )
             .map_err(|_| ())?;
+        let has_offered_column = connection
+            .query_row(
+                "SELECT EXISTS (
+                   SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
+                   WHERE name = 'offered_version'
+                 )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|_| ())?;
+        if !has_offered_column {
+            let has_deferred_column = connection
+                .query_row(
+                    "SELECT EXISTS (
+                       SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
+                       WHERE name = 'deferred_version'
+                     )",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|_| ())?;
+            let migration = if has_deferred_column {
+                "ALTER TABLE touchgrassbar_update_state
+                 RENAME COLUMN deferred_version TO offered_version;"
+            } else {
+                "ALTER TABLE touchgrassbar_update_state
+                 ADD COLUMN offered_version TEXT CHECK (
+                   offered_version IS NULL OR
+                   length(offered_version) BETWEEN 1 AND 64
+                 );"
+            };
+            connection.execute_batch(migration).map_err(|_| ())?;
+        }
         let has_minimum_column = connection
             .query_row(
                 "SELECT EXISTS (
@@ -202,7 +227,7 @@ impl UpdatePersistence {
         connection
             .execute(
                 "INSERT OR IGNORE INTO touchgrassbar_update_state (
-                   singleton, last_automatic_check_at, deferred_version,
+                   singleton, last_automatic_check_at, offered_version,
                    minimum_required_version
                  ) VALUES (1, NULL, NULL, NULL)",
                 [],
@@ -210,14 +235,14 @@ impl UpdatePersistence {
             .map_err(|_| ())?;
         let persisted = connection
             .query_row(
-                "SELECT last_automatic_check_at, deferred_version,
+                "SELECT last_automatic_check_at, offered_version,
                         minimum_required_version
                  FROM touchgrassbar_update_state WHERE singleton = 1",
                 [],
                 |row| {
                     Ok(PersistedUpdateState {
                         last_automatic_check_at: row.get(0)?,
-                        deferred_version: row.get(1)?,
+                        offered_version: row.get(1)?,
                         minimum_required_version: row.get(2)?,
                     })
                 },
@@ -261,7 +286,7 @@ impl UpdatePersistence {
 
     fn set_offer(
         &self,
-        deferred_version: Option<&str>,
+        offered_version: Option<&str>,
         minimum_required_version: Option<&str>,
     ) -> Result<(), ()> {
         let mut memory = self.memory.lock().map_err(|_| ())?;
@@ -269,33 +294,16 @@ impl UpdatePersistence {
         let changed = connection
             .execute(
                 "UPDATE touchgrassbar_update_state
-                 SET deferred_version = ?1, minimum_required_version = ?2
+                 SET offered_version = ?1, minimum_required_version = ?2
                  WHERE singleton = 1",
-                params![deferred_version, minimum_required_version],
+                params![offered_version, minimum_required_version],
             )
             .map_err(|_| ())?;
         if changed != 1 {
             return Err(());
         }
-        memory.deferred_version = deferred_version.map(str::to_owned);
+        memory.offered_version = offered_version.map(str::to_owned);
         memory.minimum_required_version = minimum_required_version.map(str::to_owned);
-        Ok(())
-    }
-
-    fn set_deferred_version(&self, version: Option<&str>) -> Result<(), ()> {
-        let mut memory = self.memory.lock().map_err(|_| ())?;
-        let connection = self.connection.lock().map_err(|_| ())?;
-        let changed = connection
-            .execute(
-                "UPDATE touchgrassbar_update_state
-                 SET deferred_version = ?1 WHERE singleton = 1",
-                params![version],
-            )
-            .map_err(|_| ())?;
-        if changed != 1 {
-            return Err(());
-        }
-        memory.deferred_version = version.map(str::to_owned);
         Ok(())
     }
 }
@@ -341,13 +349,10 @@ impl UpdateRuntime {
         let initial_update = if !available || persistence.is_none() || persisted.is_none() {
             UpdateStatus::Unavailable
         } else if let Some(version) = persisted
-            .and_then(|persisted| persisted.deferred_version)
+            .and_then(|persisted| persisted.offered_version)
             .filter(|version| version_is_newer(version, &current_version))
         {
-            UpdateStatus::Available {
-                version,
-                presentation: UpdatePresentation::Row,
-            }
+            UpdateStatus::Available { version }
         } else {
             UpdateStatus::Idle
         };
@@ -448,10 +453,10 @@ impl UpdateRuntime {
                     );
                     return;
                 };
-                let deferred_version = Some(version.to_string());
+                let offered_version = Some(version.to_string());
                 if persistence
                     .set_offer(
-                        deferred_version.as_deref(),
+                        offered_version.as_deref(),
                         minimum_required_version.as_deref(),
                     )
                     .is_err()
@@ -473,7 +478,6 @@ impl UpdateRuntime {
                 self.publish(
                     UpdateStatus::Available {
                         version: version.to_string(),
-                        presentation: UpdatePresentation::Sheet,
                     },
                     minimum_required,
                 );
@@ -504,33 +508,6 @@ impl UpdateRuntime {
             }
             Err(error) => self.fail(None, classify_error(&error, false), RetryAction::Check),
         }
-    }
-
-    pub fn defer(&self) -> UpdateStateV1 {
-        let current = self.state();
-        if let UpdateStatus::Available { version, .. } = current.update {
-            let persisted = self
-                .persistence
-                .as_ref()
-                .ok_or(())
-                .and_then(|persistence| persistence.set_deferred_version(Some(&version)));
-            if persisted.is_err() {
-                self.fail(
-                    Some(version),
-                    UpdateFailure::Unavailable,
-                    RetryAction::Check,
-                );
-                return self.state();
-            }
-            self.publish(
-                UpdateStatus::Available {
-                    version,
-                    presentation: UpdatePresentation::Row,
-                },
-                current.online_features_paused,
-            );
-        }
-        self.state()
     }
 
     pub fn request_install(&self) -> UpdateStateV1 {
@@ -858,12 +835,12 @@ mod tests {
     fn available_offer_persists_only_a_bounded_newer_semver() {
         let database = TestDatabase::new();
         let persistence = UpdatePersistence::open(Some(&database.0)).unwrap();
-        persistence.set_deferred_version(Some("1.4.0")).unwrap();
+        persistence.set_offer(Some("1.4.0"), None).unwrap();
         drop(persistence);
 
         let reopened = UpdatePersistence::open(Some(&database.0)).unwrap();
         assert_eq!(
-            reopened.snapshot().unwrap().deferred_version.as_deref(),
+            reopened.snapshot().unwrap().offered_version.as_deref(),
             Some("1.4.0")
         );
         assert!(valid_version("1.4.0"));
@@ -874,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn minimum_version_policy_and_deferred_offer_survive_restart() {
+    fn minimum_version_policy_and_offer_survive_restart() {
         let database = TestDatabase::new();
         let persistence = UpdatePersistence::open(Some(&database.0)).unwrap();
         persistence.set_offer(Some("1.4.0"), Some("1.3.0")).unwrap();
@@ -884,9 +861,9 @@ mod tests {
         assert_eq!(
             reopened.snapshot().unwrap(),
             PersistedUpdateState {
-                deferred_version: Some("1.4.0".to_owned()),
                 last_automatic_check_at: None,
                 minimum_required_version: Some("1.3.0".to_owned()),
+                offered_version: Some("1.4.0".to_owned()),
             }
         );
         assert!(persisted_minimum_required(
@@ -900,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_update_state_adds_minimum_column_without_losing_state() {
+    fn legacy_update_state_renames_offer_and_adds_minimum_without_loss() {
         let database = TestDatabase::new();
         let connection = Connection::open(&database.0).unwrap();
         connection
@@ -921,9 +898,9 @@ mod tests {
         assert_eq!(
             migrated.snapshot().unwrap(),
             PersistedUpdateState {
-                deferred_version: Some("1.4.0".to_owned()),
                 last_automatic_check_at: Some(10_000),
                 minimum_required_version: None,
+                offered_version: Some("1.4.0".to_owned()),
             }
         );
     }
@@ -940,7 +917,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(persistence.claim_automatic_check(10_000), Err(()));
-        assert_eq!(persistence.set_deferred_version(Some("1.4.0")), Err(()));
+        assert_eq!(persistence.set_offer(Some("1.4.0"), None), Err(()));
         assert_eq!(
             persistence.snapshot().unwrap(),
             PersistedUpdateState::default()

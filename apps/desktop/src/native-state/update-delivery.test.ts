@@ -24,7 +24,6 @@ function port(): UpdatePort & { changed: () => void } {
       ok: true as const,
       value: { ...idleState, update: { status: "checking" } },
     })),
-    defer: vi.fn(async () => ({ ok: true as const, value: idleState })),
     install: vi.fn(async () => ({ ok: true as const, value: idleState })),
     openLatestDmg: vi.fn(async () => ({
       ok: true as const,
@@ -76,12 +75,10 @@ describe("update delivery", () => {
     await delivery.activate();
 
     expect(await delivery.check()).toBe(true);
-    expect(await delivery.defer()).toBe(true);
     expect(await delivery.install()).toBe(true);
     expect(await delivery.retry()).toBe(true);
     expect(await delivery.openLatestDmg()).toBe(true);
     expect(native.check).toHaveBeenCalledOnce();
-    expect(native.defer).toHaveBeenCalledOnce();
     expect(native.install).toHaveBeenCalledOnce();
     expect(native.retry).toHaveBeenCalledOnce();
     expect(native.openLatestDmg).toHaveBeenCalledOnce();
@@ -100,7 +97,6 @@ describe("Tauri update adapter", () => {
 
     await adapter.read();
     await adapter.check();
-    await adapter.defer();
     await adapter.install();
     await adapter.retry();
     await adapter.openLatestDmg();
@@ -108,10 +104,9 @@ describe("Tauri update adapter", () => {
 
     expect(bindings.invoke).toHaveBeenNthCalledWith(1, "get_update_state");
     expect(bindings.invoke).toHaveBeenNthCalledWith(2, "check_for_updates");
-    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "defer_update");
-    expect(bindings.invoke).toHaveBeenNthCalledWith(4, "install_update");
-    expect(bindings.invoke).toHaveBeenNthCalledWith(5, "retry_update");
-    expect(bindings.invoke).toHaveBeenNthCalledWith(6, "open_latest_dmg");
+    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "install_update");
+    expect(bindings.invoke).toHaveBeenNthCalledWith(4, "retry_update");
+    expect(bindings.invoke).toHaveBeenNthCalledWith(5, "open_latest_dmg");
     expect(bindings.listen).toHaveBeenCalledWith(
       "update-state-changed",
       receive,

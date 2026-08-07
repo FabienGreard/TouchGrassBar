@@ -128,6 +128,7 @@ describe("settings screen", () => {
     const generalMarkup = renderToStaticMarkup(<SettingsScreen />);
 
     expect(generalMarkup).toContain("Not connected in this build.");
+    expect(generalMarkup).toContain("Update state unavailable.");
     expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(
       2,
     );
@@ -147,7 +148,6 @@ describe("settings screen", () => {
           currentVersion: "1.3.2",
           onlineFeaturesPaused: false,
           update: {
-            presentation: "sheet",
             status: "available",
             version: "1.4.0",
           },
@@ -159,6 +159,25 @@ describe("settings screen", () => {
     expect(markup).toContain("Version 1.4.0 is ready.");
     expect(markup).toContain("Install &amp; Relaunch");
     expect(markup).not.toContain('data-slot="update-sheet"');
+
+    const requiredMarkup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates
+        onInstallUpdate={() => undefined}
+        updateState={{
+          contractVersion: 1,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: true,
+          update: {
+            status: "available",
+            version: "1.4.0",
+          },
+        }}
+      />,
+    );
+    expect(requiredMarkup).toContain(
+      "Version 1.4.0 is required for online features.",
+    );
 
     const failedMarkup = renderToStaticMarkup(
       <SettingsScreen

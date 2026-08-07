@@ -15,11 +15,13 @@ type UpdatesSettingsProps = {
 };
 
 function updateSummary(state: UpdateState | null) {
-  if (state === null) return "Development build";
+  if (state === null) return "Update state unavailable.";
   const update = state.update;
   switch (update.status) {
     case "available":
-      return `Version ${update.version} is ready.`;
+      return state.onlineFeaturesPaused
+        ? `Version ${update.version} is required for online features.`
+        : `Version ${update.version} is ready.`;
     case "checking":
       return "Checking the stable channel…";
     case "downloading":
@@ -27,7 +29,9 @@ function updateSummary(state: UpdateState | null) {
         ? "Downloading signed update…"
         : `Downloading signed update · ${update.progressPercent}%`;
     case "failed":
-      return "Update not installed.";
+      return state.onlineFeaturesPaused
+        ? "Required update not installed."
+        : "Update not installed.";
     case "installing":
       return "Installing and relaunching…";
     case "unavailable":
@@ -75,7 +79,7 @@ function UpdatesSettings({
       <div className="flex items-center justify-between gap-6 rounded-[12px] bg-white/38 px-4 py-3.5">
         <span>
           <strong className="block text-[12px]">
-            Version {state?.currentVersion ?? "0.0.0"}
+            Version {state?.currentVersion ?? "unavailable"}
           </strong>
           <small className="mt-0.5 block text-[9px] text-sheet-muted">
             {updateSummary(state)}

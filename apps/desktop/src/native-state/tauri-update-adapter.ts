@@ -36,8 +36,6 @@ function createTauriUpdateAdapter(
   return {
     check: () =>
       closedInvoke(bindings, "check_for_updates", "update-check-unavailable"),
-    defer: () =>
-      closedInvoke(bindings, "defer_update", "update-defer-unavailable"),
     install: () =>
       closedInvoke(bindings, "install_update", "update-install-unavailable"),
     openLatestDmg: async () => {

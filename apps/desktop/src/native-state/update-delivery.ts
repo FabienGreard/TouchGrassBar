@@ -5,7 +5,6 @@ import {
 
 type UpdatePortFaultCode =
   | "update-check-unavailable"
-  | "update-defer-unavailable"
   | "update-download-unavailable"
   | "update-install-unavailable"
   | "update-retry-unavailable"
@@ -18,7 +17,6 @@ type UpdatePortOutcome<Value> =
 
 type UpdatePort = {
   check: () => Promise<UpdatePortOutcome<unknown>>;
-  defer: () => Promise<UpdatePortOutcome<unknown>>;
   install: () => Promise<UpdatePortOutcome<unknown>>;
   openLatestDmg: () => Promise<UpdatePortOutcome<void>>;
   read: () => Promise<UpdatePortOutcome<unknown>>;
@@ -88,7 +86,6 @@ function createUpdateDelivery(port: UpdatePort) {
       return subscription.value;
     },
     check: () => run(port.check),
-    defer: () => run(port.defer),
     getSnapshot: () => current,
     install: () => run(port.install),
     openLatestDmg: async () => (await port.openLatestDmg()).ok,

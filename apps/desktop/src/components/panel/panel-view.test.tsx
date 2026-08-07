@@ -186,7 +186,6 @@ describe("panel states", () => {
           currentVersion: "1.3.2",
           onlineFeaturesPaused: false,
           update: {
-            presentation: "sheet",
             status: "available",
             version: "1.4.0",
           },
@@ -200,6 +199,31 @@ describe("panel states", () => {
     expect(markup).toContain('data-size="icon"');
     expect(markup).toContain('data-icon-source="Download04Icon"');
     expect(markup).not.toContain('data-slot="update-sheet"');
+
+    const retryMarkup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        onUpdate={() => undefined}
+        refreshing={false}
+        state={currentState}
+        updateState={{
+          contractVersion: 1,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: true,
+          update: {
+            failure: "signature",
+            status: "failed",
+            version: "1.4.0",
+          },
+        }}
+      />,
+    );
+    expect(retryMarkup).toContain('aria-label="Retry required update"');
+    expect(retryMarkup).not.toContain(
+      'aria-label="Install update and relaunch"',
+    );
   });
 
   test("renders the populated development fixture without changing the production fallback", async () => {
