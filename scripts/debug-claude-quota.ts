@@ -59,10 +59,6 @@ function requestedOptions() {
   return { fixture, release };
 }
 
-function sqliteLiteral(value: string) {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
 function clearDebugDatabase() {
   for (const path of [
     debugDatabase,
@@ -71,49 +67,6 @@ function clearDebugDatabase() {
   ]) {
     rmSync(path, { force: true });
   }
-}
-
-function snapshotSourceDatabase(sourceDatabase: string) {
-  if (!existsSync(sourceDatabase)) return false;
-  const sourceTables = spawnSync(
-    "sqlite3",
-    [
-      sourceDatabase,
-      "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('touchgrassbar_schema_versions', 'claude_quota_observation', 'claude_response_cursors');",
-    ],
-    {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  if (sourceTables.status !== 0 || sourceTables.stdout.trim() !== "3") {
-    return false;
-  }
-  const snapshot = spawnSync(
-    "sqlite3",
-    [
-      debugDatabase,
-      [
-        "CREATE TABLE touchgrassbar_schema_versions (module TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK (version >= 1));",
-        "CREATE TABLE claude_quota_observation (singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1), observed_at TEXT NOT NULL, five_hour_used_percentage REAL NOT NULL CHECK(five_hour_used_percentage >= 0 AND five_hour_used_percentage <= 100), five_hour_resets_at INTEGER NOT NULL CHECK(five_hour_resets_at > 0), seven_day_used_percentage REAL NOT NULL CHECK(seven_day_used_percentage >= 0 AND seven_day_used_percentage <= 100), seven_day_resets_at INTEGER NOT NULL CHECK(seven_day_resets_at > 0));",
-        "CREATE TABLE claude_response_cursors (session_id TEXT PRIMARY KEY NOT NULL, total_api_duration_ms INTEGER NOT NULL CHECK(total_api_duration_ms > 0), observed_at TEXT NOT NULL);",
-        `ATTACH DATABASE ${sqliteLiteral(sourceDatabase)} AS source;`,
-        "INSERT INTO touchgrassbar_schema_versions(module, version) SELECT module, version FROM source.touchgrassbar_schema_versions WHERE module = 'claude-quota-capture';",
-        "INSERT INTO claude_quota_observation SELECT * FROM source.claude_quota_observation;",
-        "DETACH DATABASE source;",
-      ].join(" "),
-    ],
-    {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  if (snapshot.status !== 0) {
-    throw new Error("The reduced Claude quota snapshot could not be created.");
-  }
-  return true;
 }
 
 function main() {
@@ -126,21 +79,21 @@ function main() {
   clearDebugDatabase();
 
   let source = "fixture";
+  let sourceDatabase: string | undefined;
   let snapshotAvailable = false;
   if (!options.fixture) {
     source = options.release ? "release" : "development";
     const namespace = options.release
       ? "app.touchgrass.bar"
       : developmentNamespace();
-    snapshotAvailable = snapshotSourceDatabase(
-      join(
-        userHome,
-        "Library",
-        "Application Support",
-        namespace,
-        "touchgrassbar.sqlite3",
-      ),
+    sourceDatabase = join(
+      userHome,
+      "Library",
+      "Application Support",
+      namespace,
+      "touchgrassbar.sqlite3",
     );
+    snapshotAvailable = existsSync(sourceDatabase);
   }
   console.error(
     `[TouchGrassBar][claude-quota-report] debug_source=${source} snapshot=${options.fixture ? "synthetic" : snapshotAvailable ? "loaded" : "unavailable"}`,
@@ -161,6 +114,9 @@ function main() {
       env: {
         ...Bun.env,
         TOUCHGRASS_CLAUDE_DEBUG_DATABASE: debugDatabase,
+        TOUCHGRASS_CLAUDE_DEBUG_SOURCE_DATABASE: snapshotAvailable
+          ? sourceDatabase
+          : undefined,
         TOUCHGRASS_CLAUDE_DEBUG_FIXTURE: options.fixture ? "1" : "0",
       },
       stdio: "inherit",

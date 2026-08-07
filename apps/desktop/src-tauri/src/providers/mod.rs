@@ -127,6 +127,13 @@ pub(crate) fn seed_claude_debug_fixture(
     claude::seed_debug_fixture(database_path, now)
 }
 
+pub(crate) fn snapshot_claude_debug_capture(
+    source_path: &Path,
+    target_path: &Path,
+) -> Result<(), ()> {
+    claude::snapshot_debug_capture(source_path, target_path)
+}
+
 pub(crate) fn debug_claude_quota_pass(
     database_path: &Path,
     now: OffsetDateTime,

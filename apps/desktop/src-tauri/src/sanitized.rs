@@ -1778,7 +1778,7 @@ impl ProviderSnapshot {
         }
     }
 
-    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
+    pub(crate) fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
         let (provider, observed_at, quota_lanes, current) = match self {
             Self::Unavailable { .. } => return (self.clone(), false),
             Self::Current {

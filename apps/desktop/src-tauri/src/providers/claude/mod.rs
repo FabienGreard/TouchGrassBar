@@ -569,12 +569,7 @@ fn store_response_cursor(
     Ok(())
 }
 
-fn load_quota_observation(
-    database_path: &Path,
-    now: OffsetDateTime,
-) -> Result<Option<ClaudeQuotaObservation>, ()> {
-    let connection = open_capture_database(database_path)?;
-    prune_response_cursors(&connection, now)?;
+fn read_quota_observation(connection: &Connection) -> Result<Option<ClaudeQuotaObservation>, ()> {
     let row = connection
         .query_row(
             "SELECT
@@ -614,6 +609,66 @@ fn load_quota_observation(
     }))
 }
 
+fn load_quota_observation(
+    database_path: &Path,
+    now: OffsetDateTime,
+) -> Result<Option<ClaudeQuotaObservation>, ()> {
+    let connection = open_capture_database(database_path)?;
+    prune_response_cursors(&connection, now)?;
+    read_quota_observation(&connection)
+}
+
+pub(super) fn snapshot_debug_capture(source_path: &Path, target_path: &Path) -> Result<(), ()> {
+    if source_path == target_path {
+        return Err(());
+    }
+    let source =
+        Connection::open_with_flags(source_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| ())?;
+    if capture_schema_version(&source)? != CAPTURE_SCHEMA_VERSION {
+        return Err(());
+    }
+    validate_capture_schema(&source)?;
+    let observation = read_quota_observation(&source)?;
+    drop(source);
+
+    let mut target = open_capture_database(target_path)?;
+    let transaction = target.transaction().map_err(|_| ())?;
+    transaction
+        .execute_batch(
+            "DELETE FROM claude_quota_observation;
+             DELETE FROM claude_response_cursors;",
+        )
+        .map_err(|_| ())?;
+    if let Some(observation) = observation {
+        transaction
+            .execute(
+                "INSERT INTO claude_quota_observation(
+                   singleton,
+                   observed_at,
+                   five_hour_used_percentage,
+                   five_hour_resets_at,
+                   seven_day_used_percentage,
+                   seven_day_resets_at
+                 ) VALUES(1, ?1, ?2, ?3, ?4, ?5)",
+                params![
+                    observation
+                        .observed_at
+                        .to_offset(time::UtcOffset::UTC)
+                        .format(&Rfc3339)
+                        .map_err(|_| ())?,
+                    observation.five_hour.used_percentage,
+                    observation.five_hour.resets_at,
+                    observation.seven_day.used_percentage,
+                    observation.seven_day.resets_at,
+                ],
+            )
+            .map_err(|_| ())?;
+    }
+    transaction.commit().map_err(|_| ())?;
+    validate_capture_schema(&target)
+}
+
 pub(super) fn seed_debug_fixture(database_path: &Path, now: OffsetDateTime) -> Result<(), ()> {
     let payload = serde_json::to_vec(&serde_json::json!({
         "cost": { "total_api_duration_ms": 1 },
@@ -642,12 +697,20 @@ pub(super) fn debug_quota_report(database_path: &Path, now: OffsetDateTime) -> R
                 .to_owned(),
         );
     };
-    if observation.sanitized_snapshot(now).is_err() {
-        return Ok(
-            "[TouchGrassBar][claude-quota-report] availability=unavailable reason=expired_or_invalid"
-                .to_owned(),
-        );
-    }
+    let snapshot = match observation.sanitized_snapshot(now) {
+        Ok(snapshot) => snapshot.transition_at(now).0,
+        Err(()) => {
+            return Ok(
+                "[TouchGrassBar][claude-quota-report] availability=unavailable reason=expired_or_invalid"
+                    .to_owned(),
+            );
+        }
+    };
+    let availability = match snapshot {
+        ProviderSnapshot::Current { .. } => "current",
+        ProviderSnapshot::Stale { .. } => "stale",
+        ProviderSnapshot::Unavailable { .. } => "unavailable",
+    };
     let observed_age_seconds = (now - observation.observed_at).whole_seconds().max(0);
     let five_hour_reset_seconds =
         (OffsetDateTime::from_unix_timestamp(observation.five_hour.resets_at).map_err(|_| ())?
@@ -658,7 +721,7 @@ pub(super) fn debug_quota_report(database_path: &Path, now: OffsetDateTime) -> R
             - now)
             .whole_seconds();
     Ok(format!(
-        "[TouchGrassBar][claude-quota-report] availability=current observed_age_seconds={observed_age_seconds} lane_count=2\n\
+        "[TouchGrassBar][claude-quota-report] availability={availability} observed_age_seconds={observed_age_seconds} lane_count=2\n\
 [TouchGrassBar][claude-quota-report] lane=five_hour remaining_percent={:.2} reset_in_seconds={five_hour_reset_seconds}\n\
 [TouchGrassBar][claude-quota-report] lane=seven_day remaining_percent={:.2} reset_in_seconds={seven_day_reset_seconds}",
         100.0 - observation.five_hour.used_percentage,
@@ -1247,17 +1310,29 @@ mod tests {
     #[test]
     fn debug_report_distinguishes_missing_and_current_without_private_data() {
         let fixture = FixtureDirectory::new();
-        let database = fixture.database();
+        let source = fixture.0.join("source.sqlite3");
+        let target = fixture.database();
         assert_eq!(
-            debug_quota_report(&database, test_time()).unwrap(),
+            debug_quota_report(&target, test_time()).unwrap(),
             "[TouchGrassBar][claude-quota-report] availability=unavailable reason=not_observed"
         );
 
-        assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
-        let report = debug_quota_report(&database, test_time()).unwrap();
+        assert!(capture_status_line_payload(&source, &status_payload(100), test_time()).unwrap());
+        snapshot_debug_capture(&source, &target).unwrap();
+        let report = debug_quota_report(&target, test_time()).unwrap();
         assert!(report.contains("availability=current observed_age_seconds=0 lane_count=2"));
         assert!(report.contains("lane=five_hour remaining_percent=76.50 reset_in_seconds=14400"));
         assert!(report.contains("lane=seven_day remaining_percent=58.75 reset_in_seconds=518400"));
+        let stale_report =
+            debug_quota_report(&target, test_time() + time::Duration::minutes(6)).unwrap();
+        assert!(stale_report.contains("availability=stale observed_age_seconds=360 lane_count=2"));
+        let target_connection = Connection::open(&target).unwrap();
+        let copied_cursor_count: i64 = target_connection
+            .query_row("SELECT COUNT(*) FROM claude_response_cursors", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(copied_cursor_count, 0);
         for sentinel in [
             "REDACTED-CREDENTIAL",
             "REDACTED-PROVIDER-CONTENT",

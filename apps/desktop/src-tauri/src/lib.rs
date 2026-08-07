@@ -58,9 +58,14 @@ pub fn run_codex_usage_debug_pass(
 #[doc(hidden)]
 pub fn run_claude_quota_debug_pass(
     database_path: &std::path::Path,
+    source_database: Option<&std::path::Path>,
     seed_fixture: bool,
 ) -> Result<String, &'static str> {
     let now = time::OffsetDateTime::now_utc();
+    if let Some(source_database) = source_database {
+        providers::snapshot_claude_debug_capture(source_database, database_path)
+            .map_err(|()| "Claude quota snapshot failed")?;
+    }
     if seed_fixture {
         providers::seed_claude_debug_fixture(database_path, now)
             .map_err(|()| "Claude quota fixture failed")?;

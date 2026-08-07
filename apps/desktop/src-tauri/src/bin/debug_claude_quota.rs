@@ -8,9 +8,16 @@ fn required_path(name: &str) -> Result<PathBuf, String> {
 
 fn run() -> Result<(), String> {
     let database_path = required_path("TOUCHGRASS_CLAUDE_DEBUG_DATABASE")?;
+    let source_database = env::var_os("TOUCHGRASS_CLAUDE_DEBUG_SOURCE_DATABASE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     let seed_fixture = env::var("TOUCHGRASS_CLAUDE_DEBUG_FIXTURE").as_deref() == Ok("1");
-    let report = touchgrassbar_lib::run_claude_quota_debug_pass(&database_path, seed_fixture)
-        .map_err(str::to_owned)?;
+    let report = touchgrassbar_lib::run_claude_quota_debug_pass(
+        &database_path,
+        source_database.as_deref(),
+        seed_fixture,
+    )
+    .map_err(str::to_owned)?;
     eprintln!("{report}");
     Ok(())
 }
