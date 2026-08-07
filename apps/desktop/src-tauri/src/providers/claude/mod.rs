@@ -35,6 +35,7 @@ const CAPTURE_SCHEMA_MODULE: &str = "claude-quota-capture";
 const CAPTURE_SCHEMA_VERSION: i64 = 1;
 const MAX_STATUS_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_SESSION_ID_BYTES: usize = 256;
+const RESPONSE_CURSOR_RETENTION_DAYS: i64 = 60;
 const UPSTREAM_ARGUMENT: &str = "--touchgrassbar-upstream-hex";
 
 #[cfg(debug_assertions)]
@@ -459,10 +460,22 @@ fn capture_status_line_payload(
     let five_hour = input.rate_limits.five_hour.validate(now)?;
     let seven_day = input.rate_limits.seven_day.validate(now)?;
     let api_duration = i64::try_from(input.cost.total_api_duration_ms).map_err(|_| ())?;
-    let observed_at = now.format(&Rfc3339).map_err(|_| ())?;
+    let observed_at = now
+        .to_offset(time::UtcOffset::UTC)
+        .format(&Rfc3339)
+        .map_err(|_| ())?;
     let mut connection = open_capture_database(database_path)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| ())?;
+    let cursor_cutoff = response_cursor_retention_cutoff(now)
+        .format(&Rfc3339)
+        .map_err(|_| ())?;
+    transaction
+        .execute(
+            "DELETE FROM claude_response_cursors WHERE observed_at < ?1",
+            [&cursor_cutoff],
+        )
         .map_err(|_| ())?;
     let previous_duration = transaction
         .query_row(
@@ -473,6 +486,7 @@ fn capture_status_line_payload(
         .optional()
         .map_err(|_| ())?;
     if previous_duration.is_some_and(|previous| previous >= api_duration) {
+        transaction.commit().map_err(|_| ())?;
         return Ok(false);
     }
     let current_observed_at = transaction
@@ -488,19 +502,12 @@ fn capture_status_line_payload(
     if let Some(current_at) = current_observed_at {
         let current_at = OffsetDateTime::parse(&current_at, &Rfc3339).map_err(|_| ())?;
         if now <= current_at {
+            store_response_cursor(&transaction, &input.session_id, api_duration, &observed_at)?;
+            transaction.commit().map_err(|_| ())?;
             return Ok(false);
         }
     }
-    transaction
-        .execute(
-            "INSERT INTO claude_response_cursors(session_id, total_api_duration_ms, observed_at)
-             VALUES(?1, ?2, ?3)
-             ON CONFLICT(session_id) DO UPDATE SET
-               total_api_duration_ms=excluded.total_api_duration_ms,
-               observed_at=excluded.observed_at",
-            params![input.session_id, api_duration, observed_at],
-        )
-        .map_err(|_| ())?;
+    store_response_cursor(&transaction, &input.session_id, api_duration, &observed_at)?;
     transaction
         .execute(
             "INSERT INTO claude_quota_observation(
@@ -528,6 +535,32 @@ fn capture_status_line_payload(
         .map_err(|_| ())?;
     transaction.commit().map_err(|_| ())?;
     Ok(true)
+}
+
+fn response_cursor_retention_cutoff(now: OffsetDateTime) -> OffsetDateTime {
+    let today = now.to_offset(time::UtcOffset::UTC).date();
+    (today - time::Duration::days(RESPONSE_CURSOR_RETENTION_DAYS - 1))
+        .midnight()
+        .assume_utc()
+}
+
+fn store_response_cursor(
+    transaction: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    api_duration: i64,
+    observed_at: &str,
+) -> Result<(), ()> {
+    transaction
+        .execute(
+            "INSERT INTO claude_response_cursors(session_id, total_api_duration_ms, observed_at)
+             VALUES(?1, ?2, ?3)
+             ON CONFLICT(session_id) DO UPDATE SET
+               total_api_duration_ms=excluded.total_api_duration_ms,
+               observed_at=excluded.observed_at",
+            params![session_id, api_duration, observed_at],
+        )
+        .map_err(|_| ())?;
+    Ok(())
 }
 
 fn load_quota_observation(database_path: &Path) -> Result<Option<ClaudeQuotaObservation>, ()> {
@@ -1242,6 +1275,15 @@ mod tests {
             .unwrap(),
             "a delayed helper cannot replace an observation received later"
         );
+        assert!(
+            !capture_status_line_payload(
+                &database,
+                &delayed,
+                test_time() + time::Duration::minutes(2),
+            )
+            .unwrap(),
+            "a timer rerun cannot replay a delayed response after it was rejected"
+        );
 
         assert!(
             !capture_status_line_payload(
@@ -1279,6 +1321,57 @@ mod tests {
         );
         assert_eq!(observation.five_hour.used_percentage, 30.0);
         assert_eq!(observation.seven_day.used_percentage, 48.0);
+    }
+
+    #[test]
+    fn response_cursors_retain_only_sixty_utc_ranking_days() {
+        let fixture = FixtureDirectory::new();
+        let database = fixture.database();
+        drop(open_capture_database(&database).unwrap());
+        let cutoff = response_cursor_retention_cutoff(test_time());
+        let expired_at = (cutoff - time::Duration::seconds(1))
+            .format(&Rfc3339)
+            .unwrap();
+        let retained_at = cutoff.format(&Rfc3339).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute(
+                "INSERT INTO claude_response_cursors(
+                   session_id,
+                   total_api_duration_ms,
+                   observed_at
+                 ) VALUES(?1, ?2, ?3), (?4, ?5, ?6)",
+                params![
+                    "fixture-expired-session",
+                    100,
+                    expired_at,
+                    "fixture-retained-session",
+                    100,
+                    retained_at,
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
+
+        let connection = Connection::open(&database).unwrap();
+        let expired_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM claude_response_cursors WHERE session_id = ?1",
+                ["fixture-expired-session"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let retained_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM claude_response_cursors WHERE session_id = ?1",
+                ["fixture-retained-session"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(expired_count, 0);
+        assert_eq!(retained_count, 1);
     }
 
     #[test]
