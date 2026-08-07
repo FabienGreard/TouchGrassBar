@@ -267,7 +267,7 @@ function extractCertificateSha256(appPath: string, temporaryDirectory: string) {
   const certificatePrefix = join(certificateDirectory, "leaf-");
   commandPasses(
     "/usr/bin/codesign",
-    ["--display", "--extract-certificates", certificatePrefix, appPath],
+    ["--display", `--extract-certificates=${certificatePrefix}`, appPath],
     "The public signing certificate cannot be extracted.",
   );
   const leafCertificatePath = `${certificatePrefix}0`;
