@@ -6,6 +6,7 @@ import {
 } from "@touchgrass/contracts";
 
 type SettingsPortFaultCode =
+  | "display-name-update-unavailable"
   | "launch-at-login-unavailable"
   | "navigation-stream-unavailable"
   | "recovery-clear-stream-unavailable"
@@ -26,6 +27,9 @@ type SettingsPort = {
     section: SettingsSection,
   ) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
+  updateDisplayName: (
+    displayName: string,
+  ) => Promise<SettingsPortOutcome<unknown>>;
   subscribeNavigation: (
     receive: (payload: unknown) => void,
   ) => Promise<SettingsPortOutcome<() => void>>;
@@ -56,6 +60,7 @@ function createSettingsDelivery(port: SettingsPort) {
   let revealInFlight: Promise<boolean> | null = null;
   let recoveryRevision = 0;
   let saveInFlight: Promise<boolean> | null = null;
+  let displayNameSaveInFlight: Promise<boolean> | null = null;
   let sectionSelection = Promise.resolve(true);
   let sectionRevision = 0;
   let selectedSection: SettingsSection | null = null;
@@ -252,6 +257,17 @@ function createSettingsDelivery(port: SettingsPort) {
         saveInFlight = null;
       });
       return saveInFlight;
+    },
+    updateDisplayName(displayName: string) {
+      if (displayNameSaveInFlight !== null) return displayNameSaveInFlight;
+      displayNameSaveInFlight = (async () => {
+        const outcome = await port.updateDisplayName(displayName);
+        if (!outcome.ok) return false;
+        return accept(outcome.value);
+      })().finally(() => {
+        displayNameSaveInFlight = null;
+      });
+      return displayNameSaveInFlight;
     },
     subscribe(listener: () => void) {
       listeners.add(listener);

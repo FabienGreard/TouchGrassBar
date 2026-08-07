@@ -95,6 +95,13 @@ function createTauriSettingsAdapter(
         "launch-at-login-unavailable",
         { enabled },
       ),
+    updateDisplayName: (displayName) =>
+      closedInvoke(
+        bindings,
+        "update_profile_display_name",
+        "display-name-update-unavailable",
+        { displayName },
+      ),
     subscribeNavigation: async (receive) => {
       try {
         const stop = await bindings.listen(

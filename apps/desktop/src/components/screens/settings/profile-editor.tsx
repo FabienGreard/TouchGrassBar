@@ -6,32 +6,60 @@ import { useCopyText } from "@/components/use-copy-text";
 type ProfileEditorProps = {
   className?: string;
   displayName: string;
-  onDisplayNameChange?: ((displayName: string) => void) | undefined;
+  onDisplayNameChange?:
+    | ((displayName: string) => boolean | Promise<boolean> | void)
+    | undefined;
   touchGrassId: string;
 };
 
 function ProfileEditor(props: ProfileEditorProps) {
   const [editing, setEditing] = useState(false);
   const [draftDisplayName, setDraftDisplayName] = useState(props.displayName);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
   const { copyStatus, copyText } = useCopyText(props.touchGrassId);
   const initialLetter =
     props.displayName.trim().slice(0, 1).toUpperCase() || "?";
 
   function beginEditing() {
     setDraftDisplayName(props.displayName);
+    setSaveFailed(false);
     setEditing(true);
   }
 
   function cancelEditing() {
     setDraftDisplayName(props.displayName);
+    setSaveFailed(false);
     setEditing(false);
   }
 
-  function saveDisplayName() {
+  async function saveDisplayName() {
     const displayName = draftDisplayName.trim();
-    if (!displayName || props.onDisplayNameChange === undefined) return;
-    props.onDisplayNameChange(displayName);
-    setEditing(false);
+    if (
+      !displayName ||
+      displayName.length > 40 ||
+      props.onDisplayNameChange === undefined
+    ) {
+      return;
+    }
+    if (displayName === props.displayName) {
+      setEditing(false);
+      return;
+    }
+    setSaveFailed(false);
+    setSaving(true);
+    try {
+      const saved = await props.onDisplayNameChange(displayName);
+      if (saved === false) {
+        setSaveFailed(true);
+        return;
+      }
+      setEditing(false);
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (editing) {
@@ -41,7 +69,7 @@ function ProfileEditor(props: ProfileEditorProps) {
           className="grid gap-3"
           onSubmit={(event) => {
             event.preventDefault();
-            saveDisplayName();
+            void saveDisplayName();
           }}
         >
           <label>
@@ -51,12 +79,22 @@ function ProfileEditor(props: ProfileEditorProps) {
             <Input
               aria-label="Display name"
               autoFocus
+              disabled={saving}
+              maxLength={40}
               onChange={(event) => setDraftDisplayName(event.target.value)}
               value={draftDisplayName}
             />
           </label>
+          <small
+            aria-live="polite"
+            className="text-[9px] text-sheet-muted"
+            data-display-name-save-state={saveFailed ? "failed" : "idle"}
+          >
+            {saveFailed ? "Display Name could not be saved. Try again." : ""}
+          </small>
           <div className="flex justify-end gap-1.5">
             <Button
+              disabled={saving}
               onClick={cancelEditing}
               size="quiet"
               type="button"
@@ -65,11 +103,15 @@ function ProfileEditor(props: ProfileEditorProps) {
               Cancel
             </Button>
             <Button
-              disabled={draftDisplayName.trim().length === 0}
+              disabled={
+                saving ||
+                draftDisplayName.trim().length === 0 ||
+                draftDisplayName.trim().length > 40
+              }
               size="quiet"
               type="submit"
             >
-              Save
+              {saving ? "Saving…" : "Save"}
             </Button>
           </div>
         </form>
