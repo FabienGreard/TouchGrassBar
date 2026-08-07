@@ -3,11 +3,9 @@ mod usage;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::{Arc, Mutex, mpsc},
-    thread::{self, JoinHandle},
+    sync::{Arc, Mutex},
+    time::Duration as StdDuration,
 };
 
 use serde::Deserialize;
@@ -21,6 +19,10 @@ use self::usage::{
 };
 use super::{ProviderObservation, ProviderObservationAdapter};
 use crate::daily_usage_aggregate::preserve_best_known_costs;
+use crate::providers::process::{
+    ProviderCommand, ProviderOutputMode, ProviderProcess, ProviderProcessError,
+    ProviderProcessSupervisor,
+};
 use crate::sanitized::{
     Clock, CodingProvider, ProviderPresentation, ProviderSnapshot, QuotaLane, RefreshAttempt,
     RefreshFailure, RefreshTrigger, UsagePeriods,
@@ -30,6 +32,9 @@ const INITIALIZE_REQUEST_ID: i64 = 1;
 const DEFAULT_LIMIT_ID: &str = "codex";
 const IGNORED_CODEX_LIMIT_NAME: &str = "GPT-5.3-Codex-Spark";
 const ACCOUNT_USAGE_REFRESH_MINUTES: i64 = 30;
+const MAX_APP_SERVER_MESSAGE_BYTES: usize = 1024 * 1024;
+const MAX_APP_SERVER_BUFFERED_BYTES: usize = 4 * MAX_APP_SERVER_MESSAGE_BYTES;
+const PROCESS_POLL_INTERVAL: StdDuration = StdDuration::from_millis(100);
 
 pub(super) fn debug_usage_pass(
     database_path: &Path,
@@ -459,6 +464,7 @@ fn debug_observation(_observation: &CodexQuotaObservation) {}
 pub(crate) struct CodexProviderObservationAdapter {
     clock: Arc<dyn Clock>,
     database_path: Option<PathBuf>,
+    processes: ProviderProcessSupervisor,
     session: Mutex<Option<CodexAppServerSession>>,
     refresh_trigger: Mutex<Option<RefreshTrigger>>,
 }
@@ -471,10 +477,15 @@ trait AccountUsageReader {
 }
 
 impl CodexProviderObservationAdapter {
-    pub(crate) fn production(clock: Arc<dyn Clock>, database_path: Option<PathBuf>) -> Self {
+    pub(crate) fn production(
+        clock: Arc<dyn Clock>,
+        database_path: Option<PathBuf>,
+        processes: ProviderProcessSupervisor,
+    ) -> Self {
         Self {
             clock,
             database_path,
+            processes,
             session: Mutex::new(None),
             refresh_trigger: Mutex::new(None),
         }
@@ -642,9 +653,10 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone();
             let session =
-                CodexAppServerSession::start(&executable, attempt, trigger).inspect_err(|_| {
-                    debug_event("refresh_failed stage=session_start");
-                })?;
+                CodexAppServerSession::start(&self.processes, &executable, attempt, trigger)
+                    .inspect_err(|_| {
+                        debug_event("refresh_failed stage=session_start");
+                    })?;
             *session_guard = Some(session);
         }
         let result = session_guard
@@ -707,27 +719,21 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
 }
 
 struct CodexAppServerSession {
-    child: Child,
-    stdin: ChildStdin,
-    messages: mpsc::Receiver<Result<String, std::io::Error>>,
-    reader: Option<JoinHandle<()>>,
+    process: ProviderProcess,
     next_request_id: i64,
     observation: Option<CodexQuotaObservation>,
 }
 
 impl CodexAppServerSession {
     fn start(
+        processes: &ProviderProcessSupervisor,
         executable: &Path,
         attempt: &RefreshAttempt,
         trigger: Option<RefreshTrigger>,
     ) -> Result<Self, RefreshFailure> {
         attempt.remaining()?;
-        let mut command = Command::new(executable);
-        command
-            .arg("app-server")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+        let mut command = ProviderCommand::new(executable);
+        command.arg("app-server");
         if let Some(parent) = executable.parent() {
             let mut paths = vec![parent.to_path_buf()];
             if let Some(current) = env::var_os("PATH") {
@@ -737,61 +743,54 @@ impl CodexAppServerSession {
                 command.env("PATH", path);
             }
         }
-        let mut child = command
-            .spawn()
-            .map_err(|_| RefreshFailure::SourceUnavailable)?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or(RefreshFailure::SourceUnavailable)?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(RefreshFailure::SourceUnavailable)?;
-        let (sender, messages) = mpsc::channel();
-        let reader = thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if let Ok(ref line) = line
-                    && serde_json::from_str::<Value>(line)
-                        .ok()
-                        .and_then(|message| {
-                            message
-                                .get("method")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                        == Some("account/rateLimits/updated".to_owned())
-                    && let Some(trigger) = &trigger
+        let observer = trigger.map(|trigger| {
+            Arc::new(move |line: &[u8]| {
+                if serde_json::from_slice::<Value>(line)
+                    .ok()
+                    .and_then(|message| {
+                        message
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    == Some("account/rateLimits/updated".to_owned())
                 {
                     debug_event("provider_notification_received");
                     trigger();
                 }
-                if sender.send(line).is_err() {
-                    break;
-                }
-            }
+            }) as Arc<dyn Fn(&[u8]) + Send + Sync>
         });
+        let process = processes
+            .spawn_piped(
+                command,
+                ProviderOutputMode::Lines {
+                    max_line_bytes: MAX_APP_SERVER_MESSAGE_BYTES,
+                    max_buffered_bytes: MAX_APP_SERVER_BUFFERED_BYTES,
+                },
+                observer,
+            )
+            .map_err(|_| RefreshFailure::SourceUnavailable)?;
         let mut session = Self {
-            child,
-            stdin,
-            messages,
-            reader: Some(reader),
+            process,
             next_request_id: INITIALIZE_REQUEST_ID + 1,
             observation: None,
         };
-        session.send(json!({
-            "method": "initialize",
-            "id": INITIALIZE_REQUEST_ID,
-            "params": {
-                "clientInfo": {
-                    "name": "touchgrassbar",
-                    "title": "TouchGrassBar",
-                    "version": env!("CARGO_PKG_VERSION")
+        session.send(
+            json!({
+                "method": "initialize",
+                "id": INITIALIZE_REQUEST_ID,
+                "params": {
+                    "clientInfo": {
+                        "name": "touchgrassbar",
+                        "title": "TouchGrassBar",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
                 }
-            }
-        }))?;
+            }),
+            attempt,
+        )?;
         session.wait_for_response(INITIALIZE_REQUEST_ID, attempt)?;
-        session.send(json!({"method": "initialized", "params": {}}))?;
+        session.send(json!({"method": "initialized", "params": {}}), attempt)?;
         debug_event("session_initialized");
         Ok(session)
     }
@@ -803,11 +802,14 @@ impl CodexAppServerSession {
         let _ = self.drain_sparse_notifications()?;
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
-        self.send(json!({
-            "method": "account/rateLimits/read",
-            "id": request_id,
-            "params": null
-        }))?;
+        self.send(
+            json!({
+                "method": "account/rateLimits/read",
+                "id": request_id,
+                "params": null
+            }),
+            attempt,
+        )?;
         loop {
             let message = self.receive(attempt)?;
             if is_sparse_notification(&message) {
@@ -836,18 +838,16 @@ impl CodexAppServerSession {
     fn drain_sparse_notifications(&mut self) -> Result<bool, RefreshFailure> {
         let mut updated = false;
         loop {
-            match self.messages.try_recv() {
-                Ok(Ok(line)) => {
-                    let message: Value = serde_json::from_str(&line)
+            match self.process.try_receive() {
+                Ok(Some(line)) => {
+                    let message: Value = serde_json::from_slice(&line)
                         .map_err(|_| RefreshFailure::SourceUnavailable)?;
                     if is_sparse_notification(&message) {
                         updated |= self.merge_notification(&message)?;
                     }
                 }
-                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err(RefreshFailure::SourceUnavailable);
-                }
-                Err(mpsc::TryRecvError::Empty) => return Ok(updated),
+                Ok(None) => return Ok(updated),
+                Err(_) => return Err(RefreshFailure::SourceUnavailable),
             }
         }
     }
@@ -858,11 +858,14 @@ impl CodexAppServerSession {
     ) -> Result<AccountUsageObservation, RefreshFailure> {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
-        self.send(json!({
-            "method": "account/usage/read",
-            "id": request_id,
-            "params": null
-        }))?;
+        self.send(
+            json!({
+                "method": "account/usage/read",
+                "id": request_id,
+                "params": null
+            }),
+            attempt,
+        )?;
         loop {
             let message = self.receive(attempt)?;
             if is_sparse_notification(&message) {
@@ -918,22 +921,30 @@ impl CodexAppServerSession {
         }
     }
 
-    fn send(&mut self, message: Value) -> Result<(), RefreshFailure> {
-        writeln!(self.stdin, "{message}")
-            .and_then(|_| self.stdin.flush())
-            .map_err(|_| RefreshFailure::SourceUnavailable)
+    fn send(&self, message: Value, attempt: &RefreshAttempt) -> Result<(), RefreshFailure> {
+        let mut encoded =
+            serde_json::to_vec(&message).map_err(|_| RefreshFailure::SourceUnavailable)?;
+        encoded.push(b'\n');
+        self.process
+            .write_all(&encoded, attempt.remaining()?)
+            .map_err(map_process_error)
     }
 
     fn receive(&self, attempt: &RefreshAttempt) -> Result<Value, RefreshFailure> {
-        let line = self
-            .messages
-            .recv_timeout(attempt.remaining()?)
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => RefreshFailure::DeadlineExceeded,
-                mpsc::RecvTimeoutError::Disconnected => RefreshFailure::SourceUnavailable,
-            })?
-            .map_err(|_| RefreshFailure::SourceUnavailable)?;
-        serde_json::from_str(&line).map_err(|_| RefreshFailure::SourceUnavailable)
+        loop {
+            let remaining = attempt.remaining()?;
+            match self
+                .process
+                .receive_timeout(remaining.min(PROCESS_POLL_INTERVAL))
+            {
+                Ok(line) => {
+                    return serde_json::from_slice(&line)
+                        .map_err(|_| RefreshFailure::SourceUnavailable);
+                }
+                Err(ProviderProcessError::TimedOut) => continue,
+                Err(error) => return Err(map_process_error(error)),
+            }
+        }
     }
 }
 
@@ -946,13 +957,15 @@ impl AccountUsageReader for CodexAppServerSession {
     }
 }
 
-impl Drop for CodexAppServerSession {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
+fn map_process_error(error: ProviderProcessError) -> RefreshFailure {
+    match error {
+        ProviderProcessError::TimedOut => RefreshFailure::DeadlineExceeded,
+        ProviderProcessError::Cancelled => RefreshFailure::Cancelled,
+        ProviderProcessError::SupervisorStopping
+        | ProviderProcessError::StartFailed
+        | ProviderProcessError::InputUnavailable
+        | ProviderProcessError::OutputClosed
+        | ProviderProcessError::OutputLimit => RefreshFailure::SourceUnavailable,
     }
 }
 
@@ -1137,7 +1150,11 @@ mod tests {
     #[test]
     fn account_usage_read_remains_independent_after_a_quota_failure() {
         let now = observed_at();
-        let adapter = CodexProviderObservationAdapter::production(Arc::new(FixedClock(now)), None);
+        let adapter = CodexProviderObservationAdapter::production(
+            Arc::new(FixedClock(now)),
+            None,
+            ProviderProcessSupervisor::default(),
+        );
         let mut reader = RecordingUsageReader {
             reads: 0,
             observation: parse_account_usage(
