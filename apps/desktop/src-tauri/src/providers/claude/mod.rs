@@ -19,7 +19,6 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Deserialize;
-#[cfg(any(test, not(debug_assertions)))]
 use serde_json::{Map, Value};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use zeroize::Zeroizing;
@@ -740,12 +739,10 @@ pub(super) fn debug_quota_report(database_path: &Path, now: OffsetDateTime) -> R
     ))
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn hex_encode(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(1 + value.len() * 2);
@@ -783,7 +780,6 @@ fn hex_digit(value: u8) -> Result<u8, ()> {
     }
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn bridge_command(
     executable: &Path,
     database_path: &Path,
@@ -808,14 +804,12 @@ fn bridge_command(
     Ok(command)
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn is_touchgrassbar_bridge(command: &str) -> bool {
     command
         .split_whitespace()
         .any(|part| part == STATUS_LINE_ARGUMENT)
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn bridge_upstream(command: &str) -> Result<Option<String>, ()> {
     if !is_touchgrassbar_bridge(command) {
         return Err(());
@@ -830,7 +824,6 @@ fn bridge_upstream(command: &str) -> Result<Option<String>, ()> {
     hex_decode(encoded).map(Some)
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn read_settings(path: &Path) -> Result<Value, ()> {
     match fs::read(path) {
         Ok(bytes) => {
@@ -842,7 +835,6 @@ fn read_settings(path: &Path) -> Result<Value, ()> {
     }
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn write_settings_atomically(path: &Path, settings: &Value) -> Result<(), ()> {
     let parent = path.parent().ok_or(())?;
     fs::create_dir_all(parent).map_err(|_| ())?;
@@ -875,7 +867,6 @@ fn write_settings_atomically(path: &Path, settings: &Value) -> Result<(), ()> {
     result
 }
 
-#[cfg(any(test, not(debug_assertions)))]
 fn configure_status_line_at(
     settings_path: &Path,
     executable: &Path,
@@ -930,8 +921,7 @@ fn configure_status_line_at(
     write_settings_atomically(settings_path, &settings)
 }
 
-#[cfg(not(debug_assertions))]
-pub(super) fn configure_production_status_line(database_path: &Path) -> Result<(), ()> {
+pub(super) fn configure_status_line(database_path: &Path) -> Result<(), ()> {
     let home = env::var_os("HOME").map(PathBuf::from).ok_or(())?;
     let settings_path = home.join(".claude/settings.json");
     let executable = env::current_exe().map_err(|_| ())?;

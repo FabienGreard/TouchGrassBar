@@ -916,9 +916,6 @@ pub fn run() {
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
-            #[cfg(debug_assertions)]
-            providers::report_claude_status_line_setup();
-            #[cfg(not(debug_assertions))]
             match database_path.as_deref() {
                 Some(path) => {
                     let _ = providers::configure_claude_status_line(path);
