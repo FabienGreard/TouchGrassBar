@@ -1,3 +1,4 @@
+mod claude;
 mod codex;
 mod registry;
 
@@ -75,10 +76,15 @@ pub(crate) fn production_observation_coordinator(
     clock: Arc<dyn Clock>,
     database_path: Option<std::path::PathBuf>,
 ) -> ProviderObservationCoordinator {
-    let codex: Arc<dyn ProviderObservationAdapter> = Arc::new(
-        codex::CodexProviderObservationAdapter::production(clock, database_path),
+    let codex: Arc<dyn ProviderObservationAdapter> =
+        Arc::new(codex::CodexProviderObservationAdapter::production(
+            Arc::clone(&clock),
+            database_path.clone(),
+        ));
+    let claude: Arc<dyn ProviderObservationAdapter> = Arc::new(
+        claude::ClaudeProviderObservationAdapter::production(clock, database_path),
     );
-    ProviderObservationCoordinator::new(vec![codex])
+    ProviderObservationCoordinator::new(vec![codex, claude])
 }
 
 pub(crate) fn debug_codex_usage_pass(
@@ -87,6 +93,24 @@ pub(crate) fn debug_codex_usage_pass(
     now: OffsetDateTime,
 ) -> Result<String, ()> {
     codex::debug_usage_pass(database_path, codex_home, now)
+}
+
+pub(crate) fn debug_live_claude_quota_pass(
+    probe_directory: &Path,
+    now: OffsetDateTime,
+) -> Result<String, ()> {
+    claude::debug_live_quota_report(probe_directory, now)
+}
+
+#[cfg(test)]
+pub(crate) fn test_claude_observation_coordinator(
+    clock: Arc<dyn Clock>,
+) -> ProviderObservationCoordinator {
+    let observation = claude::fixture_observation(clock.now());
+    let claude: Arc<dyn ProviderObservationAdapter> = Arc::new(
+        claude::ClaudeProviderObservationAdapter::fixture(clock, observation),
+    );
+    ProviderObservationCoordinator::new(vec![claude])
 }
 
 impl SnapshotRefreshAdapter for ProviderObservationCoordinator {

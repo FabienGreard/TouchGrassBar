@@ -12,6 +12,7 @@ import {
   myTokenmaxxerRows,
 } from "@/dev/panel-fixtures";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
+import { createTauriSanitizedDesktopStateAdapter } from "@/native-state/tauri-sanitized-desktop-state-adapter";
 
 function localDateTime(iso: string) {
   return new Intl.DateTimeFormat("en-GB", {
@@ -54,6 +55,17 @@ async function deliveredBrowserFixture(name: BrowserFixtureName) {
   const snapshot = delivery.getSnapshot().snapshot;
   if (snapshot === null) throw new Error("fixture unavailable");
   return snapshot;
+}
+
+async function waitForDeliveredRevision(
+  delivery: ReturnType<typeof createSanitizedDesktopStateDelivery>,
+  revision: string,
+) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (delivery.getSnapshot().snapshot?.revision === revision) return;
+    await Promise.resolve();
+  }
+  throw new Error(`revision ${revision} was not delivered`);
 }
 
 describe("panel states", () => {
@@ -337,6 +349,58 @@ describe("panel states", () => {
       />,
     );
     expect(previousValueMarkup).toContain('id="claude-heading"');
+  });
+
+  test("updates Claude lanes after a native revision notice", async () => {
+    const unavailableState = await deliveredBrowserFixture("unavailable");
+    const currentState = await deliveredBrowserFixture("current");
+    let nativeState = unavailableState;
+    let emitRevision: ((event: { payload: unknown }) => void) | undefined;
+    const delivery = createSanitizedDesktopStateDelivery(
+      createTauriSanitizedDesktopStateAdapter({
+        invoke: () => Promise.resolve(nativeState),
+        listen: (_event, receive) => {
+          emitRevision = receive;
+          return Promise.resolve(() => undefined);
+        },
+        onFocusChanged: () => Promise.resolve(() => undefined),
+      }),
+    );
+    const stop = delivery.subscribe(() => undefined);
+    await waitForDeliveredRevision(delivery, "1");
+
+    const unavailableMarkup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={delivery.getSnapshot().snapshot}
+      />,
+    );
+    expect(unavailableMarkup).not.toContain('data-quota-tone="claude"');
+
+    nativeState = currentState;
+    emitRevision?.({ payload: { revision: "2" } });
+    await waitForDeliveredRevision(delivery, "2");
+    const currentMarkup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={delivery.getSnapshot().snapshot}
+      />,
+    );
+
+    expect(currentMarkup.match(/data-quota-tone="claude"/g)).toHaveLength(2);
+    expect(currentMarkup).toContain(
+      'aria-label="Claude quota current, 18 percent remaining"',
+    );
+    expect(currentMarkup).toContain(
+      'aria-label="5-hour limit quota current, 43 percent remaining"',
+    );
+    stop();
   });
 
   test("shows compact costs without exposing internal quality labels", async () => {

@@ -55,6 +55,15 @@ pub fn run_codex_usage_debug_pass(
         .map_err(|()| "Codex usage extraction failed")
 }
 
+#[doc(hidden)]
+pub fn run_claude_quota_debug_pass(
+    probe_directory: &std::path::Path,
+) -> Result<String, &'static str> {
+    let now = time::OffsetDateTime::now_utc();
+    providers::debug_live_claude_quota_pass(probe_directory, now)
+        .map_err(|()| "Claude CLI quota probe failed")
+}
+
 #[derive(Default)]
 struct PanelActionState {
     add_tokenmaxxer_pending: AtomicBool,

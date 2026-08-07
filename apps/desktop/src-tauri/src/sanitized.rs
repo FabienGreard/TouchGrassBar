@@ -415,6 +415,13 @@ impl RefreshAttempt {
         self.sources.is_only(RefreshSource::LocalUsageCatchUp)
     }
 
+    pub(crate) fn should_skip_claude_quota_probe(&self) -> bool {
+        self.sources.contains_only(&[
+            RefreshSource::ProviderNotification,
+            RefreshSource::LocalUsageCatchUp,
+        ])
+    }
+
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
@@ -436,6 +443,24 @@ impl RefreshAttempt {
         Self::new(
             Arc::new(AtomicBool::new(false)),
             RefreshSources(RefreshSource::Manual.bit()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_provider_notification() -> Self {
+        Self::new(
+            Arc::new(AtomicBool::new(false)),
+            RefreshSources(RefreshSource::ProviderNotification.bit()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_provider_notification_with_local_usage() -> Self {
+        Self::new(
+            Arc::new(AtomicBool::new(false)),
+            RefreshSources(
+                RefreshSource::ProviderNotification.bit() | RefreshSource::LocalUsageCatchUp.bit(),
+            ),
         )
     }
 }
@@ -750,6 +775,11 @@ impl RefreshSources {
 
     fn is_only(self, source: RefreshSource) -> bool {
         self.0 == source.bit()
+    }
+
+    fn contains_only(self, allowed: &[RefreshSource]) -> bool {
+        let allowed = allowed.iter().fold(0, |mask, source| mask | source.bit());
+        self.0 != 0 && self.0 & !allowed == 0
     }
 
     fn contains_immediate_request(self) -> bool {
@@ -2576,6 +2606,38 @@ mod tests {
         ));
         assert_eq!(after.providers.len(), 1);
         assert!(after.provider(CodingProvider::Claude).is_none());
+    }
+
+    #[test]
+    fn claude_cli_observation_commits_native_panel_revision() {
+        let database = TestDatabase::new();
+        let now = test_time();
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(now));
+        let refresh_adapter: Arc<dyn SnapshotRefreshAdapter> = Arc::new(
+            crate::providers::test_claude_observation_coordinator(Arc::clone(&clock)),
+        );
+        let core = NativeCore::open_without_launch(&database.0, clock, refresh_adapter).unwrap();
+        let notices = core.revision_notices().unwrap();
+
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        let notice = notices.recv_timeout(Duration::from_secs(1)).unwrap();
+        let panel = core.panel_state().unwrap();
+        let claude = panel.provider(CodingProvider::Claude).unwrap();
+
+        assert_eq!(notice.revision, "2");
+        assert_eq!(panel.revision, notice.revision);
+        let ProviderSnapshot::Current { quota_lanes, .. } = &claude.quota else {
+            panic!("Claude quota did not become current");
+        };
+        assert_eq!(quota_lanes.len(), 2);
+        assert_eq!(quota_lanes[0].label, "5-hour limit");
+        assert_eq!(quota_lanes[0].remaining, Some(76.5));
+        assert_eq!(quota_lanes[1].label, "Weekly limit");
+        assert_eq!(quota_lanes[1].remaining, Some(58.75));
     }
 
     #[test]
