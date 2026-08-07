@@ -156,7 +156,8 @@ impl ClaudeProviderObservationAdapter {
             report("capture_unavailable reason=database_unavailable");
             return Ok(None);
         };
-        let observation = match load_quota_observation(database_path) {
+        let now = self.clock.now();
+        let observation = match load_quota_observation(database_path, now) {
             Ok(Some(observation)) => observation,
             Ok(None) => {
                 report("capture_unavailable reason=not_observed");
@@ -174,7 +175,7 @@ impl ClaudeProviderObservationAdapter {
             report("capture_unchanged");
             return Ok(None);
         }
-        let quota = match observation.sanitized_snapshot(self.clock.now()) {
+        let quota = match observation.sanitized_snapshot(now) {
             Ok(quota) => quota,
             Err(()) => {
                 report("capture_unavailable reason=expired_or_invalid");
@@ -468,15 +469,7 @@ fn capture_status_line_payload(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| ())?;
-    let cursor_cutoff = response_cursor_retention_cutoff(now)
-        .format(&Rfc3339)
-        .map_err(|_| ())?;
-    transaction
-        .execute(
-            "DELETE FROM claude_response_cursors WHERE observed_at < ?1",
-            [&cursor_cutoff],
-        )
-        .map_err(|_| ())?;
+    prune_response_cursors(&transaction, now)?;
     let previous_duration = transaction
         .query_row(
             "SELECT total_api_duration_ms FROM claude_response_cursors WHERE session_id = ?1",
@@ -544,6 +537,19 @@ fn response_cursor_retention_cutoff(now: OffsetDateTime) -> OffsetDateTime {
         .assume_utc()
 }
 
+fn prune_response_cursors(connection: &Connection, now: OffsetDateTime) -> Result<(), ()> {
+    let cutoff = response_cursor_retention_cutoff(now)
+        .format(&Rfc3339)
+        .map_err(|_| ())?;
+    connection
+        .execute(
+            "DELETE FROM claude_response_cursors WHERE observed_at < ?1",
+            [&cutoff],
+        )
+        .map_err(|_| ())?;
+    Ok(())
+}
+
 fn store_response_cursor(
     transaction: &rusqlite::Transaction<'_>,
     session_id: &str,
@@ -563,8 +569,12 @@ fn store_response_cursor(
     Ok(())
 }
 
-fn load_quota_observation(database_path: &Path) -> Result<Option<ClaudeQuotaObservation>, ()> {
+fn load_quota_observation(
+    database_path: &Path,
+    now: OffsetDateTime,
+) -> Result<Option<ClaudeQuotaObservation>, ()> {
     let connection = open_capture_database(database_path)?;
+    prune_response_cursors(&connection, now)?;
     let row = connection
         .query_row(
             "SELECT
@@ -1314,7 +1324,10 @@ mod tests {
             "the later response is still rejected when its timer reruns"
         );
 
-        let observation = load_quota_observation(&database).unwrap().unwrap();
+        let observation =
+            load_quota_observation(&database, test_time() + time::Duration::minutes(4))
+                .unwrap()
+                .unwrap();
         assert_eq!(
             observation.observed_at,
             test_time() + time::Duration::minutes(3)
@@ -1353,7 +1366,11 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
+        assert!(
+            load_quota_observation(&database, test_time())
+                .unwrap()
+                .is_none()
+        );
 
         let connection = Connection::open(&database).unwrap();
         let expired_count: i64 = connection
@@ -1398,7 +1415,7 @@ mod tests {
                 [CAPTURE_SCHEMA_MODULE],
             )
             .unwrap();
-        assert!(load_quota_observation(&fixture.database()).is_err());
+        assert!(load_quota_observation(&fixture.database(), test_time()).is_err());
         let adapter = ClaudeProviderObservationAdapter::production(
             Arc::new(FixedClock(test_time())),
             Some(fixture.database()),
@@ -1460,7 +1477,9 @@ mod tests {
         assert_eq!(diagnostics, ["capture_unavailable reason=not_observed"]);
 
         assert!(capture_status_line_payload(&database, &status_payload(100), test_time()).unwrap());
-        let observation = load_quota_observation(&database).unwrap().unwrap();
+        let observation = load_quota_observation(&database, test_time())
+            .unwrap()
+            .unwrap();
         let snapshot = observation.sanitized_snapshot(test_time()).unwrap();
 
         diagnostics.clear();
