@@ -17,3 +17,16 @@ show in sanitized output.
 The Rust parser rejects unknown fields and invalid manifests. Keep the format
 suitable for a future signed remote manifest, but do not add remote updates as
 part of issue #21.
+
+## Unknown models
+
+When the local debug report finds an unknown model, check the official OpenAI
+API pricing page, model catalog, Codex rate card, and official Codex source.
+Add a manifest entry only when those sources define every applicable input,
+cached-input, cache-write, output, effective-date, and long-context rule. Add
+an alias only when an official source defines it.
+
+If any required price or alias is missing, leave the model out of the manifest.
+The API-equivalent cost stays unavailable while the account Observed Tokens
+remain visible. Updating the manifest and releasing the application are manual
+operations.

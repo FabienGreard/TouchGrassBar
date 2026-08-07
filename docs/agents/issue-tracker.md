@@ -33,6 +33,11 @@ Create a GitHub issue.
 
 Run `gh issue view <number> --comments`.
 
+## Artifact closeout
+
+Before closing an issue, resolve every linked research or spike artifact with
+`docs/agents/artifact-lifecycle.md`.
+
 ## Wayfinding operations
 
 Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.

@@ -16,6 +16,11 @@ Use the default Matt Pocock triage label vocabulary. See `docs/agents/triage-lab
 
 Use the single-context domain documentation layout. See `docs/agents/domain.md`.
 
+### Research and spikes
+
+Research and spike artifacts are temporary, issue-owned work. Before creating,
+retaining, reviewing, or closing one, use `docs/agents/artifact-lifecycle.md`.
+
 <!-- convex-ai-start -->
 
 This project uses [Convex](https://convex.dev) as its backend.
