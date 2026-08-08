@@ -1,3 +1,5 @@
+import type { SyncStatus } from "@touchgrass/contracts";
+
 import type { DesktopSurface } from "@/App";
 import {
   codingProviderAccessStates,
@@ -15,6 +17,15 @@ type OnboardingSetupPreviewState =
   "profile-pending" | "ready" | "required" | "unavailable";
 type SettingsProfilePreviewState = "profile-pending" | "saved";
 
+const syncPreviewStatuses = [
+  { key: "synced", label: "Synced" },
+  { key: "pending", label: "Pending" },
+  { key: "stale", label: "Stale" },
+  { key: "offline", label: "Offline" },
+  { key: "authority-rejected", label: "Rejected" },
+  { key: "unavailable", label: "Unavailable" },
+] as const satisfies readonly { key: SyncStatus; label: string }[];
+
 type DevPreviewScenario = {
   fixture: BrowserFixtureName;
   onboarding: {
@@ -27,6 +38,7 @@ type DevPreviewScenario = {
   settingsProviderEnabled: boolean;
   settingsProviderState: CodingProviderAccessState;
   surface: DesktopSurface;
+  syncStatus: SyncStatus;
 };
 
 function resolveFixture(params: URLSearchParams): BrowserFixtureName {
@@ -85,6 +97,13 @@ function resolveSettingsProfileState(
     : "saved";
 }
 
+function resolveSyncStatus(params: URLSearchParams): SyncStatus {
+  const candidate = params.get("syncStatus");
+  return syncPreviewStatuses.some(({ key }) => key === candidate)
+    ? (candidate as SyncStatus)
+    : "unavailable";
+}
+
 function resolveBrowserFixtureName(search: string): BrowserFixtureName {
   return resolveFixture(new URLSearchParams(search));
 }
@@ -111,10 +130,15 @@ function resolveDevPreviewScenario(search: string): DevPreviewScenario {
     settingsProviderEnabled: !settingsProviderExcluded,
     settingsProviderState: providerState,
     surface: resolveSurface(params),
+    syncStatus: resolveSyncStatus(params),
   };
 }
 
-export { resolveBrowserFixtureName, resolveDevPreviewScenario };
+export {
+  resolveBrowserFixtureName,
+  resolveDevPreviewScenario,
+  syncPreviewStatuses,
+};
 export type {
   BrowserFixtureName,
   DevPreviewScenario,

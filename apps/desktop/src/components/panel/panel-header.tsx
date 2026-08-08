@@ -13,6 +13,8 @@ import {
   SettingsIcon,
 } from "@touchgrass/ui";
 
+import { refreshActionLabel } from "@/components/panel/panel-header-copy";
+
 type PanelHeaderProps = {
   error: boolean;
   onAddTokenmaxxer: () => void;
@@ -24,15 +26,30 @@ type PanelHeaderProps = {
   updateActionLabel: string | null;
 };
 
-function syncLabel(
+type PanelSyncStatus = SanitizedDesktopState["sync"]["status"];
+
+const syncLabels = {
+  "authority-rejected": "This Mac cannot sync",
+  offline: "Offline",
+  pending: "Waiting to sync",
+  stale: "Sync is stale",
+  synced: "Synced",
+  unavailable: "Sync unavailable",
+} as const satisfies Record<PanelSyncStatus, string>;
+
+function syncPresentation(
   error: boolean,
-  refreshing: boolean,
   state: SanitizedDesktopState | null,
-) {
-  if (refreshing) return "Syncing…";
-  if (error) return "Sync unavailable";
-  if (!state) return "Connecting…";
-  return "Live";
+): { label: string; status: PanelSyncStatus | undefined } {
+  if (!state) {
+    return {
+      label: error ? "Sync unavailable" : "Connecting…",
+      status: undefined,
+    };
+  }
+
+  const status = state.sync.status;
+  return { label: syncLabels[status], status };
 }
 
 function PanelHeader({
@@ -45,12 +62,18 @@ function PanelHeader({
   state,
   updateActionLabel,
 }: PanelHeaderProps) {
+  const sync = syncPresentation(error, state);
+
   return (
     <header className="flex items-center justify-between border-b border-pearl-line bg-panel-header px-4 pt-[15px] pb-3 contrast-more:border-pearl-ink">
       <div className="flex min-w-0 items-center gap-2.5">
         <Brand />
-        <small className="truncate border-l border-pearl-line pl-2.5 text-[10px] text-pearl-muted contrast-more:border-pearl-ink contrast-more:text-pearl-ink">
-          {syncLabel(error, refreshing, state)}
+        <small
+          aria-live="polite"
+          className="truncate border-l border-pearl-line pl-2.5 text-[10px] text-pearl-muted contrast-more:border-pearl-ink contrast-more:text-pearl-ink"
+          data-sync-status={sync.status}
+        >
+          {sync.label}
         </small>
       </div>
 
@@ -85,7 +108,7 @@ function PanelHeader({
           <PanelMenuContent align="end" sideOffset={7}>
             <PanelMenuItem disabled={refreshing} onSelect={onRefresh}>
               <RefreshIcon aria-hidden="true" spin={refreshing} />
-              {refreshing ? "Syncing…" : "Sync now"}
+              {refreshActionLabel(refreshing)}
             </PanelMenuItem>
             <PanelMenuItem onSelect={onAddTokenmaxxer}>
               <InviteIcon aria-hidden="true" />

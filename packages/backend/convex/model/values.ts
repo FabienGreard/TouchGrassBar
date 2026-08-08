@@ -1,36 +1,59 @@
-import { v } from "convex/values";
+import { type Infer, v } from "convex/values";
 
 export const providerValidator = v.union(v.literal("codex"), v.literal("claude"));
 export const scoreScopeValidator = v.union(providerValidator, v.literal("combined"));
 export const scoreWindowValidator = v.union(v.literal(1), v.literal(7), v.literal(30));
 export const coverageValidator = v.union(v.literal("complete"), v.literal("partial"));
+export const evidenceBasisValidator = v.union(
+  v.literal("provider-reported"),
+  v.literal("locally-derived"),
+);
+export const costQualityValidator = v.union(
+  v.literal("reconciled"),
+  v.literal("modeled"),
+  v.literal("local-only"),
+);
+export const correctionReasonValidator = v.union(
+  v.literal("provider-replacement"),
+  v.literal("parser-correction"),
+);
+export const apiEquivalentCostValidator = v.union(
+  v.null(),
+  v.object({
+    coveragePercent: v.union(v.number(), v.null()),
+    micros: v.number(),
+    pricingBasis: v.string(),
+    quality: costQualityValidator,
+  }),
+);
 
-export type Provider = "codex" | "claude";
-export type ScoreScope = Provider | "combined";
-export type ScoreWindow = 1 | 7 | 30;
+const MAX_OBSERVED_AT_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 
 export const usageSnapshotValidator = v.object({
-  apiEquivalentCostMicros: v.union(v.number(), v.null()),
+  apiEquivalentCost: apiEquivalentCostValidator,
+  correctionReason: v.union(correctionReasonValidator, v.null()),
+  correctionRevision: v.union(v.number(), v.null()),
   coverage: coverageValidator,
+  evidenceBasis: evidenceBasisValidator,
   observedAt: v.number(),
   observedTokens: v.number(),
-  priceBasisVersion: v.union(v.string(), v.null()),
   provider: providerValidator,
   rankingDay: v.string(),
   revision: v.number(),
-  source: v.literal("local-observed"),
 });
 
-export type UsageSnapshot = {
-  apiEquivalentCostMicros: number | null;
-  coverage: "complete" | "partial";
-  observedAt: number;
-  observedTokens: number;
-  priceBasisVersion: string | null;
-  provider: Provider;
-  rankingDay: string;
-  revision: number;
-  source: "local-observed";
+export type Provider = Infer<typeof providerValidator>;
+export type ScoreScope = Infer<typeof scoreScopeValidator>;
+export type ScoreWindow = Infer<typeof scoreWindowValidator>;
+export type ApiEquivalentCost = Exclude<
+  Infer<typeof apiEquivalentCostValidator>,
+  null
+>;
+export type UsageSnapshot = Infer<typeof usageSnapshotValidator>;
+
+const PRICING_BASIS_BY_PROVIDER: Record<Provider, string> = {
+  claude: "anthropic-standard-2026-08-07-v1",
+  codex: "openai-standard-2026-08-06-v1",
 };
 
 export const WINDOWS: readonly ScoreWindow[] = [1, 7, 30];
@@ -40,7 +63,11 @@ export function boardKey(scope: ScoreScope, windowDays: ScoreWindow) {
   return `tokens-v1:${scope}:${windowDays}d`;
 }
 
-export function assertUsageSnapshot(snapshot: UsageSnapshot) {
+export function assertUsageSnapshot(
+  snapshot: UsageSnapshot,
+  currentRankingDay = rankingDayAt(),
+  now = Date.now(),
+) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshot.rankingDay)) {
     throw new Error("rankingDay must be a UTC date in YYYY-MM-DD form");
   }
@@ -50,18 +77,81 @@ export function assertUsageSnapshot(snapshot: UsageSnapshot) {
   if (canonicalDay !== snapshot.rankingDay) {
     throw new Error("rankingDay is not a real UTC calendar day");
   }
+  if (snapshot.rankingDay !== currentRankingDay) {
+    throw new Error("rankingDay must be the current UTC Ranking Day");
+  }
   if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 1) {
     throw new Error("revision must be a positive safe integer");
+  }
+  if (
+    (snapshot.correctionReason === null) !==
+    (snapshot.correctionRevision === null)
+  ) {
+    throw new Error(
+      "correctionReason and correctionRevision must both be null or both be set",
+    );
+  }
+  if (
+    snapshot.correctionRevision !== null &&
+    (!Number.isSafeInteger(snapshot.correctionRevision) ||
+      snapshot.correctionRevision < 1 ||
+      snapshot.correctionRevision > snapshot.revision)
+  ) {
+    throw new Error(
+      "correctionRevision must be a positive safe integer at or before revision",
+    );
   }
   if (!Number.isSafeInteger(snapshot.observedTokens) || snapshot.observedTokens < 0) {
     throw new Error("observedTokens must be a non-negative safe integer");
   }
+  if (!Number.isSafeInteger(snapshot.observedAt) || snapshot.observedAt < 0) {
+    throw new Error("observedAt must be a non-negative safe integer");
+  }
+  const rankingDayStart = Date.parse(`${currentRankingDay}T00:00:00.000Z`);
+  const rankingDayEnd = rankingDayStart + 24 * 60 * 60 * 1_000;
   if (
-    snapshot.apiEquivalentCostMicros !== null &&
-    (!Number.isSafeInteger(snapshot.apiEquivalentCostMicros) ||
-      snapshot.apiEquivalentCostMicros < 0)
+    snapshot.observedAt < rankingDayStart ||
+    snapshot.observedAt >= rankingDayEnd
   ) {
-    throw new Error("apiEquivalentCostMicros must be null or a non-negative safe integer");
+    throw new Error("observedAt must be within the current UTC Ranking Day");
+  }
+  if (snapshot.observedAt > now + MAX_OBSERVED_AT_FUTURE_SKEW_MS) {
+    throw new Error("observedAt exceeds the allowed clock-skew window");
+  }
+  const cost = snapshot.apiEquivalentCost;
+  if (cost === null) return;
+  if (!Number.isSafeInteger(cost.micros) || cost.micros < 0) {
+    throw new Error("cost micros must be a non-negative safe integer");
+  }
+  if (
+    cost.pricingBasis.length < 1 ||
+    cost.pricingBasis.length > 256 ||
+    !/^[A-Za-z0-9][A-Za-z0-9 ._:+-]*$/.test(cost.pricingBasis)
+  ) {
+    throw new Error("pricingBasis must be a bounded catalog identifier");
+  }
+  if (cost.pricingBasis !== PRICING_BASIS_BY_PROVIDER[snapshot.provider]) {
+    throw new Error("pricingBasis is not approved for this provider");
+  }
+  if (
+    (snapshot.evidenceBasis === "provider-reported" &&
+      cost.quality === "local-only") ||
+    (snapshot.evidenceBasis === "locally-derived" &&
+      cost.quality === "reconciled")
+  ) {
+    throw new Error("cost quality does not match the evidence basis");
+  }
+  if (cost.quality === "modeled") {
+    if (
+      cost.coveragePercent === null ||
+      !Number.isFinite(cost.coveragePercent) ||
+      cost.coveragePercent < 0 ||
+      cost.coveragePercent > 100
+    ) {
+      throw new Error("modeled cost requires coveragePercent between 0 and 100");
+    }
+  } else if (cost.coveragePercent !== null) {
+    throw new Error("fixed-quality cost must not include coveragePercent");
   }
 }
 

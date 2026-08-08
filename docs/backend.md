@@ -14,9 +14,9 @@ Rust is the only desktop Convex client. It exchanges its Keychain-held Better Au
 
 ## Snapshot invariant
 
-One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. Disappearance of a local record is never valid downward evidence.
+One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. The request pairs that reason with the original correction revision. A later cumulative retry can identify the same correction without a second audit or authority for a new decrease. Disappearance of a local record is never valid downward evidence.
 
-Each request contains at most 62 snapshots and commits atomically. An acknowledgement names only revisions committed by that mutation. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. The current Active Mac's accepted snapshot updates the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
+Each request contains at most 62 snapshots and commits atomically. A committed or idempotent acknowledgement names the submitted revision. A stale acknowledgement names the newer server revision. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. The current Active Mac's accepted snapshot updates the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
 
 On same-day Active Mac transfer, the old generation's accepted contribution is frozen and the new generation contributes only its post-transfer segment. Later writes from the old generation fail, earlier Ranking Days are not rewritten, and a known unsynchronized old segment makes the transferred day partial.
 
@@ -44,11 +44,13 @@ A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer 
 
 The migrations component owns repair/backfill work. Migrations are forward-only, resumable, idempotent, and bounded. A required-field or Board Key change adds new storage, backfills it, verifies counts and invariants, switches reads and writes, then removes legacy state only in a later release. Readiness includes an interruption/resume rehearsal on production-shaped data and Aggregate-repair coverage.
 
+Issue 26 includes `retireLegacyActiveDeviceAuthority`. It removes the old installation identifier, revokes the old device row, and clears its Active Mac link. The next live, matching Better Auth Profile can then claim a credential-based Active Mac. A governed deployment must rehearse and complete this migration before it enables synchronization for existing Profiles. This branch does not run the migration on a cloud deployment.
+
 ## Authentication boundary
 
-Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from `tokenIdentifier`, and never accepts a client-supplied user identifier as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
+Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from the Better Auth user, and never accepts a client-supplied user identifier as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
 
-Better Auth is pinned but its generated Recovery Key adapter and device-transfer flow remain an implementation gate. Until that is wired, the authenticated mutations are deliberately inaccessible to the desktop scaffold.
+Better Auth generated credentials and the desktop session-to-JWT exchange are wired. Active Mac transfer and recovery remain separate implementation gates. Synchronization accepts only the current claimed installation credential and server-owned generation.
 
 ## Abuse policy
 
@@ -79,4 +81,4 @@ The resulting Backend Readiness Evidence is one machine-readable CI artifact con
 
 ## Validation
 
-This document defines the target contract; it does not claim launch readiness. The current backend has been generated and pushed successfully only to an anonymous local Convex deployment. Better Auth is not wired into Convex, protected functions still trust the raw JWT subject, Active Mac generations and correction provenance are absent from the schema, rollover stops after a fixed batch, and My Tokenmaxxers scans broad capped sets. Production deployment, implementation of this contract, regenerated Backend Readiness Evidence, and explicit launch approval remain separate gates.
+This document defines the target contract; it does not claim launch readiness. The issue 26 implementation has a typed current-day synchronization mutation, live Better Auth authorization, Active Mac generation checks, correction provenance, and a native latest-revision outbox. Local tests do not prove a production deployment, authenticated canary, Active Mac transfer, historical backfill, rollover completion, or release approval. Those items and regenerated Backend Readiness Evidence remain separate gates.

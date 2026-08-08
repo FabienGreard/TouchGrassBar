@@ -1,10 +1,15 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
-const provider = v.union(v.literal("codex"), v.literal("claude"));
-const scoreScope = v.union(provider, v.literal("combined"));
-const scoreWindow = v.union(v.literal(1), v.literal(7), v.literal(30));
-const coverage = v.union(v.literal("complete"), v.literal("partial"));
+import {
+  apiEquivalentCostValidator as apiEquivalentCost,
+  correctionReasonValidator as correctionReason,
+  coverageValidator as coverage,
+  evidenceBasisValidator as evidenceBasis,
+  providerValidator as provider,
+  scoreScopeValidator as scoreScope,
+  scoreWindowValidator as scoreWindow,
+} from "./model/values";
 
 export default defineSchema({
   signupProofs: defineTable({
@@ -38,7 +43,11 @@ export default defineSchema({
 
   devices: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
-    installationId: v.string(),
+    // Optional legacy field. New Active Macs store only a digest of the
+    // Keychain-held installation credential.
+    installationId: v.optional(v.string()),
+    installationCredentialDigest: v.optional(v.string()),
+    generation: v.optional(v.number()),
     createdAt: v.number(),
     lastSeenAt: v.number(),
     revokedAt: v.optional(v.number()),
@@ -53,10 +62,18 @@ export default defineSchema({
     rankingDay: v.string(),
     revision: v.number(),
     observedTokens: v.number(),
+    // Optional legacy fields. The complete cost object below is the current
+    // write contract.
     apiEquivalentCostMicros: v.optional(v.number()),
     priceBasisVersion: v.optional(v.string()),
+    apiEquivalentCost: v.optional(apiEquivalentCost),
     coverage,
-    source: v.literal("local-observed"),
+    source: v.optional(v.literal("local-observed")),
+    evidenceBasis: v.optional(evidenceBasis),
+    correctionReason: v.optional(v.union(correctionReason, v.null())),
+    correctionRevision: v.optional(v.union(v.number(), v.null())),
+    lastCorrectionReason: v.optional(correctionReason),
+    lastCorrectionRevision: v.optional(v.number()),
     observedAt: v.number(),
     syncedAt: v.number(),
   })
@@ -66,6 +83,17 @@ export default defineSchema({
       "provider",
       "rankingDay",
     ]),
+
+  usageCorrectionAudits: defineTable({
+    bucketId: v.id("usageBuckets"),
+    deviceId: v.id("devices"),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+    provider,
+    rankingDay: v.string(),
+    revision: v.number(),
+    reason: correctionReason,
+    createdAt: v.number(),
+  }).index("by_bucket_id_and_revision", ["bucketId", "revision"]),
 
   userDailyUsage: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),

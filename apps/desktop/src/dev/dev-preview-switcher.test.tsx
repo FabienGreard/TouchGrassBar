@@ -7,6 +7,7 @@ import {
   DevFixtureSwitcher,
   DevPreviewSwitcher,
 } from "@/dev/dev-preview-switcher";
+import { syncPreviewStatuses } from "@/dev/preview-scenario";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -85,16 +86,17 @@ describe("development preview switcher", () => {
       <DevPreviewSwitcher
         activeFixture="update"
         activeSurface="settings"
+        activeSyncStatus="offline"
         settingsProviderPreviewState="not-installed"
       />,
     );
 
     expect(markup).toContain('aria-label="Update preview states"');
     expect(markup).toContain(
-      'href="?window=settings&amp;fixture=current&amp;providerState=not-installed#settings-general"',
+      'href="?window=settings&amp;fixture=current&amp;providerState=not-installed&amp;syncStatus=offline#settings-general"',
     );
     expect(markup).toContain(
-      'href="?window=settings&amp;fixture=update&amp;providerState=not-installed#settings-general"',
+      'href="?window=settings&amp;fixture=update&amp;providerState=not-installed&amp;syncStatus=offline#settings-general"',
     );
     expect(markup).toContain('aria-current="page"');
     expect(markup).toContain("No update");
@@ -106,16 +108,39 @@ describe("development preview switcher", () => {
       <DevPreviewSwitcher
         activeFixture="unavailable"
         activeSurface="settings"
+        activeSyncStatus="authority-rejected"
         settingsProviderEnabled={false}
         settingsProviderPreviewState="not-installed"
       />,
     );
 
     expect(markup).toContain(
-      'href="?window=settings&amp;fixture=unavailable&amp;providerState=excluded#settings-providers"',
+      'href="?window=settings&amp;fixture=unavailable&amp;providerState=excluded&amp;syncStatus=authority-rejected#settings-providers"',
     );
     expect(markup).toContain(">Excluded<");
     expect(markup).toContain(">Ready<");
     expect(markup).not.toContain(">Detected<");
+  });
+
+  test("offers each safe sync status without changing the provider fixture", () => {
+    const markup = renderToStaticMarkup(
+      <DevPreviewSwitcher
+        activeFixture="stale"
+        activeSurface="panel"
+        activeSyncStatus="pending"
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Sync preview states"');
+    expect(markup).toContain('href="?fixture=current&amp;syncStatus=pending"');
+    for (const status of syncPreviewStatuses) {
+      expect(markup).toContain(
+        `href="?fixture=stale&amp;syncStatus=${status.key}"`,
+      );
+      expect(markup).toContain(`>${status.label}<`);
+    }
+    expect(markup).not.toContain("syncReason");
+    expect(markup).not.toContain("installationCredential");
+    expect(markup).not.toContain("transportError");
   });
 });

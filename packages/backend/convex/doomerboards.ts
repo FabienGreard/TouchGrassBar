@@ -70,7 +70,7 @@ export const myTokenmaxxers = query({
   returns: v.array(doomerboardRow),
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
-    const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
+    const owner = await tokenmaxxerForAuthUser(ctx, authUser);
     if (!owner) {
       return [];
     }

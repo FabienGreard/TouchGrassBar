@@ -1,11 +1,14 @@
-import type {
-  CodingProvider,
-  SanitizedDesktopState,
-  UsageCoverage,
-  UsageEvidenceBasis,
-  UsagePeriods,
-  UsageScanStatus,
-  UsageTotal,
+import {
+  CONTRACT_VERSION,
+  type CodingProvider,
+  type SanitizedDesktopState,
+  type SyncState,
+  type SyncStatus,
+  type UsageCoverage,
+  type UsageEvidenceBasis,
+  type UsagePeriods,
+  type UsageScanStatus,
+  type UsageTotal,
 } from "@touchgrass/contracts";
 
 import type { SanitizedDesktopStatePort } from "@/native-state/sanitized-desktop-state-delivery";
@@ -34,11 +37,23 @@ function unavailableUsage(): UsagePeriods {
   };
 }
 
-function unavailableFixture(now: Date): SanitizedDesktopState {
+function previewSyncState(status: SyncStatus, observedAt: string): SyncState {
+  return {
+    lastSuccessfulAt:
+      status === "synced" || status === "stale" ? observedAt : null,
+    status,
+  };
+}
+
+function unavailableFixture(
+  now: Date,
+  syncStatus: SyncStatus,
+): SanitizedDesktopState {
+  const observedAt = now.toISOString();
   return {
     combinedUsage: unavailableUsage(),
-    contractVersion: 3,
-    generatedAt: now.toISOString(),
+    contractVersion: CONTRACT_VERSION,
+    generatedAt: observedAt,
     profile: { status: "not-authorized" },
     providers: [
       {
@@ -57,7 +72,7 @@ function unavailableFixture(now: Date): SanitizedDesktopState {
       },
     ],
     revision: "1",
-    sync: { lastSuccessfulAt: null, status: "unavailable" },
+    sync: previewSyncState(syncStatus, observedAt),
   };
 }
 
@@ -236,6 +251,7 @@ function projectProviderEnablement(
 function populatedFixture(
   availability: "current" | "stale",
   now: Date,
+  syncStatus: SyncStatus,
 ): SanitizedDesktopState {
   const observedAt = now.toISOString();
   const resetAfter = (minutes: number) =>
@@ -333,7 +349,7 @@ function populatedFixture(
 
   return {
     combinedUsage: combinedUsage([codexUsage, claudeUsage]),
-    contractVersion: 3,
+    contractVersion: CONTRACT_VERSION,
     generatedAt: observedAt,
     profile: {
       displayName: "Fabien",
@@ -397,27 +413,29 @@ function populatedFixture(
       },
     ],
     revision: availability === "current" ? "2" : "3",
-    sync: {
-      lastSuccessfulAt: observedAt,
-      status: availability === "current" ? "synced" : "stale",
-    },
+    sync: previewSyncState(syncStatus, observedAt),
   };
 }
 
-function fixture(name: BrowserFixtureName, now: Date): SanitizedDesktopState {
+function fixture(
+  name: BrowserFixtureName,
+  now: Date,
+  syncStatus: SyncStatus,
+): SanitizedDesktopState {
   if (name === "current" || name === "update")
-    return populatedFixture("current", now);
-  if (name === "stale") return populatedFixture("stale", now);
-  return unavailableFixture(now);
+    return populatedFixture("current", now, syncStatus);
+  if (name === "stale") return populatedFixture("stale", now, syncStatus);
+  return unavailableFixture(now, syncStatus);
 }
 
 export function createBrowserSanitizedDesktopStateAdapter(
   name: BrowserFixtureName,
   now = () => new Date(),
   providerEnablement: ProviderEnablement = allProvidersEnabled,
+  syncStatus: SyncStatus = "unavailable",
 ): SanitizedDesktopStatePort {
   const snapshot = projectProviderEnablement(
-    fixture(name, now()),
+    fixture(name, now(), syncStatus),
     providerEnablement,
   );
 

@@ -17,6 +17,7 @@ import type * as http from "../http.js";
 import type * as internal_migrations from "../internal/migrations.js";
 import type * as internal_recompute from "../internal/recompute.js";
 import type * as model_aggregate from "../model/aggregate.js";
+import type * as model_authority from "../model/authority.js";
 import type * as model_profile from "../model/profile.js";
 import type * as model_rateLimits from "../model/rateLimits.js";
 import type * as model_scores from "../model/scores.js";
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   "internal/migrations": typeof internal_migrations;
   "internal/recompute": typeof internal_recompute;
   "model/aggregate": typeof model_aggregate;
+  "model/authority": typeof model_authority;
   "model/profile": typeof model_profile;
   "model/rateLimits": typeof model_rateLimits;
   "model/scores": typeof model_scores;

@@ -3,11 +3,12 @@
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    io::Read,
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use convex::{AuthenticationToken, ConvexClient, FunctionResult, Value};
+use convex::{ConvexClient, FunctionResult, Value};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -22,6 +23,10 @@ const SIGN_UP_PATH: &str = "/api/auth/sign-up/email";
 const SIGN_IN_PATH: &str = "/api/auth/sign-in/username";
 const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const SIGNUP_PROOF_HEADER: &str = "x-touchgrass-signup-proof";
+const PROFILE_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_PROFILE_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
+const MAX_PROFILE_JWT_BYTES: usize = 8 * 1_024;
+const AUTHORITY_REJECTED_MESSAGE: &str = "Active Mac authority rejected";
 const ID_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const SECRET_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -102,6 +107,11 @@ impl Secret {
         Self(Zeroizing::new(value))
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_only() -> Self {
+        Self::new("test-only".to_owned())
+    }
+
     pub(crate) fn expose(&self) -> &str {
         self.0.as_str()
     }
@@ -132,6 +142,16 @@ fn recovery_key_suffix(key: &Secret) -> String {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProfileError(&'static str);
+
+impl ProfileError {
+    fn authority_rejected() -> Self {
+        Self(AUTHORITY_REJECTED_MESSAGE)
+    }
+
+    pub(crate) fn is_authority_rejected(self) -> bool {
+        self.0 == AUTHORITY_REJECTED_MESSAGE
+    }
+}
 
 impl fmt::Display for ProfileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -302,7 +322,13 @@ trait ProfileTransport: Send + Sync {
         touch_grass_id: &str,
         recovery_key: &Secret,
     ) -> Result<SignInOutcome, ProfileError>;
-    fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), ProfileError>;
+    fn ensure_profile(
+        &self,
+        session: &Secret,
+        display_name: &str,
+        expected_touch_grass_id: &str,
+        installation_credential: &Secret,
+    ) -> Result<EnsuredProfileAuthority, ProfileError>;
     fn update_display_name(&self, session: &Secret, display_name: &str)
     -> Result<(), ProfileError>;
 }
@@ -311,7 +337,72 @@ fn profile_mutation_payload(display_name: String) -> BTreeMap<String, Value> {
     BTreeMap::from([("displayName".to_owned(), Value::String(display_name))])
 }
 
+fn ensure_profile_mutation_payload(
+    display_name: String,
+    expected_touch_grass_id: String,
+    installation_credential: &Secret,
+) -> BTreeMap<String, Value> {
+    BTreeMap::from([
+        ("displayName".to_owned(), Value::String(display_name)),
+        (
+            "expectedTouchGrassId".to_owned(),
+            Value::String(expected_touch_grass_id),
+        ),
+        (
+            "installationCredential".to_owned(),
+            Value::String(installation_credential.expose().to_owned()),
+        ),
+    ])
+}
+
+struct EnsuredProfileAuthority {
+    active_mac_generation: u64,
+    touch_grass_id: String,
+}
+
+fn ensured_profile_authority(value: &Value) -> Option<EnsuredProfileAuthority> {
+    let Value::Object(object) = value else {
+        return None;
+    };
+    let active_mac_generation = match object.get("activeMacGeneration") {
+        Some(Value::Int64(value)) => u64::try_from(*value).ok().filter(|value| *value > 0),
+        Some(Value::Float64(value))
+            if value.is_finite()
+                && value.fract() == 0.0
+                && *value >= 1.0
+                && *value <= 9_007_199_254_740_991.0 =>
+        {
+            Some(*value as u64)
+        }
+        _ => None,
+    }?;
+    let touch_grass_id = match object.get("touchGrassId") {
+        Some(Value::String(value)) if valid_touch_grass_id(value) => value.clone(),
+        _ => return None,
+    };
+    Some(EnsuredProfileAuthority {
+        active_mac_generation,
+        touch_grass_id,
+    })
+}
+
+fn matching_active_mac_generation(
+    authority: EnsuredProfileAuthority,
+    expected_touch_grass_id: &str,
+) -> Result<u64, ProfileError> {
+    (authority.touch_grass_id == expected_touch_grass_id)
+        .then_some(authority.active_mac_generation)
+        .ok_or_else(ProfileError::authority_rejected)
+}
+
+pub(crate) struct ActiveSyncCredentials {
+    pub(crate) active_mac_generation: u64,
+    pub(crate) installation_credential: Secret,
+    pub(crate) session: Secret,
+}
+
 pub(crate) struct ProfileCoordinator {
+    active_mac_generation: Mutex<Option<u64>>,
     lifecycle: DesktopLifecycle,
     custody: Arc<dyn SecretCustody>,
     transport: Arc<dyn ProfileTransport>,
@@ -324,6 +415,7 @@ impl ProfileCoordinator {
         transport: Arc<dyn ProfileTransport>,
     ) -> Self {
         Self {
+            active_mac_generation: Mutex::new(None),
             lifecycle,
             custody,
             transport,
@@ -335,7 +427,7 @@ impl ProfileCoordinator {
             return Ok(None);
         };
 
-        self.ensure_secret(SecretKind::InstallationCredential, 52)?;
+        let installation_credential = self.ensure_secret(SecretKind::InstallationCredential, 52)?;
         let recovery_key = self.ensure_secret(SecretKind::RecoveryKey, 48)?;
         let mut prepared = match self.custody.read(SecretKind::SignupPreparation)? {
             Some(value) => PreparedProfile::decode(&value)?,
@@ -376,8 +468,23 @@ impl ProfileCoordinator {
         };
         self.custody
             .write(SecretKind::BetterAuthSession, &session)?;
-        self.transport
-            .ensure_profile(&session, &request.display_name)?;
+        let authority = self.transport.ensure_profile(
+            &session,
+            &request.display_name,
+            &prepared.touch_grass_id,
+            &installation_credential,
+        )?;
+        let generation = match matching_active_mac_generation(authority, &prepared.touch_grass_id) {
+            Ok(generation) => generation,
+            Err(error) => {
+                let _ = self.custody.delete(SecretKind::BetterAuthSession);
+                return Err(error);
+            }
+        };
+        *self
+            .active_mac_generation
+            .lock()
+            .map_err(|_| ProfileError("Active Mac authority unavailable"))? = Some(generation);
         self.lifecycle
             .mark_profile_ready(&prepared.touch_grass_id)
             .map_err(ProfileError)?;
@@ -387,6 +494,97 @@ impl ProfileCoordinator {
             touch_grass_id: prepared.touch_grass_id,
         };
         Ok(Some(profile))
+    }
+
+    pub(crate) fn active_sync_credentials(
+        &self,
+    ) -> Result<Option<ActiveSyncCredentials>, ProfileError> {
+        let SanitizedProfileOutcome::Ready {
+            display_name,
+            touch_grass_id,
+        } = self.lifecycle.sanitized_profile_outcome()
+        else {
+            return Ok(None);
+        };
+        let installation_credential = self
+            .custody
+            .read(SecretKind::InstallationCredential)?
+            .ok_or(ProfileError("Active Mac authority unavailable"))?;
+        let mut session = match self.custody.read(SecretKind::BetterAuthSession)? {
+            Some(session) => session,
+            None => {
+                let recovery_key = self
+                    .custody
+                    .read(SecretKind::RecoveryKey)?
+                    .ok_or(ProfileError("Active Mac authority unavailable"))?;
+                let SignInOutcome::Authenticated(session) =
+                    self.transport.sign_in(&touch_grass_id, &recovery_key)?
+                else {
+                    return Err(ProfileError::authority_rejected());
+                };
+                self.custody
+                    .write(SecretKind::BetterAuthSession, &session)?;
+                session
+            }
+        };
+        let cached_generation = *self
+            .active_mac_generation
+            .lock()
+            .map_err(|_| ProfileError("Active Mac authority unavailable"))?;
+        let active_mac_generation = if let Some(generation) = cached_generation {
+            generation
+        } else {
+            let first_attempt = self
+                .transport
+                .ensure_profile(
+                    &session,
+                    &display_name,
+                    &touch_grass_id,
+                    &installation_credential,
+                )
+                .and_then(|authority| matching_active_mac_generation(authority, &touch_grass_id));
+            let generation = match first_attempt {
+                Ok(generation) => generation,
+                Err(_) => {
+                    let recovery_key = self
+                        .custody
+                        .read(SecretKind::RecoveryKey)?
+                        .ok_or(ProfileError("Active Mac authority unavailable"))?;
+                    let SignInOutcome::Authenticated(fresh_session) =
+                        self.transport.sign_in(&touch_grass_id, &recovery_key)?
+                    else {
+                        return Err(ProfileError::authority_rejected());
+                    };
+                    self.custody
+                        .write(SecretKind::BetterAuthSession, &fresh_session)?;
+                    session = fresh_session;
+                    let authority = self.transport.ensure_profile(
+                        &session,
+                        &display_name,
+                        &touch_grass_id,
+                        &installation_credential,
+                    )?;
+                    match matching_active_mac_generation(authority, &touch_grass_id) {
+                        Ok(generation) => generation,
+                        Err(error) => {
+                            let _ = self.custody.delete(SecretKind::BetterAuthSession);
+                            return Err(error);
+                        }
+                    }
+                }
+            };
+            *self
+                .active_mac_generation
+                .lock()
+                .map_err(|_| ProfileError("Active Mac authority unavailable"))? = Some(generation);
+            generation
+        };
+
+        Ok(Some(ActiveSyncCredentials {
+            active_mac_generation,
+            installation_credential,
+            session,
+        }))
     }
 
     pub(crate) fn recovery_key(
@@ -509,59 +707,91 @@ impl HttpProfileTransport {
         Ok(format!("{}{path}", base.trim_end_matches('/')))
     }
 
+    fn fetch_convex_token(
+        &self,
+        session: &Secret,
+        failure: &'static str,
+    ) -> Result<Zeroizing<String>, ProfileError> {
+        let response = self
+            .client
+            .get(self.endpoint(CONVEX_TOKEN_PATH)?)
+            .bearer_auth(session.expose())
+            .send()
+            .map_err(|_| ProfileError(failure))?;
+        if matches!(response.status().as_u16(), 401 | 403) {
+            return Err(ProfileError::authority_rejected());
+        }
+        let response = response
+            .error_for_status()
+            .map_err(|_| ProfileError(failure))?;
+        let mut body = Zeroizing::new(Vec::with_capacity(MAX_PROFILE_TOKEN_RESPONSE_BYTES));
+        response
+            .take((MAX_PROFILE_TOKEN_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut body)
+            .map_err(|_| ProfileError(failure))?;
+        if body.len() > MAX_PROFILE_TOKEN_RESPONSE_BYTES {
+            return Err(ProfileError(failure));
+        }
+        let response: ConvexTokenResponse =
+            serde_json::from_slice(body.as_slice()).map_err(|_| ProfileError(failure))?;
+        if response.token.is_empty() || response.token.len() > MAX_PROFILE_JWT_BYTES {
+            return Err(ProfileError(failure));
+        }
+        Ok(Zeroizing::new(response.token))
+    }
+
     fn mutate_profile(
         &self,
         session: &Secret,
         mutation: &'static str,
-        display_name: &str,
+        payload: BTreeMap<String, Value>,
         failure: &'static str,
-    ) -> Result<(), ProfileError> {
-        let auth_site_url = self
-            .auth_site_url
-            .ok_or(ProfileError("profile service unavailable"))?
-            .trim_end_matches('/')
-            .to_owned();
+    ) -> Result<Value, ProfileError> {
         let convex_url = self
             .convex_url
             .ok_or(ProfileError("profile service unavailable"))?
             .to_owned();
-        let session = Arc::new(Zeroizing::new(session.expose().to_owned()));
-        let display_name = display_name.to_owned();
-        tokio::runtime::Runtime::new()
+        let jwt = self.fetch_convex_token(session, failure)?;
+        let attempt = tokio::runtime::Runtime::new()
             .map_err(|_| ProfileError(failure))?
             .block_on(async move {
-                let mut client = ConvexClient::new(&convex_url)
-                    .await
-                    .map_err(|_| ProfileError(failure))?;
-                let fetcher: convex::AuthTokenFetcher = Box::new(move |_force_refresh| {
-                    let auth_site_url = auth_site_url.clone();
-                    let session = Arc::clone(&session);
-                    Box::pin(async move {
-                        let response = reqwest::Client::new()
-                            .get(format!("{auth_site_url}{CONVEX_TOKEN_PATH}"))
-                            .bearer_auth(session.as_str())
-                            .send()
-                            .await?
-                            .error_for_status()?
-                            .json::<ConvexTokenResponse>()
-                            .await?;
-                        Ok(AuthenticationToken::User(response.token))
-                    })
-                });
-                client.set_auth_callback(Some(fetcher)).await;
-                let result = client
-                    .mutation(mutation, profile_mutation_payload(display_name))
-                    .await
-                    .map_err(|_| ProfileError(failure))?;
-                client.set_auth_callback(None).await;
-                match result {
-                    FunctionResult::Value(_) => Ok(()),
-                    FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-                        Err(ProfileError(failure))
+                tokio::time::timeout(PROFILE_MUTATION_TIMEOUT, async move {
+                    let mut client = ConvexClient::new(&convex_url)
+                        .await
+                        .map_err(|_| ProfileError(failure))?;
+                    client.set_auth(Some(jwt.as_str().to_owned())).await;
+                    let result = client.mutation(mutation, payload).await;
+                    client.set_auth(None).await;
+                    match result.map_err(|_| ProfileError(failure))? {
+                        FunctionResult::Value(value) => Ok(value),
+                        FunctionResult::ConvexError(error)
+                            if is_exact_authority_rejection(&error.data) =>
+                        {
+                            Err(ProfileError::authority_rejected())
+                        }
+                        FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
+                            Err(ProfileError(failure))
+                        }
                     }
-                }
-            })
+                })
+                .await
+            });
+        match attempt {
+            Ok(result) => result,
+            Err(_) => Err(ProfileError(failure)),
+        }
     }
+}
+
+fn is_exact_authority_rejection(data: &Value) -> bool {
+    let Value::Object(fields) = data else {
+        return false;
+    };
+    fields.len() == 1
+        && matches!(
+            fields.get("code"),
+            Some(Value::String(code)) if code == "authority-rejected"
+        )
 }
 
 #[derive(Deserialize)]
@@ -650,13 +880,24 @@ impl ProfileTransport for HttpProfileTransport {
         Ok(SignInOutcome::Authenticated(Secret::new(response.token)))
     }
 
-    fn ensure_profile(&self, session: &Secret, display_name: &str) -> Result<(), ProfileError> {
-        self.mutate_profile(
+    fn ensure_profile(
+        &self,
+        session: &Secret,
+        display_name: &str,
+        expected_touch_grass_id: &str,
+        installation_credential: &Secret,
+    ) -> Result<EnsuredProfileAuthority, ProfileError> {
+        let result = self.mutate_profile(
             session,
             ENSURE_PROFILE_MUTATION,
-            display_name,
+            ensure_profile_mutation_payload(
+                display_name.to_owned(),
+                expected_touch_grass_id.to_owned(),
+                installation_credential,
+            ),
             "Profile creation pending",
-        )
+        )?;
+        ensured_profile_authority(&result).ok_or(ProfileError("Profile creation pending"))
     }
 
     fn update_display_name(
@@ -667,9 +908,10 @@ impl ProfileTransport for HttpProfileTransport {
         self.mutate_profile(
             session,
             UPDATE_DISPLAY_NAME_MUTATION,
-            display_name,
+            profile_mutation_payload(display_name.to_owned()),
             "Display Name update unavailable",
         )
+        .map(drop)
     }
 }
 
@@ -743,6 +985,7 @@ mod tests {
         exchange_count: AtomicUsize,
         fixed_profile_mutation: AtomicBool,
         last_jwt: Mutex<Option<String>>,
+        authority_touch_grass_id: Mutex<Option<String>>,
         private_sentinels: [Secret; 3],
     }
 
@@ -764,6 +1007,7 @@ mod tests {
                 exchange_count: AtomicUsize::new(0),
                 fixed_profile_mutation: AtomicBool::new(false),
                 last_jwt: Mutex::new(None),
+                authority_touch_grass_id: Mutex::new(None),
                 private_sentinels: [
                     Secret::new(format!("COOKIE_SENTINEL_{}", generate_secret(18).unwrap())),
                     Secret::new(format!(
@@ -792,6 +1036,10 @@ mod tests {
 
         fn used_fixed_profile_mutation(&self) -> bool {
             self.fixed_profile_mutation.load(Ordering::SeqCst)
+        }
+
+        fn return_authority_for(&self, touch_grass_id: &str) {
+            *self.authority_touch_grass_id.lock().unwrap() = Some(touch_grass_id.to_owned());
         }
 
         fn private_values(&self) -> Vec<String> {
@@ -840,13 +1088,30 @@ mod tests {
             &self,
             _session: &Secret,
             _display_name: &str,
-        ) -> Result<(), ProfileError> {
+            expected_touch_grass_id: &str,
+            installation_credential: &Secret,
+        ) -> Result<EnsuredProfileAuthority, ProfileError> {
+            if installation_credential.expose().len() != 52 {
+                return Err(ProfileError("Active Mac authority unavailable"));
+            }
             self.exchange_count.fetch_add(1, Ordering::SeqCst);
             let jwt = Secret::new(generate_secret(44)?);
             *self.last_jwt.lock().unwrap() = Some(jwt.expose().to_owned());
             self.fixed_profile_mutation.store(true, Ordering::SeqCst);
             drop(jwt);
-            Ok(())
+            let touch_grass_id = self
+                .authority_touch_grass_id
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| self.touch_grass_id.clone());
+            if touch_grass_id != expected_touch_grass_id {
+                return Err(ProfileError::authority_rejected());
+            }
+            Ok(EnsuredProfileAuthority {
+                active_mac_generation: 1,
+                touch_grass_id,
+            })
         }
 
         fn update_display_name(
@@ -977,6 +1242,30 @@ mod tests {
     }
 
     #[test]
+    fn ensure_profile_payload_proves_the_expected_profile() {
+        let installation_credential = Secret::new("A".repeat(52));
+
+        let payload = ensure_profile_mutation_payload(
+            "Fabien".to_owned(),
+            "TG-234567".to_owned(),
+            &installation_credential,
+        );
+
+        assert_eq!(
+            payload.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "displayName",
+                "expectedTouchGrassId",
+                "installationCredential"
+            ]
+        );
+        assert_eq!(
+            payload.get("expectedTouchGrassId"),
+            Some(&Value::String("TG-234567".to_owned()))
+        );
+    }
+
+    #[test]
     fn prepare_sends_json_to_the_better_auth_http_route() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1014,6 +1303,61 @@ mod tests {
         server.join().unwrap();
 
         assert_eq!(prepared.touch_grass_id, "TG-234567");
+    }
+
+    #[test]
+    fn rejected_live_session_is_a_typed_authority_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            )
+            .unwrap();
+        });
+        let auth_site_url = Box::leak(format!("http://{address}").into_boxed_str());
+        let transport = HttpProfileTransport {
+            auth_site_url: Some(auth_site_url),
+            convex_url: Some("http://127.0.0.1:1"),
+            client: crate::native_https_client(),
+        };
+
+        let result =
+            transport.fetch_convex_token(&Secret::new("rejected-session".to_owned()), "pending");
+        server.join().unwrap();
+        let Err(error) = result else {
+            panic!("a rejected session must not return a token");
+        };
+
+        assert!(error.is_authority_rejected());
+    }
+
+    #[test]
+    fn only_exact_structured_profile_rejection_is_authoritative() {
+        let exact = Value::Object(BTreeMap::from([(
+            "code".to_owned(),
+            Value::String("authority-rejected".to_owned()),
+        )]));
+        let with_detail = Value::Object(BTreeMap::from([
+            (
+                "code".to_owned(),
+                Value::String("authority-rejected".to_owned()),
+            ),
+            (
+                "detail".to_owned(),
+                Value::String("private-response".to_owned()),
+            ),
+        ]));
+
+        assert!(is_exact_authority_rejection(&exact));
+        assert!(!is_exact_authority_rejection(&with_detail));
+        assert!(!is_exact_authority_rejection(&Value::String(
+            "authority-rejected".to_owned()
+        )));
     }
 
     #[test]
@@ -1092,6 +1436,117 @@ mod tests {
         assert_eq!(fixture.transport.exchange_count(), 1);
         assert!(!fixture.custody.contains(SecretKind::ConvexJwt));
         assert!(fixture.transport.used_fixed_profile_mutation());
+    }
+
+    #[test]
+    fn ready_profile_exposes_only_current_in_memory_sync_authority() {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture.coordinator.retry_pending().unwrap();
+
+        let first = fixture
+            .coordinator
+            .active_sync_credentials()
+            .unwrap()
+            .unwrap();
+        let second = fixture
+            .coordinator
+            .active_sync_credentials()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(first.active_mac_generation, 1);
+        assert_eq!(second.active_mac_generation, 1);
+        assert_eq!(first.installation_credential.expose().len(), 52);
+        assert!(!first.session.expose().is_empty());
+        assert_eq!(fixture.transport.exchange_count(), 1);
+        assert!(!fixture.custody.contains(SecretKind::ConvexJwt));
+    }
+
+    #[test]
+    fn mismatched_authenticated_profile_never_caches_active_mac_authority() {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        let wrong_touch_grass_id = if fixture.transport.touch_grass_id() == "TG-234567" {
+            "TG-234568"
+        } else {
+            "TG-234567"
+        };
+        fixture.transport.return_authority_for(wrong_touch_grass_id);
+
+        let error = fixture.coordinator.retry_pending().unwrap_err();
+        assert!(error.is_authority_rejected());
+        assert_eq!(
+            fixture.lifecycle.bootstrap_state().profile_provisioning,
+            ProfileProvisioningStatus::ProfilePending
+        );
+        assert!(
+            fixture
+                .coordinator
+                .active_sync_credentials()
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fixture
+                .coordinator
+                .active_mac_generation
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn restart_propagates_rejected_active_mac_authority() {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture.coordinator.retry_pending().unwrap();
+        let restarted = ProfileCoordinator::new(
+            fixture.lifecycle.clone(),
+            fixture.custody.clone(),
+            fixture.transport.clone(),
+        );
+        let wrong_touch_grass_id = if fixture.transport.touch_grass_id() == "TG-234567" {
+            "TG-234568"
+        } else {
+            "TG-234567"
+        };
+        fixture.transport.return_authority_for(wrong_touch_grass_id);
+
+        let Err(error) = restarted.active_sync_credentials() else {
+            panic!("rejected Active Mac authority must fail");
+        };
+
+        assert!(error.is_authority_rejected());
+        assert!(restarted.active_mac_generation.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn ready_profile_treats_rejected_recovery_sign_in_as_authority_rejection() {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture.coordinator.retry_pending().unwrap();
+        fixture
+            .custody
+            .delete(SecretKind::BetterAuthSession)
+            .unwrap();
+        fixture
+            .transport
+            .account_exists
+            .store(false, Ordering::SeqCst);
+        let restarted = ProfileCoordinator::new(
+            fixture.lifecycle.clone(),
+            fixture.custody.clone(),
+            fixture.transport.clone(),
+        );
+
+        let Err(error) = restarted.active_sync_credentials() else {
+            panic!("rejected recovery sign-in must fail");
+        };
+
+        assert!(error.is_authority_rejected());
+        assert!(restarted.active_mac_generation.lock().unwrap().is_none());
     }
 
     #[test]

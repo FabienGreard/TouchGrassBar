@@ -1,4 +1,7 @@
-import type { SanitizedDesktopState } from "@touchgrass/contracts";
+import {
+  CONTRACT_VERSION,
+  type SanitizedDesktopState,
+} from "@touchgrass/contracts";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -21,7 +24,7 @@ function unavailableUsage() {
 function state(revision: string): SanitizedDesktopState {
   return {
     combinedUsage: unavailableUsage(),
-    contractVersion: 3,
+    contractVersion: CONTRACT_VERSION,
     generatedAt: "2026-08-03T00:00:00.000Z",
     profile: { status: "not-authorized" },
     revision,

@@ -2,7 +2,7 @@
 import * as z from "zod";
 
 export const BOOTSTRAP_CONTRACT_VERSION = 3 as const;
-export const CONTRACT_VERSION = 3 as const;
+export const CONTRACT_VERSION = 4 as const;
 export const PANEL_ADD_TOKENMAXXER_EVENT = "panel-add-tokenmaxxer-requested" as const;
 export const REVISION_NOTICE_EVENT = "sanitized-desktop-state-revision" as const;
 export const SETTINGS_CONTRACT_VERSION = 4 as const;
@@ -43,12 +43,12 @@ export const providerPresentationSchema = z.object({ provider: codingProviderSch
 export const sanitizedProfileOutcomeSchema = z.discriminatedUnion("status", [z.object({ status: z.literal("not-authorized") }).strict(), z.object({ status: z.literal("profile-pending") }).strict(), z.object({ displayName: z.string(), touchGrassId: z.string(), status: z.literal("ready") }).strict()]);
 export const settingsProviderSchema = z.object({ provider: codingProviderSchema, displayName: z.string().min(1).max(40), status: providerPresenceStatusSchema, enabled: z.boolean() }).strict();
 export const settingsSectionSchema = z.enum(["general","providers","profile"]);
-export const syncStatusSchema = z.enum(["synced","pending","stale","unavailable"]);
+export const syncStatusSchema = z.enum(["synced","pending","stale","offline","authority-rejected","unavailable"]);
 export const syncStateSchema = z.object({ status: syncStatusSchema, lastSuccessfulAt: z.string().datetime().nullable().optional() }).strict();
 export const updateFailureSchema = z.enum(["download","interrupted","low-disk","network","permission","replacement","signature","unavailable"]);
 export const updateStatusSchema = z.discriminatedUnion("status", [z.object({ status: z.literal("unavailable") }).strict(), z.object({ status: z.literal("idle") }).strict(), z.object({ status: z.literal("checking") }).strict(), z.object({ status: z.literal("upToDate") }).strict(), z.object({ version: z.string().min(1).max(64), status: z.literal("available") }).strict(), z.object({ version: z.string().min(1).max(64), progressPercent: z.number().int().nonnegative().max(100).nullable().optional(), status: z.literal("downloading") }).strict(), z.object({ version: z.string().min(1).max(64), status: z.literal("installing") }).strict(), z.object({ version: z.string().min(1).max(64).nullable().optional(), failure: updateFailureSchema, status: z.literal("failed") }).strict()]);
 export const bootstrapStateSchema = z.object({ contractVersion: z.literal(3), bootstrap: bootstrapStatusSchema, profileProvisioning: profileProvisioningStatusSchema, persistence: persistenceStatusSchema, displayName: z.string().nullable().optional(), touchGrassId: z.string().nullable().optional(), providers: z.array(providerPresenceSchema).max(16) }).strict();
-export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal(3), generatedAt: z.string().datetime(), revision: z.string().regex(/^[1-9]\d*$/), providers: z.array(providerPresentationSchema).max(16), topModelUsage: topModelUsageSchema.nullable().optional(), combinedUsage: usagePeriodsSchema, sync: syncStateSchema, profile: sanitizedProfileOutcomeSchema }).strict();
+export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal(4), generatedAt: z.string().datetime(), revision: z.string().regex(/^[1-9]\d*$/), providers: z.array(providerPresentationSchema).max(16), topModelUsage: topModelUsageSchema.nullable().optional(), combinedUsage: usagePeriodsSchema, sync: syncStateSchema, profile: sanitizedProfileOutcomeSchema }).strict();
 export const refreshReceiptSchema = z.object({ accepted: z.boolean() }).strict();
 export const revisionNoticeSchema = z.object({ revision: z.string().regex(/^[1-9]\d*$/) }).strict();
 export const settingsNavigationRequestSchema = z.object({ section: settingsSectionSchema }).strict();

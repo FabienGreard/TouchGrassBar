@@ -10,6 +10,7 @@ mod providers;
 mod quota_headroom;
 pub mod sanitized;
 pub mod updater;
+mod usage_sync;
 
 use std::{
     env,
@@ -45,6 +46,7 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use updater::{OnlineFeatureGate, UpdateRuntime, UpdateStateV1};
+use usage_sync::{PendingUsageSynchronization, SynchronizationEnvironment};
 
 const PANEL_LABEL: &str = "panel";
 const SETTINGS_LABEL: &str = "settings";
@@ -67,6 +69,9 @@ fn production_native_core(
         },
     )
 }
+
+const NATIVE_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const NATIVE_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[doc(hidden)]
 pub fn run_codex_usage_debug_pass(
@@ -124,7 +129,11 @@ pub(crate) fn install_tls_crypto_provider() {
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn native_https_client() -> reqwest::blocking::Client {
     install_tls_crypto_provider();
-    reqwest::blocking::Client::new()
+    reqwest::blocking::Client::builder()
+        .connect_timeout(NATIVE_HTTP_CONNECT_TIMEOUT)
+        .timeout(NATIVE_HTTP_REQUEST_TIMEOUT)
+        .build()
+        .expect("build the bounded native HTTPS client")
 }
 
 #[derive(Clone)]
@@ -170,6 +179,7 @@ struct ProfileRuntime {
     lifecycle: DesktopLifecycle,
     online_gate: OnlineFeatureGate,
     retry: ProfileRetryMailbox,
+    usage_sync: PendingUsageSynchronization,
 }
 
 #[derive(Default)]
@@ -182,15 +192,29 @@ struct ProfileWorkAdmission {
 struct ProfileWorkState {
     in_flight: usize,
     paused: bool,
+    rerun: Option<ProfileRetryMailbox>,
 }
 
 impl ProfileWorkAdmission {
-    fn try_start(self: &Arc<Self>) -> Option<ProfileAttemptGuard> {
+    fn try_start(
+        self: &Arc<Self>,
+        retry_if_busy: Option<&ProfileRetryMailbox>,
+    ) -> Option<ProfileAttemptGuard> {
         let mut state = self.state.lock().ok()?;
         if state.paused {
+            if let Some(retry) = retry_if_busy {
+                state.rerun = Some(retry.clone());
+            }
             return None;
         }
-        state.in_flight = state.in_flight.checked_add(1)?;
+        if state.in_flight > 0 {
+            if let Some(retry) = retry_if_busy {
+                state.rerun = Some(retry.clone());
+            }
+            return None;
+        }
+        state.in_flight = 1;
+        state.rerun = None;
         Some(ProfileAttemptGuard(Arc::clone(self)))
     }
 
@@ -223,8 +247,17 @@ impl Drop for ProfileAttemptGuard {
             return;
         };
         state.in_flight = state.in_flight.saturating_sub(1);
+        let rerun = if state.in_flight == 0 && !state.paused {
+            state.rerun.take()
+        } else {
+            None
+        };
         if state.in_flight == 0 {
             self.0.idle.notify_all();
+        }
+        drop(state);
+        if let Some(retry) = rerun {
+            retry.request();
         }
     }
 }
@@ -254,11 +287,10 @@ impl ProfileRuntime {
         lifecycle: DesktopLifecycle,
         app: AppHandle,
         online_gate: OnlineFeatureGate,
+        coordinator: Arc<std::sync::Mutex<profile::ProfileCoordinator>>,
+        usage_sync: PendingUsageSynchronization,
     ) -> std::io::Result<Self> {
         let runtime_lifecycle = lifecycle.clone();
-        let coordinator = Arc::new(std::sync::Mutex::new(profile::production_coordinator(
-            lifecycle,
-        )));
         let (retry, requests) = ProfileRetryMailbox::new();
         let worker_retry = retry.clone();
         let runtime = Self {
@@ -268,6 +300,7 @@ impl ProfileRuntime {
             lifecycle: runtime_lifecycle,
             online_gate,
             retry,
+            usage_sync,
         };
         let worker_runtime = runtime.clone();
         std::thread::Builder::new()
@@ -308,7 +341,7 @@ impl ProfileRuntime {
         if self.online_gate.is_paused() {
             return Ok(None);
         }
-        let Some(_attempt) = self.admission.try_start() else {
+        let Some(_attempt) = self.admission.try_start(Some(&self.retry)) else {
             return Ok(None);
         };
         if self.online_gate.is_paused() {
@@ -326,6 +359,7 @@ impl ProfileRuntime {
             self.core
                 .set_profile_outcome(profile.clone())
                 .map_err(str::to_owned)?;
+            self.usage_sync.request();
         }
         Ok(profile)
     }
@@ -354,7 +388,7 @@ impl ProfileRuntime {
         if self.online_gate.is_paused() {
             return Err("Display Name update unavailable".to_owned());
         }
-        let Some(_attempt) = self.admission.try_start() else {
+        let Some(_attempt) = self.admission.try_start(None) else {
             return Err("Display Name update unavailable".to_owned());
         };
         let profile = self
@@ -663,8 +697,10 @@ fn get_sanitized_state(
 async fn request_refresh(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
+    usage_sync: State<'_, PendingUsageSynchronization>,
 ) -> Result<RefreshReceipt, String> {
     require_panel(&window)?;
+    usage_sync.request();
     let core = core.inner().clone();
     let receipt = core
         .request_refresh(RefreshSource::Manual)
@@ -677,6 +713,9 @@ async fn request_refresh(
 }
 
 fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
+    if let Some(usage_sync) = app.try_state::<PendingUsageSynchronization>() {
+        usage_sync.request();
+    }
     app.state::<NativeCore>()
         .request_refresh(RefreshSource::Manual)
         .map_err(str::to_owned)?;
@@ -1145,10 +1184,38 @@ pub fn run() {
                     }
                 }
             }
-            let profile_runtime =
-                ProfileRuntime::start(lifecycle, app.handle().clone(), online_gate)?;
+            let revision_notices = core.revision_notices().map_err(std::io::Error::other)?;
+            let profile_coordinator = Arc::new(Mutex::new(profile::production_coordinator(
+                lifecycle.clone(),
+            )));
+            #[cfg(debug_assertions)]
+            let synchronization_environment = if physical_menu_bar_fixture.is_some() {
+                SynchronizationEnvironment::no_io(core.clone(), online_gate.clone())
+            } else {
+                SynchronizationEnvironment::production(
+                    core.clone(),
+                    Arc::clone(&profile_coordinator),
+                    online_gate.clone(),
+                )
+            };
+            #[cfg(not(debug_assertions))]
+            let synchronization_environment = SynchronizationEnvironment::production(
+                core.clone(),
+                Arc::clone(&profile_coordinator),
+                online_gate.clone(),
+            );
+            let usage_sync = PendingUsageSynchronization::start(synchronization_environment)?;
+            let profile_runtime = ProfileRuntime::start(
+                lifecycle,
+                app.handle().clone(),
+                online_gate,
+                profile_coordinator,
+                usage_sync.clone(),
+            )?;
             profile_runtime.trigger();
+            usage_sync.request();
             app.manage(profile_runtime);
+            app.manage(usage_sync);
 
             if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
                 panel.set_visible_on_all_workspaces(true)?;
@@ -1163,8 +1230,7 @@ pub fn run() {
                 }
             }
 
-            let revision_notices = core.revision_notices().map_err(std::io::Error::other)?;
-            let refresh = MenuItemBuilder::with_id("refresh", "Sync now").build(app)?;
+            let refresh = MenuItemBuilder::with_id("refresh", "Refresh now").build(app)?;
             let add_tokenmaxxer =
                 MenuItemBuilder::with_id("add_tokenmaxxer", "Add a Tokenmaxxer…").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
@@ -1291,6 +1357,12 @@ pub fn run() {
                 if let Some(profile_runtime) = window.app_handle().try_state::<ProfileRuntime>() {
                     profile_runtime.trigger();
                 }
+                if let Some(usage_sync) = window
+                    .app_handle()
+                    .try_state::<PendingUsageSynchronization>()
+                {
+                    usage_sync.request();
+                }
             }
             tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {
                 let _ = window.hide();
@@ -1325,8 +1397,14 @@ pub fn run() {
             if let Some(core) = app.try_state::<NativeCore>() {
                 let _ = core.request_refresh(RefreshSource::Wake);
             }
+            if let Some(usage_sync) = app.try_state::<PendingUsageSynchronization>() {
+                usage_sync.request();
+            }
         }
         RunEvent::Exit => {
+            if let Some(usage_sync) = app.try_state::<PendingUsageSynchronization>() {
+                usage_sync.shutdown();
+            }
             if let Some(core) = app.try_state::<NativeCore>() {
                 core.shutdown();
             }
@@ -1471,10 +1549,25 @@ mod tests {
     }
 
     #[test]
-    fn profile_update_pause_waits_for_every_admitted_attempt() {
+    fn profile_work_is_single_flight_and_coalesces_a_busy_attempt() {
         let admission = Arc::new(ProfileWorkAdmission::default());
-        let first = admission.try_start().expect("first attempt admitted");
-        let second = admission.try_start().expect("second attempt admitted");
+        let (retry, requests) = ProfileRetryMailbox::new();
+        let first = admission
+            .try_start(Some(&retry))
+            .expect("first attempt admitted");
+        assert!(admission.try_start(Some(&retry)).is_none());
+        drop(first);
+        requests
+            .recv_timeout(Duration::from_secs(1))
+            .expect("coalesced work did not wake");
+        assert!(retry.take());
+        assert!(admission.try_start(Some(&retry)).is_some());
+    }
+
+    #[test]
+    fn profile_update_pause_waits_for_the_single_active_attempt() {
+        let admission = Arc::new(ProfileWorkAdmission::default());
+        let first = admission.try_start(None).expect("first attempt admitted");
         let waiting_admission = Arc::clone(&admission);
         let (paused, pause_result) = mpsc::sync_channel(1);
         let pause_thread = std::thread::spawn(move || {
@@ -1487,18 +1580,16 @@ mod tests {
             std::thread::yield_now();
         }
 
-        assert!(admission.try_start().is_none());
+        assert!(admission.try_start(None).is_none());
         drop(first);
-        assert!(pause_result.try_recv().is_err());
-        drop(second);
         pause_result
             .recv_timeout(Duration::from_secs(1))
-            .expect("pause did not wait for all attempts");
+            .expect("pause did not wait for the active attempt");
         pause_thread.join().expect("pause thread failed");
 
-        assert!(admission.try_start().is_none());
+        assert!(admission.try_start(None).is_none());
         admission.resume().expect("resume admission");
-        assert!(admission.try_start().is_some());
+        assert!(admission.try_start(None).is_some());
     }
 
     #[test]

@@ -96,7 +96,7 @@ describe("panel states", () => {
     );
 
     expect(markup).not.toContain(">0<");
-    expect(markup).toContain("Live");
+    expect(markup).toContain("Sync unavailable");
     expect(markup).toContain('aria-label="Open panel menu"');
     expect(markup).toContain('data-slot="brand-mark"');
     expect(markup).toContain('data-tone="ink"');
@@ -151,7 +151,7 @@ describe("panel states", () => {
     );
 
     expect(markup).toContain('data-slot="dropdown-menu-trigger"');
-    expect(markup).toContain("Syncing…");
+    expect(markup).toContain("Connecting…");
     expect(markup).toContain('data-slot="loading-panel"');
     expect(markup).toContain('aria-busy="true"');
     expect(markup).not.toContain("Weekly limit");
