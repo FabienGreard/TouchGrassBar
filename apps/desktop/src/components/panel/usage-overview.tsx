@@ -242,6 +242,7 @@ function UsageOverview({
         "the previous 30 days",
       ),
   };
+  const topModelName = topModelUsage?.model;
   return (
     <section
       aria-labelledby="observed-usage-heading"
@@ -249,10 +250,17 @@ function UsageOverview({
     >
       <header className="flex items-center justify-between">
         <h2 className="m-0 text-[10px]" id="observed-usage-heading">
-          Top model
+          Usage
         </h2>
         <small className="truncate text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
-          {topModelUsage?.model ?? "—"}
+          {topModelName ? (
+            <>
+              Most used
+              <span className="text-pearl-ink"> · {topModelName}</span>
+            </>
+          ) : (
+            "—"
+          )}
         </small>
       </header>
       <div className="mt-2">
