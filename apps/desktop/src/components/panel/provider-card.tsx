@@ -137,9 +137,16 @@ function ProviderQuotaLane({
 
 function ProviderCard({ presentation }: { presentation: ProviderPresentation }) {
   const { displayName: label, quota: provider } = presentation;
-  const reconnecting =
-    provider.availability === "unavailable" &&
-    presentation.usage.scanStatus === "indexing";
+  const hasCachedQuotaOrObservedUsage =
+    provider.availability !== "unavailable" ||
+    [
+      presentation.usage.today,
+      presentation.usage.sevenDays,
+      presentation.usage.thirtyDays,
+    ].some((usage) => usage.availability !== "unavailable");
+  const loading =
+    presentation.usage.scanStatus === "indexing" &&
+    !hasCachedQuotaOrObservedUsage;
   const lanes = orderedQuotaLanes(provider);
   const primaryLane = lanes[0] ?? null;
   const secondaryLanes = lanes.slice(1);
@@ -147,17 +154,17 @@ function ProviderCard({ presentation }: { presentation: ProviderPresentation }) 
 
   return (
     <section
-      aria-busy={reconnecting || undefined}
+      aria-busy={loading || undefined}
       aria-labelledby={`${provider.provider}-heading`}
       className={`border-b border-pearl-line bg-provider-row px-4 py-[15px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight ${
-        reconnecting
+        loading
           ? "pointer-events-none animate-pulse motion-reduce:animate-none"
           : ""
       }`}
       data-provider-availability={provider.availability}
       data-provider-presence={presentation.presence}
     >
-      {reconnecting ? (
+      {loading ? (
         <span className="sr-only">Refreshing {label}…</span>
       ) : null}
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2.5">

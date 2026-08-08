@@ -152,6 +152,10 @@ struct ProductScenario {
 
 impl ProductScenario {
     fn unavailable(now: OffsetDateTime) -> Self {
+        Self::with_state(unavailable_state_at(1, now), now)
+    }
+
+    fn with_state(state: SanitizedDesktopStateV3, now: OffsetDateTime) -> Self {
         let enablement = Arc::new(ScenarioEnablement {
             codex: AtomicBool::new(true),
             claude: AtomicBool::new(true),
@@ -164,7 +168,7 @@ impl ProductScenario {
             policy.clone(),
         ));
         let core = NativeCore::with_components(
-            unavailable_state_at(1, now),
+            state,
             ReadModelStore::Memory,
             Arc::new(FixedClock(now)),
             coordinator,
@@ -223,6 +227,31 @@ impl ProductScenario {
         self.notices
             .recv_timeout(NOTICE_TIMEOUT)
             .expect("native revision before timeout");
+    }
+
+    fn wait_for_manual_runs(&self, expected: usize) {
+        let deadline = std::time::Instant::now() + NOTICE_TIMEOUT;
+        while self.codex.manual_runs() < expected || self.claude.manual_runs() < expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "provider refresh did not finish before timeout"
+            );
+            std::thread::yield_now();
+        }
+        while self
+            .core
+            .inner
+            .coordinator
+            .inbox
+            .in_flight
+            .load(Ordering::Acquire)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native refresh did not become idle before timeout"
+            );
+            std::thread::yield_now();
+        }
     }
 }
 
@@ -284,9 +313,19 @@ fn observed(
     costs: [f64; 3],
 ) -> ProviderObservation {
     ProviderObservation {
-        quota: ProviderSnapshot::Unavailable {
+        quota: ProviderSnapshot::Current {
             provider,
-            quota_lanes: [],
+            observed_at: format_time(now),
+            quota_lanes: vec![QuotaLane {
+                label: "Weekly limit".to_owned(),
+                unit: "percent".to_owned(),
+                allowance: Some(100.0),
+                remaining: Some(match provider {
+                    CodingProvider::Codex => 40.0,
+                    CodingProvider::Claude => 60.0,
+                }),
+                reset_at: None,
+            }],
         },
         usage: UsagePeriods {
             scan_status: UsageScanStatus::Complete,
@@ -382,21 +421,22 @@ fn observed_usage_and_provider_enablement_follow_the_product_flow() {
         [4.0, 14.0, 40.0],
     );
 
-    let reconnecting = scenario.set_enabled(CodingProvider::Claude, true);
-    let claude = reconnecting
+    let reenabled = scenario.set_enabled(CodingProvider::Claude, true);
+    let claude = reenabled
         .provider(CodingProvider::Claude)
         .expect("Claude panel row");
-    assert_eq!(claude.usage.scan_status, UsageScanStatus::Indexing);
+    assert_eq!(claude.usage.scan_status, UsageScanStatus::Complete);
     assert!(matches!(
-        claude.quota,
-        ProviderSnapshot::Unavailable {
+        &claude.quota,
+        ProviderSnapshot::Current {
             provider: CodingProvider::Claude,
-            quota_lanes: []
-        }
+            quota_lanes,
+            ..
+        } if quota_lanes.len() == 1 && quota_lanes[0].remaining == Some(60.0)
     ));
     assert_usage(&claude.usage, [60, 160, 600], [6.0, 16.0, 60.0]);
     assert_usage(
-        &reconnecting.combined_usage,
+        &reenabled.combined_usage,
         [100, 300, 1_000],
         [10.0, 30.0, 100.0],
     );
@@ -446,24 +486,156 @@ fn reenabling_a_provider_without_history_keeps_the_valid_peer_combined_value() {
         [4.0, 14.0, 40.0],
     );
 
-    let reconnecting = scenario.set_enabled(CodingProvider::Claude, true);
-    let claude = reconnecting
+    let reenabled = scenario.set_enabled(CodingProvider::Claude, true);
+    let claude = reenabled
         .provider(CodingProvider::Claude)
         .expect("Claude panel row");
     assert_eq!(claude.usage.scan_status, UsageScanStatus::Indexing);
     assert!(matches!(claude.usage.today, UsageTotal::Unavailable));
     assert_eq!(
-        reconnecting.combined_usage.scan_status,
+        reenabled.combined_usage.scan_status,
         UsageScanStatus::Complete
     );
     assert_eq!(
-        reconnecting.combined_usage.today_scan_status,
+        reenabled.combined_usage.today_scan_status,
         UsageScanStatus::Complete
     );
-    assert_usage(
-        &reconnecting.combined_usage,
-        [40, 140, 400],
-        [4.0, 14.0, 40.0],
+    assert_usage(&reenabled.combined_usage, [40, 140, 400], [4.0, 14.0, 40.0]);
+}
+
+#[test]
+fn unchanged_refresh_finishes_only_the_matching_no_history_reenable_wait() {
+    let scenario = ProductScenario::unavailable(test_time());
+
+    scenario.set_enabled(CodingProvider::Claude, false);
+    let loading = scenario.set_enabled_and_request_refresh(CodingProvider::Claude, true);
+    assert_eq!(
+        loading
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Indexing
+    );
+
+    scenario.expect_revision();
+    let settled = scenario.panel();
+    assert_eq!(
+        settled
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Unavailable
+    );
+}
+
+#[test]
+fn repeated_reenable_before_the_first_refresh_still_finishes_the_loading_state() {
+    let scenario = ProductScenario::unavailable(test_time());
+
+    scenario.set_enabled(CodingProvider::Claude, false);
+    let first_enable = scenario.set_enabled(CodingProvider::Claude, true);
+    assert_eq!(
+        first_enable
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Indexing
+    );
+    scenario.set_enabled(CodingProvider::Claude, false);
+    let second_enable = scenario.set_enabled_and_request_refresh(CodingProvider::Claude, true);
+    assert_eq!(
+        second_enable
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Indexing
+    );
+
+    scenario.expect_revision();
+    assert_eq!(
+        scenario
+            .panel()
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Unavailable
+    );
+}
+
+#[test]
+fn a_provider_filtered_before_commit_keeps_its_first_observation_wait() {
+    let scenario = ProductScenario::unavailable(test_time());
+    scenario.set_enabled(CodingProvider::Claude, false);
+    scenario.set_enabled(CodingProvider::Claude, true);
+    let gate = Arc::new(ScenarioRefreshGate::for_two_providers());
+    scenario.codex.block_next(gate.clone());
+    scenario.claude.block_next(gate.clone());
+
+    scenario
+        .core
+        .request_provider_refresh()
+        .expect("blocked provider refresh request");
+    gate.wait_until_started();
+    scenario.enablement.set(CodingProvider::Claude, false);
+    gate.release();
+    scenario.wait_for_manual_runs(1);
+
+    scenario.enablement.set(CodingProvider::Claude, true);
+    assert_eq!(
+        scenario
+            .panel()
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Indexing
+    );
+}
+
+#[test]
+fn reenable_keeps_a_real_older_history_index_active_after_an_unchanged_refresh() {
+    let now = test_time();
+    let mut state = unavailable_state_at(1, now);
+    let claude = state
+        .provider_mut(CodingProvider::Claude)
+        .expect("Claude panel row");
+    claude.usage.scan_status = UsageScanStatus::Indexing;
+    claude.usage.today_scan_status = UsageScanStatus::Complete;
+    claude.usage.seven_day_scan_status = UsageScanStatus::Complete;
+    claude.usage.thirty_day_scan_status = UsageScanStatus::Complete;
+    state.refresh_combined_usage();
+    let scenario = ProductScenario::with_state(state, now);
+
+    scenario.set_enabled(CodingProvider::Claude, false);
+    let reenabled = scenario.set_enabled(CodingProvider::Claude, true);
+    assert_eq!(
+        reenabled
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Indexing
+    );
+
+    scenario
+        .core
+        .request_provider_refresh()
+        .expect("provider refresh request");
+    scenario.wait_for_manual_runs(1);
+
+    assert_eq!(
+        scenario
+            .panel()
+            .provider(CodingProvider::Claude)
+            .expect("Claude panel row")
+            .usage
+            .scan_status,
+        UsageScanStatus::Indexing
     );
 }
 
@@ -501,7 +673,8 @@ fn enabling_both_providers_restores_both_contributions() {
         [10.0, 30.0, 100.0],
     );
     for provider in &restored.providers {
-        assert_eq!(provider.usage.scan_status, UsageScanStatus::Indexing);
+        assert_eq!(provider.usage.scan_status, UsageScanStatus::Complete);
+        assert!(matches!(provider.quota, ProviderSnapshot::Current { .. }));
     }
 
     let refreshed = scenario.refresh(
@@ -583,9 +756,9 @@ fn provider_toggles_during_a_refresh_commit_both_follow_up_contributions_once() 
     scenario.set_enabled_and_request_refresh(CodingProvider::Codex, false);
     scenario.set_enabled_and_request_refresh(CodingProvider::Claude, false);
     scenario.set_enabled_and_request_refresh(CodingProvider::Codex, true);
-    let reconnecting = scenario.set_enabled_and_request_refresh(CodingProvider::Claude, true);
+    let reenabled = scenario.set_enabled_and_request_refresh(CodingProvider::Claude, true);
     assert_usage(
-        &reconnecting.combined_usage,
+        &reenabled.combined_usage,
         [100, 300, 1_000],
         [10.0, 30.0, 100.0],
     );

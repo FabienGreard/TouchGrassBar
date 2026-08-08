@@ -23,8 +23,46 @@ function unavailableProvider(scanStatus: "indexing" | "unavailable") {
   } as const satisfies ProviderPresentation;
 }
 
+function cachedProvider() {
+  return {
+    ...unavailableProvider("indexing"),
+    presence: "detected",
+    quota: {
+      availability: "current",
+      observedAt: "2026-08-08T12:00:00Z",
+      provider: "claude",
+      quotaLanes: [
+        {
+          allowance: 100,
+          label: "Weekly limit",
+          remaining: 50,
+          resetAt: null,
+          unit: "percent",
+        },
+      ],
+    },
+  } as const satisfies ProviderPresentation;
+}
+
+function cachedUsageProvider() {
+  return {
+    ...unavailableProvider("indexing"),
+    presence: "detected",
+    usage: {
+      ...unavailableProvider("indexing").usage,
+      today: {
+        availability: "current",
+        coverage: "complete",
+        evidenceBasis: "locally-derived",
+        observedAt: "2026-08-08T12:00:00Z",
+        observedTokens: 60,
+      },
+    },
+  } as const satisfies ProviderPresentation;
+}
+
 describe("provider card", () => {
-  test("pulses only the provider row while it reconnects", () => {
+  test("pulses only the provider row while usage is indexing", () => {
     const markup = renderToStaticMarkup(
       <ProviderCard presentation={unavailableProvider("indexing")} />,
     );
@@ -37,6 +75,27 @@ describe("provider card", () => {
   test("does not pulse an ordinary unavailable provider", () => {
     const markup = renderToStaticMarkup(
       <ProviderCard presentation={unavailableProvider("unavailable")} />,
+    );
+
+    expect(markup).not.toContain("aria-busy");
+    expect(markup).not.toContain("animate-pulse");
+    expect(markup).not.toContain("Refreshing Claude…");
+  });
+
+  test("shows cached quota without a loading pulse", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderCard presentation={cachedProvider()} />,
+    );
+
+    expect(markup).not.toContain("aria-busy");
+    expect(markup).not.toContain("animate-pulse");
+    expect(markup).toContain("Weekly limit");
+    expect(markup).toContain("50%");
+  });
+
+  test("does not show a loading pulse when only cached Observed Usage is available", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderCard presentation={cachedUsageProvider()} />,
     );
 
     expect(markup).not.toContain("aria-busy");

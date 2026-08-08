@@ -13,7 +13,7 @@ Whether a Coding Provider installation is locally detected, not detected, or can
 _Avoid_: Provider connection, provider authorization, provider availability
 
 **Provider Enablement**:
-Whether a Coding Provider is active in TouchGrassBar. Providers are enabled by default. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Observed Usage and API-Equivalent Cost do not contribute to Combined totals. Disabling a provider does not delete its local history.
+Whether a Coding Provider is active in TouchGrassBar. Providers are enabled by default. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Observed Usage and API-Equivalent Cost do not contribute to Combined totals. Disabling a provider does not delete its local history. Re-enabling it restores the still-valid cached Quota Lanes, Observed Usage, and API-Equivalent Cost before the fresh read completes, without replacing that cache with a loading state.
 _Avoid_: Provider Presence, provider authentication, data deletion
 
 **Quota**:
