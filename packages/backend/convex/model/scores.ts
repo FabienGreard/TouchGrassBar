@@ -56,6 +56,7 @@ export function calculateScore(
   let coveredTokenPercent = 0;
   let quality: ApiEquivalentCost["quality"] = "reconciled";
   let hasPricedEvidence = false;
+  let hasLegacyPricedEvidence = false;
   let hasUnpricedTokens = false;
   const pricingBases = new Set<string>();
 
@@ -69,6 +70,18 @@ export function calculateScore(
     tokenScore = checkedAdd(tokenScore, row.observedTokens, "Token Score");
     const cost = row.apiEquivalentCost;
     if (!cost) {
+      // Pre-contract local rows have valid micros but no quality or basis.
+      // Keep the estimate, but do not invent the missing metadata.
+      if (row.apiEquivalentCostMicros !== undefined) {
+        hasPricedEvidence = true;
+        hasLegacyPricedEvidence = true;
+        apiEquivalentCostMicros = checkedAdd(
+          apiEquivalentCostMicros,
+          row.apiEquivalentCostMicros,
+          "API-equivalent cost",
+        );
+        continue;
+      }
       hasUnpricedTokens ||= row.observedTokens > 0;
       continue;
     }
@@ -92,6 +105,13 @@ export function calculateScore(
     return {
       apiEquivalentCost: undefined,
       apiEquivalentCostMicros: undefined,
+      tokenScore,
+    };
+  }
+  if (hasLegacyPricedEvidence) {
+    return {
+      apiEquivalentCost: undefined,
+      apiEquivalentCostMicros,
       tokenScore,
     };
   }

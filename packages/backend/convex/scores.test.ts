@@ -157,4 +157,40 @@ describe("cost and ranking independence", () => {
       },
     ]);
   });
+
+  test("legacy cost micros survive without invented metadata", () => {
+    expect(
+      calculateScore(
+        [
+          {
+            apiEquivalentCostMicros: 1_000_000,
+            costIsComplete: true,
+            observedTokens: 100,
+            provider: "codex",
+            rankingDay: "2026-08-05",
+          },
+          {
+            apiEquivalentCost: {
+              coveragePercent: 50,
+              micros: 2_000_000,
+              pricingBasis: "anthropic-standard-2026-08-07-v1",
+              quality: "modeled",
+            },
+            apiEquivalentCostMicros: 2_000_000,
+            costIsComplete: false,
+            observedTokens: 300,
+            provider: "claude",
+            rankingDay: "2026-08-06",
+          },
+        ],
+        "combined",
+        7,
+        "2026-08-06",
+      ),
+    ).toEqual({
+      apiEquivalentCost: undefined,
+      apiEquivalentCostMicros: 3_000_000,
+      tokenScore: 400,
+    });
+  });
 });
