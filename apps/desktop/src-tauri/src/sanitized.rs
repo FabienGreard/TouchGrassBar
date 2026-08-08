@@ -205,7 +205,15 @@ impl SanitizedDesktopStateV3 {
                 presentation
             })
             .collect();
-        self.refresh_combined_usage();
+        let periods = self
+            .providers
+            .iter()
+            .filter(|presentation| {
+                enablement.is_provider_enabled(presentation.provider) && presentation.is_visible()
+            })
+            .map(|presentation| &presentation.usage)
+            .collect::<Vec<_>>();
+        self.combined_usage = combine_usage_periods(&periods);
         disabled_providers
     }
 }
@@ -1989,7 +1997,6 @@ impl NativeCore {
     pub fn panel_state(&self) -> Result<SanitizedDesktopStateV3, &'static str> {
         let mut snapshot = self.inner.projection.panel_snapshot()?;
         drop(snapshot.apply_provider_enablement(self.inner.enablement.as_ref()));
-        snapshot.refresh_combined_usage();
         Ok(snapshot)
     }
 
@@ -3144,7 +3151,7 @@ mod tests {
         let UsageTotal::Current {
             observed_tokens,
             api_equivalent_cost_usd,
-            api_equivalent_cost_basis,
+            ref api_equivalent_cost_basis,
             ..
         } = panel.combined_usage.today
         else {
@@ -3153,6 +3160,10 @@ mod tests {
         assert_eq!(observed_tokens, 42);
         assert_eq!(api_equivalent_cost_usd, Some(4.2));
         assert_eq!(api_equivalent_cost_basis.as_deref(), Some("openai-fixture"));
+        assert_eq!(
+            panel.combined_usage,
+            panel.provider(CodingProvider::Codex).unwrap().usage
+        );
     }
 
     #[test]
