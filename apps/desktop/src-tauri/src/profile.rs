@@ -912,7 +912,7 @@ mod tests {
         }
 
         fn public_boundaries(&self) -> Vec<String> {
-            let core = NativeCore::test_unavailable();
+            let core = NativeCore::no_io_unavailable();
             core.set_profile_outcome(self.lifecycle.sanitized_profile_outcome())
                 .unwrap();
             vec![

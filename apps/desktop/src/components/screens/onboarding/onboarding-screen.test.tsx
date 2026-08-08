@@ -57,6 +57,13 @@ describe("onboarding screen", () => {
     expect(finishMarkup).toContain('data-icon-source="macos-sf-search"');
     expect(finishMarkup).not.toContain('data-icon-source="KeyboardIcon"');
     expect(finishMarkup).toContain("menu-bar-app-target");
+    expect(finishMarkup).toContain('data-slot="menu-bar-headroom-icon"');
+    expect(finishMarkup).toContain('data-slot="menu-bar-headroom-meter"');
+    expect(finishMarkup).toContain('data-slot="menu-bar-headroom-fill"');
+    expect(finishMarkup).toContain('data-preview-value="illustrative"');
+    expect(finishMarkup).toContain('data-meter-shape="rounded-pill"');
+    expect(finishMarkup).toContain('data-native-meter-geometry="332x48"');
+    expect(finishMarkup).toContain("h-[3.6px] w-[24.9px]");
     expect(finishMarkup).toContain("Tue 4 Aug");
     expect(markup.match(/>Unavailable</g)).toHaveLength(2);
     expect(markup).not.toContain(">Ready<");

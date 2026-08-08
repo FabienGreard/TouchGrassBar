@@ -42,10 +42,6 @@ impl DevelopmentInstance {
         &self.tag
     }
 
-    pub(crate) fn tooltip(&self) -> String {
-        format!("TouchGrassBar · {}", self.label)
-    }
-
     pub(crate) fn window_title(&self, title: &str) -> String {
         format!("{title} · {}", self.label)
     }
@@ -85,10 +81,6 @@ mod tests {
         assert_eq!(instance.namespace(), "app.touchgrass.bar.dev.wexample");
         assert_eq!(instance.tag(), "CACHE-RE");
         assert_eq!(instance.quit_label(), "Quit TouchGrassBar · CACHE-RE");
-        assert_eq!(
-            instance.tooltip(),
-            "TouchGrassBar · Cache refresh with an intentionally"
-        );
         assert_eq!(
             instance.window_title("TouchGrassBar Settings"),
             "TouchGrassBar Settings · Cache refresh with an intentionally"

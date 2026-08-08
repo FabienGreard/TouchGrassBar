@@ -29,6 +29,7 @@ use crate::providers::{
     PROVIDER_REGISTRY, ProviderEnablementPolicy, all_providers_enabled_policy,
     detect_provider_presence, production_observation_coordinator, provider_descriptor,
 };
+use crate::quota_headroom::{RevisionedOverallQuotaHeadroom, overall_quota_headroom};
 use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update_state_schema};
 
 pub const CONTRACT_VERSION: u8 = 3;
@@ -663,10 +664,10 @@ impl SnapshotRefreshOutcome {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 struct CachedProjectionRefreshAdapter;
 
-#[cfg(test)]
+#[cfg(any(test, debug_assertions))]
 impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     fn refresh(
         &self,
@@ -993,6 +994,19 @@ struct CachedProjection {
 struct CachedProjectionState {
     snapshot: SanitizedDesktopStateV3,
     first_observation_waits: BTreeSet<CodingProvider>,
+    enabled_providers: BTreeSet<CodingProvider>,
+}
+
+#[derive(Clone, Copy)]
+struct ProviderEnablementChange {
+    provider: CodingProvider,
+    enabled: bool,
+}
+
+#[derive(Default)]
+struct SnapshotCommitOptions {
+    force_revision: bool,
+    provider_enablement_change: Option<ProviderEnablementChange>,
 }
 
 #[derive(Default)]
@@ -1006,11 +1020,12 @@ struct RevisionSubscribers {
 }
 
 impl CachedProjection {
-    fn new(state: SanitizedDesktopStateV3) -> Self {
+    fn new(state: SanitizedDesktopStateV3, enabled_providers: BTreeSet<CodingProvider>) -> Self {
         Self {
             state: Mutex::new(CachedProjectionState {
                 snapshot: state,
                 first_observation_waits: BTreeSet::new(),
+                enabled_providers,
             }),
         }
     }
@@ -1031,6 +1046,13 @@ impl CachedProjection {
             }
         }
         Ok(snapshot)
+    }
+
+    fn menu_bar_snapshot(
+        &self,
+    ) -> Result<(SanitizedDesktopStateV3, BTreeSet<CodingProvider>), &'static str> {
+        let state = self.state.lock().map_err(|_| "native state unavailable")?;
+        Ok((state.snapshot.clone(), state.enabled_providers.clone()))
     }
 
     fn snapshot_with_first_observation_waits(
@@ -1105,7 +1127,10 @@ impl CachedProjection {
             cached,
             first_observation_waits,
             now,
-            first_observation_wait_changed,
+            SnapshotCommitOptions {
+                force_revision: first_observation_wait_changed,
+                ..SnapshotCommitOptions::default()
+            },
         )
     }
 
@@ -1130,29 +1155,30 @@ impl CachedProjection {
             cached,
             first_observation_waits,
             now,
-            false,
+            SnapshotCommitOptions::default(),
         )
     }
 
     fn commit_provider_enablement(
         &self,
         store: &mut ReadModelStore,
-        changed_provider: Option<(CodingProvider, bool)>,
+        change: Option<ProviderEnablementChange>,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         let (cached, mut first_observation_waits) = self.snapshot_with_first_observation_waits()?;
         let mut refreshed = cached.clone();
-        if let Some((provider, true)) = changed_provider
-            && let Some(presentation) = refreshed.provider_mut(provider)
+        if let Some(change) = change
+            && change.enabled
+            && let Some(presentation) = refreshed.provider_mut(change.provider)
         {
             let (reenabled, _) = presentation.transition_at(now);
             let waits_for_first_observation = !reenabled.has_cached_quota_or_observed_usage()
-                && (first_observation_waits.contains(&provider)
+                && (first_observation_waits.contains(&change.provider)
                     || reenabled.usage.scan_status != UsageScanStatus::Indexing);
             if waits_for_first_observation {
-                first_observation_waits.insert(provider);
+                first_observation_waits.insert(change.provider);
             } else {
-                first_observation_waits.remove(&provider);
+                first_observation_waits.remove(&change.provider);
             }
             *presentation = reenabled;
         }
@@ -1163,7 +1189,10 @@ impl CachedProjection {
             cached,
             first_observation_waits,
             now,
-            changed_provider.is_some(),
+            SnapshotCommitOptions {
+                force_revision: change.is_some(),
+                provider_enablement_change: change,
+            },
         )
     }
 
@@ -1174,8 +1203,12 @@ impl CachedProjection {
         cached: SanitizedDesktopStateV3,
         first_observation_waits: BTreeSet<CodingProvider>,
         now: OffsetDateTime,
-        force_revision: bool,
+        options: SnapshotCommitOptions,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
+        let SnapshotCommitOptions {
+            force_revision,
+            provider_enablement_change,
+        } = options;
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
@@ -1221,9 +1254,19 @@ impl CachedProjection {
             refreshed.sync.status = SyncStatus::Unavailable;
         }
         validate_snapshot(&refreshed)?;
-        *self.state.lock().map_err(|_| "native state unavailable")? = CachedProjectionState {
+        let mut state = self.state.lock().map_err(|_| "native state unavailable")?;
+        let mut enabled_providers = state.enabled_providers.clone();
+        if let Some(change) = provider_enablement_change {
+            if change.enabled {
+                enabled_providers.insert(change.provider);
+            } else {
+                enabled_providers.remove(&change.provider);
+            }
+        }
+        *state = CachedProjectionState {
             snapshot: refreshed,
             first_observation_waits,
+            enabled_providers,
         };
         Ok(SnapshotCommitOutcome {
             notice: Some(RevisionNotice {
@@ -1891,6 +1934,14 @@ pub struct NativeCore {
     inner: Arc<NativeCoreInner>,
 }
 
+fn enabled_provider_set(enablement: &dyn ProviderEnablementPolicy) -> BTreeSet<CodingProvider> {
+    PROVIDER_REGISTRY
+        .iter()
+        .filter(|descriptor| enablement.is_provider_enabled(descriptor.provider))
+        .map(|descriptor| descriptor.provider)
+        .collect()
+}
+
 impl NativeCore {
     pub fn open(path: &Path) -> Result<Self, &'static str> {
         Self::open_with_provider_enablement(path, all_providers_enabled_policy())
@@ -1956,7 +2007,10 @@ impl NativeCore {
         drop(initial.apply_provider_enablement(enablement.as_ref()));
         let (store, state) = SqliteReadModelStore::open(path, &initial)?;
         let mut store = ReadModelStore::Persistent(store);
-        let projection = Arc::new(CachedProjection::new(state));
+        let projection = Arc::new(CachedProjection::new(
+            state,
+            enabled_provider_set(enablement.as_ref()),
+        ));
         if let Some(transitioned) = transition_snapshot_at(&projection.snapshot()?, now) {
             projection.commit_refreshed_snapshot(
                 &mut store,
@@ -1998,8 +2052,8 @@ impl NativeCore {
         core
     }
 
-    #[cfg(test)]
-    pub(crate) fn test_unavailable() -> Self {
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn no_io_unavailable() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         Self::with_components(
             unavailable_state_at(1, clock.now()),
@@ -2029,8 +2083,9 @@ impl NativeCore {
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
         enablement: Arc<dyn ProviderEnablementPolicy>,
     ) -> Self {
+        let enabled_providers = enabled_provider_set(enablement.as_ref());
         Self::from_components(
-            Arc::new(CachedProjection::new(state)),
+            Arc::new(CachedProjection::new(state, enabled_providers)),
             store,
             clock,
             refresh_adapter,
@@ -2075,6 +2130,33 @@ impl NativeCore {
         Ok(snapshot)
     }
 
+    /// Returns one menu-bar projection from the committed in-memory snapshot.
+    /// This method does not perform provider, disk, Keychain, or network I/O.
+    pub(crate) fn menu_bar_headroom(&self) -> Result<RevisionedOverallQuotaHeadroom, &'static str> {
+        let (snapshot, enabled_providers) = self.inner.projection.menu_bar_snapshot()?;
+        let revision = snapshot
+            .revision
+            .parse::<u64>()
+            .map_err(|_| "native revision unavailable")?;
+        let enabled_quotas = PROVIDER_REGISTRY
+            .iter()
+            .filter(|descriptor| enabled_providers.contains(&descriptor.provider))
+            .map(|descriptor| {
+                snapshot
+                    .provider(descriptor.provider)
+                    .map(|provider| provider.quota.clone())
+                    .unwrap_or(ProviderSnapshot::Unavailable {
+                        provider: descriptor.provider,
+                        quota_lanes: [],
+                    })
+            })
+            .collect::<Vec<_>>();
+        Ok(RevisionedOverallQuotaHeadroom {
+            revision,
+            headroom: overall_quota_headroom(enabled_quotas.iter()),
+        })
+    }
+
     pub(crate) fn provider_enablement_changed(
         &self,
         provider: CodingProvider,
@@ -2087,7 +2169,7 @@ impl NativeCore {
             .map_err(|_| "native state unavailable")?;
         let commit = self.inner.projection.commit_provider_enablement(
             &mut store,
-            Some((provider, enabled)),
+            Some(ProviderEnablementChange { provider, enabled }),
             self.inner.clock.now(),
         )?;
         self.inner.coordinator.note_provider_setting_commit();
@@ -3149,6 +3231,18 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(1_775_347_200).unwrap()
     }
 
+    fn expected_headroom(
+        remaining_percent: f64,
+        freshness: crate::quota_headroom::HeadroomFreshness,
+        completeness: crate::quota_headroom::HeadroomCompleteness,
+    ) -> crate::quota_headroom::OverallQuotaHeadroom {
+        crate::quota_headroom::OverallQuotaHeadroom::Calculated {
+            remaining_percent,
+            freshness,
+            completeness,
+        }
+    }
+
     struct ClaudeTogglePolicy {
         enabled: AtomicBool,
     }
@@ -3254,8 +3348,22 @@ mod tests {
             enablement,
         );
         let notices = core.revision_notices().unwrap();
+        let before_disable = core.menu_bar_headroom().unwrap();
+        assert_eq!(
+            before_disable.headroom,
+            expected_headroom(
+                62.0,
+                crate::quota_headroom::HeadroomFreshness::Current,
+                crate::quota_headroom::HeadroomCompleteness::Complete,
+            )
+        );
 
         policy.enabled.store(false, Ordering::Release);
+        assert_eq!(
+            core.menu_bar_headroom().unwrap(),
+            before_disable,
+            "live lifecycle changes must not alter an uncommitted native revision"
+        );
         core.provider_enablement_changed(CodingProvider::Claude, false)
             .unwrap();
         let notice = notices.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -3327,6 +3435,17 @@ mod tests {
             panel.combined_usage,
             panel.provider(CodingProvider::Codex).unwrap().usage
         );
+        assert_eq!(
+            core.menu_bar_headroom().unwrap(),
+            crate::quota_headroom::RevisionedOverallQuotaHeadroom {
+                revision: notice.revision.parse().unwrap(),
+                headroom: expected_headroom(
+                    74.0,
+                    crate::quota_headroom::HeadroomFreshness::Current,
+                    crate::quota_headroom::HeadroomCompleteness::Complete,
+                ),
+            }
+        );
     }
 
     #[test]
@@ -3340,13 +3459,40 @@ mod tests {
         let policy = Arc::new(ClaudeTogglePolicy {
             enabled: AtomicBool::new(false),
         });
-        let enablement: Arc<dyn ProviderEnablementPolicy> = policy;
+        let enablement: Arc<dyn ProviderEnablementPolicy> = policy.clone();
         let core = NativeCore::with_components(
             state,
             ReadModelStore::Memory,
             clock,
             Arc::new(CachedProjectionRefreshAdapter),
             enablement,
+        );
+        let disabled = core.menu_bar_headroom().unwrap();
+        assert_eq!(
+            disabled.headroom,
+            expected_headroom(
+                74.0,
+                crate::quota_headroom::HeadroomFreshness::Current,
+                crate::quota_headroom::HeadroomCompleteness::Complete,
+            )
+        );
+
+        policy.enabled.store(true, Ordering::Release);
+        assert_eq!(
+            core.menu_bar_headroom().unwrap(),
+            disabled,
+            "enablement must change only with a committed native revision"
+        );
+        core.provider_enablement_changed(CodingProvider::Claude, true)
+            .unwrap();
+        assert_eq!(
+            core.menu_bar_headroom().unwrap().headroom,
+            expected_headroom(
+                74.0,
+                crate::quota_headroom::HeadroomFreshness::Current,
+                crate::quota_headroom::HeadroomCompleteness::Incomplete,
+            ),
+            "a missing enabled registry provider must make headroom incomplete"
         );
 
         let panel = core.panel_state().unwrap();
@@ -3607,6 +3753,14 @@ mod tests {
         };
         assert_eq!(observed_tokens, 58);
         assert_eq!(api_equivalent_cost_usd, Some(5.8));
+        assert_eq!(
+            core.menu_bar_headroom().unwrap().headroom,
+            expected_headroom(
+                62.0,
+                crate::quota_headroom::HeadroomFreshness::Stale,
+                crate::quota_headroom::HeadroomCompleteness::Complete,
+            )
+        );
     }
 
     #[test]
@@ -3685,6 +3839,17 @@ mod tests {
         assert!(receipt.accepted);
         assert_eq!(notice.revision, "2");
         assert_eq!(after.revision, notice.revision);
+        assert_eq!(
+            core.menu_bar_headroom().unwrap(),
+            crate::quota_headroom::RevisionedOverallQuotaHeadroom {
+                revision: notice.revision.parse().unwrap(),
+                headroom: expected_headroom(
+                    74.0,
+                    crate::quota_headroom::HeadroomFreshness::Current,
+                    crate::quota_headroom::HeadroomCompleteness::Incomplete,
+                ),
+            }
+        );
         assert!(matches!(
             &after.provider(CodingProvider::Codex).unwrap().usage.today,
             UsageTotal::Current { .. }
@@ -4362,6 +4527,17 @@ mod tests {
         let cached = relaunched.panel_state().unwrap();
 
         assert_eq!(cached.revision, "2");
+        assert_eq!(
+            relaunched.menu_bar_headroom().unwrap(),
+            crate::quota_headroom::RevisionedOverallQuotaHeadroom {
+                revision: 2,
+                headroom: expected_headroom(
+                    74.0,
+                    crate::quota_headroom::HeadroomFreshness::Current,
+                    crate::quota_headroom::HeadroomCompleteness::Incomplete,
+                ),
+            }
+        );
         assert!(matches!(
             &cached.provider(CodingProvider::Codex).unwrap().usage.today,
             UsageTotal::Current {
@@ -5068,6 +5244,10 @@ mod tests {
             &after_reset.providers[0].quota,
             ProviderSnapshot::Unavailable { .. }
         ));
+        assert_eq!(
+            core.menu_bar_headroom().unwrap().headroom,
+            crate::quota_headroom::OverallQuotaHeadroom::Unavailable
+        );
         assert!(matches!(
             &after_reset
                 .provider(CodingProvider::Codex)
