@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-pub const UPDATE_CONTRACT_VERSION: u8 = 1;
+pub const UPDATE_CONTRACT_VERSION: u8 = 2;
 pub const UPDATE_STATE_CHANGED_EVENT: &str = "update-state-changed";
 pub const LATEST_DMG_RECOVERY_URL: &str =
     "https://github.com/FabienGreard/TouchGrassBar/releases/latest";
-const AUTOMATIC_CHECK_INTERVAL_SECONDS: i64 = 24 * 60 * 60;
+pub const SOURCE_REPOSITORY_URL: &str = "https://github.com/FabienGreard/TouchGrassBar";
+const AUTOMATIC_CHECK_INTERVAL_SECONDS: i64 = 60 * 60;
 const MAX_VERSION_LENGTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -69,6 +70,7 @@ pub enum UpdateStatus {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStateV1 {
     pub contract_version: u8,
+    pub automatic_checks_enabled: bool,
     #[schemars(length(min = 1, max = 64))]
     pub current_version: String,
     pub online_features_paused: bool,
@@ -79,6 +81,7 @@ impl UpdateStateV1 {
     fn new(current_version: String, update: UpdateStatus) -> Self {
         Self {
             contract_version: UPDATE_CONTRACT_VERSION,
+            automatic_checks_enabled: true,
             current_version,
             online_features_paused: false,
             update,
@@ -141,11 +144,23 @@ struct UpdatePersistence {
     memory: Mutex<PersistedUpdateState>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct PersistedUpdateState {
+    automatic_checks_enabled: bool,
     last_automatic_check_at: Option<i64>,
     minimum_required_version: Option<String>,
     offered_version: Option<String>,
+}
+
+impl Default for PersistedUpdateState {
+    fn default() -> Self {
+        Self {
+            automatic_checks_enabled: true,
+            last_automatic_check_at: None,
+            minimum_required_version: None,
+            offered_version: None,
+        }
+    }
 }
 
 impl UpdatePersistence {
@@ -158,6 +173,9 @@ impl UpdatePersistence {
                  PRAGMA synchronous = FULL;
                  CREATE TABLE IF NOT EXISTS touchgrassbar_update_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   automatic_checks_enabled INTEGER NOT NULL DEFAULT 1 CHECK (
+                     automatic_checks_enabled IN (0, 1)
+                   ),
                    last_automatic_check_at INTEGER,
                    offered_version TEXT CHECK (
                      offered_version IS NULL OR
@@ -224,26 +242,46 @@ impl UpdatePersistence {
                 )
                 .map_err(|_| ())?;
         }
+        let has_automatic_checks_column = connection
+            .query_row(
+                "SELECT EXISTS (
+                   SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
+                   WHERE name = 'automatic_checks_enabled'
+                 )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|_| ())?;
+        if !has_automatic_checks_column {
+            connection
+                .execute_batch(
+                    "ALTER TABLE touchgrassbar_update_state
+                     ADD COLUMN automatic_checks_enabled INTEGER NOT NULL DEFAULT 1
+                     CHECK (automatic_checks_enabled IN (0, 1));",
+                )
+                .map_err(|_| ())?;
+        }
         connection
             .execute(
                 "INSERT OR IGNORE INTO touchgrassbar_update_state (
-                   singleton, last_automatic_check_at, offered_version,
+                   singleton, automatic_checks_enabled, last_automatic_check_at, offered_version,
                    minimum_required_version
-                 ) VALUES (1, NULL, NULL, NULL)",
+                 ) VALUES (1, 1, NULL, NULL, NULL)",
                 [],
             )
             .map_err(|_| ())?;
         let persisted = connection
             .query_row(
-                "SELECT last_automatic_check_at, offered_version,
-                        minimum_required_version
+                "SELECT automatic_checks_enabled, last_automatic_check_at,
+                        offered_version, minimum_required_version
                  FROM touchgrassbar_update_state WHERE singleton = 1",
                 [],
                 |row| {
                     Ok(PersistedUpdateState {
-                        last_automatic_check_at: row.get(0)?,
-                        offered_version: row.get(1)?,
-                        minimum_required_version: row.get(2)?,
+                        automatic_checks_enabled: row.get(0)?,
+                        last_automatic_check_at: row.get(1)?,
+                        offered_version: row.get(2)?,
+                        minimum_required_version: row.get(3)?,
                     })
                 },
             )
@@ -263,6 +301,9 @@ impl UpdatePersistence {
 
     fn claim_automatic_check(&self, now: i64) -> Result<bool, ()> {
         let mut memory = self.memory.lock().map_err(|_| ())?;
+        if !memory.automatic_checks_enabled {
+            return Ok(false);
+        }
         if memory
             .last_automatic_check_at
             .is_some_and(|last| now.saturating_sub(last) < AUTOMATIC_CHECK_INTERVAL_SECONDS)
@@ -282,6 +323,23 @@ impl UpdatePersistence {
         }
         memory.last_automatic_check_at = Some(now);
         Ok(true)
+    }
+
+    fn set_automatic_checks_enabled(&self, enabled: bool) -> Result<(), ()> {
+        let mut memory = self.memory.lock().map_err(|_| ())?;
+        let connection = self.connection.lock().map_err(|_| ())?;
+        let changed = connection
+            .execute(
+                "UPDATE touchgrassbar_update_state
+                 SET automatic_checks_enabled = ?1 WHERE singleton = 1",
+                [enabled],
+            )
+            .map_err(|_| ())?;
+        if changed != 1 {
+            return Err(());
+        }
+        memory.automatic_checks_enabled = enabled;
+        Ok(())
     }
 
     fn set_offer(
@@ -349,7 +407,8 @@ impl UpdateRuntime {
         let initial_update = if !available || persistence.is_none() || persisted.is_none() {
             UpdateStatus::Unavailable
         } else if let Some(version) = persisted
-            .and_then(|persisted| persisted.offered_version)
+            .as_ref()
+            .and_then(|persisted| persisted.offered_version.clone())
             .filter(|version| version_is_newer(version, &current_version))
         {
             UpdateStatus::Available { version }
@@ -357,6 +416,9 @@ impl UpdateRuntime {
             UpdateStatus::Idle
         };
         let mut state = UpdateStateV1::new(current_version.to_string(), initial_update);
+        state.automatic_checks_enabled = persisted
+            .as_ref()
+            .is_none_or(|persisted| persisted.automatic_checks_enabled);
         state.online_features_paused = minimum_required;
         Self {
             app,
@@ -385,6 +447,21 @@ impl UpdateRuntime {
 
     pub fn request_manual_check(&self) -> UpdateStateV1 {
         self.request_check(CheckKind::Manual)
+    }
+
+    pub fn set_automatic_checks_enabled(&self, enabled: bool) -> UpdateStateV1 {
+        let Some(persistence) = &self.persistence else {
+            return self.state();
+        };
+        if persistence.set_automatic_checks_enabled(enabled).is_err() {
+            self.fail(None, UpdateFailure::Unavailable, RetryAction::Check);
+            return self.state();
+        }
+        if let Ok(mut state) = self.state.lock() {
+            state.automatic_checks_enabled = enabled;
+        }
+        let _ = self.app.emit(UPDATE_STATE_CHANGED_EVENT, ());
+        self.state()
     }
 
     fn request_check(&self, kind: CheckKind) -> UpdateStateV1 {
@@ -675,7 +752,7 @@ impl UpdateRuntime {
                 core_pause.keep_paused();
             },
             || {
-                self.app.request_restart();
+                self.relaunch_after_install();
             },
         );
         if let Err(failure) = result {
@@ -696,18 +773,33 @@ impl UpdateRuntime {
     }
 
     pub fn open_latest_dmg(&self) -> Result<(), &'static str> {
+        open_external_url(LATEST_DMG_RECOVERY_URL, "recovery download unavailable")
+    }
+
+    pub fn open_source_repository(&self) -> Result<(), &'static str> {
+        open_external_url(SOURCE_REPOSITORY_URL, "source repository unavailable")
+    }
+
+    fn relaunch_after_install(&self) {
         #[cfg(target_os = "macos")]
         {
-            Command::new("/usr/bin/open")
-                .arg(LATEST_DMG_RECOVERY_URL)
-                .spawn()
-                .map(|_| ())
-                .map_err(|_| "recovery download unavailable")
+            let scheduled = tauri::process::current_binary(&self.app.env())
+                .ok()
+                .and_then(|binary| macos_app_bundle_path(&binary).map(Path::to_path_buf))
+                .is_some_and(|bundle| {
+                    schedule_relaunch_after_exit(
+                        std::process::id(),
+                        &bundle,
+                        Path::new("/usr/bin/open"),
+                    )
+                    .is_ok()
+                });
+            if scheduled {
+                self.app.exit(0);
+                return;
+            }
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err("recovery download unavailable")
-        }
+        self.app.request_restart();
     }
 
     fn fail(&self, version: Option<String>, failure: UpdateFailure, retry: RetryAction) {
@@ -727,6 +819,48 @@ impl UpdateRuntime {
         }
         let _ = self.app.emit(UPDATE_STATE_CHANGED_EVENT, ());
     }
+}
+
+fn open_external_url(url: &str, unavailable: &'static str) -> Result<(), &'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("/usr/bin/open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| unavailable)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        Err(unavailable)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_bundle_path(binary: &Path) -> Option<&Path> {
+    let bundle = binary.parent()?.parent()?.parent()?;
+    (bundle.extension().and_then(|extension| extension.to_str()) == Some("app")).then_some(bundle)
+}
+
+#[cfg(target_os = "macos")]
+fn schedule_relaunch_after_exit(
+    process_id: u32,
+    app_bundle: &Path,
+    opener: &Path,
+) -> Result<(), &'static str> {
+    Command::new("/bin/sh")
+        .args([
+            "-c",
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.1; done\nexec \"$2\" -n \"$3\"",
+            "touchgrassbar-relaunch-helper",
+        ])
+        .arg(process_id.to_string())
+        .arg(opener)
+        .arg(app_bundle)
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "relaunch unavailable")
 }
 
 fn finish_verified_install<Guard>(
@@ -885,7 +1019,8 @@ mod tests {
     }
 
     #[test]
-    fn automatic_check_claim_is_persistent_and_manual_checks_are_independent() {
+    fn automatic_check_claim_is_hourly_persistent_and_manual_checks_are_independent() {
+        assert_eq!(AUTOMATIC_CHECK_INTERVAL_SECONDS, 60 * 60);
         let database = TestDatabase::new();
         let first = UpdatePersistence::open(Some(&database.0)).unwrap();
         assert!(first.claim_automatic_check(10_000).unwrap());
@@ -908,6 +1043,20 @@ mod tests {
                 .claim_automatic_check(10_000 + AUTOMATIC_CHECK_INTERVAL_SECONDS)
                 .unwrap()
         );
+        assert_eq!(CheckKind::Manual, CheckKind::Manual);
+    }
+
+    #[test]
+    fn disabled_automatic_checks_remain_disabled_after_restart() {
+        let database = TestDatabase::new();
+        let first = UpdatePersistence::open(Some(&database.0)).unwrap();
+        first.set_automatic_checks_enabled(false).unwrap();
+        assert!(!first.claim_automatic_check(10_000).unwrap());
+        drop(first);
+
+        let reopened = UpdatePersistence::open(Some(&database.0)).unwrap();
+        assert!(!reopened.snapshot().unwrap().automatic_checks_enabled);
+        assert!(!reopened.claim_automatic_check(20_000).unwrap());
         assert_eq!(CheckKind::Manual, CheckKind::Manual);
     }
 
@@ -941,6 +1090,7 @@ mod tests {
         assert_eq!(
             reopened.snapshot().unwrap(),
             PersistedUpdateState {
+                automatic_checks_enabled: true,
                 last_automatic_check_at: None,
                 minimum_required_version: Some("1.3.0".to_owned()),
                 offered_version: Some("1.4.0".to_owned()),
@@ -978,6 +1128,7 @@ mod tests {
         assert_eq!(
             migrated.snapshot().unwrap(),
             PersistedUpdateState {
+                automatic_checks_enabled: true,
                 last_automatic_check_at: Some(10_000),
                 minimum_required_version: None,
                 offered_version: Some("1.4.0".to_owned()),
@@ -1071,6 +1222,7 @@ mod tests {
     fn public_update_state_has_closed_failures_and_no_source_material() {
         let serialized = serde_json::to_value(UpdateStateV1 {
             contract_version: UPDATE_CONTRACT_VERSION,
+            automatic_checks_enabled: false,
             current_version: "1.2.0".to_owned(),
             online_features_paused: true,
             update: UpdateStatus::Failed {
@@ -1082,7 +1234,8 @@ mod tests {
         assert_eq!(
             serialized,
             json!({
-                "contractVersion": 1,
+                "contractVersion": 2,
+                "automaticChecksEnabled": false,
                 "currentVersion": "1.2.0",
                 "onlineFeaturesPaused": true,
                 "update": {
@@ -1180,5 +1333,50 @@ mod tests {
             *calls.lock().unwrap(),
             ["verified", "paused", "flushed", "install-failed", "resumed"]
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_relaunch_waits_for_the_old_process_before_opening_the_app() {
+        use std::{os::unix::fs::PermissionsExt, thread, time::Duration};
+
+        let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let directory =
+            std::env::temp_dir().join(format!("touchgrassbar-relaunch-{}-{id}", process::id()));
+        fs::create_dir(&directory).unwrap();
+        let opener = directory.join("record-open");
+        let marker = directory.join("opened");
+        fs::write(
+            &opener,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/opened\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&opener, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let mut old_process = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        schedule_relaunch_after_exit(
+            old_process.id(),
+            Path::new("/Applications/TouchGrassBar.app"),
+            &opener,
+        )
+        .unwrap();
+
+        thread::sleep(Duration::from_millis(150));
+        assert!(
+            !marker.exists(),
+            "the new app must wait for the old process"
+        );
+        old_process.kill().unwrap();
+        old_process.wait().unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            "-n\n/Applications/TouchGrassBar.app\n"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 }

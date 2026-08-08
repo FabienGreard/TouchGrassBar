@@ -28,7 +28,7 @@ The landing site is a static marketing and distribution surface containing produ
 
 ## Updates and recovery
 
-TouchGrassBar uses one stable update channel. It checks quietly on the first panel open, at most once in 24 hours, and also gives the Tokenmaxxer a separate **Check now** action in Settings. An available update uses the existing compact download icon in the panel header and the existing version row in Settings. Ignoring the icon leaves it available after restart. Only selecting the icon or the compact **Install & Relaunch** Settings action can download, verify, install, and immediately restart the app. TouchGrassBar does not silently install or restart.
+TouchGrassBar uses one stable update channel. When automatic checks are enabled, it checks quietly when the panel opens, at most once each hour. The Tokenmaxxer can disable automatic checks without disabling the separate **Check now** action in Settings. An available update uses the existing compact download icon in the panel header and the existing version row in Settings. Ignoring the icon leaves it available after restart. Only selecting the icon or the compact **Install & Relaunch** Settings action can download, verify, install, and immediately restart the app. TouchGrassBar does not silently install or restart.
 
 The native core owns update checks and installation. React receives only a bounded update state. After the Tauri signature is valid, the native core pauses and flushes owned work before it replaces the app. The app bundle update does not reset the Rust-owned SQLite database or macOS Keychain items.
 

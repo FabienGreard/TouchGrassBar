@@ -9,12 +9,15 @@ import type {
 } from "@/native-state/update-delivery";
 
 type TauriUpdateBindings = {
-  invoke: (command: string) => Promise<unknown>;
+  invoke: (
+    command: string,
+    args?: Record<string, unknown>,
+  ) => Promise<unknown>;
   listen: (event: string, receive: () => void) => Promise<() => void>;
 };
 
 const defaultBindings: TauriUpdateBindings = {
-  invoke: (command) => invoke<unknown>(command),
+  invoke: (command, args) => invoke<unknown>(command, args),
   listen: (event, receive) => listen(event, receive),
 };
 
@@ -22,9 +25,16 @@ async function closedInvoke(
   bindings: TauriUpdateBindings,
   command: string,
   fault: UpdatePortFaultCode,
+  args?: Record<string, unknown>,
 ): Promise<UpdatePortOutcome<unknown>> {
   try {
-    return { ok: true, value: await bindings.invoke(command) };
+    return {
+      ok: true,
+      value:
+        args === undefined
+          ? await bindings.invoke(command)
+          : await bindings.invoke(command, args),
+    };
   } catch {
     return { fault: { code: fault }, ok: false };
   }
@@ -46,10 +56,25 @@ function createTauriUpdateAdapter(
       );
       return outcome.ok ? { ok: true, value: undefined } : outcome;
     },
+    openSource: async () => {
+      const outcome = await closedInvoke(
+        bindings,
+        "open_source_repository",
+        "update-source-unavailable",
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
     read: () =>
       closedInvoke(bindings, "get_update_state", "update-state-unavailable"),
     retry: () =>
       closedInvoke(bindings, "retry_update", "update-retry-unavailable"),
+    setAutomaticChecks: (enabled) =>
+      closedInvoke(
+        bindings,
+        "set_automatic_update_checks",
+        "update-preference-unavailable",
+        { enabled },
+      ),
     subscribe: async (receive) => {
       try {
         const stop = await bindings.listen(UPDATE_STATE_CHANGED_EVENT, receive);

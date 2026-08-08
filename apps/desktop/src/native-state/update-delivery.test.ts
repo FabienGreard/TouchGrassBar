@@ -10,7 +10,8 @@ import {
 } from "@/native-state/update-delivery";
 
 const idleState = {
-  contractVersion: 1,
+  automaticChecksEnabled: true,
+  contractVersion: 2,
   currentVersion: "1.3.2",
   onlineFeaturesPaused: false,
   update: { status: "idle" },
@@ -34,8 +35,16 @@ function port(): UpdatePort & { changed: () => void } {
       ok: true as const,
       value: undefined,
     })),
+    openSource: vi.fn(async () => ({
+      ok: true as const,
+      value: undefined,
+    })),
     read: vi.fn(async () => ({ ok: true as const, value: idleState })),
     retry: vi.fn(async () => ({ ok: true as const, value: idleState })),
+    setAutomaticChecks: vi.fn(async (enabled) => ({
+      ok: true as const,
+      value: { ...idleState, automaticChecksEnabled: enabled },
+    })),
     subscribe: vi.fn(async (receive) => {
       receiveChange = receive;
       return { ok: true as const, value: () => undefined };
@@ -111,10 +120,15 @@ describe("update delivery", () => {
     expect(await delivery.install()).toBe(true);
     expect(await delivery.retry()).toBe(true);
     expect(await delivery.openLatestDmg()).toBe(true);
+    expect(await delivery.openSource()).toBe(true);
+    expect(await delivery.setAutomaticChecks(false)).toBe(true);
     expect(native.check).toHaveBeenCalledOnce();
     expect(native.install).toHaveBeenCalledOnce();
     expect(native.retry).toHaveBeenCalledOnce();
     expect(native.openLatestDmg).toHaveBeenCalledOnce();
+    expect(native.openSource).toHaveBeenCalledOnce();
+    expect(native.setAutomaticChecks).toHaveBeenCalledWith(false);
+    expect(delivery.getSnapshot().state?.automaticChecksEnabled).toBe(false);
   });
 });
 
@@ -133,6 +147,8 @@ describe("Tauri update adapter", () => {
     await adapter.install();
     await adapter.retry();
     await adapter.openLatestDmg();
+    await adapter.openSource();
+    await adapter.setAutomaticChecks(false);
     const subscription = await adapter.subscribe(receive);
 
     expect(bindings.invoke).toHaveBeenNthCalledWith(1, "get_update_state");
@@ -140,6 +156,15 @@ describe("Tauri update adapter", () => {
     expect(bindings.invoke).toHaveBeenNthCalledWith(3, "install_update");
     expect(bindings.invoke).toHaveBeenNthCalledWith(4, "retry_update");
     expect(bindings.invoke).toHaveBeenNthCalledWith(5, "open_latest_dmg");
+    expect(bindings.invoke).toHaveBeenNthCalledWith(
+      6,
+      "open_source_repository",
+    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(
+      7,
+      "set_automatic_update_checks",
+      { enabled: false },
+    );
     expect(bindings.listen).toHaveBeenCalledWith(
       "update-state-changed",
       receive,

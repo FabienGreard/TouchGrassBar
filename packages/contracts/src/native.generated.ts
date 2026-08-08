@@ -8,7 +8,7 @@ export const REVISION_NOTICE_EVENT = "sanitized-desktop-state-revision" as const
 export const SETTINGS_CONTRACT_VERSION = 4 as const;
 export const SETTINGS_NAVIGATION_EVENT = "settings-navigation-requested" as const;
 export const SETTINGS_RECOVERY_CLEAR_EVENT = "settings-recovery-clear-requested" as const;
-export const UPDATE_CONTRACT_VERSION = 1 as const;
+export const UPDATE_CONTRACT_VERSION = 2 as const;
 export const UPDATE_STATE_CHANGED_EVENT = "update-state-changed" as const;
 
 export const apiEquivalentCostQualitySchema = z.enum(["reconciled","modeled","local-only"]);
@@ -52,7 +52,7 @@ export const refreshReceiptSchema = z.object({ accepted: z.boolean() }).strict()
 export const revisionNoticeSchema = z.object({ revision: z.string().regex(/^[1-9]\d*$/) }).strict();
 export const settingsNavigationRequestSchema = z.object({ section: settingsSectionSchema }).strict();
 export const settingsStateSchema = z.object({ contractVersion: z.literal(4), section: settingsSectionSchema, launchAtLogin: launchAtLoginStateSchema, profileProvisioning: profileProvisioningStatusSchema, displayName: z.string().nullable().optional(), recoveryKeySuffix: z.string().regex(new RegExp("^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{3}$")).nullable().optional(), touchGrassId: z.string().nullable().optional(), providers: z.array(settingsProviderSchema).max(16) }).strict();
-export const updateStateSchema = z.object({ contractVersion: z.literal(1), currentVersion: z.string().min(1).max(64), onlineFeaturesPaused: z.boolean(), update: updateStatusSchema }).strict();
+export const updateStateSchema = z.object({ contractVersion: z.literal(2), automaticChecksEnabled: z.boolean(), currentVersion: z.string().min(1).max(64), onlineFeaturesPaused: z.boolean(), update: updateStatusSchema }).strict();
 
 export type ApiEquivalentCostQuality = z.infer<typeof apiEquivalentCostQualitySchema>;
 export type BootstrapStatus = z.infer<typeof bootstrapStatusSchema>;

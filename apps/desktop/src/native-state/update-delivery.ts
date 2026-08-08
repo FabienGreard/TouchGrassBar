@@ -7,7 +7,9 @@ type UpdatePortFaultCode =
   | "update-check-unavailable"
   | "update-download-unavailable"
   | "update-install-unavailable"
+  | "update-preference-unavailable"
   | "update-retry-unavailable"
+  | "update-source-unavailable"
   | "update-state-stream-unavailable"
   | "update-state-unavailable";
 
@@ -19,8 +21,12 @@ type UpdatePort = {
   check: () => Promise<UpdatePortOutcome<unknown>>;
   install: () => Promise<UpdatePortOutcome<unknown>>;
   openLatestDmg: () => Promise<UpdatePortOutcome<void>>;
+  openSource: () => Promise<UpdatePortOutcome<void>>;
   read: () => Promise<UpdatePortOutcome<unknown>>;
   retry: () => Promise<UpdatePortOutcome<unknown>>;
+  setAutomaticChecks: (
+    enabled: boolean,
+  ) => Promise<UpdatePortOutcome<unknown>>;
   subscribe: (
     receive: () => void,
   ) => Promise<UpdatePortOutcome<() => void>>;
@@ -94,8 +100,11 @@ function createUpdateDelivery(port: UpdatePort) {
     getSnapshot: () => current,
     install: () => run(port.install),
     openLatestDmg: async () => (await port.openLatestDmg()).ok,
+    openSource: async () => (await port.openSource()).ok,
     read,
     retry: () => run(port.retry),
+    setAutomaticChecks: (enabled: boolean) =>
+      run(() => port.setAutomaticChecks(enabled)),
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);

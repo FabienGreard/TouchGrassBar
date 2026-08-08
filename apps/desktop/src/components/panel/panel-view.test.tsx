@@ -195,7 +195,8 @@ describe("panel states", () => {
         refreshing={false}
         state={currentState}
         updateState={{
-          contractVersion: 1,
+          automaticChecksEnabled: true,
+          contractVersion: 2,
           currentVersion: "1.3.2",
           onlineFeaturesPaused: false,
           update: {
@@ -222,7 +223,8 @@ describe("panel states", () => {
         refreshing={false}
         state={currentState}
         updateState={{
-          contractVersion: 1,
+          automaticChecksEnabled: true,
+          contractVersion: 2,
           currentVersion: "1.3.2",
           onlineFeaturesPaused: true,
           update: {
