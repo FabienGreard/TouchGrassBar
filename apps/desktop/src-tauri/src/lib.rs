@@ -1,4 +1,5 @@
 mod daily_usage_aggregate;
+mod database;
 #[cfg(debug_assertions)]
 mod dev_instance;
 pub mod lifecycle;
@@ -12,14 +13,16 @@ pub mod updater;
 
 use std::{
     env,
-    path::Path,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::{Duration, Instant},
+    time::Instant,
 };
+
+#[cfg(any(target_os = "macos", test))]
+use std::time::Duration;
 
 use lifecycle::{
     BootstrapStateV3, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
@@ -31,9 +34,11 @@ use sanitized::{
     NativeCore, PANEL_ADD_TOKENMAXXER_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
     RevisionNotice, SanitizedDesktopStateV3, SanitizedProfileOutcome,
 };
+#[cfg(target_os = "macos")]
+use tauri::ActivationPolicy;
 use tauri::{
-    ActivationPolicy, AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    Position, Rect, RunEvent, Size, State, WebviewWindow,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Rect,
+    RunEvent, Size, State, WebviewWindow,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -49,15 +54,16 @@ const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 
 fn production_native_core(
-    database_path: Option<&Path>,
+    database: Option<&database::PreparedDatabase>,
     enablement: Arc<dyn providers::ProviderEnablementPolicy>,
 ) -> NativeCore {
-    database_path.map_or_else(
-        || NativeCore::unavailable_with_provider_enablement(Arc::clone(&enablement)),
-        |path| {
-            NativeCore::open_with_provider_enablement(path, Arc::clone(&enablement)).unwrap_or_else(
-                |_| NativeCore::unavailable_with_provider_enablement(Arc::clone(&enablement)),
-            )
+    database.map_or_else(
+        || NativeCore::no_io_unavailable_with_provider_enablement(Arc::clone(&enablement)),
+        |database| {
+            NativeCore::open_with_provider_enablement(database.path(), Arc::clone(&enablement))
+                .unwrap_or_else(|_| {
+                    NativeCore::unavailable_with_provider_enablement(Arc::clone(&enablement))
+                })
         },
     )
 }
@@ -115,6 +121,7 @@ pub(crate) fn install_tls_crypto_provider() {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn native_https_client() -> reqwest::blocking::Client {
     install_tls_crypto_provider();
     reqwest::blocking::Client::new()
@@ -127,6 +134,7 @@ struct ProfileRetryMailbox {
 }
 
 impl ProfileRetryMailbox {
+    #[cfg(target_os = "macos")]
     fn new() -> (Self, mpsc::Receiver<()>) {
         let (wake, receiver) = mpsc::sync_channel(1);
         (
@@ -146,6 +154,7 @@ impl ProfileRetryMailbox {
         let _ = self.wake.try_send(());
     }
 
+    #[cfg(target_os = "macos")]
     fn take(&self) -> bool {
         self.pending
             .lock()
@@ -278,6 +287,17 @@ impl ProfileRuntime {
                 }
             })?;
         Ok(runtime)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn start(
+        _lifecycle: DesktopLifecycle,
+        _app: AppHandle,
+        _online_gate: OnlineFeatureGate,
+    ) -> std::io::Result<Self> {
+        Err(std::io::Error::other(
+            "Profile runtime is available only on macOS",
+        ))
     }
 
     fn trigger(&self) {
@@ -1009,7 +1029,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
         ));
-    let mut app = builder
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             check_for_updates,
             complete_bootstrap,
@@ -1051,9 +1071,19 @@ pub fn run() {
                     .ok()
                     .map(|()| directory.join("touchgrassbar.sqlite3"))
             });
-            let lifecycle = database_path
-                .as_deref()
-                .and_then(|path| DesktopLifecycle::open(path).ok())
+            let prepared_database =
+                database_path
+                    .as_deref()
+                    .and_then(|path| match database::prepare(path) {
+                        Ok(database) => Some(database),
+                        Err(error) => {
+                            eprintln!("database-open:{}:{}", error.diagnostic(), error.detail());
+                            None
+                        }
+                    });
+            let lifecycle = prepared_database
+                .as_ref()
+                .and_then(|database| DesktopLifecycle::open(database.path()).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
             let provider_enablement: Arc<dyn providers::ProviderEnablementPolicy> =
                 Arc::new(lifecycle.clone());
@@ -1061,11 +1091,13 @@ pub fn run() {
             let core = if physical_menu_bar_fixture.is_some() {
                 NativeCore::no_io_unavailable()
             } else {
-                production_native_core(database_path.as_deref(), Arc::clone(&provider_enablement))
+                production_native_core(prepared_database.as_ref(), Arc::clone(&provider_enablement))
             };
             #[cfg(not(debug_assertions))]
-            let core =
-                production_native_core(database_path.as_deref(), Arc::clone(&provider_enablement));
+            let core = production_native_core(
+                prepared_database.as_ref(),
+                Arc::clone(&provider_enablement),
+            );
             let show_bootstrap = should_show_bootstrap_on_start(
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,
@@ -1073,19 +1105,26 @@ pub fn run() {
             app.manage(lifecycle.clone());
             app.manage(core.clone());
             app.manage(PanelActionState::default());
+            if let Some(database) = prepared_database.clone() {
+                app.manage(database);
+            }
             #[cfg(debug_assertions)]
             if let Some(fixture) = physical_menu_bar_fixture.clone() {
                 app.manage(fixture);
             }
 
-            let online_gate = OnlineFeatureGate::default();
+            let online_gate = if prepared_database.is_some() {
+                OnlineFeatureGate::default()
+            } else {
+                OnlineFeatureGate::paused()
+            };
             #[cfg(debug_assertions)]
             let updater_available = development_instance.is_none();
             #[cfg(not(debug_assertions))]
             let updater_available = true;
             app.manage(UpdateRuntime::open(
                 app.handle().clone(),
-                database_path.as_deref(),
+                prepared_database.as_ref(),
                 online_gate.clone(),
                 updater_available,
             ));
@@ -1274,6 +1313,8 @@ pub fn run() {
         .expect("failed to build TouchGrassBar");
 
     #[cfg(target_os = "macos")]
+    let mut app = app;
+    #[cfg(target_os = "macos")]
     {
         app.set_activation_policy(ActivationPolicy::Accessory);
         app.set_dock_visibility(false);
@@ -1302,6 +1343,19 @@ mod tests {
     fn native_tls_provider_supports_https_clients() {
         let _ = native_https_client();
         let _ = rustls::ClientConfig::builder();
+    }
+
+    #[test]
+    fn native_core_without_prepared_database_rejects_refresh_work() {
+        let enablement: Arc<dyn providers::ProviderEnablementPolicy> =
+            Arc::new(DesktopLifecycle::unavailable());
+        let core = production_native_core(None, enablement);
+
+        assert_eq!(
+            core.request_refresh(RefreshSource::Launch).unwrap_err(),
+            "refresh coordinator unavailable"
+        );
+        core.shutdown();
     }
 
     fn native_config() -> serde_json::Value {

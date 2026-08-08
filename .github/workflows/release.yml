@@ -67,6 +67,20 @@ jobs:
           shared-key: desktop-native-release
           workspaces: apps/desktop/src-tauri -> target
           save-if: false
+      - name: Verify every released database fixture
+        run: |
+          set -euo pipefail
+          tests="$(cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- --list)"
+          if ! grep -q '^database::release_compatibility::' <<< "$tests"; then
+            echo 'The database compatibility release test is absent.' >&2
+            exit 1
+          fi
+          cargo test \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml \
+            --lib \
+            'database::release_compatibility::'
+      - name: Record database compatibility evidence
+        run: bun scripts/release-contract.ts database-evidence
       - name: Record presence-only release configuration
         env:
           RELEASE_HAS_APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER != '' }}
@@ -139,6 +153,7 @@ jobs:
             "release-output/TouchGrassBar_${version}_aarch64.app.tar.gz.sig" \
             "release-output/latest.json" \
             "release-output/SHA256SUMS" \
+            "release-output/database-compatibility-${version}.json" \
             "release-output/release-trust-${version}.json" \
             --draft \
             --latest=false \

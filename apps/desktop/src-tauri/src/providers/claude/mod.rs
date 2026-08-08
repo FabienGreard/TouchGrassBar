@@ -7,6 +7,11 @@ mod cli_probe;
 mod pricing;
 mod usage;
 
+pub(crate) use usage::{
+    USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION,
+    prepare_database as prepare_usage_database, usage_index_schema_version,
+};
+
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

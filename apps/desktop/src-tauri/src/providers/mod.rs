@@ -25,6 +25,24 @@ use time::OffsetDateTime;
 pub use registry::{CodingProvider, ProviderPresenceStatus};
 pub(crate) use registry::{PROVIDER_REGISTRY, detect_provider_presence, provider_descriptor};
 
+pub(crate) const CODEX_USAGE_SCHEMA_MODULE: &str = codex::USAGE_INDEX_SCHEMA_MODULE;
+pub(crate) const CODEX_USAGE_SCHEMA_VERSION: i64 = codex::USAGE_INDEX_SCHEMA_VERSION;
+pub(crate) const CLAUDE_USAGE_SCHEMA_MODULE: &str = claude::USAGE_INDEX_SCHEMA_MODULE;
+pub(crate) const CLAUDE_USAGE_SCHEMA_VERSION: i64 = claude::USAGE_INDEX_SCHEMA_VERSION;
+
+pub(crate) fn prepare_usage_databases(path: &Path) -> Result<(), ()> {
+    codex::prepare_usage_database(path)?;
+    claude::prepare_usage_database(path)
+}
+
+pub(crate) fn codex_usage_schema_version(connection: &rusqlite::Connection) -> Result<i64, ()> {
+    codex::usage_index_schema_version(connection)
+}
+
+pub(crate) fn claude_usage_schema_version(connection: &rusqlite::Connection) -> Result<i64, ()> {
+    claude::usage_index_schema_version(connection)
+}
+
 pub(crate) trait ProviderEnablementPolicy: Send + Sync {
     fn is_provider_enabled(&self, provider: CodingProvider) -> bool;
 }

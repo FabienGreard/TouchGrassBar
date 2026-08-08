@@ -1,3 +1,5 @@
+#![cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+
 use std::{
     collections::BTreeMap,
     fmt,
@@ -36,6 +38,7 @@ fn keychain_configuration(development_service: Option<&'static str>) -> Keychain
     }
 }
 
+#[cfg(target_os = "macos")]
 fn build_keychain_configuration() -> KeychainConfiguration {
     keychain_configuration(option_env!("TOUCHGRASS_DEV_KEYCHAIN_SERVICE"))
 }
@@ -490,6 +493,7 @@ pub(crate) struct HttpProfileTransport {
 }
 
 impl HttpProfileTransport {
+    #[cfg(target_os = "macos")]
     pub(crate) fn from_build_configuration() -> Self {
         Self {
             auth_site_url: option_env!("CONVEX_SITE_URL").filter(|value| !value.is_empty()),
