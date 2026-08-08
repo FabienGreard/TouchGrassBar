@@ -1,7 +1,7 @@
-# Issue 26: Retire Legacy Active Mac Authority
+# Issue 67: Retire Legacy Active Mac Authority
 
 - **Status:** planned
-- **Owner issue:** [#26 Synchronize today's Daily Usage Aggregates](https://github.com/FabienGreard/TouchGrassBar/issues/26)
+- **Owner issue:** [#67 Retire legacy Active Mac authority](https://github.com/FabienGreard/TouchGrassBar/issues/67)
 - **Implementation:** [PR #65](https://github.com/FabienGreard/TouchGrassBar/pull/65)
 - **Migration:** `internal/migrations:retireLegacyActiveDeviceAuthority`
 
@@ -65,5 +65,5 @@ After every supported deployment satisfies the verification invariants:
 ## Exit condition
 
 Delete this entry after the migration has completed on every supported
-deployment, sanitized evidence is linked from issue #26, all cleanup targets
+deployment, sanitized evidence is linked from issue #67, all cleanup targets
 are merged, and the post-cleanup schema contains no legacy installation ID.

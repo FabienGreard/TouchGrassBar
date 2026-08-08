@@ -252,6 +252,35 @@ test("both providers commit atomically and retries report exact revision outcome
     beforeRetry,
   );
 
+  const divergentSnapshots = snapshots.map((snapshot) =>
+    Object.assign({}, snapshot, {
+      observedTokens: snapshot.observedTokens + 1,
+    }),
+  );
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: divergentSnapshots,
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "stale",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 1,
+    },
+    {
+      outcome: "stale",
+      provider: "claude",
+      rankingDay: TODAY,
+      revision: 1,
+    },
+  ]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
+    beforeRetry,
+  );
+
   await authenticated.mutation(api.sync.dailyUsage, {
     activeMacGeneration: 1,
     installationCredential: credential,
@@ -302,6 +331,14 @@ test("provider settings exclude accepted usage and restore retained history", as
       revision: 1,
     }),
   ).resolves.toEqual({ outcome: "idempotent", revision: 1 });
+  await expect(
+    authenticated.mutation(api.sync.providerSettings, {
+      activeMacGeneration: 1,
+      enabledProviders: ["codex", "claude"],
+      installationCredential: credential,
+      revision: 1,
+    }),
+  ).resolves.toEqual({ outcome: "stale", revision: 1 });
 
   const disabled = await t.run(async (ctx) => ({
     daily: await ctx.db.query("userDailyUsage").collect(),

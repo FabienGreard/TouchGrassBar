@@ -1321,9 +1321,10 @@ pub(crate) fn parse_provider_settings_acknowledgement(
 /// Apply one complete success value to the exact submitted batch.
 ///
 /// A committed or idempotent acknowledgement must name the submitted
-/// revision. A stale acknowledgement must name a newer server revision. The
-/// delete always uses the submitted revision. Therefore, a late response
-/// cannot remove a newer local revision.
+/// revision. A stale acknowledgement must name the same or a newer server
+/// revision. The equal case reports a divergent payload after local state was
+/// rebuilt. The delete always uses the submitted revision. Therefore, a late
+/// response cannot remove a newer local revision.
 pub(crate) fn apply_usage_acknowledgements(
     transaction: &Transaction<'_>,
     batch: &PendingUsageBatch,
@@ -1361,7 +1362,7 @@ pub(crate) fn apply_usage_acknowledgements(
             AcknowledgementOutcome::Committed | AcknowledgementOutcome::Idempotent => {
                 acknowledgement.revision == submitted_revision
             }
-            AcknowledgementOutcome::Stale => acknowledgement.revision > submitted_revision,
+            AcknowledgementOutcome::Stale => acknowledgement.revision >= submitted_revision,
         };
         if !revision_is_valid {
             return Err(UsageSyncError::INVALID_RESPONSE);
@@ -1436,7 +1437,7 @@ pub(crate) fn apply_provider_settings_acknowledgement(
             Ok(false)
         }
         AcknowledgementOutcome::Stale => {
-            if acknowledgement.revision <= submitted_revision {
+            if acknowledgement.revision < submitted_revision {
                 return Err(UsageSyncError::INVALID_RESPONSE);
             }
             let rebased_revision = acknowledgement
@@ -3025,6 +3026,37 @@ mod tests {
     }
 
     #[test]
+    fn equal_revision_conflict_requeues_both_providers_at_the_next_revision() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            queue_daily_aggregate(&transaction, 1, aggregate(provider, 10, 1000)).unwrap();
+        }
+        transaction.commit().unwrap();
+        let sent = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        let acknowledgements = sent
+            .snapshots()
+            .iter()
+            .map(|snapshot| acknowledgement(snapshot, AcknowledgementOutcome::Stale, 1))
+            .collect::<Vec<_>>();
+
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &sent, &acknowledgements).unwrap(),
+            2
+        );
+        transaction.commit().unwrap();
+
+        let pending = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        assert!(
+            pending
+                .snapshots()
+                .iter()
+                .all(|snapshot| { snapshot.revision == 2 && snapshot.observed_tokens == 10 })
+        );
+    }
+
+    #[test]
     fn stale_acknowledgement_rebases_a_concurrent_newer_local_row() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
@@ -3104,7 +3136,7 @@ mod tests {
                 &transaction,
                 &second,
                 Some(&ProviderSettingsAcknowledgement {
-                    revision: 4,
+                    revision: 2,
                     outcome: AcknowledgementOutcome::Stale,
                 }),
             )
@@ -3113,7 +3145,7 @@ mod tests {
         transaction.commit().unwrap();
         let rebased = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
         let settings = rebased.provider_settings().unwrap();
-        assert_eq!(settings.revision(), 5);
+        assert_eq!(settings.revision(), 3);
         assert_eq!(settings.enabled_providers(), &[CodingProvider::Codex]);
 
         let transaction = connection.transaction().unwrap();
@@ -3136,7 +3168,7 @@ mod tests {
                 .provider_settings()
                 .unwrap()
                 .revision(),
-            5
+            3
         );
     }
 

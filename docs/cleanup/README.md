@@ -56,7 +56,7 @@ complete.
 
 ## Active entries
 
-- [Issue 26: retire legacy Active Mac authority](./issue-26-retire-legacy-active-device-authority.md)
+- [Issue 67: retire legacy Active Mac authority](./issue-67-retire-legacy-active-device-authority.md)
 
 ## Entry template
 

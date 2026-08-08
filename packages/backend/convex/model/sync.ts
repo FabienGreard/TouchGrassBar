@@ -106,6 +106,37 @@ function validateBatch(snapshots: UsageSnapshot[], today: string, now: number) {
   }
 }
 
+function sameApiEquivalentCost(
+  left: UsageSnapshot["apiEquivalentCost"],
+  right: UsageSnapshot["apiEquivalentCost"],
+) {
+  if (left === null || right === null) return left === right;
+  return (
+    left.coveragePercent === right.coveragePercent &&
+    left.micros === right.micros &&
+    left.pricingBasis === right.pricingBasis &&
+    left.quality === right.quality
+  );
+}
+
+function sameUsageSnapshot(
+  existing: Doc<"usageBuckets">,
+  snapshot: UsageSnapshot,
+) {
+  return (
+    existing.provider === snapshot.provider &&
+    existing.rankingDay === snapshot.rankingDay &&
+    existing.revision === snapshot.revision &&
+    existing.observedTokens === snapshot.observedTokens &&
+    sameApiEquivalentCost(existing.apiEquivalentCost, snapshot.apiEquivalentCost) &&
+    existing.coverage === snapshot.coverage &&
+    existing.evidenceBasis === snapshot.evidenceBasis &&
+    existing.correctionReason === snapshot.correctionReason &&
+    existing.correctionRevision === snapshot.correctionRevision &&
+    existing.observedAt === snapshot.observedAt
+  );
+}
+
 function snapshotCorrectionLineage(
   snapshot: UsageSnapshot,
 ): CorrectionLineage | null {
@@ -247,7 +278,9 @@ async function planSnapshots(
     if (existing && snapshot.revision === existing.revision) {
       plans.push({
         acknowledgement: {
-          outcome: "idempotent",
+          outcome: sameUsageSnapshot(existing, snapshot)
+            ? "idempotent"
+            : "stale",
           provider: snapshot.provider,
           rankingDay: snapshot.rankingDay,
           revision: existing.revision,
@@ -406,7 +439,7 @@ export async function applyProviderSettings(
       existing.claudeEnabled !== settings.claudeEnabled ||
       existing.codexEnabled !== settings.codexEnabled
     ) {
-      throw new Error("provider settings revision has different values");
+      return { outcome: "stale", revision: existing.revision };
     }
     return { outcome: "idempotent", revision };
   }
