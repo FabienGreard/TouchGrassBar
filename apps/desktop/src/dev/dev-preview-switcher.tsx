@@ -26,6 +26,10 @@ import type { DevInstance } from "@/dev/dev-instance";
 type PreviewSurface = "onboarding" | "panel" | "settings";
 
 const providerPreviewStates = codingProviderAccessStates;
+const settingsProviderPreviewStates = [
+  ...codingProviderAccessStates,
+  { key: "excluded", label: "Excluded" },
+] as const;
 
 type PreviewPanelMode = "expanded" | "minimized";
 type PreviewPanelPosition = { left: number; top: number } | null;
@@ -388,6 +392,7 @@ function DevPreviewSwitcher({
   onboardingCodexPreviewState,
   onboardingProviderPreviewState,
   onboardingStep,
+  settingsProviderEnabled = true,
   settingsProviderPreviewState,
 }: {
   activeFixture: BrowserFixtureName;
@@ -396,11 +401,14 @@ function DevPreviewSwitcher({
   onboardingCodexPreviewState?: CodingProviderAccessState | undefined;
   onboardingProviderPreviewState?: CodingProviderAccessState | undefined;
   onboardingStep?: OnboardingStep | undefined;
+  settingsProviderEnabled?: boolean | undefined;
   settingsProviderPreviewState?: CodingProviderAccessState | undefined;
 }) {
   const fixture = encodeURIComponent(activeFixture);
   const settingsProviderState = settingsProviderPreviewState
-    ? `&providerState=${encodeURIComponent(settingsProviderPreviewState)}`
+    ? `&providerState=${encodeURIComponent(
+        settingsProviderEnabled ? settingsProviderPreviewState : "excluded",
+      )}`
     : "";
   const onboardingQuery =
     onboardingCodexPreviewState &&
@@ -409,7 +417,7 @@ function DevPreviewSwitcher({
       ? `&onboardingStep=${encodeURIComponent(onboardingStep)}&codexState=${encodeURIComponent(onboardingCodexPreviewState)}&providerState=${encodeURIComponent(onboardingProviderPreviewState)}`
       : "";
   const onboardingStateHref = ({
-    codexState = onboardingCodexPreviewState ?? "ready",
+    codexState = onboardingCodexPreviewState ?? "detected",
     providerState = onboardingProviderPreviewState ?? "not-installed",
     step = onboardingStep ?? "providers",
   }: {
@@ -474,9 +482,14 @@ function DevPreviewSwitcher({
           aria-label="Claude provider preview states"
           label="Claude"
         >
-          {providerPreviewStates.map((state) => (
+          {settingsProviderPreviewStates.map((state) => (
             <PreviewSwitcherOption
-              active={settingsProviderPreviewState === state.key}
+              active={
+                state.key === "excluded"
+                  ? !settingsProviderEnabled
+                  : settingsProviderEnabled &&
+                    settingsProviderPreviewState === state.key
+              }
               href={`?window=settings&fixture=${fixture}&providerState=${encodeURIComponent(state.key)}#settings-providers`}
               key={state.key}
             >

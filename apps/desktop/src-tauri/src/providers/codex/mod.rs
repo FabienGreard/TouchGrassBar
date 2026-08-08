@@ -25,7 +25,7 @@ use crate::providers::process::{
 };
 use crate::sanitized::{
     Clock, CodingProvider, ProviderPresentation, ProviderSnapshot, QuotaLane, RefreshAttempt,
-    RefreshFailure, RefreshTrigger, UsagePeriods,
+    RefreshFailure, RefreshTrigger, TopModelUsage, UsagePeriods,
 };
 
 const INITIALIZE_REQUEST_ID: i64 = 1;
@@ -541,6 +541,7 @@ impl CodexProviderObservationAdapter {
     fn update_usage_projection(
         &self,
         usage: &mut UsagePeriods,
+        top_model_usage: &mut Option<TopModelUsage>,
         account: Option<&CachedAccountUsageObservation>,
         observed_at: OffsetDateTime,
     ) -> bool {
@@ -557,6 +558,9 @@ impl CodexProviderObservationAdapter {
         );
         let previous = usage.clone();
         *usage = preserve_best_known_costs(projected, &previous);
+        if let Some(local_usage) = local_usage {
+            *top_model_usage = local_usage.top_model_usage;
+        }
         let published = &*usage;
         let cost_available = |total: &crate::sanitized::UsageTotal| {
             matches!(
@@ -609,6 +613,13 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
         CodingProvider::Codex
     }
 
+    fn reset_after_cancellation(&self) {
+        self.session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     fn install_refresh_trigger(&self, trigger: RefreshTrigger) {
         *self
             .refresh_trigger
@@ -624,6 +635,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
         let mut provider_observation = ProviderObservation {
             quota: cached.quota.clone(),
             usage: cached.usage.clone(),
+            top_model_usage: cached.top_model_usage.clone(),
         };
         if attempt.is_local_usage_only() {
             let observed_at = self.clock.now();
@@ -631,6 +643,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
             attempt.remaining()?;
             self.update_usage_projection(
                 &mut provider_observation.usage,
+                &mut provider_observation.top_model_usage,
                 account.as_ref(),
                 observed_at,
             );
@@ -681,6 +694,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
                 attempt.remaining()?;
                 self.update_usage_projection(
                     &mut provider_observation.usage,
+                    &mut provider_observation.top_model_usage,
                     account.as_ref(),
                     observed_at,
                 );
@@ -706,6 +720,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
         attempt.remaining()?;
         if self.update_usage_projection(
             &mut provider_observation.usage,
+            &mut provider_observation.top_model_usage,
             account_usage.as_ref(),
             observed_at,
         ) {
@@ -1145,6 +1160,54 @@ mod tests {
             self.reads += 1;
             Ok(self.observation.clone())
         }
+    }
+
+    #[test]
+    fn provider_cancellation_drops_the_retained_session_before_the_next_attempt() {
+        let processes = ProviderProcessSupervisor::default();
+        let mut command = ProviderCommand::new("/bin/sh");
+        command.args(["-c", "sleep 30"]);
+        let process = processes
+            .spawn_piped(
+                command,
+                ProviderOutputMode::Lines {
+                    max_line_bytes: 1024,
+                    max_buffered_bytes: 2048,
+                },
+                None,
+            )
+            .expect("retained app-server process");
+        let adapter = Arc::new(CodexProviderObservationAdapter::production(
+            Arc::new(FixedClock(observed_at())),
+            None,
+            processes.clone(),
+        ));
+        *adapter
+            .session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CodexAppServerSession {
+            process,
+            next_request_id: INITIALIZE_REQUEST_ID + 1,
+            observation: None,
+        });
+        let coordinator = crate::providers::ProviderObservationCoordinator::with_processes(
+            vec![adapter.clone()],
+            processes,
+        );
+
+        crate::sanitized::SnapshotRefreshAdapter::cancel_provider(
+            &coordinator,
+            CodingProvider::Codex,
+        );
+
+        assert!(
+            adapter
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none(),
+            "the next refresh must create a new app-server session"
+        );
     }
 
     #[test]

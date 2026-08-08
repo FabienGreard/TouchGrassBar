@@ -101,12 +101,17 @@ describe("public contracts", () => {
       providers,
     } as const;
     const settings = {
-      contractVersion: 3,
+      contractVersion: 4,
       displayName: "Fabien",
       launchAtLogin: { availability: "available", enabled: true },
       recoveryKeySuffix: "K9m",
       profileProvisioning: "profile-pending",
-      providers,
+      providers: providers.map((provider) => ({
+        displayName: provider.displayName,
+        enabled: true,
+        provider: provider.provider,
+        status: provider.status,
+      })),
       section: "profile",
     } as const;
 

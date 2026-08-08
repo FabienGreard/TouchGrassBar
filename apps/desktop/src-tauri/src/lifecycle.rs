@@ -8,15 +8,18 @@ use rusqlite::{Connection, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
 
-use crate::providers::{CodingProvider, PROVIDER_REGISTRY, detect_provider_presence};
+use crate::providers::{
+    CodingProvider, PROVIDER_REGISTRY, ProviderEnablementPolicy, detect_provider_presence,
+};
 use crate::sanitized::SanitizedProfileOutcome;
 
 pub use crate::providers::ProviderPresenceStatus;
 
 pub const LIFECYCLE_CONTRACT_VERSION: u8 = 3;
+pub const SETTINGS_CONTRACT_VERSION: u8 = 4;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
 pub const SETTINGS_RECOVERY_CLEAR_EVENT: &str = "settings-recovery-clear-requested";
-const DATABASE_SCHEMA_VERSION: i64 = 4;
+const DATABASE_SCHEMA_VERSION: i64 = 5;
 const PUBLIC_BACKFILL_WINDOW_DAYS: u8 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -90,6 +93,16 @@ pub struct ProviderPresence {
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SettingsProvider {
+    pub provider: CodingProvider,
+    #[schemars(length(min = 1, max = 40))]
+    pub display_name: String,
+    pub status: ProviderPresenceStatus,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BootstrapStateV3 {
     pub contract_version: u8,
     pub bootstrap: BootstrapStatus,
@@ -103,7 +116,7 @@ pub struct BootstrapStateV3 {
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SettingsStateV3 {
+pub struct SettingsStateV4 {
     pub contract_version: u8,
     pub section: SettingsSection,
     pub launch_at_login: LaunchAtLoginState,
@@ -115,7 +128,7 @@ pub struct SettingsStateV3 {
     pub recovery_key_suffix: Option<String>,
     pub touch_grass_id: Option<String>,
     #[schemars(length(max = 16))]
-    pub providers: Vec<ProviderPresence>,
+    pub providers: Vec<SettingsProvider>,
 }
 
 #[derive(Clone, Copy, Debug, JsonSchema, Serialize)]
@@ -304,6 +317,24 @@ impl SqliteLifecycleStore {
                      UPDATE lifecycle_state
                      SET recovery_disclosure_pending = 0;
                      PRAGMA user_version = 4;
+                     COMMIT;",
+                )
+                .map_err(|_| "lifecycle persistence unavailable")?;
+        }
+        if version <= 4 {
+            if version == 4 {
+                Self::backup_before_migration(connection, path, version)?;
+            }
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     CREATE TABLE provider_settings (
+                       provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude')),
+                       enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
+                     );
+                     INSERT INTO provider_settings (provider, enabled)
+                     VALUES ('codex', 1), ('claude', 1);
+                     PRAGMA user_version = 5;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
@@ -522,6 +553,46 @@ impl SqliteLifecycleStore {
             .execute_batch("PRAGMA wal_checkpoint(FULL);")
             .map_err(|_| "lifecycle persistence unavailable")
     }
+
+    fn provider_enabled(&self, provider: CodingProvider) -> Result<bool, &'static str> {
+        let provider = provider_storage_key(provider);
+        self.connection
+            .lock()
+            .map_err(|_| "lifecycle persistence unavailable")?
+            .query_row(
+                "SELECT enabled FROM provider_settings WHERE provider = ?1",
+                [provider],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|enabled| enabled == 1)
+            .map_err(|_| "lifecycle persistence unavailable")
+    }
+
+    fn set_provider_enabled(
+        &self,
+        provider: CodingProvider,
+        enabled: bool,
+    ) -> Result<(), &'static str> {
+        let updated = self
+            .connection
+            .lock()
+            .map_err(|_| "lifecycle persistence unavailable")?
+            .execute(
+                "UPDATE provider_settings SET enabled = ?1 WHERE provider = ?2",
+                params![i64::from(enabled), provider_storage_key(provider)],
+            )
+            .map_err(|_| "lifecycle persistence unavailable")?;
+        (updated == 1)
+            .then_some(())
+            .ok_or("lifecycle persistence unavailable")
+    }
+}
+
+fn provider_storage_key(provider: CodingProvider) -> &'static str {
+    match provider {
+        CodingProvider::Codex => "codex",
+        CodingProvider::Claude => "claude",
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -616,6 +687,18 @@ impl DesktopLifecycle {
             .collect()
     }
 
+    fn settings_providers(&self) -> Vec<SettingsProvider> {
+        PROVIDER_REGISTRY
+            .iter()
+            .map(|descriptor| SettingsProvider {
+                provider: descriptor.provider,
+                display_name: descriptor.display_name.to_owned(),
+                status: self.inner.detector.detect(descriptor.provider),
+                enabled: self.is_provider_enabled(descriptor.provider),
+            })
+            .collect()
+    }
+
     pub fn should_show_bootstrap(&self) -> bool {
         self.record()
             .map(|record| record.bootstrap == BootstrapStatus::Required)
@@ -705,19 +788,37 @@ impl DesktopLifecycle {
         }
     }
 
-    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV3 {
+    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV4 {
         let record = self
             .record()
             .unwrap_or_else(|_| LifecycleRecord::required());
-        SettingsStateV3 {
-            contract_version: LIFECYCLE_CONTRACT_VERSION,
+        SettingsStateV4 {
+            contract_version: SETTINGS_CONTRACT_VERSION,
             section: self.current_settings_section(),
             launch_at_login,
             profile_provisioning: record.profile_provisioning,
             display_name: record.display_name,
             recovery_key_suffix: None,
             touch_grass_id: record.touch_grass_id,
-            providers: self.providers(),
+            providers: self.settings_providers(),
+        }
+    }
+
+    pub fn set_provider_enabled(
+        &self,
+        provider: CodingProvider,
+        enabled: bool,
+    ) -> Result<(), &'static str> {
+        match &self.inner.store {
+            LifecycleStore::Persistent(store) => store.set_provider_enabled(provider, enabled),
+            LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
+        }
+    }
+
+    pub(crate) fn is_provider_enabled(&self, provider: CodingProvider) -> bool {
+        match &self.inner.store {
+            LifecycleStore::Persistent(store) => store.provider_enabled(provider).unwrap_or(false),
+            LifecycleStore::Unavailable => false,
         }
     }
 
@@ -757,12 +858,18 @@ impl DesktopLifecycle {
     }
 }
 
+impl ProviderEnablementPolicy for DesktopLifecycle {
+    fn is_provider_enabled(&self, provider: CodingProvider) -> bool {
+        DesktopLifecycle::is_provider_enabled(self, provider)
+    }
+}
+
 pub fn bootstrap_state_schema() -> Schema {
     schema_for!(BootstrapStateV3)
 }
 
 pub fn settings_state_schema() -> Schema {
-    schema_for!(SettingsStateV3)
+    schema_for!(SettingsStateV4)
 }
 
 pub fn settings_navigation_schema() -> Schema {
@@ -810,6 +917,10 @@ mod tests {
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v1.partial"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v2"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v2.partial"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v3"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v3.partial"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v4"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v4.partial"));
         }
     }
 
@@ -1032,6 +1143,108 @@ mod tests {
                 ProviderPresenceStatus::NotDetected
             ]
         );
+    }
+
+    #[test]
+    fn provider_settings_default_to_enabled_and_persist_each_choice() {
+        let database = TestDatabase::new();
+        {
+            let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+            let settings = lifecycle.settings_state(LaunchAtLoginState::Unavailable);
+
+            assert_eq!(settings.contract_version, SETTINGS_CONTRACT_VERSION);
+            assert!(settings.providers.iter().all(|provider| provider.enabled));
+            assert_eq!(
+                lifecycle.bootstrap_state().contract_version,
+                LIFECYCLE_CONTRACT_VERSION
+            );
+            lifecycle
+                .set_provider_enabled(CodingProvider::Codex, false)
+                .unwrap();
+            lifecycle
+                .set_provider_enabled(CodingProvider::Claude, false)
+                .unwrap();
+        }
+
+        let relaunched = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+        assert!(!relaunched.is_provider_enabled(CodingProvider::Codex));
+        assert!(!relaunched.is_provider_enabled(CodingProvider::Claude));
+        let claude = relaunched
+            .settings_state(LaunchAtLoginState::Unavailable)
+            .providers
+            .into_iter()
+            .find(|provider| provider.provider == CodingProvider::Claude)
+            .unwrap();
+        assert!(!claude.enabled);
+    }
+
+    #[test]
+    fn provider_settings_migration_backs_up_v4_and_enables_both_providers() {
+        let database = TestDatabase::new();
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE lifecycle_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   bootstrap_completed INTEGER NOT NULL CHECK (bootstrap_completed IN (0, 1)),
+                   profile_provisioning TEXT NOT NULL CHECK (profile_provisioning IN ('not-authorized', 'profile-pending', 'ready')),
+                   public_participation_authorized INTEGER NOT NULL CHECK (public_participation_authorized IN (0, 1)),
+                   profile_retry_pending INTEGER NOT NULL CHECK (profile_retry_pending IN (0, 1)),
+                   backfill_window_days INTEGER CHECK (backfill_window_days = 30),
+                   display_name TEXT CHECK (display_name IS NULL OR (length(trim(display_name)) BETWEEN 1 AND 40)),
+                   touch_grass_id TEXT,
+                   recovery_disclosure_pending INTEGER NOT NULL DEFAULT 0 CHECK (recovery_disclosure_pending IN (0, 1))
+                 );
+                 INSERT INTO lifecycle_state VALUES (1, 0, 'not-authorized', 0, 0, NULL, NULL, NULL, 0);
+                 PRAGMA user_version = 4;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+
+        assert!(lifecycle.is_provider_enabled(CodingProvider::Codex));
+        assert!(lifecycle.is_provider_enabled(CodingProvider::Claude));
+        let backup_path = database.0.with_extension("sqlite3.backup-v4");
+        let backup =
+            Connection::open_with_flags(backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let version = backup
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let provider_table_exists = backup
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_master
+                   WHERE type = 'table' AND name = 'provider_settings'
+                 )",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap();
+        assert!(!provider_table_exists);
+    }
+
+    #[test]
+    fn unreadable_persisted_provider_choice_fails_closed() {
+        let database = TestDatabase::new();
+        let lifecycle = DesktopLifecycle::open_with_detector(&database.0, detector()).unwrap();
+        lifecycle
+            .set_provider_enabled(CodingProvider::Claude, false)
+            .unwrap();
+        Connection::open(&database.0)
+            .unwrap()
+            .execute(
+                "DELETE FROM provider_settings WHERE provider = 'claude'",
+                [],
+            )
+            .unwrap();
+
+        assert!(!lifecycle.is_provider_enabled(CodingProvider::Claude));
+        let unavailable = DesktopLifecycle::unavailable();
+        assert!(!unavailable.is_provider_enabled(CodingProvider::Codex));
+        assert!(!unavailable.is_provider_enabled(CodingProvider::Claude));
     }
 
     #[test]

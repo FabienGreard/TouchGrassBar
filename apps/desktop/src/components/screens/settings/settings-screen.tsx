@@ -7,13 +7,14 @@ import {
   NativeWindowSidebar,
 } from "@touchgrass/ui";
 import type {
+  CodingProvider,
   ProfileProvisioningStatus,
   UpdateState,
 } from "@touchgrass/contracts";
 import { useState } from "react";
 
 import { CodingProviderAccessCard } from "@/components/provider-access/card";
-import type { CodingProviderAccessPresentation } from "@/components/provider-access/presentation";
+import type { SettingsProviderAccessPresentation } from "@/components/provider-access/presentation";
 
 import { ProfileSettings, type SettingsProfile } from "./profile-settings";
 import {
@@ -33,7 +34,7 @@ const settingsSectionDetails: Record<
     label: "General",
   },
   providers: {
-    description: "Local coding-provider connections and read status.",
+    description: "Local coding-provider connections and total inclusion.",
     label: "Providers",
   },
   profile: {
@@ -56,6 +57,9 @@ type SettingsScreenProps = {
   onProfileDisplayNameChange?:
     | ((displayName: string) => boolean | Promise<boolean> | void)
     | undefined;
+  onProviderEnabledChange?:
+    | ((provider: CodingProvider, enabled: boolean) => void)
+    | undefined;
   onHideRecoveryKey?: (() => void) | undefined;
   onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
@@ -64,9 +68,10 @@ type SettingsScreenProps = {
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
   profileProvisioning?: ProfileProvisioningStatus | undefined;
-  providers?: readonly CodingProviderAccessPresentation[] | undefined;
+  providers?: readonly SettingsProviderAccessPresentation[] | undefined;
   recoveryKey?: string | null | undefined;
   revealingRecoveryKey?: boolean | undefined;
+  savingProviders?: readonly CodingProvider[] | undefined;
   section?: SettingsSection | undefined;
   updateState?: UpdateState | null | undefined;
 };
@@ -84,6 +89,7 @@ function SettingsScreen({
   onOpenLatestDmg,
   onOpenSource,
   onProfileDisplayNameChange,
+  onProviderEnabledChange,
   onHideRecoveryKey,
   onRevealRecoveryKey,
   onStartRecovery,
@@ -95,6 +101,7 @@ function SettingsScreen({
   providers = [],
   recoveryKey = null,
   revealingRecoveryKey = false,
+  savingProviders = [],
   section: controlledSection,
   updateState = null,
 }: SettingsScreenProps) {
@@ -104,6 +111,7 @@ function SettingsScreen({
       : resolveSettingsSectionHash(window.location.hash),
   );
   const section = controlledSection ?? localSection;
+  const savingProviderSet = new Set(savingProviders);
   const selectSection = (nextSection: SettingsSection) => {
     if (controlledSection === undefined) setLocalSection(nextSection);
     onSectionChange?.(nextSection);
@@ -186,9 +194,17 @@ function SettingsScreen({
                 <CodingProviderAccessCard
                   busy={busyProviders}
                   displayName={provider.displayName}
+                  enabled={provider.enabled}
                   key={provider.provider}
                   onCheck={onCheckProviders}
+                  onEnabledChange={
+                    onProviderEnabledChange === undefined
+                      ? undefined
+                      : (enabled) =>
+                          onProviderEnabledChange(provider.provider, enabled)
+                  }
                   provider={provider.provider}
+                  savingEnabled={savingProviderSet.has(provider.provider)}
                   state={provider.state}
                 />
               ))}

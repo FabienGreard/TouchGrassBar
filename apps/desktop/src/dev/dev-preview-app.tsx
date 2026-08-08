@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { UpdateState } from "@touchgrass/contracts";
+import { useEffect, useRef, useState } from "react";
+import type { CodingProvider, UpdateState } from "@touchgrass/contracts";
 
 import { App } from "@/App";
 import "@/dev/dev-preview.css";
@@ -11,7 +11,6 @@ import { RecoverySheetPreview } from "@/dev/recovery-sheet-preview";
 import {
   currentProfile,
   currentDoomerboardRows,
-  currentUsagePresentation,
   myTokenmaxxerRows,
 } from "@/dev/panel-fixtures";
 import { resolveDevPreviewScenario } from "@/dev/preview-scenario";
@@ -38,24 +37,83 @@ const currentUpdate: UpdateState = {
   update: { status: "idle" },
 };
 
+type ProviderEnablement = Record<CodingProvider, boolean>;
+
+const defaultProviderEnablement: ProviderEnablement = {
+  claude: true,
+  codex: true,
+};
+const providerEnablementStorageKey =
+  "touchgrass:dev-provider-enablement:v1";
+
+function isProviderEnablement(value: unknown): value is ProviderEnablement {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.claude === "boolean" &&
+    typeof candidate.codex === "boolean"
+  );
+}
+
+function readProviderEnablement(): ProviderEnablement {
+  try {
+    const stored = window.sessionStorage.getItem(providerEnablementStorageKey);
+    if (stored === null) return { ...defaultProviderEnablement };
+    const candidate: unknown = JSON.parse(stored);
+    return isProviderEnablement(candidate)
+      ? candidate
+      : { ...defaultProviderEnablement };
+  } catch {
+    return { ...defaultProviderEnablement };
+  }
+}
+
+function persistProviderEnablement(providerEnablement: ProviderEnablement) {
+  try {
+    window.sessionStorage.setItem(
+      providerEnablementStorageKey,
+      JSON.stringify(providerEnablement),
+    );
+  } catch {
+    // The development preview remains usable when storage is unavailable.
+  }
+}
+
 function DevPreviewApp() {
+  const surfaceContainerRef = useRef<HTMLDivElement>(null);
+  const [scenario] = useState(() =>
+    resolveDevPreviewScenario(window.location.search),
+  );
   const [devInstance] = useState(currentDevInstance);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [providerEnabled, setProviderEnabled] = useState<
+    Record<CodingProvider, boolean>
+  >(() => ({
+    ...readProviderEnablement(),
+    ...(scenario.surface === "settings"
+      ? { claude: scenario.settingsProviderEnabled }
+      : {}),
+  }));
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [profile, setProfile] = useState({
     displayName: "Fabien",
     recoveryKeySuffix: "K9m",
     touchGrassId: "#TG-7K4P9D",
   });
-  const [scenario] = useState(() =>
-    resolveDevPreviewScenario(window.location.search),
-  );
   const [stateDelivery] = useState(() =>
     createSanitizedDesktopStateDelivery(
-      createBrowserSanitizedDesktopStateAdapter(scenario.fixture),
+      createBrowserSanitizedDesktopStateAdapter(
+        scenario.fixture,
+        () => new Date(),
+        providerEnabled,
+      ),
     ),
   );
+
+  useEffect(() => {
+    persistProviderEnablement(providerEnabled);
+  }, [providerEnabled]);
 
   useEffect(() => {
     if (devInstance) {
@@ -71,7 +129,6 @@ function DevPreviewApp() {
         tokenmaxxerRows: myTokenmaxxerRows,
         updateState:
           scenario.fixture === "update" ? availableUpdate : currentUpdate,
-        usagePresentation: currentUsagePresentation,
       }
     : undefined;
 
@@ -82,10 +139,12 @@ function DevPreviewApp() {
         <App
           hasNativeRuntime={false}
           onboarding={{
+            appVersion: currentUpdate.currentVersion,
             initialDisplayName: "Fabien",
             initialStep: scenario.onboarding.initialStep,
             onCheckProvider: () => undefined,
             onFinish: () => undefined,
+            onStartRecovery: () => setRecoveryOpen(true),
             providers: [
               {
                 displayName: "Codex",
@@ -118,6 +177,11 @@ function DevPreviewApp() {
             onLaunchAtLoginChange: setLaunchAtLogin,
             onOpenLatestDmg: () => undefined,
             onOpenSource: () => undefined,
+            onProviderEnabledChange: (provider, enabled) =>
+              setProviderEnabled((current) => ({
+                ...current,
+                [provider]: enabled,
+              })),
             onProfileDisplayNameChange: (displayName) =>
               setProfile((current) => ({ ...current, displayName })),
             onStartRecovery: () => setRecoveryOpen(true),
@@ -131,9 +195,15 @@ function DevPreviewApp() {
                 ? "profile-pending"
                 : "ready",
             providers: [
-              { displayName: "Codex", provider: "codex", state: "ready" },
+              {
+                displayName: "Codex",
+                enabled: providerEnabled.codex,
+                provider: "codex",
+                state: "detected",
+              },
               {
                 displayName: "Claude",
+                enabled: providerEnabled.claude,
                 provider: "claude",
                 state: scenario.settingsProviderState,
               },
@@ -157,12 +227,21 @@ function DevPreviewApp() {
       break;
   }
 
+  const recoveryPortalContainer = recoveryOpen
+    ? (surfaceContainerRef.current?.querySelector<HTMLElement>(
+        '[data-slot="native-window"]',
+      ) ?? null)
+    : null;
+
   return (
     <>
-      {surface}
+      <div ref={surfaceContainerRef}>
+        {surface}
+      </div>
       <RecoverySheetPreview
         onOpenChange={setRecoveryOpen}
         open={recoveryOpen}
+        portalContainer={recoveryPortalContainer}
       />
       <DevPreviewSwitcher
         activeFixture={scenario.fixture}
@@ -187,6 +266,9 @@ function DevPreviewApp() {
           scenario.surface === "settings"
             ? scenario.settingsProviderState
             : undefined
+        }
+        settingsProviderEnabled={
+          scenario.surface === "settings" ? providerEnabled.claude : undefined
         }
       />
     </>

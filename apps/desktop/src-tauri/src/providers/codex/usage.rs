@@ -18,14 +18,18 @@ use time::{
 };
 
 use crate::daily_usage_aggregate::{
-    DailyCostEvidence, ProviderUsageEvidence, calculate_usage_periods, checked_sum, period_days,
+    DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_usage_periods,
+    checked_sum, period_days,
 };
-use crate::sanitized::{ApiEquivalentCostQuality, UsagePeriods, UsageScanStatus, UsageTotal};
+use crate::sanitized::{
+    ApiEquivalentCostQuality, TopModelUsage, UsageCoverage, UsagePeriods, UsageScanStatus,
+    UsageTotal,
+};
 
 #[cfg(test)]
 use crate::daily_usage_aggregate::preserve_best_known_costs;
 #[cfg(test)]
-use crate::sanitized::{UsageCoverage, UsageEvidenceBasis};
+use crate::sanitized::UsageEvidenceBasis;
 
 const OPENAI_STANDARD_PRICING_JSON: &str = include_str!("../../../pricing/openai-standard.json");
 const MAX_ROLLOUT_LINE_BYTES: usize = 4 * 1024 * 1024;
@@ -273,6 +277,16 @@ struct PricingManifest {
     basis: String,
     fingerprint: String,
     models: Vec<PricedModel>,
+}
+
+impl PricingManifest {
+    fn canonical_model_name(&self, model_name: &str) -> Option<&str> {
+        self.models
+            .iter()
+            .find(|model| model.names.iter().any(|name| name == model_name))
+            .and_then(|model| model.names.first())
+            .map(String::as_str)
+    }
 }
 
 #[derive(Clone)]
@@ -630,6 +644,7 @@ type LocalUsageDay = DailyCostEvidence;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LocalUsageObservation {
     daily: BTreeMap<Date, LocalUsageDay>,
+    pub(crate) top_model_usage: Option<TopModelUsage>,
     pricing_basis: Option<String>,
     scan_status: UsageScanStatus,
     latest_pending_modified_at: Option<OffsetDateTime>,
@@ -660,6 +675,7 @@ impl Default for LocalUsageObservation {
     fn default() -> Self {
         Self {
             daily: BTreeMap::new(),
+            top_model_usage: None,
             pricing_basis: None,
             scan_status: UsageScanStatus::Unavailable,
             latest_pending_modified_at: None,
@@ -2772,8 +2788,10 @@ fn read_indexed_usage(
         )
         .optional()
         .map_err(|_| ())?;
+    let top_model_usage = read_top_model_usage(connection, cutoff, today)?;
     Ok(LocalUsageObservation {
         daily: rows,
+        top_model_usage,
         pricing_basis,
         scan_status,
         latest_pending_modified_at: parse_modified_at(latest_pending_modified_ns)?
@@ -2783,6 +2801,47 @@ fn read_indexed_usage(
         latest_error_modified_at: parse_modified_at(latest_error_modified_ns)?,
         scan_scope_known,
     })
+}
+
+fn read_top_model_usage(
+    connection: &Connection,
+    cutoff: Date,
+    today: Date,
+) -> Result<Option<TopModelUsage>, ()> {
+    let manifest = pricing_manifest();
+    let mut statement = connection
+        .prepare(
+            "SELECT d.model, SUM(d.observed_tokens)
+             FROM codex_usage_file_model_days d
+             JOIN codex_usage_files f ON f.path = d.path
+             WHERE f.parser_version = ?1 AND d.day >= ?2 AND d.day <= ?3
+             GROUP BY d.model",
+        )
+        .map_err(|_| ())?;
+    let entries = statement
+        .query_map(
+            params![
+                ROLLOUT_PARSER_VERSION,
+                cutoff.to_string(),
+                today.to_string()
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(|_| ())?
+        .map(|row| {
+            let (model, observed_tokens) = row.map_err(|_| ())?;
+            let display_name = manifest
+                .and_then(|manifest| manifest.canonical_model_name(&model))
+                .and_then(crate::providers::normalized_model_display_name);
+            let grouping_key = display_name.clone().unwrap_or_else(|| model.clone());
+            Ok((
+                grouping_key,
+                display_name,
+                from_i64(observed_tokens).map_err(|_| ())?,
+            ))
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    Ok(crate::providers::select_top_model_usage(entries))
 }
 
 fn index_local_usage_at(
@@ -3345,6 +3404,22 @@ pub(crate) fn project_usage_periods_with_account_time(
     let evidence = ProviderUsageEvidence {
         provider_reported_tokens: account.map(|account| account.daily_tokens.clone()),
         provider_observed_at: account.map(|_| account_observed_at),
+        local_usage_evidence: local.map_or_else(BTreeMap::new, |local| {
+            local
+                .daily
+                .iter()
+                .map(|(day, detail)| {
+                    (
+                        *day,
+                        DailyUsageEvidence {
+                            observed_tokens: detail.observed_tokens,
+                            coverage: UsageCoverage::Partial,
+                            observed_through: detail.observed_through,
+                        },
+                    )
+                })
+                .collect()
+        }),
         local_cost_evidence: local.map_or_else(BTreeMap::new, |local| local.daily.clone()),
         local_evidence_available: local.is_some(),
         local_observed_at: local.map(|_| now),
@@ -4106,6 +4181,20 @@ mod tests {
         )
         .unwrap();
         let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(
+            local
+                .top_model_usage
+                .as_ref()
+                .and_then(|top| top.model.as_deref()),
+            Some("GPT 5.6 Sol")
+        );
+        assert_eq!(
+            local
+                .top_model_usage
+                .as_ref()
+                .map(|top| top.observed_tokens),
+            Some(100)
+        );
         let account = load_cached_account_usage(Some(&fixture.database)).unwrap();
         let periods = project_usage_periods_with_account_time(
             Some(&account.observation),

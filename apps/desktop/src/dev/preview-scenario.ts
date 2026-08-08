@@ -24,6 +24,7 @@ type DevPreviewScenario = {
     setupState: OnboardingSetupPreviewState;
   };
   settingsProfileState: SettingsProfilePreviewState;
+  settingsProviderEnabled: boolean;
   settingsProviderState: CodingProviderAccessState;
   surface: DesktopSurface;
 };
@@ -95,16 +96,19 @@ function resolveDevPreviewScenario(search: string): DevPreviewScenario {
     "providerState",
     "not-installed",
   );
+  const settingsProviderExcluded =
+    params.get("providerState") === "excluded";
 
   return {
     fixture: resolveFixture(params),
     onboarding: {
-      codexState: resolveProviderState(params, "codexState", "ready"),
+      codexState: resolveProviderState(params, "codexState", "detected"),
       initialStep: resolveOnboardingStep(params),
       providerState,
       setupState: resolveOnboardingSetupState(params),
     },
     settingsProfileState: resolveSettingsProfileState(params),
+    settingsProviderEnabled: !settingsProviderExcluded,
     settingsProviderState: providerState,
     surface: resolveSurface(params),
   };

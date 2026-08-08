@@ -260,7 +260,7 @@ describe("Sanitized Desktop State delivery", () => {
     unsubscribe();
   });
 
-  test("ends refresh feedback at acknowledgement and advances after commit notice", async () => {
+  test("keeps refresh feedback until native refresh completion", async () => {
     const transport = controlledAdapter();
     const delivery = createSanitizedDesktopStateDelivery(transport.port);
     const unsubscribe = delivery.subscribe(() => undefined);
@@ -333,7 +333,7 @@ describe("Sanitized Desktop State delivery", () => {
     stopSecondActivation();
   });
 
-  test("expires a stalled refresh acknowledgement so a later request can retry", async () => {
+  test("expires a stalled native refresh so a later request can retry", async () => {
     vi.useFakeTimers();
     try {
       const stalledReceipt = deferred<unknown>();
@@ -347,7 +347,7 @@ describe("Sanitized Desktop State delivery", () => {
       await Promise.resolve();
       expect(delivery.getSnapshot().refreshing).toBe(true);
 
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(305_000);
       await stalledRefresh;
 
       expect(delivery.getSnapshot()).toMatchObject({

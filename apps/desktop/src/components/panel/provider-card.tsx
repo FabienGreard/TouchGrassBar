@@ -137,6 +137,16 @@ function ProviderQuotaLane({
 
 function ProviderCard({ presentation }: { presentation: ProviderPresentation }) {
   const { displayName: label, quota: provider } = presentation;
+  const hasCachedQuotaOrObservedUsage =
+    provider.availability !== "unavailable" ||
+    [
+      presentation.usage.today,
+      presentation.usage.sevenDays,
+      presentation.usage.thirtyDays,
+    ].some((usage) => usage.availability !== "unavailable");
+  const loading =
+    presentation.usage.scanStatus === "indexing" &&
+    !hasCachedQuotaOrObservedUsage;
   const lanes = orderedQuotaLanes(provider);
   const primaryLane = lanes[0] ?? null;
   const secondaryLanes = lanes.slice(1);
@@ -144,11 +154,19 @@ function ProviderCard({ presentation }: { presentation: ProviderPresentation }) 
 
   return (
     <section
+      aria-busy={loading || undefined}
       aria-labelledby={`${provider.provider}-heading`}
-      className="border-b border-pearl-line bg-provider-row px-4 py-[15px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight"
+      className={`border-b border-pearl-line bg-provider-row px-4 py-[15px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight ${
+        loading
+          ? "pointer-events-none animate-pulse motion-reduce:animate-none"
+          : ""
+      }`}
       data-provider-availability={provider.availability}
       data-provider-presence={presentation.presence}
     >
+      {loading ? (
+        <span className="sr-only">Refreshing {label}…</span>
+      ) : null}
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2.5">
         <span className="grid h-[29px] w-[29px] place-items-center overflow-hidden rounded-[7px] border border-input bg-pearl-control shadow-control contrast-more:border-pearl-ink">
           <ProviderMark provider={provider.provider} />

@@ -1,4 +1,6 @@
-import { Input, ProfileCard } from "@touchgrass/ui";
+import { ProfileCard } from "@touchgrass/ui";
+
+import { DisplayNameInput } from "@/components/display-name-input";
 
 function ProfileStep({
   displayName,
@@ -15,7 +17,7 @@ function ProfileStep({
         avatarLabel={initialLetter}
         data-profile-state="draft"
         displayName={
-          <Input
+          <DisplayNameInput
             aria-label="Display name"
             className="mt-1 h-8"
             maxLength={40}

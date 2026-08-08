@@ -1,6 +1,7 @@
-import { Button, Input, ProfileCard } from "@touchgrass/ui";
+import { Button, ProfileCard } from "@touchgrass/ui";
 import { useState } from "react";
 
+import { DisplayNameInput } from "@/components/display-name-input";
 import { useCopyText } from "@/components/use-copy-text";
 
 type ProfileEditorProps = {
@@ -78,7 +79,7 @@ function ProfileEditor(props: ProfileEditorProps) {
             <small className="mb-1.5 block text-[9px] font-semibold text-sheet-muted">
               Display name
             </small>
-            <Input
+            <DisplayNameInput
               aria-label="Display name"
               autoFocus
               disabled={saving}

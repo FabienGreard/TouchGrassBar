@@ -1,4 +1,8 @@
-import type { UsagePeriods, UsageTotal } from "@touchgrass/contracts";
+import type {
+  TopModelUsage,
+  UsagePeriods,
+  UsageTotal,
+} from "@touchgrass/contracts";
 import {
   MetricCard,
   MetricCardDetail,
@@ -145,6 +149,7 @@ function UsageMetric({
   scanStatus: UsagePeriods["scanStatus"];
 }) {
   if (total.availability === "unavailable") {
+    const detail = scanStatus === "indexing" ? "Indexing…" : "Not observed";
     return (
       <MetricCard>
         <MetricCardLabel>{label}</MetricCardLabel>
@@ -162,7 +167,7 @@ function UsageMetric({
         >
           —
         </MetricCardValue>
-        <MetricCardDetail>Not observed</MetricCardDetail>
+        <MetricCardDetail>{detail}</MetricCardDetail>
         <MetricCardGauge
           aria-label={
             presentation
@@ -214,9 +219,11 @@ function UsageMetric({
 
 function UsageOverview({
   presentation,
+  topModelUsage,
   usage,
 }: {
   presentation?: UsagePresentation | undefined;
+  topModelUsage?: TopModelUsage | null | undefined;
   usage: UsagePeriods;
 }) {
   const [todayGauge, sevenDayGauge, thirtyDayGauge] = relativeGaugeFills(usage);
@@ -235,6 +242,7 @@ function UsageOverview({
         "the previous 30 days",
       ),
   };
+  const topModelName = topModelUsage?.model;
   return (
     <section
       aria-labelledby="observed-usage-heading"
@@ -242,10 +250,17 @@ function UsageOverview({
     >
       <header className="flex items-center justify-between">
         <h2 className="m-0 text-[10px]" id="observed-usage-heading">
-          Observed tokens
+          Usage
         </h2>
-        <small className="text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
-          API equivalent
+        <small className="truncate text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
+          {topModelName ? (
+            <>
+              Most used
+              <span className="text-pearl-ink"> · {topModelName}</span>
+            </>
+          ) : (
+            "—"
+          )}
         </small>
       </header>
       <div className="mt-2">

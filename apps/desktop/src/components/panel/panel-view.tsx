@@ -98,6 +98,7 @@ function PanelView({
             </div>
             <UsageOverview
               presentation={usagePresentation}
+              topModelUsage={state.topModelUsage}
               usage={state.combinedUsage}
             />
             <Doomerboard

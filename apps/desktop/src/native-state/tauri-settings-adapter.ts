@@ -102,6 +102,13 @@ function createTauriSettingsAdapter(
         "display-name-update-unavailable",
         { displayName },
       ),
+    setProviderEnabled: (provider, enabled) =>
+      closedInvoke(
+        bindings,
+        "set_provider_enabled",
+        "provider-setting-unavailable",
+        { enabled, provider },
+      ),
     subscribeNavigation: async (receive) => {
       try {
         const stop = await bindings.listen(

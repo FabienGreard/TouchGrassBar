@@ -5,8 +5,18 @@ import { ProfileSettings } from "./profile-settings";
 import { SettingsScreen } from "./settings-screen";
 
 const providers = [
-  { displayName: "Codex", provider: "codex", state: "detected" },
-  { displayName: "Claude", provider: "claude", state: "not-installed" },
+  {
+    displayName: "Codex",
+    enabled: true,
+    provider: "codex",
+    state: "detected",
+  },
+  {
+    displayName: "Claude",
+    enabled: false,
+    provider: "claude",
+    state: "not-installed",
+  },
 ] as const;
 
 describe("settings screen", () => {
@@ -160,6 +170,8 @@ describe("settings screen", () => {
     expect(markup).toContain("Version 1.3.2");
     expect(markup).toContain("Version 1.4.0 is ready.");
     expect(markup).toContain("Install &amp; Relaunch");
+    expect(markup).toContain('data-slot="update-settings-group"');
+    expect(markup).toContain('data-grouped="true"');
     expect(markup).toMatch(/<button[^>]*>View on GitHub ↗<\/button>/);
     expect(markup).not.toContain('data-slot="update-sheet"');
 
@@ -229,7 +241,7 @@ describe("settings screen", () => {
     expect(markup).toMatch(/<button[^>]*>Check now<\/button>/);
   });
 
-  test("names provider actions independently for VoiceOver", () => {
+  test("names provider controls independently for VoiceOver", () => {
     const markup = renderToStaticMarkup(
       <SettingsScreen
         onCheckProviders={() => undefined}
@@ -238,8 +250,43 @@ describe("settings screen", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Check Codex again"');
-    expect(markup).toContain('aria-label="Check Claude again"');
+    expect(markup).not.toContain('aria-label="Check Codex again"');
+    expect(markup).not.toContain('aria-label="Check Claude again"');
+    expect(markup).toContain(
+      'aria-label="Show Codex and include its quota and usage in totals"',
+    );
+    expect(markup).toContain(
+      'aria-label="Show Claude and include its quota and usage in totals"',
+    );
+  });
+
+  test("keeps an excluded provider visible and available to enable", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        onCheckProviders={() => undefined}
+        onProviderEnabledChange={() => undefined}
+        providers={providers}
+        savingProviders={["claude"]}
+        section="providers"
+      />,
+    );
+
+    expect(markup).toContain('data-provider-enabled="true"');
+    expect(markup).toContain('data-provider-enabled="false"');
+    expect(markup).toContain("Claude shows as unavailable in the panel.");
+    expect(markup).toContain(
+      "Its quota and usage are excluded from totals.",
+    );
+    expect(markup).toContain(">Excluded<");
+    expect(markup).not.toContain("Show and include");
+    expect(markup).not.toContain("Connect Claude");
+    expect(markup).not.toContain('aria-label="Check Claude again"');
+    expect(markup).toMatch(
+      /<button(?=[^>]*aria-label="Show Claude and include its quota and usage in totals")(?=[^>]*disabled="")[^>]*>/,
+    );
+    expect(markup).not.toMatch(
+      /<button(?=[^>]*aria-label="Show Codex and include its quota and usage in totals")(?=[^>]*disabled="")[^>]*>/,
+    );
   });
 
   test("renders the provider collection supplied by Rust", () => {

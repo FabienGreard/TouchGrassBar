@@ -7,13 +7,23 @@ import {
 } from "@/native-state/settings-delivery";
 
 const settingsState = {
-  contractVersion: 3,
+  contractVersion: 4,
   displayName: "Fabien",
   launchAtLogin: { availability: "available", enabled: false },
   profileProvisioning: "profile-pending",
   providers: [
-    { displayName: "Codex", provider: "codex", status: "detected" },
-    { displayName: "Claude", provider: "claude", status: "not-detected" },
+    {
+      displayName: "Codex",
+      enabled: true,
+      provider: "codex",
+      status: "detected",
+    },
+    {
+      displayName: "Claude",
+      enabled: false,
+      provider: "claude",
+      status: "not-detected",
+    },
   ],
   section: "general",
 } as const;
@@ -56,6 +66,15 @@ function port(): SettingsPort & {
         displayName,
         profileProvisioning: "ready" as const,
         touchGrassId: "TG-234567",
+      },
+    })),
+    setProviderEnabled: vi.fn(async (provider, enabled) => ({
+      ok: true as const,
+      value: {
+        ...settingsState,
+        providers: settingsState.providers.map((item) =>
+          item.provider === provider ? { ...item, enabled } : item,
+        ),
       },
     })),
     subscribeNavigation: vi.fn(async (receive) => {
@@ -185,6 +204,217 @@ describe("Settings delivery", () => {
     });
     expect(await save).toBe(false);
     expect(delivery.getSnapshot().snapshot?.displayName).toBe("Fabien");
+  });
+
+  test("commits one provider toggle only after native confirmation", async () => {
+    const native = port();
+    let confirm!: (outcome: SettingsPortOutcome<unknown>) => void;
+    native.setProviderEnabled = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          confirm = resolve;
+        }),
+    );
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    const save = delivery.setProviderEnabled("claude", true);
+    expect(native.setProviderEnabled).toHaveBeenCalledWith("claude", true);
+    expect(delivery.getSnapshot()).toMatchObject({
+      savingProviders: ["claude"],
+      snapshot: {
+        providers: [
+          { enabled: true, provider: "codex" },
+          { enabled: false, provider: "claude" },
+        ],
+      },
+    });
+
+    confirm({
+      ok: true,
+      value: {
+        ...settingsState,
+        providers: settingsState.providers.map((provider) =>
+          provider.provider === "claude"
+            ? { ...provider, enabled: true }
+            : provider,
+        ),
+      },
+    });
+
+    expect(await save).toBe(true);
+    expect(delivery.getSnapshot()).toMatchObject({
+      savingProviders: [],
+      snapshot: {
+        providers: [
+          { enabled: true, provider: "codex" },
+          { enabled: true, provider: "claude" },
+        ],
+      },
+    });
+  });
+
+  test("keeps both providers enabled when their confirmations finish out of order", async () => {
+    const native = port();
+    const bothDisabled = {
+      ...settingsState,
+      providers: settingsState.providers.map((provider) => ({
+        ...provider,
+        enabled: false,
+      })),
+    };
+    native.read = vi.fn(async () => ({
+      ok: true as const,
+      value: bothDisabled,
+    }));
+    const confirmations = new Map<
+      "claude" | "codex",
+      (outcome: SettingsPortOutcome<unknown>) => void
+    >();
+    native.setProviderEnabled = vi.fn(
+      (provider) =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          confirmations.set(provider, resolve);
+        }),
+    );
+    const confirmedProviders = (confirmed: "claude" | "codex") => {
+      const providers = [];
+      for (const provider of bothDisabled.providers) {
+        providers.push(
+          provider.provider === confirmed
+            ? { ...provider, enabled: true }
+            : provider,
+        );
+      }
+      return providers;
+    };
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    const enableCodex = delivery.setProviderEnabled("codex", true);
+    const enableClaude = delivery.setProviderEnabled("claude", true);
+    confirmations.get("claude")?.({
+      ok: true,
+      value: {
+        ...bothDisabled,
+        providers: confirmedProviders("claude"),
+      },
+    });
+    expect(await enableClaude).toBe(true);
+    confirmations.get("codex")?.({
+      ok: true,
+      value: {
+        ...bothDisabled,
+        providers: confirmedProviders("codex"),
+      },
+    });
+    expect(await enableCodex).toBe(true);
+
+    expect(delivery.getSnapshot().snapshot?.providers).toEqual([
+      expect.objectContaining({ enabled: true, provider: "codex" }),
+      expect.objectContaining({ enabled: true, provider: "claude" }),
+    ]);
+  });
+
+  test("preserves the last confirmed provider value when a mutation fails", async () => {
+    const native = port();
+    native.setProviderEnabled = vi.fn(async () => ({
+      fault: { code: "provider-setting-unavailable" as const },
+      ok: false as const,
+    }));
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    expect(await delivery.setProviderEnabled("codex", false)).toBe(false);
+    expect(delivery.getSnapshot()).toMatchObject({
+      phase: "degraded",
+      savingProviders: [],
+      snapshot: {
+        providers: [
+          { enabled: true, provider: "codex" },
+          { enabled: false, provider: "claude" },
+        ],
+      },
+    });
+  });
+
+  test("rejects a native response that does not confirm the provider value", async () => {
+    const native = port();
+    native.setProviderEnabled = vi.fn(async () => ({
+      ok: true as const,
+      value: settingsState,
+    }));
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    expect(await delivery.setProviderEnabled("codex", false)).toBe(false);
+    expect(delivery.getSnapshot()).toMatchObject({
+      phase: "degraded",
+      savingProviders: [],
+      snapshot: {
+        providers: [
+          { enabled: true, provider: "codex" },
+          { enabled: false, provider: "claude" },
+        ],
+      },
+    });
+  });
+
+  test("does not let an older read replace a confirmed provider value", async () => {
+    const native = port();
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+    let finishRead!: (outcome: SettingsPortOutcome<unknown>) => void;
+    native.read = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+
+    const olderRead = delivery.read();
+    expect(await delivery.setProviderEnabled("claude", true)).toBe(true);
+    finishRead({ ok: true, value: settingsState });
+    await olderRead;
+
+    expect(delivery.getSnapshot().snapshot?.providers).toEqual([
+      expect.objectContaining({ enabled: true, provider: "codex" }),
+      expect.objectContaining({ enabled: true, provider: "claude" }),
+    ]);
+  });
+
+  test("merges an older launch response with a confirmed provider value", async () => {
+    const native = port();
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+    let finishLaunch!: (outcome: SettingsPortOutcome<unknown>) => void;
+    native.setLaunchAtLogin = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          finishLaunch = resolve;
+        }),
+    );
+
+    const launch = delivery.setLaunchAtLogin(true);
+    expect(await delivery.setProviderEnabled("claude", true)).toBe(true);
+    finishLaunch({
+      ok: true,
+      value: {
+        ...settingsState,
+        launchAtLogin: { availability: "available", enabled: true },
+      },
+    });
+    expect(await launch).toBe(true);
+
+    expect(delivery.getSnapshot()).toMatchObject({
+      snapshot: {
+        launchAtLogin: { availability: "available", enabled: true },
+        providers: [
+          { enabled: true, provider: "codex" },
+          { enabled: true, provider: "claude" },
+        ],
+      },
+    });
   });
 
   test("preserves the selected section across provider refreshes", async () => {

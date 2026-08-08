@@ -13,6 +13,8 @@ import {
 } from "@/components/screens/onboarding/onboarding-flow";
 import { createBootstrapDelivery } from "@/native-state/bootstrap-delivery";
 import { createTauriBootstrapAdapter } from "@/native-state/tauri-bootstrap-adapter";
+import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
+import { createUpdateDelivery } from "@/native-state/update-delivery";
 
 type BootstrapDelivery = ReturnType<typeof createBootstrapDelivery>;
 
@@ -26,10 +28,18 @@ function OnboardingCoordinator({
       suppliedDelivery ??
       createBootstrapDelivery(createTauriBootstrapAdapter()),
   );
+  const [updates] = useState(() =>
+    createUpdateDelivery(createTauriUpdateAdapter()),
+  );
   const view = useSyncExternalStore(
     delivery.subscribe,
     delivery.getSnapshot,
     delivery.getSnapshot,
+  );
+  const updateView = useSyncExternalStore(
+    updates.subscribe,
+    updates.getSnapshot,
+    updates.getSnapshot,
   );
   const [step, setStep] = useState<OnboardingStep>("providers");
   const [furthestStep, setFurthestStep] = useState<OnboardingStep>("providers");
@@ -40,6 +50,19 @@ function OnboardingCoordinator({
   useEffect(() => {
     void delivery.read();
   }, [delivery]);
+
+  useEffect(() => {
+    let disposed = false;
+    let stop: () => void = () => undefined;
+    void updates.activate().then((unsubscribe) => {
+      if (disposed) unsubscribe();
+      else stop = unsubscribe;
+    });
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, [updates]);
 
   useEffect(() => {
     const storedName = view.snapshot?.displayName;
@@ -83,6 +106,7 @@ function OnboardingCoordinator({
 
   return (
     <OnboardingScreen
+      appVersion={updateView.state?.currentVersion}
       busyProviders={checkingProviders}
       canComplete={
         view.phase === "ready" && view.snapshot?.persistence === "available"

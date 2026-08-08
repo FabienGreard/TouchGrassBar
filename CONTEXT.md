@@ -12,6 +12,10 @@ _Avoid_: AI, model, vendor
 Whether a Coding Provider installation is locally detected, not detected, or cannot be checked. Provider Presence does not prove authentication, Quota access, or Observed Usage availability.
 _Avoid_: Provider connection, provider authorization, provider availability
 
+**Provider Enablement**:
+Whether a Coding Provider is active in TouchGrassBar. Providers are enabled by default. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Observed Usage and API-Equivalent Cost do not contribute to Combined totals. Disabling a provider does not delete its local history. Re-enabling it restores the still-valid cached Quota Lanes, Observed Usage, and API-Equivalent Cost before the fresh read completes, without replacing that cache with a loading state.
+_Avoid_: Provider Presence, provider authentication, data deletion
+
 **Quota**:
 A provider-defined allowance for a bounded period. A quota is not the same as locally observed usage.
 _Avoid_: Usage, balance
@@ -66,7 +70,7 @@ The unweighted sum of observed tokens for a Tokenmaxxer, time range, and provide
 _Avoid_: Usage score, productivity score, points
 
 **API-Equivalent Cost**:
-An approximate estimate of what Observed Tokens would cost at published per-token prices applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Reconciled cost uses local priced detail that equals the authoritative tokens. Modeled cost applies a defensible average rate from priced local detail to the authoritative tokens and reports that priced-detail coverage. Local-only cost uses available local detail when provider-reported usage is unavailable. An unknown price leaves only that detail unpriced; a period with other usable priced evidence may still have a Modeled or Local-only estimate, while a period with no defensible priced evidence has no estimate. A catalog correction recomputes only affected retained model-days and never changes Token Score or Doomerboard rank.
+An approximate estimate of what Observed Tokens would cost at published per-token prices applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Reconciled cost uses local priced detail that equals the authoritative tokens. Modeled cost applies a defensible average rate from priced local detail to the authoritative tokens and reports that priced-detail coverage. Local-only cost uses available local detail when provider-reported usage is unavailable. An unknown price leaves only that detail unpriced; a period with other usable priced evidence may still have a Modeled or Local-only estimate, while a period with no defensible priced evidence has no estimate. Combined adds only valid provider estimates and reports priced-token coverage when another contributing provider is unpriced; it never applies one provider's rate to another provider. A catalog correction recomputes only affected retained model-days and never changes Token Score or Doomerboard rank.
 _Avoid_: Spend, bill, actual cost
 
 **Daily Usage Aggregate**:

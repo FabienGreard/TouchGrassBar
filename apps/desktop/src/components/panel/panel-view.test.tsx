@@ -1,3 +1,4 @@
+import type { UsagePeriods } from "@touchgrass/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -91,13 +92,14 @@ describe("panel states", () => {
     );
 
     expect(markup).not.toContain(">0<");
+    expect(markup).toContain("Live");
     expect(markup).toContain('aria-label="Open panel menu"');
     expect(markup).toContain('data-slot="brand-mark"');
     expect(markup).toContain('data-tone="ink"');
     expect(markup).toMatch(/<img[^>]*brightness-0[^>]*data-slot="brand-mark"/);
     expect(markup.match(/aria-label="Open panel menu"/g)).toHaveLength(1);
     expect(markup).toContain('data-icon-provider="hugeicons"');
-    expect(markup).toContain("Doomerboard unavailable");
+    expect(markup).toContain("Leaderboard unavailable");
     expect(markup).not.toContain("Add by ID");
     expect(markup).toContain('aria-label="Current user profile unavailable"');
     expect(markup).not.toContain("— users");
@@ -107,11 +109,11 @@ describe("panel states", () => {
     expect(markup).not.toContain("My Tokenmaxxers");
     expect(markup).toContain("Global");
     expect(markup).toMatch(
-      /aria-label="Select Doomerboard period"[^>]*>Today<\/button>/,
+      /aria-label="Select Leaderboard period"[^>]*>Today<\/button>/,
     );
     expect(markup).toContain("Combined");
-    expect(markup).toContain('aria-label="Select Doomerboard period"');
-    expect(markup).toContain('aria-label="Select Doomerboard provider"');
+    expect(markup).toContain('aria-label="Select Leaderboard period"');
+    expect(markup).toContain('aria-label="Select Leaderboard provider"');
     expect(markup.match(/aria-expanded:bg-pearl-ink\/5/g)).toHaveLength(3);
     expect(markup.match(/data-slot="metric-gauge"/g)).toHaveLength(3);
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
@@ -146,6 +148,7 @@ describe("panel states", () => {
     );
 
     expect(markup).toContain('data-slot="dropdown-menu-trigger"');
+    expect(markup).toContain("Syncing…");
     expect(markup).toContain('data-slot="loading-panel"');
     expect(markup).toContain('aria-busy="true"');
     expect(markup).not.toContain("Weekly limit");
@@ -154,7 +157,7 @@ describe("panel states", () => {
       markup.match(/data-provider-availability="unavailable"/g),
     ).toHaveLength(2);
     expect(markup).not.toContain("1970-01-01");
-    expect(markup).toContain("Doomerboard unavailable");
+    expect(markup).toContain("Leaderboard unavailable");
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-slot="quota-progress"/g)).toHaveLength(2);
     expect(markup).not.toContain('data-slot="skeleton"');
@@ -173,7 +176,7 @@ describe("panel states", () => {
       />,
     );
 
-    expect(markup).toContain("Local state unavailable");
+    expect(markup).toContain("Sync unavailable");
     expect(markup).toContain("Local provider state unavailable");
     expect(markup).toContain('data-slot="loading-panel"');
     expect(markup).not.toContain('aria-busy="true"');
@@ -181,6 +184,21 @@ describe("panel states", () => {
     expect(markup).not.toContain("Nothing invented");
     expect(markup).not.toContain("native snapshot");
     expect(markup).not.toContain('role="alert"');
+  });
+
+  test("shows connecting before the first native snapshot", () => {
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={null}
+      />,
+    );
+
+    expect(markup).toContain("Connecting…");
+    expect(markup).not.toContain("Live");
   });
 
   test("keeps the compact update icon when an update is available", async () => {
@@ -315,7 +333,7 @@ describe("panel states", () => {
     expect(markup).toContain("data-radix-scroll-area-viewport");
     expect(markup).not.toMatch(/data-doomerboard-scroll=""[^>]*tabindex/);
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
-    expect(markup).not.toContain("Doomerboard unavailable");
+    expect(markup).not.toContain("Leaderboard unavailable");
     expect(markup).not.toContain("My Tokenmaxxers");
   });
 
@@ -405,6 +423,117 @@ describe("panel states", () => {
     stop();
   });
 
+  test("shows Claude-only observed usage in all accessible metric cards", async () => {
+    const claudeOnlyState = structuredClone(
+      await deliveredBrowserFixture("current"),
+    );
+    const unavailableUsage: UsagePeriods = {
+      scanStatus: "unavailable",
+      sevenDayScanStatus: "unavailable",
+      sevenDays: { availability: "unavailable" },
+      thirtyDayScanStatus: "unavailable",
+      thirtyDays: { availability: "unavailable" },
+      today: { availability: "unavailable" },
+      todayScanStatus: "unavailable",
+    };
+    const observedAt = "2026-08-06T13:44:00.000Z";
+    const pricingBasis = "anthropic-standard-2026-08-07-v1";
+    const claudeUsage: UsagePeriods = {
+      scanStatus: "complete",
+      sevenDayScanStatus: "complete",
+      sevenDays: {
+        apiEquivalentCostBasis: pricingBasis,
+        apiEquivalentCostCoveragePercent: null,
+        apiEquivalentCostQuality: "local-only",
+        apiEquivalentCostUsd: 24.5,
+        availability: "current",
+        coverage: "partial",
+        evidenceBasis: "locally-derived",
+        observedAt,
+        observedTokens: 8_000_000,
+        trendPercent: 25,
+      },
+      thirtyDayScanStatus: "complete",
+      thirtyDays: {
+        apiEquivalentCostBasis: pricingBasis,
+        apiEquivalentCostCoveragePercent: null,
+        apiEquivalentCostQuality: "local-only",
+        apiEquivalentCostUsd: 61.75,
+        availability: "current",
+        coverage: "partial",
+        evidenceBasis: "locally-derived",
+        observedAt,
+        observedTokens: 20_000_000,
+        trendPercent: 0,
+      },
+      today: {
+        apiEquivalentCostBasis: pricingBasis,
+        apiEquivalentCostCoveragePercent: null,
+        apiEquivalentCostQuality: "local-only",
+        apiEquivalentCostUsd: 6.25,
+        availability: "current",
+        coverage: "partial",
+        evidenceBasis: "locally-derived",
+        observedAt,
+        observedTokens: 2_000_000,
+        trendPercent: -12.5,
+      },
+      todayScanStatus: "complete",
+    };
+    const codex = claudeOnlyState.providers.find(
+      (provider) => provider.provider === "codex",
+    );
+    const claude = claudeOnlyState.providers.find(
+      (provider) => provider.provider === "claude",
+    );
+    if (!codex || !claude) throw new Error("provider fixture unavailable");
+    codex.usage = structuredClone(unavailableUsage);
+    claude.usage = structuredClone(claudeUsage);
+    claudeOnlyState.combinedUsage = structuredClone(claudeUsage);
+
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={claudeOnlyState}
+      />,
+    );
+
+    expect(markup).toContain('data-slot="metric-card-label">Today');
+    expect(markup).toContain('data-slot="metric-card-label">7 days');
+    expect(markup).toContain('data-slot="metric-card-label">30 days');
+    expect(markup).toContain(">2M</strong>");
+    expect(markup).toContain(">8M</strong>");
+    expect(markup).toContain(">20M</strong>");
+    expect(markup).toContain(
+      'aria-label="Down 12.5 percent from the previous day"',
+    );
+    expect(markup).toContain(
+      'aria-label="Up 25 percent from the previous 7 days"',
+    );
+    expect(markup).toContain(
+      'aria-label="No change from the previous 30 days"',
+    );
+    expect(markup).toContain(
+      `aria-label="≈ $6.25, locally observed token evidence, partial period coverage, cost estimated from local pricing evidence, pricing basis ${pricingBasis}"`,
+    );
+    expect(markup).toContain(
+      `aria-label="≈ $24.50, locally observed token evidence, partial period coverage, cost estimated from local pricing evidence, pricing basis ${pricingBasis}"`,
+    );
+    expect(markup).toContain(
+      `aria-label="≈ $61.75, locally observed token evidence, partial period coverage, cost estimated from local pricing evidence, pricing basis ${pricingBasis}"`,
+    );
+    expect(markup).toContain('aria-label="Today usage gauge 10 percent"');
+    expect(markup).toContain('aria-label="7 days usage gauge 40 percent"');
+    expect(markup).toContain('aria-label="30 days usage gauge 100 percent"');
+    expect(markup).toContain("width:10%");
+    expect(markup).toContain("width:40%");
+    expect(markup).toContain("width:100%");
+    expect(markup).not.toContain("≈ $38.61");
+  });
+
   test("shows compact costs without exposing internal quality labels", async () => {
     const currentState = await deliveredBrowserFixture("current");
     const markup = renderToStaticMarkup(
@@ -417,26 +546,31 @@ describe("panel states", () => {
       />,
     );
 
-    expect(markup).toContain("-8%");
-    expect(markup).toContain("Down 8 percent from the previous day");
-    expect(markup).toContain("+14%");
-    expect(markup).toContain("+22%");
-    expect(markup).toContain("≈ $38.61");
+    expect(markup).toContain("-8.6%");
+    expect(markup).toContain("Down 8.6 percent from the previous day");
+    expect(markup).toContain("+15%");
+    expect(markup).toContain("+20.3%");
+    expect(markup).toContain("≈ $44.86");
+    expect(markup).toContain("≈ $239.46");
+    expect(markup).toContain("≈ $918.48");
     expect(markup).not.toContain(">Reconciled<");
     expect(markup).not.toContain(">Modeled");
     expect(markup).not.toContain(">Local only<");
-    expect(markup).toContain("provider-reported token evidence");
-    expect(markup).toContain("complete period coverage");
-    expect(markup).toContain("pricing detail covers the reported tokens");
-    expect(markup).toContain("pricing basis openai-standard-2026-08-06-v1");
-    expect(markup).toContain("width:4%");
-    expect(markup).toContain("width:25%");
+    expect(markup).toContain("mixed token evidence");
+    expect(markup).toContain("partial period coverage");
+    expect(markup).toContain("cost estimated from local pricing evidence");
+    expect(markup).toContain(
+      "pricing basis openai-standard-2026-08-06-v1 + anthropic-standard-2026-08-07-v1",
+    );
+    expect(markup).toContain("width:5%");
+    expect(markup).toContain("width:26%");
     expect(markup).toContain("width:100%");
   });
 
   test("shows a compact indexing state when cost evidence is not ready", async () => {
     const currentState = await deliveredBrowserFixture("current");
     currentState.combinedUsage.scanStatus = "indexing";
+    currentState.combinedUsage.todayScanStatus = "indexing";
     const today = currentState.combinedUsage.today;
     if (today.availability === "unavailable")
       throw new Error("fixture unavailable");
@@ -466,8 +600,8 @@ describe("panel states", () => {
     );
 
     expect(markup).toContain("Indexing…");
-    expect(markup).toContain("≈ $214.96");
-    expect(markup).toContain("≈ $856.73");
+    expect(markup).toContain("≈ $239.46");
+    expect(markup).toContain("≈ $918.48");
     expect(markup).not.toContain('data-icon-spin="true"');
     expect(markup).not.toContain("Finish now");
     expect(markup).not.toContain("API equivalent unavailable");

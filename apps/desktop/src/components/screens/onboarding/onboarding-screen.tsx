@@ -22,6 +22,7 @@ import { ProvidersStep } from "./providers-step";
 type OnboardingSubmissionState = "failed" | "idle" | "submitting";
 
 type OnboardingScreenProps = {
+  appVersion?: string | undefined;
   busyProviders?: boolean | undefined;
   canComplete?: boolean | undefined;
   displayName?: string | undefined;
@@ -31,6 +32,7 @@ type OnboardingScreenProps = {
   onCheckProvider?: ((provider: CodingProvider) => void) | undefined;
   onDisplayNameChange?: ((displayName: string) => void) | undefined;
   onFinish?: ((displayName: string) => void) | undefined;
+  onStartRecovery?: (() => void) | undefined;
   onStepChange?: ((step: OnboardingStep) => void) | undefined;
   providers?: readonly CodingProviderAccessPresentation[] | undefined;
   setupReady?: boolean | undefined;
@@ -84,6 +86,7 @@ function StepActions({
   canComplete,
   displayName,
   onFinish,
+  onStartRecovery,
   onStepChange,
   setupState,
   step,
@@ -92,6 +95,7 @@ function StepActions({
   canComplete: boolean;
   displayName: string;
   onFinish?: ((displayName: string) => void) | undefined;
+  onStartRecovery?: (() => void) | undefined;
   onStepChange: (step: OnboardingStep) => void;
   setupState: OnboardingSetupState;
   step: OnboardingStep;
@@ -136,13 +140,22 @@ function StepActions({
               ? "Creating your Profile…"
               : ""}
         </span>
+        {step === "profile" ? (
+          <Button
+            data-profile-recovery-layout="step-actions"
+            data-profile-recovery-state="planned"
+            disabled={onStartRecovery === undefined}
+            onClick={onStartRecovery}
+            size="link"
+            type="button"
+            variant="link"
+          >
+            I have a Profile
+          </Button>
+        ) : null}
         <Button
           disabled={disabled}
-          onClick={() => {
-            if (next) onStepChange(next);
-            else onFinish?.(displayName.trim());
-          }}
-          type="button"
+          type="submit"
         >
           {submissionState === "submitting" && !next
             ? "Finishing…"
@@ -154,6 +167,7 @@ function StepActions({
 }
 
 function OnboardingScreen({
+  appVersion,
   busyProviders = false,
   canComplete,
   displayName: controlledDisplayName,
@@ -163,6 +177,7 @@ function OnboardingScreen({
   onCheckProvider,
   onDisplayNameChange,
   onFinish,
+  onStartRecovery,
   onStepChange,
   providers = [],
   setupReady = false,
@@ -205,6 +220,24 @@ function OnboardingScreen({
     onDisplayNameChange?.(nextDisplayName);
   };
 
+  const submitStep = () => {
+    const validDisplayName =
+      displayName.trim().length > 0 && [...displayName.trim()].length <= 40;
+    const next = onboardingSteps[activeStepIndex + 1]?.key;
+    if (next) {
+      if (step !== "profile" || validDisplayName) changeStep(next);
+      return;
+    }
+    if (
+      resolvedCanComplete &&
+      validDisplayName &&
+      onFinish !== undefined &&
+      submissionState !== "submitting"
+    ) {
+      onFinish(displayName.trim());
+    }
+  };
+
   return (
     <NativeWindow className="relative h-screen min-h-0 w-screen min-w-0 max-w-none min-[680px]:grid-cols-[220px_minmax(0,1fr)]">
       <NativeWindowSidebar className="h-full min-h-0 overflow-hidden px-4 py-7">
@@ -231,10 +264,19 @@ function OnboardingScreen({
             );
           })}
         </NativeWindowNav>
+        <small className="mt-auto px-2 font-mono text-[9px] text-sheet-muted">
+          Version {appVersion ?? "unavailable"}
+        </small>
       </NativeWindowSidebar>
 
       <NativeWindowContent className="h-full min-h-0 overflow-hidden p-0 min-[680px]:px-0">
-        <div className="flex h-full min-h-0 flex-col">
+        <form
+          className="flex h-full min-h-0 flex-col"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitStep();
+          }}
+        >
           <ScrollArea className="min-h-0 flex-1" viewportClassName="pt-8 pb-3">
             <div className="px-12">
               <div className="mx-auto max-w-[720px]">
@@ -269,6 +311,7 @@ function OnboardingScreen({
                 canComplete={resolvedCanComplete}
                 displayName={displayName}
                 onFinish={onFinish}
+                onStartRecovery={onStartRecovery}
                 onStepChange={changeStep}
                 setupState={resolvedSetupState}
                 step={step}
@@ -276,7 +319,7 @@ function OnboardingScreen({
               />
             </div>
           </div>
-        </div>
+        </form>
       </NativeWindowContent>
     </NativeWindow>
   );

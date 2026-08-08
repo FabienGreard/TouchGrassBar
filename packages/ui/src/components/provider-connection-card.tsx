@@ -63,7 +63,7 @@ function ProviderConnectionCard({
       <span className="grid size-11 place-items-center rounded-[11px] border border-sheet-line bg-white/75">
         <ProviderMark provider={provider} size="large" />
       </span>
-      <div className="min-w-0">
+      <div className="flex h-full min-w-0 flex-col">
         <div className="flex flex-wrap items-center gap-2">
           <strong className="text-[13px]">{label}</strong>
           <StatusPill tone={statusTone}>{status}</StatusPill>
@@ -73,7 +73,9 @@ function ProviderConnectionCard({
         </small>
         {detail}
         {action === undefined ? null : (
-          <div className="mt-2.5 flex items-center justify-end">{action}</div>
+          <div className="mt-auto flex items-center justify-end pt-1">
+            {action}
+          </div>
         )}
       </div>
     </article>

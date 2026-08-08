@@ -67,14 +67,9 @@ execFileSync(
 );
 
 console.log(`Running signed development app: ${basename(appBundlePath)}`);
-
-const child = Bun.spawn([bundledExecutable, ...argumentsList], {
-  env: Bun.env,
-  stderr: "inherit",
-  stdin: "inherit",
-  stdout: "inherit",
-});
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => child.kill(signal));
-}
-process.exitCode = await child.exited;
+// Replace the runner so a Tauri rebuild stops the app instead of orphaning it.
+process.execve(
+  bundledExecutable,
+  [bundledExecutable, ...argumentsList],
+  process.env,
+);
