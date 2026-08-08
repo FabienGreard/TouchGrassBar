@@ -620,6 +620,24 @@ pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
         cached: SanitizedDesktopStateV3,
         attempt: &RefreshAttempt,
     ) -> Result<SnapshotRefreshOutcome, RefreshFailure>;
+
+    /// Reports complete refresh outcomes as soon as they are safe to commit.
+    /// Adapters that have one result use the default atomic report. A
+    /// multi-provider coordinator can report one provider at a time.
+    fn refresh_with_progress(
+        &self,
+        cached: SanitizedDesktopStateV3,
+        attempt: &RefreshAttempt,
+        progress: &dyn SnapshotRefreshProgress,
+    ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
+        let outcome = self.refresh(cached, attempt)?;
+        progress.report(outcome)?;
+        Ok(SnapshotRefreshOutcome::default())
+    }
+}
+
+pub(crate) trait SnapshotRefreshProgress: Send + Sync {
+    fn report(&self, outcome: SnapshotRefreshOutcome) -> Result<(), RefreshFailure>;
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -637,6 +655,12 @@ impl From<Option<SanitizedDesktopStateV3>> for SnapshotRefreshOutcome {
             snapshot,
             completed_providers: BTreeSet::new(),
         }
+    }
+}
+
+impl SnapshotRefreshOutcome {
+    fn is_empty(&self) -> bool {
+        self.snapshot.is_none() && self.completed_providers.is_empty()
     }
 }
 
@@ -1508,11 +1532,101 @@ impl Drop for RefreshCoordinator {
 }
 
 enum RefreshRunResult {
-    Completed {
-        failed: bool,
-        notice: Option<RevisionNotice>,
-    },
+    Completed { failed: bool },
     Cancelled,
+}
+
+#[derive(Default)]
+struct SnapshotRefreshProgressState {
+    persistence_failed: bool,
+}
+
+struct NativeSnapshotRefreshProgress {
+    projection: Arc<CachedProjection>,
+    store: Arc<Mutex<ReadModelStore>>,
+    subscribers: Arc<RevisionSubscribers>,
+    clock: Arc<dyn Clock>,
+    inbox: Arc<RefreshInbox>,
+    enablement: Arc<dyn ProviderEnablementPolicy>,
+    attempt: RefreshAttempt,
+    provider_settings_generation: u64,
+    state: Mutex<SnapshotRefreshProgressState>,
+}
+
+impl NativeSnapshotRefreshProgress {
+    fn persistence_failed(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .persistence_failed
+    }
+}
+
+impl SnapshotRefreshProgress for NativeSnapshotRefreshProgress {
+    fn report(&self, outcome: SnapshotRefreshOutcome) -> Result<(), RefreshFailure> {
+        if outcome.is_empty() {
+            return Ok(());
+        }
+        self.attempt.remaining()?;
+        if self
+            .inbox
+            .provider_settings_generation
+            .load(Ordering::Acquire)
+            != self.provider_settings_generation
+        {
+            return Ok(());
+        }
+
+        let completed_at = self.clock.now();
+        let refreshed = match outcome.snapshot {
+            Some(refreshed) => {
+                transition_snapshot_at(&refreshed, completed_at).unwrap_or(refreshed)
+            }
+            None => self
+                .projection
+                .snapshot()
+                .map_err(|_| RefreshFailure::SourceUnavailable)?,
+        };
+        let completed_providers = outcome
+            .completed_providers
+            .into_iter()
+            .filter(|provider| self.enablement.is_provider_enabled(*provider))
+            .collect::<BTreeSet<_>>();
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| RefreshFailure::SourceUnavailable)?;
+        if self
+            .inbox
+            .provider_settings_generation
+            .load(Ordering::Acquire)
+            != self.provider_settings_generation
+        {
+            return Ok(());
+        }
+        let commit = self
+            .projection
+            .commit_refreshed_snapshot_with_completed(
+                &mut store,
+                refreshed,
+                self.enablement.as_ref(),
+                completed_at,
+                &completed_providers,
+            )
+            .map_err(|_| RefreshFailure::SourceUnavailable)?;
+        drop(store);
+
+        if commit.persistence_failed {
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .persistence_failed = true;
+        }
+        if let Some(notice) = commit.notice {
+            self.subscribers.publish(notice);
+        }
+        Ok(())
+    }
 }
 
 struct CoordinatorWorker {
@@ -1603,22 +1717,18 @@ impl CoordinatorWorker {
                 }
                 let _ = self.inbox.wake.try_send(());
             }
-            let notice = match result {
-                RefreshRunResult::Completed { failed, notice } => {
+            match result {
+                RefreshRunResult::Completed { failed } => {
                     if sources.contains(RefreshSource::LocalUsageCatchUp) {
                         self.record_local_usage_catch_up_result(failed, refresh_started.elapsed());
                     }
                     if !sources.is_only(RefreshSource::LocalUsageCatchUp) {
                         self.record_refresh_result(failed, self.clock.now());
                     }
-                    notice
                 }
-                RefreshRunResult::Cancelled => None,
-            };
-            self.inbox.in_flight.store(false, Ordering::Release);
-            if let Some(notice) = notice {
-                self.subscribers.publish(notice);
+                RefreshRunResult::Cancelled => {}
             }
+            self.inbox.in_flight.store(false, Ordering::Release);
         }
     }
 
@@ -1702,16 +1812,12 @@ impl CoordinatorWorker {
             .inbox
             .provider_settings_generation
             .load(Ordering::Acquire);
-        let (mut cached, mut first_observation_waits) =
-            match self.projection.snapshot_with_first_observation_waits() {
-                Ok(cached) => cached,
-                Err(_) => {
-                    return RefreshRunResult::Completed {
-                        failed: true,
-                        notice: None,
-                    };
-                }
-            };
+        let mut cached = match self.projection.snapshot() {
+            Ok(cached) => cached,
+            Err(_) => {
+                return RefreshRunResult::Completed { failed: true };
+            }
+        };
         let mut pre_refresh_failed = false;
         if let Some(transitioned) = transition_snapshot_at(&cached, self.clock.now()) {
             let transition = self
@@ -1732,11 +1838,8 @@ impl CoordinatorWorker {
                     if let Some(notice) = outcome.notice {
                         self.subscribers.publish(notice);
                     }
-                    match self.projection.snapshot_with_first_observation_waits() {
-                        Ok((transitioned, waits)) => {
-                            cached = transitioned;
-                            first_observation_waits = waits;
-                        }
+                    match self.projection.snapshot() {
+                        Ok(transitioned) => cached = transitioned,
                         Err(_) => pre_refresh_failed = true,
                     }
                 }
@@ -1744,77 +1847,58 @@ impl CoordinatorWorker {
             }
         }
         let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled), sources);
+        let progress = NativeSnapshotRefreshProgress {
+            projection: Arc::clone(&self.projection),
+            store: Arc::clone(&self.store),
+            subscribers: Arc::clone(&self.subscribers),
+            clock: Arc::clone(&self.clock),
+            inbox: Arc::clone(&self.inbox),
+            enablement: Arc::clone(&self.enablement),
+            attempt: attempt.clone(),
+            provider_settings_generation,
+            state: Mutex::new(SnapshotRefreshProgressState::default()),
+        };
         let observation = catch_unwind(AssertUnwindSafe(|| {
-            self.refresh_adapter.refresh(cached.clone(), &attempt)
+            self.refresh_adapter
+                .refresh_with_progress(cached, &attempt, &progress)
         }));
         if attempt.is_cancelled() {
             return RefreshRunResult::Cancelled;
         }
-        let completed_at = self.clock.now();
 
-        let (candidate, completed_providers, source_failed) = match observation {
-            Ok(Ok(outcome)) if attempt.remaining().is_ok() => {
-                let candidate = match outcome.snapshot {
-                    Some(refreshed) => {
-                        Some(transition_snapshot_at(&refreshed, completed_at).unwrap_or(refreshed))
-                    }
-                    None => transition_snapshot_at(&cached, completed_at),
-                };
-                (candidate, outcome.completed_providers, false)
-            }
+        let mut source_failed = match observation {
+            Ok(Ok(outcome)) if attempt.remaining().is_ok() => match progress.report(outcome) {
+                Ok(()) => false,
+                Err(RefreshFailure::Cancelled) => return RefreshRunResult::Cancelled,
+                Err(_) => true,
+            },
             Ok(Err(RefreshFailure::Cancelled)) => return RefreshRunResult::Cancelled,
-            Ok(Err(_)) | Ok(Ok(_)) | Err(_) => (
-                transition_snapshot_at(&cached, completed_at),
-                BTreeSet::new(),
-                true,
-            ),
+            Ok(Err(_)) | Ok(Ok(_)) | Err(_) => true,
         };
         if attempt.is_cancelled() {
             return RefreshRunResult::Cancelled;
         }
-
-        let store = self.store.lock().map_err(|_| "native state unavailable");
-        let commit_result = store.and_then(|mut store| {
-            if self
-                .inbox
-                .provider_settings_generation
-                .load(Ordering::Acquire)
-                != provider_settings_generation
-            {
-                return Ok(None);
+        if !source_failed {
+            let transition = self
+                .projection
+                .snapshot()
+                .map_err(|_| RefreshFailure::SourceUnavailable)
+                .and_then(|current| {
+                    let Some(transitioned) = transition_snapshot_at(&current, self.clock.now())
+                    else {
+                        return Ok(());
+                    };
+                    progress.report(SnapshotRefreshOutcome::from(Some(transitioned)))
+                });
+            match transition {
+                Ok(()) => {}
+                Err(RefreshFailure::Cancelled) => return RefreshRunResult::Cancelled,
+                Err(_) => source_failed = true,
             }
-            let mut completed_first_observations = first_observation_waits
-                .intersection(&completed_providers)
-                .copied()
-                .collect::<BTreeSet<_>>();
-            completed_first_observations
-                .retain(|provider| self.enablement.is_provider_enabled(*provider));
-            let outcome = if candidate.is_some() || !completed_first_observations.is_empty() {
-                Some(self.projection.commit_refreshed_snapshot_with_completed(
-                    &mut store,
-                    candidate.unwrap_or_else(|| cached.clone()),
-                    self.enablement.as_ref(),
-                    completed_at,
-                    &completed_first_observations,
-                )?)
-            } else {
-                None
-            };
-            Ok(outcome)
-        });
-        let failed = pre_refresh_failed
-            || source_failed
-            || commit_result.is_err()
-            || commit_result
-                .as_ref()
-                .ok()
-                .and_then(Option::as_ref)
-                .is_some_and(|outcome| outcome.persistence_failed);
-        let notice = commit_result
-            .ok()
-            .flatten()
-            .and_then(|outcome| outcome.notice);
-        RefreshRunResult::Completed { failed, notice }
+        }
+        RefreshRunResult::Completed {
+            failed: pre_refresh_failed || source_failed || progress.persistence_failed(),
+        }
     }
 
     fn record_refresh_result(&mut self, failed: bool, now: OffsetDateTime) {
@@ -3813,6 +3897,51 @@ mod tests {
     }
 
     #[test]
+    fn completed_provider_commits_before_peer_refresh_finishes() {
+        struct ReleaseOnDrop(Option<Sender<()>>);
+
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                if let Some(release) = self.0.take() {
+                    let _ = release.send(());
+                }
+            }
+        }
+
+        let database = TestDatabase::new();
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
+        let (refresh_adapter, claude_finished, codex_release) =
+            crate::providers::test_staggered_observation_coordinator(Arc::clone(&clock));
+        let core = NativeCore::open_without_launch(&database.0, clock, refresh_adapter).unwrap();
+        let mut codex_release = ReleaseOnDrop(Some(codex_release));
+        let notices = core.revision_notices().unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        claude_finished
+            .recv_timeout(Duration::from_secs(1))
+            .expect("Claude refresh must finish");
+        let notice = notices
+            .recv_timeout(Duration::from_millis(250))
+            .expect("Claude result must commit while Codex remains active");
+        let panel = core.panel_state().unwrap();
+
+        assert_eq!(panel.revision, notice.revision);
+        assert!(
+            core.inner
+                .coordinator
+                .inbox
+                .in_flight
+                .load(Ordering::Acquire)
+        );
+        assert!(matches!(
+            panel.provider(CodingProvider::Claude).unwrap().quota,
+            ProviderSnapshot::Current { .. }
+        ));
+        codex_release.0.take().unwrap().send(()).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+    }
+
+    #[test]
     fn refresh_drops_closed_notice_receivers_without_rejecting_work() {
         let core = NativeCore::with_refresh_adapter(Arc::new(ScriptedRefreshSource::new([Ok(
             Some(observed_state(test_time(), 42)),
@@ -4749,6 +4878,8 @@ mod tests {
                 .revision,
             "2"
         );
+        wait_for_completed_runs(&source, 1);
+        wait_for_idle(&core);
 
         clock.advance(REFRESH_INTERVAL);
         assert!(
@@ -4771,6 +4902,7 @@ mod tests {
             "4"
         );
         wait_for_completed_runs(&source, 2);
+        wait_for_idle(&core);
 
         assert!(
             core.request_refresh(RefreshSource::Manual)
@@ -4785,6 +4917,7 @@ mod tests {
             "5"
         );
         wait_for_completed_runs(&source, 3);
+        wait_for_idle(&core);
         assert!(core.request_refresh(RefreshSource::Wake).unwrap().accepted);
         assert_eq!(
             notices
@@ -4794,6 +4927,7 @@ mod tests {
             "6"
         );
         wait_for_completed_runs(&source, 4);
+        wait_for_idle(&core);
         assert!(
             core.request_refresh(RefreshSource::NetworkRecovery)
                 .unwrap()
@@ -4807,6 +4941,7 @@ mod tests {
             "7"
         );
         wait_for_completed_runs(&source, 5);
+        wait_for_idle(&core);
 
         clock.advance(REFRESH_INTERVAL - Duration::from_secs(1));
         assert!(
@@ -5089,6 +5224,7 @@ mod tests {
                 .revision,
             "2"
         );
+        core.wait_for_refresh_completion().unwrap();
 
         clock.advance(Duration::from_secs(2 * 60));
         assert!(
