@@ -26,7 +26,7 @@ Automated fixtures must cover Quota Lane freshness and reset transitions; provid
 
 ## Score materialization
 
-Every accepted change recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates both `publicScores` and the global Aggregate entry.
+Every accepted change recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates both `publicScores` and the global Aggregate entry. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
 
 The Aggregate component has one installation named `doomerboard`. It partitions scores by keys such as:
 

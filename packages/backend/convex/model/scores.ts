@@ -7,23 +7,45 @@ import {
   WINDOWS,
   boardKey,
   subtractRankingDays,
+  type ApiEquivalentCost,
   type ScoreScope,
   type ScoreWindow,
 } from "./values";
 
 type CalculatedScore = {
+  apiEquivalentCost: ApiEquivalentCost | undefined;
   apiEquivalentCostMicros: number | undefined;
   tokenScore: number;
 };
 
+type DailyUsageRow = {
+  apiEquivalentCost?: ApiEquivalentCost;
+  apiEquivalentCostMicros?: number;
+  costIsComplete: boolean;
+  observedTokens: number;
+  provider: string;
+  rankingDay: string;
+};
+
+function checkedAdd(left: number, right: number, field: string) {
+  const sum = left + right;
+  if (!Number.isSafeInteger(sum)) {
+    throw new Error(`${field} exceeds the safe integer range`);
+  }
+  return sum;
+}
+
+function weakestQuality(
+  left: ApiEquivalentCost["quality"],
+  right: ApiEquivalentCost["quality"],
+): ApiEquivalentCost["quality"] {
+  if (left === "modeled" || right === "modeled") return "modeled";
+  if (left === "local-only" || right === "local-only") return "local-only";
+  return "reconciled";
+}
+
 export function calculateScore(
-  rows: Array<{
-    apiEquivalentCostMicros?: number;
-    costIsComplete: boolean;
-    observedTokens: number;
-    provider: string;
-    rankingDay: string;
-  }>,
+  rows: DailyUsageRow[],
   scope: ScoreScope,
   windowDays: ScoreWindow,
   asOfDay: string,
@@ -31,7 +53,11 @@ export function calculateScore(
   const fromDay = subtractRankingDays(asOfDay, windowDays - 1);
   let tokenScore = 0;
   let apiEquivalentCostMicros = 0;
-  let costIsComplete = true;
+  let coveredTokenPercent = 0;
+  let quality: ApiEquivalentCost["quality"] = "reconciled";
+  let hasPricedEvidence = false;
+  let hasUnpricedTokens = false;
+  const pricingBases = new Set<string>();
 
   for (const row of rows) {
     if (row.rankingDay < fromDay || row.rankingDay > asOfDay) {
@@ -40,15 +66,52 @@ export function calculateScore(
     if (scope !== "combined" && row.provider !== scope) {
       continue;
     }
-    tokenScore += row.observedTokens;
-    apiEquivalentCostMicros += row.apiEquivalentCostMicros ?? 0;
-    if (!row.costIsComplete && row.observedTokens > 0) {
-      costIsComplete = false;
+    tokenScore = checkedAdd(tokenScore, row.observedTokens, "Token Score");
+    const cost = row.apiEquivalentCost;
+    if (!cost) {
+      hasUnpricedTokens ||= row.observedTokens > 0;
+      continue;
     }
+    hasPricedEvidence = true;
+    apiEquivalentCostMicros = checkedAdd(
+      apiEquivalentCostMicros,
+      cost.micros,
+      "API-equivalent cost",
+    );
+    pricingBases.add(cost.pricingBasis);
+    quality = weakestQuality(quality, cost.quality);
+    const coveragePercent =
+      cost.quality === "modeled" ? cost.coveragePercent : 100;
+    if (coveragePercent === null) {
+      throw new Error("Modeled cost is missing its coverage");
+    }
+    coveredTokenPercent += coveragePercent * row.observedTokens;
   }
 
+  if (!hasPricedEvidence) {
+    return {
+      apiEquivalentCost: undefined,
+      apiEquivalentCostMicros: undefined,
+      tokenScore,
+    };
+  }
+  if (hasUnpricedTokens) quality = "modeled";
+  const coveragePercent =
+    quality === "modeled"
+      ? tokenScore > 0
+        ? Math.min(Math.max(coveredTokenPercent / tokenScore, 0), 100)
+        : 100
+      : null;
+  const apiEquivalentCost: ApiEquivalentCost = {
+    coveragePercent,
+    micros: apiEquivalentCostMicros,
+    pricingBasis: [...pricingBases].sort().join(" + "),
+    quality,
+  };
+
   return {
-    apiEquivalentCostMicros: costIsComplete ? apiEquivalentCostMicros : undefined,
+    apiEquivalentCost,
+    apiEquivalentCostMicros,
     tokenScore,
   };
 }
@@ -87,6 +150,7 @@ async function upsertPublicScore(
   if (existing) {
     await ctx.db.patch(existing._id, {
       ...values,
+      apiEquivalentCost: score.apiEquivalentCost,
       apiEquivalentCostMicros: score.apiEquivalentCostMicros,
     });
     await globalDoomerboard.replace(
@@ -99,6 +163,9 @@ async function upsertPublicScore(
 
   const publicScoreId = await ctx.db.insert("publicScores", {
     ...values,
+    ...(score.apiEquivalentCost === undefined
+      ? {}
+      : { apiEquivalentCost: score.apiEquivalentCost }),
     ...(score.apiEquivalentCostMicros === undefined
       ? {}
       : { apiEquivalentCostMicros: score.apiEquivalentCostMicros }),
@@ -146,11 +213,15 @@ export async function recomputeScores(
       if (existing) {
         await ctx.db.patch(existing._id, {
           ...values,
+          apiEquivalentCost: score.apiEquivalentCost,
           apiEquivalentCostMicros: score.apiEquivalentCostMicros,
         });
       } else {
         await ctx.db.insert("userScores", {
           ...values,
+          ...(score.apiEquivalentCost === undefined
+            ? {}
+            : { apiEquivalentCost: score.apiEquivalentCost }),
           ...(score.apiEquivalentCostMicros === undefined
             ? {}
             : { apiEquivalentCostMicros: score.apiEquivalentCostMicros }),
@@ -159,6 +230,7 @@ export async function recomputeScores(
       }
       await upsertPublicScore(ctx, tokenmaxxer, scope, windowDays, score);
       overview.push({
+        apiEquivalentCost: score.apiEquivalentCost ?? null,
         apiEquivalentCostMicros: score.apiEquivalentCostMicros ?? null,
         scope,
         tokenScore: score.tokenScore,

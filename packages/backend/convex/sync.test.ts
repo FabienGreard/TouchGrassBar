@@ -273,6 +273,75 @@ test("both providers commit atomically and retries report exact revision outcome
   ]);
 });
 
+test("modeled cost metadata reaches daily, score, and Doomerboard rows", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const apiEquivalentCost = {
+    coveragePercent: 62.5,
+    micros: 1_694_478,
+    pricingBasis: "anthropic-standard-2026-08-07-v1",
+    quality: "modeled" as const,
+  };
+
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [
+      usageSnapshot({
+        apiEquivalentCost,
+        observedTokens: 1_458_285,
+        provider: "claude",
+      }),
+    ],
+  });
+
+  const stored = await t.run(async (ctx) => ({
+    publicScores: await ctx.db.query("publicScores").collect(),
+    userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
+    userScores: await ctx.db.query("userScores").collect(),
+  }));
+  expect(stored.userDailyUsage).toHaveLength(1);
+  expect(stored.userDailyUsage[0]).toMatchObject({
+    apiEquivalentCost,
+    apiEquivalentCostMicros: apiEquivalentCost.micros,
+    costIsComplete: false,
+  });
+  expect(
+    stored.userScores.find(
+      (row) => row.scope === "claude" && row.windowDays === 1,
+    ),
+  ).toMatchObject({
+    apiEquivalentCost,
+    apiEquivalentCostMicros: apiEquivalentCost.micros,
+  });
+  expect(
+    stored.publicScores.find(
+      (row) => row.scope === "claude" && row.windowDays === 1,
+    ),
+  ).toMatchObject({
+    apiEquivalentCost,
+    apiEquivalentCostMicros: apiEquivalentCost.micros,
+  });
+
+  await expect(
+    t.query(api.doomerboards.global, {
+      limit: 10,
+      scope: "claude",
+      windowDays: 1,
+    }),
+  ).resolves.toEqual([
+    {
+      apiEquivalentCost,
+      apiEquivalentCostMicros: apiEquivalentCost.micros,
+      displayName: "Fabien",
+      rank: 1,
+      tokenScore: 1_458_285,
+      touchGrassId: expect.any(String),
+    },
+  ]);
+});
+
 test("Active Mac authority is isolated by Profile, credential, generation, and revocation", async () => {
   const t = testBackend();
   const aliceCredential = installationCredential("A");

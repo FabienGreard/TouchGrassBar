@@ -46,8 +46,13 @@ async function upsertDailyUsage(
     )
     .unique();
   const apiEquivalentCostMicros = snapshot.apiEquivalentCost?.micros;
+  const costIsComplete =
+    snapshot.observedTokens === 0 ||
+    (snapshot.apiEquivalentCost !== null &&
+      (snapshot.apiEquivalentCost.quality !== "modeled" ||
+        snapshot.apiEquivalentCost.coveragePercent === 100));
   const values = {
-    costIsComplete: apiEquivalentCostMicros !== undefined || snapshot.observedTokens === 0,
+    costIsComplete,
     observedTokens: snapshot.observedTokens,
     updatedAt: Date.now(),
   };
@@ -55,12 +60,16 @@ async function upsertDailyUsage(
   if (existing) {
     await ctx.db.patch(existing._id, {
       ...values,
+      apiEquivalentCost: snapshot.apiEquivalentCost ?? undefined,
       apiEquivalentCostMicros,
     });
     return;
   }
   await ctx.db.insert("userDailyUsage", {
     ...values,
+    ...(snapshot.apiEquivalentCost === null
+      ? {}
+      : { apiEquivalentCost: snapshot.apiEquivalentCost }),
     ...(apiEquivalentCostMicros === undefined ? {} : { apiEquivalentCostMicros }),
     provider: snapshot.provider,
     rankingDay: snapshot.rankingDay,

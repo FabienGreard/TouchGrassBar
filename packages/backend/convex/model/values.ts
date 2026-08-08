@@ -17,14 +17,15 @@ export const correctionReasonValidator = v.union(
   v.literal("provider-replacement"),
   v.literal("parser-correction"),
 );
+export const apiEquivalentCostValueValidator = v.object({
+  coveragePercent: v.union(v.number(), v.null()),
+  micros: v.number(),
+  pricingBasis: v.string(),
+  quality: costQualityValidator,
+});
 export const apiEquivalentCostValidator = v.union(
   v.null(),
-  v.object({
-    coveragePercent: v.union(v.number(), v.null()),
-    micros: v.number(),
-    pricingBasis: v.string(),
-    quality: costQualityValidator,
-  }),
+  apiEquivalentCostValueValidator,
 );
 
 const MAX_OBSERVED_AT_FUTURE_SKEW_MS = 5 * 60 * 1_000;
@@ -45,10 +46,7 @@ export const usageSnapshotValidator = v.object({
 export type Provider = Infer<typeof providerValidator>;
 export type ScoreScope = Infer<typeof scoreScopeValidator>;
 export type ScoreWindow = Infer<typeof scoreWindowValidator>;
-export type ApiEquivalentCost = Exclude<
-  Infer<typeof apiEquivalentCostValidator>,
-  null
->;
+export type ApiEquivalentCost = Infer<typeof apiEquivalentCostValueValidator>;
 export type UsageSnapshot = Infer<typeof usageSnapshotValidator>;
 
 const PRICING_BASIS_BY_PROVIDER: Record<Provider, string> = {

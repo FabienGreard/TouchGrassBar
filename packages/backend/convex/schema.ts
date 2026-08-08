@@ -3,6 +3,7 @@ import { v } from "convex/values";
 
 import {
   apiEquivalentCostValidator as apiEquivalentCost,
+  apiEquivalentCostValueValidator as apiEquivalentCostValue,
   correctionReasonValidator as correctionReason,
   coverageValidator as coverage,
   evidenceBasisValidator as evidenceBasis,
@@ -100,6 +101,8 @@ export default defineSchema({
     provider,
     rankingDay: v.string(),
     observedTokens: v.number(),
+    apiEquivalentCost: v.optional(apiEquivalentCostValue),
+    // Compatibility fields for rows written before the complete cost object.
     apiEquivalentCostMicros: v.optional(v.number()),
     costIsComplete: v.boolean(),
     updatedAt: v.number(),
@@ -117,6 +120,8 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
+    apiEquivalentCost: v.optional(apiEquivalentCostValue),
+    // Compatibility field for clients that read only the numeric estimate.
     apiEquivalentCostMicros: v.optional(v.number()),
     computedAt: v.number(),
   })
@@ -134,6 +139,8 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
+    apiEquivalentCost: v.optional(apiEquivalentCostValue),
+    // Compatibility field for clients that read only the numeric estimate.
     apiEquivalentCostMicros: v.optional(v.number()),
     displayName: v.string(),
     touchGrassId: v.string(),
