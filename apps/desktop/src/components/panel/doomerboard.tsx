@@ -56,7 +56,7 @@ function QuerySelector({
     <PanelMenu>
       <PanelMenuTrigger asChild>
         <Button
-          aria-label={`Select Doomerboard ${label}`}
+          aria-label={`Select Leaderboard ${label}`}
           size="quiet"
           type="button"
           variant="ghost"
@@ -175,7 +175,7 @@ function DoomerboardToolbar({
     <>
       <header className="flex items-center justify-between px-3.5 pt-3">
         <div className="flex min-w-0 items-center gap-1.5">
-          <strong className="shrink-0 text-[10px]">Doomerboard</strong>
+          <strong className="shrink-0 text-[10px]">Leaderboard</strong>
           <CurrentUserProfile currentUser={currentUser} />
         </div>
         <div className="flex items-center gap-0.5 text-pearl-muted">
@@ -198,7 +198,7 @@ function DoomerboardToolbar({
       </header>
       <div className="mx-3.5 mt-2">
         <SegmentedControl
-          aria-label="Doomerboard audience"
+          aria-label="Leaderboard audience"
           onValueChange={(value) => onAudienceChange(value as Audience)}
           value={audience}
         >
@@ -217,11 +217,11 @@ function DoomerboardUnavailable({
 }) {
   return (
     <div
-      aria-label="Doomerboard unavailable"
+      aria-label="Leaderboard unavailable"
       className="mx-3.5 flex h-full flex-col items-center justify-center rounded-[12px] border border-dashed border-pearl-line bg-pearl-surface px-6 py-3.5 text-center shadow-surface contrast-more:border-pearl-ink"
     >
       <RankingIcon aria-hidden="true" size={20} />
-      <strong className="mt-1.5 text-[10px]">Doomerboard unavailable</strong>
+      <strong className="mt-1.5 text-[10px]">Leaderboard unavailable</strong>
       <small className="mt-0.5 max-w-[260px] text-[8px] leading-3.5 text-pearl-muted contrast-more:text-pearl-ink">
         {selectionUnavailable
           ? "Scores are unavailable for this selection."
@@ -283,7 +283,7 @@ function DoomerboardPodium({ rows }: { rows: readonly DoomerboardRow[] }) {
 
   return (
     <ScrollArea
-      aria-label="Doomerboard rankings"
+      aria-label="Leaderboard rankings"
       className="h-full"
       data-doomerboard-scroll=""
       viewportClassName="select-none overscroll-contain"
@@ -315,7 +315,7 @@ function DoomerboardPodium({ rows }: { rows: readonly DoomerboardRow[] }) {
       </div>
       {ledger.length > 0 ? (
         <div
-          aria-label="More Doomerboard ranks"
+          aria-label="More Leaderboard ranks"
           className="mx-3.5 border-t border-pearl-line"
           data-slot="doomerboard-ledger"
         >
@@ -378,8 +378,8 @@ function Doomerboard({
           : tokenmaxxersEmpty
             ? "Friends empty"
             : globalRowsMatchSelection
-              ? "Doomerboard rankings"
-              : "Doomerboard unavailable"
+              ? "Leaderboard rankings"
+              : "Leaderboard unavailable"
       }
       className="pb-2"
     >

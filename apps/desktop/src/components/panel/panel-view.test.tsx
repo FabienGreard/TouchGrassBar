@@ -99,7 +99,7 @@ describe("panel states", () => {
     expect(markup).toMatch(/<img[^>]*brightness-0[^>]*data-slot="brand-mark"/);
     expect(markup.match(/aria-label="Open panel menu"/g)).toHaveLength(1);
     expect(markup).toContain('data-icon-provider="hugeicons"');
-    expect(markup).toContain("Doomerboard unavailable");
+    expect(markup).toContain("Leaderboard unavailable");
     expect(markup).not.toContain("Add by ID");
     expect(markup).toContain('aria-label="Current user profile unavailable"');
     expect(markup).not.toContain("— users");
@@ -109,11 +109,11 @@ describe("panel states", () => {
     expect(markup).not.toContain("My Tokenmaxxers");
     expect(markup).toContain("Global");
     expect(markup).toMatch(
-      /aria-label="Select Doomerboard period"[^>]*>Today<\/button>/,
+      /aria-label="Select Leaderboard period"[^>]*>Today<\/button>/,
     );
     expect(markup).toContain("Combined");
-    expect(markup).toContain('aria-label="Select Doomerboard period"');
-    expect(markup).toContain('aria-label="Select Doomerboard provider"');
+    expect(markup).toContain('aria-label="Select Leaderboard period"');
+    expect(markup).toContain('aria-label="Select Leaderboard provider"');
     expect(markup.match(/aria-expanded:bg-pearl-ink\/5/g)).toHaveLength(3);
     expect(markup.match(/data-slot="metric-gauge"/g)).toHaveLength(3);
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
@@ -157,7 +157,7 @@ describe("panel states", () => {
       markup.match(/data-provider-availability="unavailable"/g),
     ).toHaveLength(2);
     expect(markup).not.toContain("1970-01-01");
-    expect(markup).toContain("Doomerboard unavailable");
+    expect(markup).toContain("Leaderboard unavailable");
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-slot="quota-progress"/g)).toHaveLength(2);
     expect(markup).not.toContain('data-slot="skeleton"');
@@ -333,7 +333,7 @@ describe("panel states", () => {
     expect(markup).toContain("data-radix-scroll-area-viewport");
     expect(markup).not.toMatch(/data-doomerboard-scroll=""[^>]*tabindex/);
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
-    expect(markup).not.toContain("Doomerboard unavailable");
+    expect(markup).not.toContain("Leaderboard unavailable");
     expect(markup).not.toContain("My Tokenmaxxers");
   });
 
