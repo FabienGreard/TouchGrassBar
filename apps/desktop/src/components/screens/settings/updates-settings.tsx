@@ -76,7 +76,7 @@ function UpdatesSettings({
 
   return (
     <div className="grid gap-3" data-slot="updates-settings">
-      <div className="flex items-center justify-between gap-6 rounded-[12px] bg-sheet-row px-4 py-3.5">
+      <div className="flex items-center justify-between gap-6 rounded-[12px] border border-sheet-row-border bg-sheet-row px-4 py-3.5">
         <span>
           <strong className="block text-[12px]">
             Version {state?.currentVersion ?? "unavailable"}
