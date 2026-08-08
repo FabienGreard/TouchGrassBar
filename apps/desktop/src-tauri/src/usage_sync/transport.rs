@@ -10,10 +10,15 @@ use zeroize::Zeroizing;
 
 use crate::profile::Secret;
 
-use super::{PendingUsageBatch, UsageSyncAcknowledgement, parse_usage_acknowledgements};
+use super::{
+    AcknowledgementOutcome, PendingUsageBatch, ProviderSettingsAcknowledgement,
+    UsageSyncAcknowledgements, parse_provider_settings_acknowledgement,
+    parse_usage_acknowledgements,
+};
 
 const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const DAILY_USAGE_MUTATION: &str = "sync:dailyUsage";
+const PROVIDER_SETTINGS_MUTATION: &str = "sync:providerSettings";
 const MAX_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_CONVEX_JWT_BYTES: usize = 8 * 1_024;
 const MAX_ACKNOWLEDGEMENT_BYTES: usize = 64 * 1_024;
@@ -23,7 +28,7 @@ const SYNC_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// The only outcomes that the native coordinator can use.
 #[derive(Debug, PartialEq)]
 pub(crate) enum UsageSyncTransportOutcome {
-    Committed(Vec<UsageSyncAcknowledgement>),
+    Committed(UsageSyncAcknowledgements),
     Offline,
     SessionRejected,
     AuthorityRejected,
@@ -118,7 +123,7 @@ impl HttpUsageSyncTransport {
 fn send_with_runtime(
     convex_url: &str,
     jwt: Zeroizing<String>,
-    args: BTreeMap<String, Value>,
+    args: BatchMutationArguments,
 ) -> UsageSyncTransportOutcome {
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
@@ -172,34 +177,113 @@ where
 async fn send_mutation(
     convex_url: &str,
     jwt: Zeroizing<String>,
-    args: BTreeMap<String, Value>,
+    args: BatchMutationArguments,
 ) -> UsageSyncTransportOutcome {
     let mut client = match ConvexClient::new(convex_url).await {
         Ok(client) => client,
         Err(_) => return UsageSyncTransportOutcome::Offline,
     };
     client.set_auth(Some(jwt.as_str().to_owned())).await;
-    let result = client.mutation(DAILY_USAGE_MUTATION, args).await;
+    let outcome = send_authenticated_mutations(&mut client, args).await;
     client.set_auth(None).await;
-    match result {
-        Ok(result) => classify_function_result(result),
-        Err(_) => UsageSyncTransportOutcome::Offline,
+    outcome
+}
+
+struct BatchMutationArguments {
+    provider_settings: Option<BTreeMap<String, Value>>,
+    usage: Option<BTreeMap<String, Value>>,
+}
+
+async fn send_authenticated_mutations(
+    client: &mut ConvexClient,
+    args: BatchMutationArguments,
+) -> UsageSyncTransportOutcome {
+    let provider_settings = if let Some(settings_args) = args.provider_settings {
+        let result = match client
+            .mutation(PROVIDER_SETTINGS_MUTATION, settings_args)
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => return UsageSyncTransportOutcome::Offline,
+        };
+        match classify_provider_settings_result(result) {
+            ParsedMutation::Value(acknowledgement) => Some(acknowledgement),
+            ParsedMutation::AuthorityRejected => {
+                return UsageSyncTransportOutcome::AuthorityRejected;
+            }
+            ParsedMutation::Deferred => return UsageSyncTransportOutcome::Deferred,
+        }
+    } else {
+        None
+    };
+
+    if provider_settings
+        .as_ref()
+        .is_some_and(|acknowledgement| acknowledgement.outcome == AcknowledgementOutcome::Stale)
+    {
+        return UsageSyncTransportOutcome::Committed(UsageSyncAcknowledgements {
+            provider_settings,
+            usage: Vec::new(),
+        });
     }
+
+    let usage = if let Some(usage_args) = args.usage {
+        let result = match client.mutation(DAILY_USAGE_MUTATION, usage_args).await {
+            Ok(result) => result,
+            Err(_) => return UsageSyncTransportOutcome::Offline,
+        };
+        match classify_usage_result(result) {
+            ParsedMutation::Value(acknowledgements) => acknowledgements,
+            ParsedMutation::AuthorityRejected => {
+                return UsageSyncTransportOutcome::AuthorityRejected;
+            }
+            ParsedMutation::Deferred => return UsageSyncTransportOutcome::Deferred,
+        }
+    } else {
+        Vec::new()
+    };
+
+    UsageSyncTransportOutcome::Committed(UsageSyncAcknowledgements {
+        provider_settings,
+        usage,
+    })
 }
 
 fn mutation_arguments(
     batch: &PendingUsageBatch,
     installation_credential: &str,
     now: OffsetDateTime,
-) -> Result<BTreeMap<String, Value>, ()> {
-    let allowed = batch
-        .mutation_args(installation_credential, now)
-        .map_err(|_| ())?;
-    let serialized = serde_json::to_value(allowed).map_err(|_| ())?;
-    let Value::Object(args) = request_json_to_convex(serialized)? else {
-        return Err(());
+) -> Result<BatchMutationArguments, ()> {
+    let provider_settings = batch
+        .provider_settings_mutation_args(installation_credential)
+        .map_err(|_| ())?
+        .map(|allowed| {
+            let serialized = serde_json::to_value(allowed).map_err(|_| ())?;
+            let Value::Object(args) = request_json_to_convex(serialized)? else {
+                return Err(());
+            };
+            Ok(args)
+        })
+        .transpose()?;
+    let usage = if batch.has_usage_snapshots() {
+        let allowed = batch
+            .mutation_args(installation_credential, now)
+            .map_err(|_| ())?;
+        let serialized = serde_json::to_value(allowed).map_err(|_| ())?;
+        let Value::Object(args) = request_json_to_convex(serialized)? else {
+            return Err(());
+        };
+        Some(args)
+    } else {
+        None
     };
-    Ok(args)
+    if provider_settings.is_none() && usage.is_none() {
+        return Err(());
+    }
+    Ok(BatchMutationArguments {
+        provider_settings,
+        usage,
+    })
 }
 
 fn request_json_to_convex(value: JsonValue) -> Result<Value, ()> {
@@ -225,16 +309,42 @@ fn request_json_to_convex(value: JsonValue) -> Result<Value, ()> {
     }
 }
 
-fn classify_function_result(result: FunctionResult) -> UsageSyncTransportOutcome {
+enum ParsedMutation<T> {
+    Value(T),
+    AuthorityRejected,
+    Deferred,
+}
+
+fn classify_usage_result(
+    result: FunctionResult,
+) -> ParsedMutation<Vec<super::UsageSyncAcknowledgement>> {
     match result {
-        FunctionResult::Value(value) => parse_success_value(value)
-            .map(UsageSyncTransportOutcome::Committed)
-            .unwrap_or(UsageSyncTransportOutcome::Deferred),
+        FunctionResult::Value(value) => parse_success_value(value, parse_usage_acknowledgements)
+            .map(ParsedMutation::Value)
+            .unwrap_or(ParsedMutation::Deferred),
         FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
-            UsageSyncTransportOutcome::AuthorityRejected
+            ParsedMutation::AuthorityRejected
         }
         FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-            UsageSyncTransportOutcome::Deferred
+            ParsedMutation::Deferred
+        }
+    }
+}
+
+fn classify_provider_settings_result(
+    result: FunctionResult,
+) -> ParsedMutation<ProviderSettingsAcknowledgement> {
+    match result {
+        FunctionResult::Value(value) => {
+            parse_success_value(value, parse_provider_settings_acknowledgement)
+                .map(ParsedMutation::Value)
+                .unwrap_or(ParsedMutation::Deferred)
+        }
+        FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
+            ParsedMutation::AuthorityRejected
+        }
+        FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
+            ParsedMutation::Deferred
         }
     }
 }
@@ -250,14 +360,17 @@ fn is_exact_authority_rejection(data: &Value) -> bool {
         )
 }
 
-fn parse_success_value(value: Value) -> Result<Vec<UsageSyncAcknowledgement>, ()> {
+fn parse_success_value<T>(
+    value: Value,
+    parse: impl FnOnce(&[u8]) -> Result<T, super::UsageSyncError>,
+) -> Result<T, ()> {
     let mut budget = MAX_ACKNOWLEDGEMENT_BYTES;
     let json = response_convex_to_json(value, &mut budget)?;
     let encoded = serde_json::to_vec(&json).map_err(|_| ())?;
     if encoded.len() > MAX_ACKNOWLEDGEMENT_BYTES {
         return Err(());
     }
-    parse_usage_acknowledgements(&encoded).map_err(|_| ())
+    parse(&encoded).map_err(|_| ())
 }
 
 fn response_convex_to_json(value: Value, budget: &mut usize) -> Result<JsonValue, ()> {
@@ -304,7 +417,7 @@ fn consume_budget(budget: &mut usize, amount: usize) -> Result<(), ()> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use convex::{ConvexError, FunctionResult, Value};
     use rusqlite::Connection;
@@ -317,6 +430,7 @@ mod tests {
         usage_sync::{
             CorrectionReason, DailyUsageAggregate, SyncCoverage, SyncEvidenceBasis,
             install_usage_sync_schema, load_pending_usage_batch, queue_daily_aggregate,
+            queue_provider_settings,
         },
     };
 
@@ -333,7 +447,10 @@ mod tests {
         let outcome = send_with_runtime(
             "not-a-convex-url",
             Zeroizing::new("test-jwt".to_owned()),
-            BTreeMap::new(),
+            BatchMutationArguments {
+                provider_settings: None,
+                usage: Some(BTreeMap::new()),
+            },
         );
 
         assert_eq!(outcome, UsageSyncTransportOutcome::Offline);
@@ -391,6 +508,15 @@ mod tests {
         ]))])
     }
 
+    fn provider_settings_batch() -> PendingUsageBatch {
+        let mut connection = Connection::open_in_memory().unwrap();
+        install_usage_sync_schema(&connection).unwrap();
+        let transaction = connection.transaction().unwrap();
+        queue_provider_settings(&transaction, 4, &BTreeSet::from([CodingProvider::Codex])).unwrap();
+        transaction.commit().unwrap();
+        load_pending_usage_batch(&connection, 4).unwrap().unwrap()
+    }
+
     fn corrected_batch() -> PendingUsageBatch {
         let mut connection = Connection::open_in_memory().unwrap();
         install_usage_sync_schema(&connection).unwrap();
@@ -437,7 +563,8 @@ mod tests {
     #[test]
     fn converts_the_exact_allowlisted_request_to_convex_values() {
         let args = mutation_arguments(&batch(), INSTALLATION_CREDENTIAL, now()).unwrap();
-        let value = JsonValue::from(Value::Object(args));
+        assert!(args.provider_settings.is_none());
+        let value = JsonValue::from(Value::Object(args.usage.unwrap()));
 
         assert_eq!(
             value,
@@ -475,9 +602,28 @@ mod tests {
     }
 
     #[test]
+    fn converts_the_exact_provider_setting_request_to_convex_values() {
+        let args =
+            mutation_arguments(&provider_settings_batch(), INSTALLATION_CREDENTIAL, now()).unwrap();
+        assert!(args.usage.is_none());
+        let value = JsonValue::from(Value::Object(args.provider_settings.unwrap()));
+
+        assert_eq!(
+            value,
+            json!({
+                "activeMacGeneration": 4.0,
+                "enabledProviders": ["codex"],
+                "installationCredential": INSTALLATION_CREDENTIAL,
+                "revision": 1.0
+            })
+        );
+    }
+
+    #[test]
     fn converts_the_exact_correction_pair_to_convex_values() {
         let args = mutation_arguments(&corrected_batch(), INSTALLATION_CREDENTIAL, now()).unwrap();
-        let value = JsonValue::from(Value::Object(args));
+        assert!(args.provider_settings.is_none());
+        let value = JsonValue::from(Value::Object(args.usage.unwrap()));
 
         assert_eq!(
             value,
@@ -512,8 +658,8 @@ mod tests {
             )])),
         });
         assert!(matches!(
-            classify_function_result(exact),
-            UsageSyncTransportOutcome::AuthorityRejected
+            classify_usage_result(exact),
+            ParsedMutation::AuthorityRejected
         ));
 
         let with_extra_data = FunctionResult::ConvexError(ConvexError {
@@ -527,8 +673,8 @@ mod tests {
             ])),
         });
         assert!(matches!(
-            classify_function_result(with_extra_data),
-            UsageSyncTransportOutcome::Deferred
+            classify_usage_result(with_extra_data),
+            ParsedMutation::Deferred
         ));
     }
 
@@ -558,27 +704,54 @@ mod tests {
             ("provider".to_owned(), Value::String("codex".to_owned())),
         ]))]);
         assert!(matches!(
-            classify_function_result(FunctionResult::Value(malformed)),
-            UsageSyncTransportOutcome::Deferred
+            classify_usage_result(FunctionResult::Value(malformed)),
+            ParsedMutation::Deferred
         ));
         assert!(matches!(
-            classify_function_result(FunctionResult::Value(Value::Int64(1))),
-            UsageSyncTransportOutcome::Deferred
+            classify_usage_result(FunctionResult::Value(Value::Int64(1))),
+            ParsedMutation::Deferred
+        ));
+    }
+
+    #[test]
+    fn provider_setting_acknowledgement_is_exact() {
+        let valid = Value::Object(BTreeMap::from([
+            ("outcome".to_owned(), Value::String("committed".to_owned())),
+            ("revision".to_owned(), Value::Float64(2.0)),
+        ]));
+        assert!(matches!(
+            classify_provider_settings_result(FunctionResult::Value(valid)),
+            ParsedMutation::Value(ProviderSettingsAcknowledgement {
+                revision: 2,
+                outcome: AcknowledgementOutcome::Committed
+            })
+        ));
+        let hostile = Value::Object(BTreeMap::from([
+            ("outcome".to_owned(), Value::String("committed".to_owned())),
+            ("revision".to_owned(), Value::Float64(2.0)),
+            (
+                "installationId".to_owned(),
+                Value::String("private".to_owned()),
+            ),
+        ]));
+        assert!(matches!(
+            classify_provider_settings_result(FunctionResult::Value(hostile)),
+            ParsedMutation::Deferred
         ));
     }
 
     #[test]
     fn valid_acknowledgements_commit_without_private_error_detail() {
-        let outcome = classify_function_result(FunctionResult::Value(acknowledgement_value()));
+        let outcome = classify_usage_result(FunctionResult::Value(acknowledgement_value()));
         assert!(matches!(
             outcome,
-            UsageSyncTransportOutcome::Committed(ref values) if values.len() == 1
+            ParsedMutation::Value(ref values) if values.len() == 1
         ));
 
         let private_detail = "session-private-value";
-        let deferred =
-            classify_function_result(FunctionResult::ErrorMessage(private_detail.to_owned()));
-        assert_eq!(format!("{deferred:?}"), "Deferred");
-        assert!(!format!("{deferred:?}").contains(private_detail));
+        assert!(matches!(
+            classify_usage_result(FunctionResult::ErrorMessage(private_detail.to_owned())),
+            ParsedMutation::Deferred
+        ));
     }
 }

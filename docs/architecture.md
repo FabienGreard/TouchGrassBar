@@ -103,7 +103,7 @@ Shared strict TypeScript and Oxlint configuration.
 2. DTOs in the sanitized contract and the deliberate Profile Settings Recovery Key reveal may serialize across Tauri IPC. Privileged provider and other authentication types are separate and non-serializable through commands.
 3. React sends narrow typed intents and receives Sanitized Desktop State, bounded sanitized views, or the Recovery Key after the explicit **View** action. It has no generic transport command or direct provider, filesystem, Keychain, or network access.
 4. Rust synchronizes only validated cumulative Usage Snapshots through the official Convex Rust client.
-5. Convex validates the live Profile and Active Mac generation, then updates Daily Usage, scores, and Aggregate projections transactionally.
+5. Convex validates the live Profile and Active Mac generation, synchronizes the monotonic enabled-provider setting, then updates Daily Usage, filtered scores, and Aggregate projections transactionally.
 6. Rust sanitizes Convex results before React receives them.
 
 ## Native contract and state delivery

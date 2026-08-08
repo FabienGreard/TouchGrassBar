@@ -176,10 +176,32 @@ export async function recomputeScores(
   if (!tokenmaxxer) {
     throw new Error("Tokenmaxxer no longer exists");
   }
-  const dailyRows = await ctx.db
+  const activeDeviceId = tokenmaxxer.activeDeviceId;
+  const providerSettings = activeDeviceId
+    ? await ctx.db
+        .query("deviceProviderSettings")
+        .withIndex("by_device_id", (q) => q.eq("deviceId", activeDeviceId))
+        .unique()
+    : null;
+  if (
+    providerSettings &&
+    providerSettings.tokenmaxxerId !== tokenmaxxer._id
+  ) {
+    throw new Error("provider settings owner is invalid");
+  }
+  const enabledProviders = new Set(
+    providerSettings
+      ? [
+          ...(providerSettings.codexEnabled ? ["codex"] : []),
+          ...(providerSettings.claudeEnabled ? ["claude"] : []),
+        ]
+      : ["codex", "claude"],
+  );
+  const dailyRows = (await ctx.db
     .query("userDailyUsage")
     .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))
-    .take(1_000);
+    .take(1_000))
+    .filter((row) => enabledProviders.has(row.provider));
   const existingScores = await ctx.db
     .query("userScores")
     .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))

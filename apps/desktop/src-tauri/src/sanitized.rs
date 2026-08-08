@@ -32,12 +32,15 @@ use crate::providers::{
 use crate::quota_headroom::{RevisionedOverallQuotaHeadroom, overall_quota_headroom};
 use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update_state_schema};
 use crate::usage_sync::{
-    PendingUsageBatch, QueueState, QueueUpdate, UsageSyncAcknowledgement, UsageSyncAttemptResult,
-    UsageSyncCorrections, activate_generation, apply_usage_acknowledgements,
-    install_usage_sync_schema, load_active_usage_sync_generation, load_current_pending_usage_batch,
-    load_usage_sync_generation_state, mark_generation_authority_rejected, queue_current_utc_day,
-    queue_current_utc_day_with_corrections, stage_usage_sync_corrections,
+    PendingUsageBatch, QueueState, QueueUpdate, UsageSyncAcknowledgements, UsageSyncAttemptResult,
+    UsageSyncCorrections, activate_generation, apply_provider_settings_acknowledgement,
+    apply_usage_acknowledgements, install_usage_sync_schema, load_active_usage_sync_generation,
+    load_current_pending_usage_batch, load_usage_sync_generation_state,
+    mark_generation_authority_rejected, queue_current_utc_day,
+    queue_current_utc_day_with_corrections, queue_provider_settings, stage_usage_sync_corrections,
 };
+#[cfg(test)]
+use crate::usage_sync::{ProviderSettingsAcknowledgement, UsageSyncAcknowledgement};
 
 pub const CONTRACT_VERSION: u8 = 4;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
@@ -771,7 +774,7 @@ enum UsageSyncCommit<'a> {
     QueueCurrent(UsageSyncCorrections),
     Activate(u64),
     Acknowledge {
-        acknowledgements: &'a [UsageSyncAcknowledgement],
+        acknowledgements: &'a UsageSyncAcknowledgements,
         batch: &'a PendingUsageBatch,
     },
     Pending,
@@ -1032,6 +1035,11 @@ impl SqliteReadModelStore {
         match usage_sync {
             UsageSyncCommit::QueueCurrent(corrections) => {
                 if let Some(generation) = self.active_mac_generation {
+                    if previous_enabled_providers != enabled_providers {
+                        pending_usage_changed |=
+                            queue_provider_settings(&transaction, generation, enabled_providers)
+                                .map_err(|_| "native state persistence unavailable")?;
+                    }
                     let updates = queue_current_utc_day_with_corrections(
                         &transaction,
                         generation,
@@ -1041,7 +1049,7 @@ impl SqliteReadModelStore {
                         enabled_providers,
                     )
                     .map_err(|_| "native state persistence unavailable")?;
-                    pending_usage_changed = updates.iter().any(|update| {
+                    pending_usage_changed |= updates.iter().any(|update| {
                         matches!(
                             update,
                             QueueUpdate::Stored {
@@ -1067,6 +1075,9 @@ impl SqliteReadModelStore {
                 activate_generation(&transaction, generation)
                     .map_err(|_| "native state persistence unavailable")?;
                 self.active_mac_generation = Some(generation);
+                pending_usage_changed |=
+                    queue_provider_settings(&transaction, generation, enabled_providers)
+                        .map_err(|_| "native state persistence unavailable")?;
                 state.sync.status = SyncStatus::Pending;
                 let updates =
                     queue_current_utc_day(&transaction, generation, state, now, enabled_providers)
@@ -1087,20 +1098,43 @@ impl SqliteReadModelStore {
                 if self.active_mac_generation != Some(batch.active_mac_generation()) {
                     return Err("native state persistence unavailable");
                 }
-                apply_usage_acknowledgements(&transaction, batch, acknowledgements)
-                    .map_err(|_| "native state persistence unavailable")?;
-                pending_usage_changed = acknowledgements.iter().any(|acknowledgement| {
+                pending_usage_changed |= apply_provider_settings_acknowledgement(
+                    &transaction,
+                    batch,
+                    acknowledgements.provider_settings.as_ref(),
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+                if !acknowledgements.usage.is_empty() {
+                    apply_usage_acknowledgements(&transaction, batch, &acknowledgements.usage)
+                        .map_err(|_| "native state persistence unavailable")?;
+                } else if batch.has_usage_snapshots()
+                    && !acknowledgements
+                        .provider_settings
+                        .as_ref()
+                        .is_some_and(|acknowledgement| {
+                            acknowledgement.outcome
+                                == crate::usage_sync::AcknowledgementOutcome::Stale
+                        })
+                {
+                    return Err("native state persistence unavailable");
+                }
+                pending_usage_changed |= acknowledgements.usage.iter().any(|acknowledgement| {
                     acknowledgement.outcome == crate::usage_sync::AcknowledgementOutcome::Stale
                 });
-                state.sync.last_successful_at = Some(format_time(now));
-                state.sync.status = if !batch.is_for_current_utc_day(now)
-                    || acknowledgements.iter().any(|acknowledgement| {
-                        acknowledgement.outcome == crate::usage_sync::AcknowledgementOutcome::Stale
-                    }) {
-                    SyncStatus::Stale
+                if acknowledgements.usage.is_empty() {
+                    state.sync.status = sync_status_from_last_successful_day(state, now);
                 } else {
-                    SyncStatus::Synced
-                };
+                    state.sync.last_successful_at = Some(format_time(now));
+                    state.sync.status = if !batch.is_for_current_utc_day(now)
+                        || acknowledgements.usage.iter().any(|acknowledgement| {
+                            acknowledgement.outcome
+                                == crate::usage_sync::AcknowledgementOutcome::Stale
+                        }) {
+                        SyncStatus::Stale
+                    } else {
+                        SyncStatus::Synced
+                    };
+                }
                 let updates = queue_current_utc_day(
                     &transaction,
                     batch.active_mac_generation(),
@@ -1200,6 +1234,23 @@ fn normalize_legacy_sync_state(snapshot: &mut SanitizedDesktopStateV3) {
         && matches!(snapshot.sync.status, SyncStatus::Synced | SyncStatus::Stale)
     {
         snapshot.sync.status = SyncStatus::Unavailable;
+    }
+}
+
+fn sync_status_from_last_successful_day(
+    state: &SanitizedDesktopStateV3,
+    now: OffsetDateTime,
+) -> SyncStatus {
+    let Some(last_successful_at) = state.sync.last_successful_at.as_deref() else {
+        return SyncStatus::Unavailable;
+    };
+    if OffsetDateTime::parse(last_successful_at, &Rfc3339).is_ok_and(|last_success| {
+        last_success.to_offset(time::UtcOffset::UTC).date()
+            == now.to_offset(time::UtcOffset::UTC).date()
+    }) {
+        SyncStatus::Synced
+    } else {
+        SyncStatus::Stale
     }
 }
 
@@ -2708,9 +2759,7 @@ impl NativeCore {
         if let Some(notice) = commit.notice {
             self.inner.subscribers.publish(notice);
         }
-        if commit.pending_usage_changed {
-            self.inner.usage_sync_requests.request();
-        }
+        self.inner.usage_sync_requests.request();
         if !enabled {
             self.inner.coordinator.cancel_provider(provider);
         }
@@ -2892,7 +2941,15 @@ impl NativeCore {
     ) -> Result<(), &'static str> {
         self.finish_usage_sync_attempt(
             batch,
-            UsageSyncAttemptResult::Committed(acknowledgements.to_vec()),
+            UsageSyncAttemptResult::Committed(UsageSyncAcknowledgements {
+                provider_settings: batch.provider_settings().map(|settings| {
+                    ProviderSettingsAcknowledgement {
+                        revision: settings.revision(),
+                        outcome: crate::usage_sync::AcknowledgementOutcome::Committed,
+                    }
+                }),
+                usage: acknowledgements.to_vec(),
+            }),
         )
     }
 
@@ -4859,6 +4916,13 @@ mod tests {
         let before_activation = core.pending_usage_sync_batch(7).unwrap().unwrap();
         assert_eq!(
             before_activation
+                .provider_settings()
+                .unwrap()
+                .enabled_providers(),
+            &[CodingProvider::Codex]
+        );
+        assert_eq!(
+            before_activation
                 .snapshots()
                 .iter()
                 .map(|snapshot| snapshot.provider)
@@ -4882,11 +4946,24 @@ mod tests {
             .unwrap();
         let enabled = core.pending_usage_sync_batch(7).unwrap().unwrap();
         assert_eq!(enabled.snapshots().len(), 2);
+        assert_eq!(enabled.provider_settings().unwrap().revision(), 2);
+        assert_eq!(
+            enabled.provider_settings().unwrap().enabled_providers(),
+            &[CodingProvider::Codex, CodingProvider::Claude]
+        );
 
         policy.enabled.store(false, Ordering::Release);
         core.provider_enablement_changed(CodingProvider::Claude, false)
             .unwrap();
         let before_delivery = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        assert_eq!(before_delivery.provider_settings().unwrap().revision(), 3);
+        assert_eq!(
+            before_delivery
+                .provider_settings()
+                .unwrap()
+                .enabled_providers(),
+            &[CodingProvider::Codex]
+        );
         assert_eq!(
             before_delivery
                 .snapshots()
@@ -4895,6 +4972,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![CodingProvider::Codex]
         );
+    }
+
+    #[test]
+    fn stale_provider_setting_acknowledgement_requeues_before_usage_delivery() {
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(7).unwrap();
+        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed_requests = Arc::clone(&requests);
+        core.install_usage_sync_request(Arc::new(move || {
+            observed_requests.fetch_add(1, Ordering::AcqRel);
+        }))
+        .unwrap();
+
+        core.finish_usage_sync_attempt(
+            &sent,
+            UsageSyncAttemptResult::Committed(UsageSyncAcknowledgements {
+                provider_settings: Some(ProviderSettingsAcknowledgement {
+                    revision: 3,
+                    outcome: crate::usage_sync::AcknowledgementOutcome::Stale,
+                }),
+                usage: Vec::new(),
+            }),
+        )
+        .unwrap();
+
+        let pending = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        assert_eq!(pending.provider_settings().unwrap().revision(), 4);
+        assert_eq!(
+            pending.snapshots()[0].revision,
+            sent.snapshots()[0].revision
+        );
+        assert_eq!(requests.load(Ordering::Acquire), 1);
     }
 
     #[test]
@@ -4927,11 +5048,13 @@ mod tests {
 
         core.activate_usage_sync_generation(7).unwrap();
 
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        let pending = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        assert!(pending.snapshots().is_empty());
         assert_eq!(
-            core.panel_state().unwrap().sync.status,
-            SyncStatus::Unavailable
+            pending.provider_settings().unwrap().enabled_providers(),
+            &[CodingProvider::Codex, CodingProvider::Claude]
         );
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Pending);
     }
 
     #[test]
@@ -5201,6 +5324,9 @@ mod tests {
             &*core.inner.store.lock().unwrap(),
             ReadModelStore::Persistent(_)
         ));
+        let settings = core.pending_usage_sync_batch(8).unwrap().unwrap();
+        assert!(settings.snapshots().is_empty());
+        core.acknowledge_usage_sync(&settings, &[]).unwrap();
         assert!(core.pending_usage_sync_batch(8).unwrap().is_none());
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
     }
@@ -5246,21 +5372,34 @@ mod tests {
 
     #[test]
     fn deferred_prior_day_batch_does_not_leave_the_new_day_pending() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
         let before_midnight = OffsetDateTime::parse("2026-08-08T23:59:59Z", &Rfc3339).unwrap();
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(before_midnight));
         let core = NativeCore::open_without_launch(
             &database.0,
             clock.clone(),
-            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
-                before_midnight,
-                42,
-            )))])),
+            Arc::new(ScriptedRefreshSource::new([
+                Ok(Some(observed_state(before_midnight, 42))),
+                Ok(Some(observed_state(before_midnight, 84))),
+            ])),
         )
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
         core.activate_usage_sync_generation(7).unwrap();
+        let initial = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: initial.snapshots()[0].provider,
+            ranking_day: initial.snapshots()[0].ranking_day.clone(),
+            revision: initial.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&initial, &[acknowledgement])
+            .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
         assert!(core.pending_usage_sync_batch(7).unwrap().is_some());
 
         clock.advance(Duration::from_secs(2));

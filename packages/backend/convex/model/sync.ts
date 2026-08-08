@@ -19,6 +19,11 @@ export type UsageAcknowledgement = {
   revision: number;
 };
 
+export type ProviderSettingsAcknowledgement = {
+  outcome: "committed" | "idempotent" | "stale";
+  revision: number;
+};
+
 type SnapshotPlan = {
   acknowledgement: UsageAcknowledgement;
   correctionAudit: CorrectionLineage | null;
@@ -66,6 +71,26 @@ async function upsertDailyUsage(
 function assertBatchSize(snapshots: UsageSnapshot[]) {
   if (snapshots.length === 0 || snapshots.length > 62) {
     throw new Error("sync must contain between 1 and 62 Daily Usage Aggregates");
+  }
+}
+
+function normalizedEnabledProviders(enabledProviders: Provider[]) {
+  if (enabledProviders.length > 2) {
+    throw new Error("provider settings contain too many providers");
+  }
+  const enabled = new Set(enabledProviders);
+  if (enabled.size !== enabledProviders.length) {
+    throw new Error("provider settings contain a duplicate provider");
+  }
+  return {
+    claudeEnabled: enabled.has("claude"),
+    codexEnabled: enabled.has("codex"),
+  };
+}
+
+function assertProviderSettingsRevision(revision: number) {
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new Error("provider settings revision is invalid");
   }
 }
 
@@ -338,4 +363,75 @@ export async function applyUsageSnapshots(
     await recomputeScores(ctx, tokenmaxxer._id, today);
   }
   return plans.map(({ acknowledgement }) => acknowledgement);
+}
+
+export async function applyProviderSettings(
+  ctx: MutationCtx,
+  authUser: AuthUserReference,
+  installationCredential: string,
+  activeMacGeneration: number,
+  revision: number,
+  enabledProviders: Provider[],
+): Promise<ProviderSettingsAcknowledgement> {
+  assertProviderSettingsRevision(revision);
+  const settings = normalizedEnabledProviders(enabledProviders);
+  const { device, tokenmaxxer } = await requireActiveDevice(
+    ctx,
+    authUser,
+    installationCredential,
+    activeMacGeneration,
+  );
+  await rateLimiter.limit(ctx, "syncDailyUsage", {
+    count: 1,
+    key: `${tokenmaxxer._id}:${device._id}:${activeMacGeneration}`,
+    throws: true,
+  });
+  const existing = await ctx.db
+    .query("deviceProviderSettings")
+    .withIndex("by_device_id", (q) => q.eq("deviceId", device._id))
+    .unique();
+  if (
+    existing &&
+    existing.activeMacGeneration === activeMacGeneration &&
+    revision < existing.revision
+  ) {
+    return { outcome: "stale", revision: existing.revision };
+  }
+  if (
+    existing &&
+    existing.activeMacGeneration === activeMacGeneration &&
+    revision === existing.revision
+  ) {
+    if (
+      existing.claudeEnabled !== settings.claudeEnabled ||
+      existing.codexEnabled !== settings.codexEnabled
+    ) {
+      throw new Error("provider settings revision has different values");
+    }
+    return { outcome: "idempotent", revision };
+  }
+
+  const now = Date.now();
+  const values = {
+    activeMacGeneration,
+    ...settings,
+    revision,
+    tokenmaxxerId: tokenmaxxer._id,
+    updatedAt: now,
+  };
+  if (existing) {
+    if (existing.tokenmaxxerId !== tokenmaxxer._id) {
+      throw new Error("provider settings owner is invalid");
+    }
+    await ctx.db.patch(existing._id, values);
+  } else {
+    await ctx.db.insert("deviceProviderSettings", {
+      ...values,
+      deviceId: device._id,
+    });
+  }
+  await ctx.db.patch(device._id, { lastSeenAt: now });
+  await ctx.db.patch(tokenmaxxer._id, { lastSyncedAt: now });
+  await recomputeScores(ctx, tokenmaxxer._id, rankingDayAt(now));
+  return { outcome: "committed", revision };
 }

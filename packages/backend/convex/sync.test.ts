@@ -273,6 +273,135 @@ test("both providers commit atomically and retries report exact revision outcome
   ]);
 });
 
+test("provider settings exclude accepted usage and restore retained history", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [
+      usageSnapshot({ observedTokens: 100 }),
+      usageSnapshot({ observedTokens: 200, provider: "claude" }),
+    ],
+  });
+
+  await expect(
+    authenticated.mutation(api.sync.providerSettings, {
+      activeMacGeneration: 1,
+      enabledProviders: ["codex"],
+      installationCredential: credential,
+      revision: 1,
+    }),
+  ).resolves.toEqual({ outcome: "committed", revision: 1 });
+  await expect(
+    authenticated.mutation(api.sync.providerSettings, {
+      activeMacGeneration: 1,
+      enabledProviders: ["codex"],
+      installationCredential: credential,
+      revision: 1,
+    }),
+  ).resolves.toEqual({ outcome: "idempotent", revision: 1 });
+
+  const disabled = await t.run(async (ctx) => ({
+    daily: await ctx.db.query("userDailyUsage").collect(),
+    scores: await ctx.db.query("userScores").collect(),
+    settings: await ctx.db.query("deviceProviderSettings").collect(),
+  }));
+  expect(disabled.daily).toHaveLength(2);
+  expect(disabled.settings).toMatchObject([
+    { claudeEnabled: false, codexEnabled: true, revision: 1 },
+  ]);
+  expect(
+    disabled.scores.find(
+      (row) => row.scope === "combined" && row.windowDays === 1,
+    ),
+  ).toMatchObject({ tokenScore: 100 });
+  expect(
+    disabled.scores.find(
+      (row) => row.scope === "claude" && row.windowDays === 1,
+    ),
+  ).toMatchObject({ tokenScore: 0 });
+
+  await expect(
+    authenticated.mutation(api.sync.providerSettings, {
+      activeMacGeneration: 1,
+      enabledProviders: ["codex", "claude"],
+      installationCredential: credential,
+      revision: 2,
+    }),
+  ).resolves.toEqual({ outcome: "committed", revision: 2 });
+  await expect(
+    authenticated.mutation(api.sync.providerSettings, {
+      activeMacGeneration: 1,
+      enabledProviders: ["codex"],
+      installationCredential: credential,
+      revision: 1,
+    }),
+  ).resolves.toEqual({ outcome: "stale", revision: 2 });
+
+  let combined = await t.run(async (ctx) =>
+    (await ctx.db.query("userScores").collect()).find(
+      (row) => row.scope === "combined" && row.windowDays === 1,
+    ),
+  );
+  expect(combined).toMatchObject({ tokenScore: 300 });
+
+  await authenticated.mutation(api.sync.providerSettings, {
+    activeMacGeneration: 1,
+    enabledProviders: [],
+    installationCredential: credential,
+    revision: 3,
+  });
+  combined = await t.run(async (ctx) =>
+    (await ctx.db.query("userScores").collect()).find(
+      (row) => row.scope === "combined" && row.windowDays === 1,
+    ),
+  );
+  expect(combined).toMatchObject({ tokenScore: 0 });
+
+  await authenticated.mutation(api.sync.providerSettings, {
+    activeMacGeneration: 1,
+    enabledProviders: ["claude"],
+    installationCredential: credential,
+    revision: 4,
+  });
+  combined = await t.run(async (ctx) =>
+    (await ctx.db.query("userScores").collect()).find(
+      (row) => row.scope === "combined" && row.windowDays === 1,
+    ),
+  );
+  expect(combined).toMatchObject({ tokenScore: 200 });
+});
+
+test("provider settings require exact Active Mac authority and values", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+
+  await expect(
+    authenticated.mutation(api.sync.providerSettings, {
+      activeMacGeneration: 1,
+      enabledProviders: ["codex"],
+      installationCredential: installationCredential("B"),
+      revision: 1,
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    authenticated.mutation(api.sync.providerSettings, {
+      activeMacGeneration: 1,
+      enabledProviders: ["claude", "claude"],
+      installationCredential: credential,
+      revision: 1,
+    }),
+  ).rejects.toThrow("duplicate provider");
+  expect(
+    await t.run(async (ctx) =>
+      ctx.db.query("deviceProviderSettings").collect(),
+    ),
+  ).toEqual([]);
+});
+
 test("modeled cost metadata reaches daily, score, and Doomerboard rows", async () => {
   const t = testBackend();
   const credential = installationCredential("A");

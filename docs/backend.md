@@ -8,6 +8,8 @@ The deployed flow is:
 
 `usageBuckets → userDailyUsage → userScores → publicScores → @convex-dev/aggregate`
 
+`deviceProviderSettings → filtered userScores/publicScores recompute`
+
 `packages/contracts` is not the sync contract. It is reserved for the sanitized Rust-to-React Tauri IPC boundary. Convex generates its own TypeScript API and data-model types in `convex/_generated`.
 
 Rust is the only desktop Convex client. It exchanges its Keychain-held Better Auth session for a short-lived memory-only Convex JWT, then uses the official Convex Rust client through typed native operations. React receives sanitized results and has no Convex client, JWT, session material, or generic backend forwarding command.
@@ -17,6 +19,15 @@ Rust is the only desktop Convex client. It exchanges its Keychain-held Better Au
 One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. The request pairs that reason with the original correction revision. A later cumulative retry can identify the same correction without a second audit or authority for a new decrease. Disappearance of a local record is never valid downward evidence.
 
 Each request contains at most 62 snapshots and commits atomically. A committed or idempotent acknowledgement names the submitted revision. A stale acknowledgement names the newer server revision. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. The current Active Mac's accepted snapshot updates the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
+
+The native synchronization module also keeps one latest-only provider-setting
+outbox row for the Active Mac generation. Its authenticated mutation stores a
+monotonic enabled-provider revision before later usage delivery. Score
+recomputation excludes accepted daily rows for disabled providers. The daily
+facts stay retained and private to this projection path, so a later re-enable
+restores their valid 1-day, 7-day, and 30-day contribution without a new scan.
+A stale provider-setting acknowledgement advances the local revision floor;
+therefore, a late disable or re-enable request cannot restore an older setting.
 
 On same-day Active Mac transfer, the old generation's accepted contribution is frozen and the new generation contributes only its post-transfer segment. Later writes from the old generation fail, earlier Ranking Days are not rewritten, and a known unsynchronized old segment makes the transferred day partial.
 

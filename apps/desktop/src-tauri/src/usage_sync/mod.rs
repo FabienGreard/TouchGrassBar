@@ -37,6 +37,10 @@ const USAGE_HISTORY_RETENTION_DAYS: i64 = 60;
 const GENERATION_ACTIVE: &str = "active";
 const GENERATION_BLOCKED: &str = "blocked";
 const GENERATION_ABANDONED: &str = "abandoned";
+const SETTINGS_PENDING: &str = "pending";
+const SETTINGS_SYNCED: &str = "synced";
+const SETTINGS_BLOCKED: &str = "blocked";
+const SETTINGS_ABANDONED: &str = "abandoned";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct UsageSyncError(&'static str);
@@ -348,10 +352,49 @@ impl UsageSyncAcknowledgement {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct ProviderSettingsAcknowledgement {
+    pub(crate) revision: u64,
+    pub(crate) outcome: AcknowledgementOutcome,
+}
+
+impl ProviderSettingsAcknowledgement {
+    fn validate(&self) -> Result<(), UsageSyncError> {
+        validate_revision(self.revision).map_err(|_| UsageSyncError::INVALID_RESPONSE)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct UsageSyncAcknowledgements {
+    pub(crate) provider_settings: Option<ProviderSettingsAcknowledgement>,
+    pub(crate) usage: Vec<UsageSyncAcknowledgement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderSettingsSnapshot {
+    revision: u64,
+    enabled_providers: Vec<CodingProvider>,
+}
+
+impl ProviderSettingsSnapshot {
+    #[cfg(test)]
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enabled_providers(&self) -> &[CodingProvider] {
+        &self.enabled_providers
+    }
+}
+
 /// A sanitized batch that is safe to give to the protected transport adapter.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PendingUsageBatch {
     active_mac_generation: u64,
+    provider_settings: Option<ProviderSettingsSnapshot>,
     snapshots: Vec<UsageSyncSnapshot>,
 }
 
@@ -361,8 +404,17 @@ impl PendingUsageBatch {
     }
 
     #[cfg(test)]
+    pub(crate) fn provider_settings(&self) -> Option<&ProviderSettingsSnapshot> {
+        self.provider_settings.as_ref()
+    }
+
+    #[cfg(test)]
     pub(crate) fn snapshots(&self) -> &[UsageSyncSnapshot] {
         &self.snapshots
+    }
+
+    pub(crate) fn has_usage_snapshots(&self) -> bool {
+        !self.snapshots.is_empty()
     }
 
     pub(crate) fn is_for_current_utc_day(&self, now: OffsetDateTime) -> bool {
@@ -391,6 +443,27 @@ impl PendingUsageBatch {
             snapshots: &self.snapshots,
         })
     }
+
+    pub(crate) fn provider_settings_mutation_args<'a>(
+        &'a self,
+        installation_credential: &'a str,
+    ) -> Result<Option<ProviderSettingsMutationArgs<'a>>, UsageSyncError> {
+        if !valid_installation_credential(installation_credential) {
+            return Err(UsageSyncError::INVALID_VALUE);
+        }
+        validate_generation(self.active_mac_generation)?;
+        let Some(settings) = self.provider_settings.as_ref() else {
+            return Ok(None);
+        };
+        validate_revision(settings.revision)?;
+        validate_enabled_providers(&settings.enabled_providers)?;
+        Ok(Some(ProviderSettingsMutationArgs {
+            installation_credential,
+            active_mac_generation: self.active_mac_generation,
+            revision: settings.revision,
+            enabled_providers: &settings.enabled_providers,
+        }))
+    }
 }
 
 /// Exact arguments for the `sync:dailyUsage` Convex mutation.
@@ -403,6 +476,16 @@ pub(crate) struct UsageSyncMutationArgs<'a> {
     installation_credential: &'a str,
     active_mac_generation: u64,
     snapshots: &'a [UsageSyncSnapshot],
+}
+
+/// Exact arguments for the `sync:providerSettings` Convex mutation.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderSettingsMutationArgs<'a> {
+    installation_credential: &'a str,
+    active_mac_generation: u64,
+    revision: u64,
+    enabled_providers: &'a [CodingProvider],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -494,6 +577,7 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
                  (correction_reason IS NULL AND correction_revision IS NULL)
                  OR (
                      correction_reason IS NOT NULL
+                     AND correction_revision IS NOT NULL
                      AND correction_revision >= 1
                      AND correction_revision <= revision
                      AND correction_revision <= 9007199254740991
@@ -506,6 +590,18 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
 
          CREATE INDEX IF NOT EXISTS usage_sync_latest_outbox_pending
              ON usage_sync_latest_outbox(active_generation, queue_state, ranking_day, provider);
+
+         CREATE TABLE IF NOT EXISTS usage_sync_provider_settings_outbox (
+             active_generation INTEGER PRIMARY KEY,
+             revision INTEGER NOT NULL
+                 CHECK(revision >= 1 AND revision <= 9007199254740991),
+             codex_enabled INTEGER NOT NULL CHECK(codex_enabled IN (0, 1)),
+             claude_enabled INTEGER NOT NULL CHECK(claude_enabled IN (0, 1)),
+             delivery_state TEXT NOT NULL
+                 CHECK(delivery_state IN ('pending', 'synced', 'blocked', 'abandoned')),
+             FOREIGN KEY(active_generation)
+                 REFERENCES usage_sync_generations(active_generation)
+         ) STRICT;
 
          CREATE TABLE IF NOT EXISTS usage_sync_correction_lineage (
              provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
@@ -521,147 +617,6 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
              PRIMARY KEY(provider, ranking_day)
          ) STRICT;",
     )?;
-    migrate_usage_sync_outbox_correction_columns(connection)?;
-    Ok(())
-}
-
-fn migrate_usage_sync_outbox_correction_columns(
-    connection: &Connection,
-) -> Result<(), UsageSyncError> {
-    let columns = connection
-        .prepare("PRAGMA table_info(usage_sync_latest_outbox)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    if !columns.contains("correction_reason") {
-        connection.execute_batch(
-            "ALTER TABLE usage_sync_latest_outbox
-                 ADD COLUMN correction_reason TEXT
-                 CHECK(correction_reason IS NULL OR correction_reason IN (
-                     'provider-replacement', 'parser-correction'
-                 ));",
-        )?;
-    }
-    if !columns.contains("correction_revision") {
-        connection.execute_batch(
-            "ALTER TABLE usage_sync_latest_outbox
-                 ADD COLUMN correction_revision INTEGER
-                 CHECK(
-                     (correction_reason IS NULL AND correction_revision IS NULL)
-                     OR (
-                         correction_reason IS NOT NULL
-                         AND correction_revision >= 1
-                         AND correction_revision <= revision
-                         AND correction_revision <= 9007199254740991
-                     )
-                 );",
-        )?;
-    }
-    connection.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS usage_sync_latest_outbox_correction_insert
-         BEFORE INSERT ON usage_sync_latest_outbox
-         WHEN (NEW.correction_reason IS NULL) != (NEW.correction_revision IS NULL)
-              OR (
-                  NEW.correction_reason IS NOT NULL
-                  AND (
-                      NEW.correction_reason NOT IN (
-                          'provider-replacement', 'parser-correction'
-                      )
-                      OR NEW.correction_revision < 1
-                      OR NEW.correction_revision > NEW.revision
-                      OR NEW.correction_revision > 9007199254740991
-                  )
-              )
-         BEGIN
-             SELECT RAISE(ABORT, 'invalid usage sync correction provenance');
-         END;
-
-         CREATE TRIGGER IF NOT EXISTS usage_sync_latest_outbox_correction_update
-         BEFORE UPDATE OF revision, correction_reason, correction_revision
-         ON usage_sync_latest_outbox
-         WHEN (NEW.correction_reason IS NULL) != (NEW.correction_revision IS NULL)
-              OR (
-                  NEW.correction_reason IS NOT NULL
-                  AND (
-                      NEW.correction_reason NOT IN (
-                          'provider-replacement', 'parser-correction'
-                      )
-                      OR NEW.correction_revision < 1
-                      OR NEW.correction_revision > NEW.revision
-                      OR NEW.correction_revision > 9007199254740991
-                  )
-              )
-         BEGIN
-             SELECT RAISE(ABORT, 'invalid usage sync correction provenance');
-         END;",
-    )?;
-
-    let rows = {
-        let mut statement = connection.prepare(
-            "SELECT active_generation, provider, ranking_day, revision, snapshot_json
-             FROM usage_sync_latest_outbox",
-        )?;
-        statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-    };
-    for (generation, provider, ranking_day, revision, snapshot_json) in rows {
-        if snapshot_json.len() > MAX_LOCAL_VALUE_BYTES {
-            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
-        }
-        let mut snapshot: UsageSyncSnapshot = serde_json::from_str(&snapshot_json)
-            .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-        if snapshot.correction_reason.is_some() && snapshot.correction_revision.is_none() {
-            // Legacy rows do not record the original correction revision. Do not
-            // invent provenance that could authorize another decrease.
-            snapshot.correction_reason = None;
-        }
-        snapshot
-            .validate()
-            .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-        let expected_provider = provider_from_database_value(&provider)?;
-        let expected_revision =
-            u64::try_from(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-        if snapshot.provider != expected_provider
-            || snapshot.ranking_day != ranking_day
-            || snapshot.revision != expected_revision
-        {
-            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
-        }
-        let migrated_json = encode_local_value(&snapshot)?;
-        let correction_reason = snapshot
-            .correction_reason
-            .map(correction_reason_database_value);
-        let correction_revision = snapshot
-            .correction_revision
-            .map(to_database_integer)
-            .transpose()?;
-        let updated = connection.execute(
-            "UPDATE usage_sync_latest_outbox
-             SET snapshot_json = ?1, correction_reason = ?2, correction_revision = ?3
-             WHERE active_generation = ?4 AND provider = ?5 AND ranking_day = ?6
-               AND revision = ?7",
-            params![
-                migrated_json,
-                correction_reason,
-                correction_revision,
-                generation,
-                provider,
-                ranking_day,
-                revision
-            ],
-        )?;
-        if updated != 1 {
-            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
-        }
-    }
     Ok(())
 }
 
@@ -886,6 +841,7 @@ pub(crate) fn queue_current_utc_day_with_corrections(
     enabled_providers: &BTreeSet<CodingProvider>,
 ) -> Result<Vec<QueueUpdate>, UsageSyncError> {
     validate_generation(active_mac_generation)?;
+    prune_expired_usage_sync_rows(transaction, now)?;
     stage_usage_sync_corrections(transaction, now, corrections)?;
     let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
     let staged = load_staged_usage_sync_corrections(transaction, &ranking_day)?;
@@ -925,7 +881,6 @@ pub(crate) fn queue_daily_aggregate(
     validate_generation(active_mac_generation)?;
     aggregate.validate()?;
     validate_current_day_aggregate(&aggregate, now)?;
-    prune_expired_usage_sync_rows(transaction, now)?;
     let queue_state = ensure_generation(transaction, active_mac_generation)?;
     if queue_state == QueueState::Abandoned {
         return Err(UsageSyncError::ABANDONED_GENERATION);
@@ -1088,6 +1043,132 @@ fn prune_expired_usage_sync_rows(
         .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
+fn provider_settings_delivery_state(queue_state: QueueState) -> &'static str {
+    match queue_state {
+        QueueState::Pending => SETTINGS_PENDING,
+        QueueState::Blocked => SETTINGS_BLOCKED,
+        QueueState::Abandoned => SETTINGS_ABANDONED,
+    }
+}
+
+/// Queue the latest complete provider setting for one Active Mac generation.
+pub(crate) fn queue_provider_settings(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    enabled_providers: &BTreeSet<CodingProvider>,
+) -> Result<bool, UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    let generation = to_database_integer(active_mac_generation)?;
+    let codex_enabled = i64::from(enabled_providers.contains(&CodingProvider::Codex));
+    let claude_enabled = i64::from(enabled_providers.contains(&CodingProvider::Claude));
+    let queue_state = ensure_generation(transaction, active_mac_generation)?;
+    let delivery_state = provider_settings_delivery_state(queue_state);
+    let existing = transaction
+        .query_row(
+            "SELECT revision, codex_enabled, claude_enabled, delivery_state
+             FROM usage_sync_provider_settings_outbox
+             WHERE active_generation = ?1",
+            [generation],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((revision, stored_codex, stored_claude, stored_state)) = existing {
+        let revision = u64::try_from(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        validate_revision(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        if !matches!(
+            stored_state.as_str(),
+            SETTINGS_PENDING | SETTINGS_SYNCED | SETTINGS_BLOCKED | SETTINGS_ABANDONED
+        ) || !matches!(stored_codex, 0 | 1)
+            || !matches!(stored_claude, 0 | 1)
+        {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+        if stored_codex == codex_enabled && stored_claude == claude_enabled {
+            return Ok(stored_state == SETTINGS_PENDING);
+        }
+        let next_revision = revision
+            .checked_add(1)
+            .ok_or(UsageSyncError::INVALID_VALUE)?;
+        validate_revision(next_revision)?;
+        let updated = transaction.execute(
+            "UPDATE usage_sync_provider_settings_outbox
+             SET revision = ?1, codex_enabled = ?2, claude_enabled = ?3,
+                 delivery_state = ?4
+             WHERE active_generation = ?5 AND revision = ?6",
+            params![
+                to_database_integer(next_revision)?,
+                codex_enabled,
+                claude_enabled,
+                delivery_state,
+                generation,
+                to_database_integer(revision)?
+            ],
+        )?;
+        if updated != 1 {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+        return Ok(delivery_state == SETTINGS_PENDING);
+    }
+
+    transaction.execute(
+        "INSERT INTO usage_sync_provider_settings_outbox(
+             active_generation, revision, codex_enabled, claude_enabled, delivery_state
+         ) VALUES(?1, 1, ?2, ?3, ?4)",
+        params![generation, codex_enabled, claude_enabled, delivery_state],
+    )?;
+    Ok(delivery_state == SETTINGS_PENDING)
+}
+
+fn load_pending_provider_settings(
+    connection: &Connection,
+    active_mac_generation: u64,
+) -> Result<Option<ProviderSettingsSnapshot>, UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    let row = connection
+        .query_row(
+            "SELECT revision, codex_enabled, claude_enabled
+             FROM usage_sync_provider_settings_outbox
+             WHERE active_generation = ?1 AND delivery_state = 'pending'",
+            [to_database_integer(active_mac_generation)?],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((revision, codex_enabled, claude_enabled)) = row else {
+        return Ok(None);
+    };
+    if !matches!(codex_enabled, 0 | 1) || !matches!(claude_enabled, 0 | 1) {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    let revision = u64::try_from(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    validate_revision(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    let mut enabled_providers = Vec::with_capacity(2);
+    if codex_enabled == 1 {
+        enabled_providers.push(CodingProvider::Codex);
+    }
+    if claude_enabled == 1 {
+        enabled_providers.push(CodingProvider::Claude);
+    }
+    validate_enabled_providers(&enabled_providers)
+        .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    Ok(Some(ProviderSettingsSnapshot {
+        revision,
+        enabled_providers,
+    }))
+}
+
 /// Load no more than 62 latest pending revisions for one generation.
 #[cfg(test)]
 pub(crate) fn load_pending_usage_batch(
@@ -1121,6 +1202,7 @@ fn load_pending_usage_batch_for_day(
     enabled_providers: Option<&BTreeSet<CodingProvider>>,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
     validate_generation(active_mac_generation)?;
+    let provider_settings = load_pending_provider_settings(connection, active_mac_generation)?;
     let mut statement = connection.prepare(
         "SELECT provider, ranking_day, revision, snapshot_json,
                 correction_reason, correction_revision
@@ -1186,12 +1268,15 @@ fn load_pending_usage_batch_for_day(
         }
         snapshots.push(snapshot);
     }
-    if snapshots.is_empty() {
+    if snapshots.is_empty() && provider_settings.is_none() {
         return Ok(None);
     }
-    validate_batch(&snapshots)?;
+    if !snapshots.is_empty() {
+        validate_batch(&snapshots)?;
+    }
     Ok(Some(PendingUsageBatch {
         active_mac_generation,
+        provider_settings,
         snapshots,
     }))
 }
@@ -1219,6 +1304,18 @@ pub(crate) fn parse_usage_acknowledgements(
         }
     }
     Ok(acknowledgements)
+}
+
+pub(crate) fn parse_provider_settings_acknowledgement(
+    bytes: &[u8],
+) -> Result<ProviderSettingsAcknowledgement, UsageSyncError> {
+    if bytes.is_empty() || bytes.len() > MAX_ACKNOWLEDGEMENT_BYTES {
+        return Err(UsageSyncError::INVALID_RESPONSE);
+    }
+    let acknowledgement: ProviderSettingsAcknowledgement =
+        serde_json::from_slice(bytes).map_err(|_| UsageSyncError::INVALID_RESPONSE)?;
+    acknowledgement.validate()?;
+    Ok(acknowledgement)
 }
 
 /// Apply one complete success value to the exact submitted batch.
@@ -1305,6 +1402,62 @@ pub(crate) fn apply_usage_acknowledgements(
         }
     }
     Ok(removed)
+}
+
+pub(crate) fn apply_provider_settings_acknowledgement(
+    transaction: &Transaction<'_>,
+    batch: &PendingUsageBatch,
+    acknowledgement: Option<&ProviderSettingsAcknowledgement>,
+) -> Result<bool, UsageSyncError> {
+    let Some(submitted) = batch.provider_settings.as_ref() else {
+        return acknowledgement
+            .is_none()
+            .then_some(false)
+            .ok_or(UsageSyncError::INVALID_RESPONSE);
+    };
+    let Some(acknowledgement) = acknowledgement else {
+        return Err(UsageSyncError::INVALID_RESPONSE);
+    };
+    acknowledgement.validate()?;
+    let generation = to_database_integer(batch.active_mac_generation)?;
+    let submitted_revision = submitted.revision;
+    match acknowledgement.outcome {
+        AcknowledgementOutcome::Committed | AcknowledgementOutcome::Idempotent => {
+            if acknowledgement.revision != submitted_revision {
+                return Err(UsageSyncError::INVALID_RESPONSE);
+            }
+            transaction.execute(
+                "UPDATE usage_sync_provider_settings_outbox
+                 SET delivery_state = 'synced'
+                 WHERE active_generation = ?1 AND revision = ?2
+                   AND delivery_state = 'pending'",
+                params![generation, to_database_integer(submitted_revision)?],
+            )?;
+            Ok(false)
+        }
+        AcknowledgementOutcome::Stale => {
+            if acknowledgement.revision <= submitted_revision {
+                return Err(UsageSyncError::INVALID_RESPONSE);
+            }
+            let rebased_revision = acknowledgement
+                .revision
+                .checked_add(1)
+                .ok_or(UsageSyncError::INVALID_RESPONSE)?;
+            validate_revision(rebased_revision).map_err(|_| UsageSyncError::INVALID_RESPONSE)?;
+            let updated = transaction.execute(
+                "UPDATE usage_sync_provider_settings_outbox
+                 SET revision = ?1
+                 WHERE active_generation = ?2 AND revision = ?3
+                   AND delivery_state = 'pending'",
+                params![
+                    to_database_integer(rebased_revision)?,
+                    generation,
+                    to_database_integer(submitted_revision)?
+                ],
+            )?;
+            Ok(updated == 1)
+        }
+    }
 }
 
 fn advance_local_revision_floor(
@@ -1427,12 +1580,21 @@ pub(crate) fn mark_generation_authority_rejected(
          WHERE active_generation = ?1 AND queue_state != 'abandoned'",
         [generation],
     )?;
-    Ok(transaction.execute(
+    let usage_rows = transaction.execute(
         "UPDATE usage_sync_latest_outbox
          SET queue_state = 'blocked'
          WHERE active_generation = ?1 AND queue_state != 'abandoned'",
         [generation],
-    )?)
+    )?;
+    let settings_rows = transaction.execute(
+        "UPDATE usage_sync_provider_settings_outbox
+         SET delivery_state = 'blocked'
+         WHERE active_generation = ?1 AND delivery_state != 'abandoned'",
+        [generation],
+    )?;
+    usage_rows
+        .checked_add(settings_rows)
+        .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
 /// Activate one server-owned generation and permanently abandon older rows.
@@ -1454,12 +1616,21 @@ pub(crate) fn activate_generation(
          WHERE active_generation < ?1",
         [generation],
     )?;
-    Ok(transaction.execute(
+    let usage_rows = transaction.execute(
         "UPDATE usage_sync_latest_outbox
          SET queue_state = 'abandoned'
          WHERE active_generation < ?1 AND queue_state != 'abandoned'",
         [generation],
-    )?)
+    )?;
+    let settings_rows = transaction.execute(
+        "UPDATE usage_sync_provider_settings_outbox
+         SET delivery_state = 'abandoned'
+         WHERE active_generation < ?1 AND delivery_state != 'abandoned'",
+        [generation],
+    )?;
+    usage_rows
+        .checked_add(settings_rows)
+        .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
 fn aggregate_from_total(
@@ -1739,6 +1910,19 @@ fn ensure_generation(
         |row| row.get::<_, String>(0),
     )?;
     QueueState::from_database_value(&state)
+}
+
+fn validate_enabled_providers(enabled_providers: &[CodingProvider]) -> Result<(), UsageSyncError> {
+    if enabled_providers.len() > 2 {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    let mut providers = BTreeSet::new();
+    for provider in enabled_providers {
+        if !providers.insert(*provider) {
+            return Err(UsageSyncError::INVALID_VALUE);
+        }
+    }
+    Ok(())
 }
 
 fn validate_batch(snapshots: &[UsageSyncSnapshot]) -> Result<(), UsageSyncError> {
@@ -2309,62 +2493,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_outbox_migration_does_not_invent_correction_provenance() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE usage_sync_latest_outbox (
-                     active_generation INTEGER NOT NULL,
-                     provider TEXT NOT NULL,
-                     ranking_day TEXT NOT NULL,
-                     revision INTEGER NOT NULL,
-                     snapshot_json TEXT NOT NULL,
-                     queue_state TEXT NOT NULL,
-                     PRIMARY KEY(active_generation, provider, ranking_day)
-                 ) STRICT;",
-            )
-            .unwrap();
-        let legacy_snapshot = json!({
-            "provider": "claude",
-            "rankingDay": "2026-08-08",
-            "revision": 2,
-            "evidenceBasis": "locally-derived",
-            "coverage": "complete",
-            "observedAt": DAY_START_MILLIS + 2_000,
-            "observedTokens": 80,
-            "apiEquivalentCost": null,
-            "correctionReason": "parser-correction"
-        })
-        .to_string();
-        connection
-            .execute(
-                "INSERT INTO usage_sync_latest_outbox(
-                     active_generation, provider, ranking_day, revision,
-                     snapshot_json, queue_state
-                 ) VALUES(1, 'claude', '2026-08-08', 2, ?1, 'active')",
-                [&legacy_snapshot],
-            )
-            .unwrap();
+    fn final_outbox_schema_rejects_incomplete_correction_provenance() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        queue_daily_aggregate(
+            &transaction,
+            1,
+            aggregate(CodingProvider::Claude, 80, 2_000),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
 
-        install_usage_sync_schema(&connection).unwrap();
-        let (snapshot_json, reason, correction_revision) = connection
-            .query_row(
-                "SELECT snapshot_json, correction_reason, correction_revision
-                 FROM usage_sync_latest_outbox",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<i64>>(2)?,
-                    ))
-                },
-            )
-            .unwrap();
-        let migrated: UsageSyncSnapshot = serde_json::from_str(&snapshot_json).unwrap();
-        assert_eq!(migrated.correction_reason, None);
-        assert_eq!(migrated.correction_revision, None);
-        assert_eq!((reason, correction_revision), (None, None));
         assert!(
             connection
                 .execute(
@@ -2922,6 +3061,86 @@ mod tests {
     }
 
     #[test]
+    fn provider_settings_outbox_is_latest_only_and_rebases_a_stale_acknowledgement() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        assert!(queue_provider_settings(&transaction, 1, &enabled_providers()).unwrap());
+        transaction.commit().unwrap();
+        let first = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        let settings = first.provider_settings().unwrap();
+        assert_eq!(settings.revision(), 1);
+        assert_eq!(
+            settings.enabled_providers(),
+            &[CodingProvider::Codex, CodingProvider::Claude]
+        );
+
+        let transaction = connection.transaction().unwrap();
+        assert!(
+            !apply_provider_settings_acknowledgement(
+                &transaction,
+                &first,
+                Some(&ProviderSettingsAcknowledgement {
+                    revision: 1,
+                    outcome: AcknowledgementOutcome::Committed,
+                }),
+            )
+            .unwrap()
+        );
+        transaction.commit().unwrap();
+        assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
+
+        let transaction = connection.transaction().unwrap();
+        assert!(
+            queue_provider_settings(&transaction, 1, &BTreeSet::from([CodingProvider::Codex]),)
+                .unwrap()
+        );
+        transaction.commit().unwrap();
+        let second = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        assert_eq!(second.provider_settings().unwrap().revision(), 2);
+
+        let transaction = connection.transaction().unwrap();
+        assert!(
+            apply_provider_settings_acknowledgement(
+                &transaction,
+                &second,
+                Some(&ProviderSettingsAcknowledgement {
+                    revision: 4,
+                    outcome: AcknowledgementOutcome::Stale,
+                }),
+            )
+            .unwrap()
+        );
+        transaction.commit().unwrap();
+        let rebased = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        let settings = rebased.provider_settings().unwrap();
+        assert_eq!(settings.revision(), 5);
+        assert_eq!(settings.enabled_providers(), &[CodingProvider::Codex]);
+
+        let transaction = connection.transaction().unwrap();
+        assert!(
+            !apply_provider_settings_acknowledgement(
+                &transaction,
+                &second,
+                Some(&ProviderSettingsAcknowledgement {
+                    revision: 2,
+                    outcome: AcknowledgementOutcome::Committed,
+                }),
+            )
+            .unwrap()
+        );
+        transaction.commit().unwrap();
+        assert_eq!(
+            load_pending_usage_batch(&connection, 1)
+                .unwrap()
+                .unwrap()
+                .provider_settings()
+                .unwrap()
+                .revision(),
+            5
+        );
+    }
+
+    #[test]
     fn authority_block_and_generation_abandonment_keep_rows() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
@@ -2999,7 +3218,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_prunes_aggregate_and_outbox_rows_older_than_sixty_utc_days() {
+    fn empty_current_day_queue_prunes_rows_older_than_sixty_utc_days() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
         for day_offset in (0..=USAGE_HISTORY_RETENTION_DAYS).rev() {
@@ -3012,6 +3231,17 @@ mod tests {
                 super::queue_daily_aggregate(&transaction, 1, value, candidate_now).unwrap();
             }
         }
+        transaction.commit().unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        queue_current_utc_day(
+            &transaction,
+            1,
+            &state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable),
+            now(),
+            &BTreeSet::new(),
+        )
+        .unwrap();
         transaction.commit().unwrap();
 
         let first_retained_day = (now() - Duration::days(USAGE_HISTORY_RETENTION_DAYS - 1))
@@ -3098,6 +3328,7 @@ mod tests {
     fn credential_validation_matches_the_protected_boundary() {
         let batch = PendingUsageBatch {
             active_mac_generation: 1,
+            provider_settings: None,
             snapshots: vec![UsageSyncSnapshot::from_aggregate(
                 aggregate(CodingProvider::Codex, 10, 1000),
                 1,

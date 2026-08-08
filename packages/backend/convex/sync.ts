@@ -2,7 +2,7 @@ import { v } from "convex/values";
 
 import { mutation } from "./_generated/server";
 import { requireAuthUser } from "./auth";
-import { applyUsageSnapshots } from "./model/sync";
+import { applyProviderSettings, applyUsageSnapshots } from "./model/sync";
 import {
   providerValidator,
   usageSnapshotValidator,
@@ -17,6 +17,36 @@ const acknowledgement = v.object({
   provider: providerValidator,
   rankingDay: v.string(),
   revision: v.number(),
+});
+
+const providerSettingsAcknowledgement = v.object({
+  outcome: v.union(
+    v.literal("committed"),
+    v.literal("idempotent"),
+    v.literal("stale"),
+  ),
+  revision: v.number(),
+});
+
+export const providerSettings = mutation({
+  args: {
+    activeMacGeneration: v.number(),
+    enabledProviders: v.array(providerValidator),
+    installationCredential: v.string(),
+    revision: v.number(),
+  },
+  returns: providerSettingsAcknowledgement,
+  handler: async (ctx, args) => {
+    const authUser = await requireAuthUser(ctx);
+    return applyProviderSettings(
+      ctx,
+      authUser,
+      args.installationCredential,
+      args.activeMacGeneration,
+      args.revision,
+      args.enabledProviders,
+    );
+  },
 });
 
 export const dailyUsage = mutation({

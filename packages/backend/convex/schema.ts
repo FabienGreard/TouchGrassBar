@@ -90,6 +90,16 @@ export default defineSchema({
     createdAt: v.number(),
   }).index("by_bucket_id_and_revision", ["bucketId", "revision"]),
 
+  deviceProviderSettings: defineTable({
+    activeMacGeneration: v.number(),
+    claudeEnabled: v.boolean(),
+    codexEnabled: v.boolean(),
+    deviceId: v.id("devices"),
+    revision: v.number(),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+    updatedAt: v.number(),
+  }).index("by_device_id", ["deviceId"]),
+
   userDailyUsage: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
     provider,

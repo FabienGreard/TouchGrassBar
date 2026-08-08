@@ -19,7 +19,7 @@ use crate::{
 };
 
 use super::{
-    PendingUsageBatch, UsageSyncAcknowledgement,
+    PendingUsageBatch, UsageSyncAcknowledgements,
     transport::{HttpUsageSyncTransport, UsageSyncTransportOutcome},
 };
 
@@ -31,7 +31,7 @@ const UPDATE_PAUSE_TIMEOUT: Duration = Duration::from_secs(40);
 /// Active Mac rejection has a separate operation because it can occur before
 /// the runtime has a batch.
 pub(crate) enum UsageSyncAttemptResult {
-    Committed(Vec<UsageSyncAcknowledgement>),
+    Committed(UsageSyncAcknowledgements),
     Offline,
     Deferred,
 }
@@ -601,7 +601,7 @@ trait PendingUsageSnapshotDelivery: Send + Sync {
 }
 
 enum PendingUsageSnapshotDeliveryOutcome {
-    Committed(Vec<UsageSyncAcknowledgement>),
+    Committed(UsageSyncAcknowledgements),
     Offline,
     SessionRejected,
     AuthorityRejected,
@@ -686,6 +686,9 @@ mod tests {
         ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshSource, SanitizedDesktopStateV3,
         SanitizedProfileOutcome, SnapshotRefreshAdapter, SnapshotRefreshOutcome, SyncState,
         SyncStatus, UsageCoverage, UsageEvidenceBasis, UsagePeriods, UsageScanStatus, UsageTotal,
+    };
+    use crate::usage_sync::{
+        ProviderSettingsAcknowledgement, UsageSyncAcknowledgement, UsageSyncAcknowledgements,
     };
 
     use super::*;
@@ -793,7 +796,7 @@ mod tests {
             batch: &PendingUsageBatch,
             _now: OffsetDateTime,
         ) -> PendingUsageSnapshotDeliveryOutcome {
-            let acknowledgements = batch
+            let usage = batch
                 .snapshots()
                 .iter()
                 .map(|snapshot| {
@@ -806,7 +809,49 @@ mod tests {
                     }
                 })
                 .collect();
-            PendingUsageSnapshotDeliveryOutcome::Committed(acknowledgements)
+            PendingUsageSnapshotDeliveryOutcome::Committed(UsageSyncAcknowledgements {
+                provider_settings: batch.provider_settings().map(|settings| {
+                    ProviderSettingsAcknowledgement {
+                        revision: settings.revision(),
+                        outcome: super::super::AcknowledgementOutcome::Committed,
+                    }
+                }),
+                usage,
+            })
+        }
+    }
+
+    struct RecordingSettingsDelivery(SyncSender<Vec<CodingProvider>>);
+
+    impl PendingUsageSnapshotDelivery for RecordingSettingsDelivery {
+        fn deliver(
+            &self,
+            _authority: &ActiveMacAuthority,
+            batch: &PendingUsageBatch,
+            _now: OffsetDateTime,
+        ) -> PendingUsageSnapshotDeliveryOutcome {
+            if let Some(settings) = batch.provider_settings() {
+                let _ = self.0.send(settings.enabled_providers().to_vec());
+            }
+            let usage = batch
+                .snapshots()
+                .iter()
+                .map(|snapshot| UsageSyncAcknowledgement {
+                    provider: snapshot.provider,
+                    ranking_day: snapshot.ranking_day.clone(),
+                    revision: snapshot.revision,
+                    outcome: super::super::AcknowledgementOutcome::Committed,
+                })
+                .collect();
+            PendingUsageSnapshotDeliveryOutcome::Committed(UsageSyncAcknowledgements {
+                provider_settings: batch.provider_settings().map(|settings| {
+                    ProviderSettingsAcknowledgement {
+                        revision: settings.revision(),
+                        outcome: super::super::AcknowledgementOutcome::Committed,
+                    }
+                }),
+                usage,
+            })
         }
     }
 
@@ -1057,6 +1102,60 @@ mod tests {
             thread::yield_now();
         }
         assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+
+        runtime.shutdown();
+        core.shutdown();
+    }
+
+    #[test]
+    fn provider_disable_delivers_a_durable_setting_without_new_usage() {
+        let now = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixedSynchronizationClock(now));
+        let core = NativeCore::open_with(
+            &database.0,
+            clock.clone(),
+            Arc::new(OneObservation(Mutex::new(Some(observed_state(now))))),
+        )
+        .unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let (settings, observed_settings) = mpsc::sync_channel(4);
+        let runtime = PendingUsageSynchronization::start(SynchronizationEnvironment {
+            state: Arc::new(NativePendingUsageSnapshotState { core: core.clone() }),
+            online_gate: OnlineFeatureGate::default(),
+            authority: Arc::new(ReadyAuthority),
+            delivery: Arc::new(RecordingSettingsDelivery(settings)),
+            clock,
+            retry_interval: Duration::from_secs(60),
+        })
+        .unwrap();
+
+        runtime.request();
+        assert_eq!(
+            observed_settings.recv_timeout(Duration::from_secs(1)),
+            Ok(vec![CodingProvider::Codex, CodingProvider::Claude])
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while core.pending_usage_sync_batch(7).unwrap().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "initial synchronization did not commit"
+            );
+            thread::yield_now();
+        }
+
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        assert_eq!(
+            observed_settings.recv_timeout(Duration::from_secs(1)),
+            Ok(vec![CodingProvider::Codex])
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while core.pending_usage_sync_batch(7).unwrap().is_some() {
+            assert!(Instant::now() < deadline, "provider setting did not commit");
+            thread::yield_now();
+        }
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Synced);
 
         runtime.shutdown();
         core.shutdown();
