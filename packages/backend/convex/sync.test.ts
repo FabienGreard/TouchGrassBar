@@ -252,7 +252,7 @@ test("both providers commit atomically and retries report exact revision outcome
     beforeRetry,
   );
 
-  const divergentSnapshots = snapshots.map((snapshot) =>
+  const higherSnapshots = snapshots.map((snapshot) =>
     Object.assign({}, snapshot, {
       observedTokens: snapshot.observedTokens + 1,
     }),
@@ -261,7 +261,7 @@ test("both providers commit atomically and retries report exact revision outcome
     authenticated.mutation(api.sync.dailyUsage, {
       activeMacGeneration: 1,
       installationCredential: credential,
-      snapshots: divergentSnapshots,
+      snapshots: higherSnapshots,
     }),
   ).resolves.toEqual([
     {
@@ -272,6 +272,35 @@ test("both providers commit atomically and retries report exact revision outcome
     },
     {
       outcome: "stale",
+      provider: "claude",
+      rankingDay: TODAY,
+      revision: 1,
+    },
+  ]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
+    beforeRetry,
+  );
+
+  const lowerSnapshots = snapshots.map((snapshot) =>
+    Object.assign({}, snapshot, {
+      observedTokens: snapshot.observedTokens - 1,
+    }),
+  );
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: lowerSnapshots,
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "conflict",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 1,
+    },
+    {
+      outcome: "conflict",
       provider: "claude",
       rankingDay: TODAY,
       revision: 1,

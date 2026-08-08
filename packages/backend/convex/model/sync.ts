@@ -13,7 +13,7 @@ import {
 } from "./values";
 
 export type UsageAcknowledgement = {
-  outcome: "committed" | "idempotent" | "stale";
+  outcome: "committed" | "conflict" | "idempotent" | "stale";
   provider: Provider;
   rankingDay: string;
   revision: number;
@@ -276,11 +276,14 @@ async function planSnapshots(
       continue;
     }
     if (existing && snapshot.revision === existing.revision) {
+      const outcome = sameUsageSnapshot(existing, snapshot)
+        ? "idempotent"
+        : snapshot.observedTokens < existing.observedTokens
+          ? "conflict"
+          : "stale";
       plans.push({
         acknowledgement: {
-          outcome: sameUsageSnapshot(existing, snapshot)
-            ? "idempotent"
-            : "stale",
+          outcome,
           provider: snapshot.provider,
           rankingDay: snapshot.rankingDay,
           revision: existing.revision,

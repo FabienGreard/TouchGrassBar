@@ -1118,22 +1118,32 @@ impl SqliteReadModelStore {
                 {
                     return Err("native state persistence unavailable");
                 }
-                pending_usage_changed |= acknowledgements.usage.iter().any(|acknowledgement| {
+                let has_stale = acknowledgements.usage.iter().any(|acknowledgement| {
                     acknowledgement.outcome == crate::usage_sync::AcknowledgementOutcome::Stale
                 });
+                let has_conflict = acknowledgements.usage.iter().any(|acknowledgement| {
+                    acknowledgement.outcome == crate::usage_sync::AcknowledgementOutcome::Conflict
+                });
+                pending_usage_changed |= has_stale;
                 if acknowledgements.usage.is_empty() {
                     state.sync.status = sync_status_from_last_successful_day(state, now);
                 } else {
-                    state.sync.last_successful_at = Some(format_time(now));
-                    state.sync.status = if !batch.is_for_current_utc_day(now)
-                        || acknowledgements.usage.iter().any(|acknowledgement| {
-                            acknowledgement.outcome
-                                == crate::usage_sync::AcknowledgementOutcome::Stale
-                        }) {
-                        SyncStatus::Stale
-                    } else {
-                        SyncStatus::Synced
-                    };
+                    if acknowledgements.usage.iter().any(|acknowledgement| {
+                        acknowledgement.outcome
+                            != crate::usage_sync::AcknowledgementOutcome::Conflict
+                    }) {
+                        state.sync.last_successful_at = Some(format_time(now));
+                    }
+                    state.sync.status =
+                        if !batch.is_for_current_utc_day(now) || has_stale || has_conflict {
+                            if state.sync.last_successful_at.is_some() {
+                                SyncStatus::Stale
+                            } else {
+                                SyncStatus::Unavailable
+                            }
+                        } else {
+                            SyncStatus::Synced
+                        };
                 }
                 let updates = queue_current_utc_day(
                     &transaction,
@@ -5094,6 +5104,48 @@ mod tests {
         let pending = core.pending_usage_sync_batch(7).unwrap().unwrap();
         assert_eq!(pending.snapshots()[0].revision, 4);
         assert_eq!(requests.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn lower_revision_conflict_stops_without_an_immediate_retry() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(7).unwrap();
+        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed_requests = Arc::clone(&requests);
+        core.install_usage_sync_request(Arc::new(move || {
+            observed_requests.fetch_add(1, Ordering::AcqRel);
+        }))
+        .unwrap();
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: sent.snapshots()[0].provider,
+            ranking_day: sent.snapshots()[0].ranking_day.clone(),
+            revision: sent.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Conflict,
+        };
+
+        core.acknowledge_usage_sync(&sent, &[acknowledgement])
+            .unwrap();
+
+        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert_eq!(requests.load(Ordering::Acquire), 0);
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
     }
 
     #[test]

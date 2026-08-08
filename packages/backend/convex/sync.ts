@@ -11,6 +11,7 @@ import {
 const acknowledgement = v.object({
   outcome: v.union(
     v.literal("committed"),
+    v.literal("conflict"),
     v.literal("idempotent"),
     v.literal("stale"),
   ),

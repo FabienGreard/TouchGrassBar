@@ -331,6 +331,7 @@ impl SyncApiEquivalentCost {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum AcknowledgementOutcome {
     Committed,
+    Conflict,
     Idempotent,
     Stale,
 }
@@ -361,7 +362,11 @@ pub(crate) struct ProviderSettingsAcknowledgement {
 
 impl ProviderSettingsAcknowledgement {
     fn validate(&self) -> Result<(), UsageSyncError> {
-        validate_revision(self.revision).map_err(|_| UsageSyncError::INVALID_RESPONSE)
+        validate_revision(self.revision).map_err(|_| UsageSyncError::INVALID_RESPONSE)?;
+        if self.outcome == AcknowledgementOutcome::Conflict {
+            return Err(UsageSyncError::INVALID_RESPONSE);
+        }
+        Ok(())
     }
 }
 
@@ -1320,10 +1325,10 @@ pub(crate) fn parse_provider_settings_acknowledgement(
 
 /// Apply one complete success value to the exact submitted batch.
 ///
-/// A committed or idempotent acknowledgement must name the submitted
-/// revision. A stale acknowledgement must name the same or a newer server
-/// revision. The equal case reports a divergent payload after local state was
-/// rebuilt. The delete always uses the submitted revision. Therefore, a late
+/// A committed, conflict, or idempotent acknowledgement must name the
+/// submitted revision. A conflict stops an unproved lower value after local
+/// state was rebuilt. A stale acknowledgement names the same or a newer server
+/// revision. The delete always uses the submitted revision. Therefore, a late
 /// response cannot remove a newer local revision.
 pub(crate) fn apply_usage_acknowledgements(
     transaction: &Transaction<'_>,
@@ -1359,9 +1364,9 @@ pub(crate) fn apply_usage_acknowledgements(
             return Err(UsageSyncError::INVALID_RESPONSE);
         };
         let revision_is_valid = match acknowledgement.outcome {
-            AcknowledgementOutcome::Committed | AcknowledgementOutcome::Idempotent => {
-                acknowledgement.revision == submitted_revision
-            }
+            AcknowledgementOutcome::Committed
+            | AcknowledgementOutcome::Conflict
+            | AcknowledgementOutcome::Idempotent => acknowledgement.revision == submitted_revision,
             AcknowledgementOutcome::Stale => acknowledgement.revision >= submitted_revision,
         };
         if !revision_is_valid {
@@ -1436,6 +1441,7 @@ pub(crate) fn apply_provider_settings_acknowledgement(
             )?;
             Ok(false)
         }
+        AcknowledgementOutcome::Conflict => Err(UsageSyncError::INVALID_RESPONSE),
         AcknowledgementOutcome::Stale => {
             if acknowledgement.revision < submitted_revision {
                 return Err(UsageSyncError::INVALID_RESPONSE);
@@ -3026,7 +3032,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_revision_conflict_requeues_both_providers_at_the_next_revision() {
+    fn equal_revision_stale_requeues_both_providers_at_the_next_revision() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
         for provider in [CodingProvider::Codex, CodingProvider::Claude] {
@@ -3054,6 +3060,43 @@ mod tests {
                 .iter()
                 .all(|snapshot| { snapshot.revision == 2 && snapshot.observed_tokens == 10 })
         );
+    }
+
+    #[test]
+    fn equal_revision_lower_conflict_stops_both_unproved_decreases() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            queue_daily_aggregate(&transaction, 1, aggregate(provider, 10, 1000)).unwrap();
+        }
+        transaction.commit().unwrap();
+        let sent = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        let acknowledgements = sent
+            .snapshots()
+            .iter()
+            .map(|snapshot| acknowledgement(snapshot, AcknowledgementOutcome::Conflict, 1))
+            .collect::<Vec<_>>();
+
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &sent, &acknowledgements).unwrap(),
+            2
+        );
+        transaction.commit().unwrap();
+        assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
+
+        let transaction = connection.transaction().unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            assert_eq!(
+                queue_daily_aggregate(&transaction, 1, aggregate(provider, 10, 1000)).unwrap(),
+                QueueUpdate::Unchanged {
+                    provider,
+                    revision: 1,
+                }
+            );
+        }
+        transaction.commit().unwrap();
+        assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
     }
 
     #[test]
@@ -3297,6 +3340,15 @@ mod tests {
     fn acknowledgement_parser_is_strict_and_bounded() {
         let valid = br#"[{"provider":"codex","rankingDay":"2026-08-08","revision":1,"outcome":"committed"}]"#;
         assert_eq!(parse_usage_acknowledgements(valid).unwrap().len(), 1);
+        let conflict = br#"[{"provider":"claude","rankingDay":"2026-08-08","revision":1,"outcome":"conflict"}]"#;
+        assert_eq!(
+            parse_usage_acknowledgements(conflict).unwrap()[0].outcome,
+            AcknowledgementOutcome::Conflict
+        );
+        assert_eq!(
+            parse_provider_settings_acknowledgement(br#"{"revision":1,"outcome":"conflict"}"#),
+            Err(UsageSyncError::INVALID_RESPONSE)
+        );
 
         for invalid in [
             br#"[{"provider":"codex","rankingDay":"2026-08-08","revision":1,"outcome":"committed","detail":"private"}]"#.as_slice(),
