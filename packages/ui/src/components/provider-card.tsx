@@ -22,8 +22,8 @@ function resetTimeFormatter(timeZone?: string) {
   });
 }
 
-function resetDateFormatter(timeZone?: string) {
-  return new Intl.DateTimeFormat("en-GB", {
+function exactResetDate(resetAt: Date, timeZone?: string) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     hour: "2-digit",
     hourCycle: "h23",
@@ -31,7 +31,11 @@ function resetDateFormatter(timeZone?: string) {
     month: "short",
     timeZone,
     weekday: "short",
-  });
+  }).formatToParts(resetAt);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? "";
+
+  return `${part("weekday")} ${part("day")} ${part("month")}, ${part("hour")}:${part("minute")}`;
 }
 
 function quotaPercentage(lane: QuotaLane | null | undefined) {
@@ -84,7 +88,7 @@ function quotaLabel(
   if (!/week/i.test(lane.label))
     return `${lane.label} · resets ${time}${freshness}`;
 
-  const exactReset = resetDateFormatter(timeZone).format(resetAt);
+  const exactReset = exactResetDate(resetAt, timeZone);
   return `${lane.label} · ${timeLeft} left · ${exactReset}${freshness}`;
 }
 

@@ -2,6 +2,10 @@
 import LandingExperience from "./LandingExperience";
 import "../styles/global.css";
 import { GARDEN_COPY, isGardenTime } from "../lib/garden-time";
+import dawnGarden from "../styles/assets/dawn-garden.webp?url";
+import dayGarden from "../styles/assets/day-garden.webp?url";
+import goldenGarden from "../styles/assets/golden-garden.webp?url";
+import nightGarden from "../styles/assets/night-garden.webp?url";
 
 type Props = {
   invitation?: boolean;
@@ -16,6 +20,12 @@ const title = invitation
 const description = invitation
   ? "Install TouchGrassBar, create your Profile on your Mac, and join the Doomerboard."
   : "See Codex and Claude limits in the menu bar, then compare observed tokens on the Doomerboard.";
+const gardenAssets = {
+  dawn: dawnGarden,
+  day: dayGarden,
+  golden: goldenGarden,
+  night: nightGarden,
+};
 ---
 
 <!doctype html>
@@ -25,9 +35,10 @@ const description = invitation
     <meta name="description" content={description} />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#070d0a" />
+    <link rel="icon" href="/favicon.png" type="image/png" />
     <title>{title}</title>
     <noscript><style>html.garden-time-pending .d-garden-hero{visibility:visible}</style></noscript>
-    <script is:inline>
+    <script is:inline define:vars={{ gardenAssets }}>
       (() => {
         const requestedGardenTime = new URLSearchParams(window.location.search).get("time");
         const explicitGardenTime = ["dawn", "day", "golden", "night"].includes(requestedGardenTime)
@@ -41,7 +52,14 @@ const description = invitation
             : hour >= 17 && hour < 21
               ? "golden"
               : "night";
-        document.documentElement.dataset.gardenTime = explicitGardenTime || localGardenTime;
+        const gardenTime = explicitGardenTime || localGardenTime;
+        document.documentElement.dataset.gardenTime = gardenTime;
+        const preload = document.createElement("link");
+        preload.rel = "preload";
+        preload.as = "image";
+        preload.href = gardenAssets[gardenTime];
+        preload.fetchPriority = "high";
+        document.head.append(preload);
       })();
     </script>
   </head>
@@ -64,13 +82,19 @@ const description = invitation
           if (!invitation) {
             hero.querySelectorAll("[data-garden-copy-line]").forEach((line) => {
               const index = Number(line.dataset.gardenCopyLine);
-              line.textContent = gardenCopy[gardenTime][index];
+              const nextCopy = gardenCopy[gardenTime][index];
+              if (line.textContent !== nextCopy) line.textContent = nextCopy;
             });
           }
         } finally {
           document.documentElement.classList.remove("garden-time-pending");
         }
       })();
+    </script>
+    <script>
+      import { installAnalytics } from "../lib/analytics";
+
+      installAnalytics();
     </script>
   </body>
 </html>

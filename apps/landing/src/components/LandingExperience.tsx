@@ -359,7 +359,7 @@ function InviteVariantD() {
         <span>“The hallucination compiles.”</span>
         <span>“No AI was harmed writing this.”</span>
       </div>
-      <header><h2>Vibe code alone.<br /><em>Tokenmaxx together.</em></h2><p>Add your friends. Compare Token Scores. Keep every prompt private.</p><a className="d-macos-download" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a></header>
+      <header><h2>Vibe code alone.<br /><em>Tokenmaxx together.</em></h2><p>Add your friends. Compare Token Scores. Keep every prompt private.</p><a className="d-macos-download" data-analytics-event="download clicked" data-analytics-placement="invite" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a></header>
     </div>
   );
 }
@@ -399,7 +399,7 @@ function DownloadSection() {
         <span>Ready when your Mac is</span>
         <h2><span>A tiny monument</span><span>to your token problem.</span></h2>
         <p>See how your Codex and Claude Token Scores rank with other Tokenmaxxers.</p>
-        <a className="d-macos-download compact" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
+        <a className="d-macos-download compact" data-analytics-event="download clicked" data-analytics-placement="release" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
       </div>
       <div className="d-release-install" aria-label="Install TouchGrassBar in Applications">
         <TouchGrassInstallItem />
@@ -453,21 +453,26 @@ function NightGarden({ initialGardenTime, invitation = false }: LandingExperienc
     <main className="direction direction-d identity-native" id="main-content">
       <header className={`d-menubar ${headerScrolled ? "scrolled" : ""}`}>
         <div className="d-brand"><SiteBrand reversed /></div>
-        <a className="d-header-download" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
+        <a className="d-header-download" data-analytics-event="download clicked" data-analytics-placement="header" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
       </header>
 
-      <section className={`d-garden-hero garden-${gardenTime} ${suppressTimeFade ? "d-time-instant" : ""}`}>
+      <section className={`d-garden-hero garden-${gardenTime} ${suppressTimeFade ? "d-time-instant" : ""}`} suppressHydrationWarning>
         {(["dawn", "day", "golden", "night"] as const).map((time) => (
-          <div className={`d-time-layer ${time === gardenTime ? "active" : ""} time-${time}`} data-garden-layer={time} key={time} />
+          <div
+            className={`d-time-layer ${time === gardenTime ? "active" : ""} time-${time}`}
+            data-garden-layer={time}
+            key={time}
+            suppressHydrationWarning
+          />
         ))}
         <div className="d-mist-layer" />
         <div className="d-life-layer" aria-hidden="true">{Array.from({ length: 24 }, (_, index) => <i className={index >= 14 ? "day-only" : undefined} key={index} />)}</div>
         <div className="d-hero-inner">
           <div className="d-hero-copy">
             <span>{invitation ? "Doomerboard invitation" : "Built for Codex & Claude"}</span>
-            <h1><span data-garden-copy-line="0">{heroCopy[0]}</span><br /><span data-garden-copy-line="1">{heroCopy[1]}</span><br /><em data-garden-copy-line="2">{heroCopy[2]}</em></h1>
+            <h1><span data-garden-copy-line="0" suppressHydrationWarning>{heroCopy[0]}</span><br /><span data-garden-copy-line="1" suppressHydrationWarning>{heroCopy[1]}</span><br /><em data-garden-copy-line="2" suppressHydrationWarning>{heroCopy[2]}</em></h1>
             <p>{invitation ? "Install TouchGrassBar on your Mac, create or restore your Profile, then join the Doomerboard with your TouchGrass ID." : "Lives in your menu bar. See your limits and compare Observed Tokens on the Doomerboard."}</p>
-            <a className="d-macos-download" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
+            <a className="d-macos-download" data-analytics-event="download clicked" data-analytics-placement="hero" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
           </div>
           <ProductPanel />
         </div>
@@ -486,7 +491,7 @@ function NightGarden({ initialGardenTime, invitation = false }: LandingExperienc
 
       <footer className="d-footer">
         <div className="d-footer-brand"><SiteBrand reversed /><span>Open Source. Public score. Private work.</span></div>
-        <nav aria-label="Project links"><a href="https://github.com/FabienGreard/TouchGrassBar" rel="noreferrer" target="_blank"><img alt="" src={githubLogo} /><span>Star on GitHub</span></a><a href="https://x.com/FabienGreard" rel="noreferrer" target="_blank"><img alt="" src={xLogo} /><span>@FabienGreard</span></a></nav>
+        <nav aria-label="Project links"><a data-analytics-event="outbound link clicked" data-analytics-placement="github" href="https://github.com/FabienGreard/TouchGrassBar" rel="noreferrer" target="_blank"><img alt="" src={githubLogo} /><span>Star on GitHub</span></a><a data-analytics-event="outbound link clicked" data-analytics-placement="x" href="https://x.com/FabienGreard" rel="noreferrer" target="_blank"><img alt="" src={xLogo} /><span>@FabienGreard</span></a></nav>
       </footer>
     </main>
   );

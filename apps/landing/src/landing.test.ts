@@ -82,6 +82,19 @@ describe("production landing contract", () => {
     expect(markup).not.toContain("No browser account.");
   });
 
+  test("marks conversion and outbound links for analytics", () => {
+    const markup = renderToStaticMarkup(
+      createElement(LandingExperience, { initialGardenTime: "day" }),
+    );
+
+    for (const placement of ["header", "hero", "invite", "release"]) {
+      expect(markup).toContain(`data-analytics-event="download clicked" data-analytics-placement="${placement}"`);
+    }
+    for (const placement of ["github", "x"]) {
+      expect(markup).toContain(`data-analytics-event="outbound link clicked" data-analytics-placement="${placement}"`);
+    }
+  });
+
   test("maps each local hour to the approved garden scene", () => {
     expect(Array.from({ length: 24 }, (_, hour) => gardenTimeForHour(hour))).toEqual([
       "night", "night", "night", "night", "night",
