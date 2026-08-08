@@ -45,12 +45,6 @@ export function rankRows<
   });
 }
 
-function hasCurrentCost<
-  T extends { apiEquivalentCost?: ApiEquivalentCost | null },
->(row: T | null): row is T & { apiEquivalentCost: ApiEquivalentCost | null } {
-  return row !== null && row.apiEquivalentCost !== undefined;
-}
-
 export const global = query({
   args: {
     limit: v.optional(v.number()),
@@ -66,7 +60,7 @@ export const global = query({
       pageSize: limit,
     });
     const rows = await Promise.all(page.map((item) => ctx.db.get(item.id)));
-    return rankRows(rows.filter(hasCurrentCost));
+    return rankRows(rows.filter((row) => row !== null));
   },
 });
 
@@ -94,13 +88,7 @@ export const myTokenmaxxers = query({
       )
       .take(2_000);
     const rows = candidates
-      .filter(
-        (score): score is typeof score & {
-          apiEquivalentCost: ApiEquivalentCost | null;
-        } =>
-          score.apiEquivalentCost !== undefined &&
-          includedIds.has(score.tokenmaxxerId),
-      )
+      .filter((score) => includedIds.has(score.tokenmaxxerId))
       .sort(
         (left, right) =>
           right.tokenScore - left.tokenScore ||

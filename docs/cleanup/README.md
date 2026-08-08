@@ -54,11 +54,6 @@ A migration is not complete only because its function returned successfully.
 Its invariants, affected deployment scope, and cleanup targets must also be
 complete.
 
-## Active entries
-
-- [Issue 67: retire legacy Active Mac authority](./issue-67-retire-legacy-active-device-authority.md)
-- [Issue 68: retire pre-contract usage compatibility](./issue-68-retire-precontract-usage-compatibility.md)
-
 ## Entry template
 
 ```markdown

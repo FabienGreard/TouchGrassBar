@@ -111,14 +111,6 @@ export async function claimActiveDevice(
   }
 
   if (
-    device.generation === undefined &&
-    device.installationCredentialDigest === undefined
-  ) {
-    return rejectAuthority();
-  }
-
-  if (
-    device.generation === undefined ||
     !Number.isSafeInteger(device.generation) ||
     device.generation < INITIAL_ACTIVE_MAC_GENERATION ||
     device.installationCredentialDigest !== installationCredentialDigestValue

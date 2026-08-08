@@ -59,9 +59,6 @@ export const ensureProfile = mutation({
       tokenmaxxer._id,
       args.installationCredential,
     );
-    if (activeDevice.generation === undefined) {
-      throw new Error("Active Mac generation unavailable");
-    }
     return {
       activeMacGeneration: activeDevice.generation,
       displayName: tokenmaxxer.displayName,

@@ -55,9 +55,7 @@ A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer 
 
 The migrations component owns repair/backfill work. Migrations are forward-only, resumable, idempotent, and bounded. A required-field or Board Key change adds new storage, backfills it, verifies counts and invariants, switches reads and writes, then removes legacy state only in a later release. Readiness includes an interruption/resume rehearsal on production-shaped data and Aggregate-repair coverage.
 
-Issue 67 owns `retireLegacyActiveDeviceAuthority`. It removes the old installation identifier, revokes the old device row, and clears its Active Mac link. The next live, matching Better Auth Profile can then claim a credential-based Active Mac. A governed deployment must rehearse and complete this migration before it enables synchronization for existing Profiles.
-
-Issue 68 owns the temporary pre-contract usage bridge. The schema accepts the old and current cost shapes while four governed migrations replace old rows. The migrations set unknown old costs to unavailable. They do not infer cost quality. Score calculation excludes a row that does not have the current cost field. A later change makes the current fields required and removes the bridge. This branch does not run either migration set on a cloud deployment.
+This feature requires the credential-based Active Mac and current usage schemas directly. It has no compatibility migration. Reset a local development deployment if it contains data from an earlier feature shape. This branch does not change a cloud deployment.
 
 ## Authentication boundary
 

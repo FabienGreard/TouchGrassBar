@@ -43,20 +43,13 @@ export default defineSchema({
 
   devices: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
-    // Optional legacy field. New Active Macs store only a digest of the
-    // Keychain-held installation credential.
-    installationId: v.optional(v.string()),
-    installationCredentialDigest: v.optional(v.string()),
-    generation: v.optional(v.number()),
+    installationCredentialDigest: v.string(),
+    generation: v.number(),
     createdAt: v.number(),
     lastSeenAt: v.number(),
     revokedAt: v.optional(v.number()),
-  })
-    .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
-    .index("by_tokenmaxxer_id_and_installation_id", ["tokenmaxxerId", "installationId"]),
+  }).index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
 
-  // Issue #68 owns the temporary optional fields in the four usage and score
-  // tables. Current writes remove the pre-contract fields.
   usageBuckets: defineTable({
     deviceId: v.id("devices"),
     tokenmaxxerId: v.id("tokenmaxxers"),
@@ -64,16 +57,13 @@ export default defineSchema({
     rankingDay: v.string(),
     revision: v.number(),
     observedTokens: v.number(),
-    apiEquivalentCost: v.optional(apiEquivalentCost),
-    apiEquivalentCostMicros: v.optional(v.number()),
+    apiEquivalentCost,
     coverage,
-    evidenceBasis: v.optional(evidenceBasis),
-    correctionReason: v.optional(v.union(correctionReason, v.null())),
-    correctionRevision: v.optional(v.union(v.number(), v.null())),
+    evidenceBasis,
+    correctionReason: v.union(correctionReason, v.null()),
+    correctionRevision: v.union(v.number(), v.null()),
     lastCorrectionReason: v.optional(correctionReason),
     lastCorrectionRevision: v.optional(v.number()),
-    priceBasisVersion: v.optional(v.string()),
-    source: v.optional(v.literal("local-observed")),
     observedAt: v.number(),
     syncedAt: v.number(),
   })
@@ -110,9 +100,7 @@ export default defineSchema({
     provider,
     rankingDay: v.string(),
     observedTokens: v.number(),
-    apiEquivalentCost: v.optional(apiEquivalentCost),
-    apiEquivalentCostMicros: v.optional(v.number()),
-    costIsComplete: v.optional(v.boolean()),
+    apiEquivalentCost,
     updatedAt: v.number(),
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
@@ -128,8 +116,7 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
-    apiEquivalentCost: v.optional(apiEquivalentCost),
-    apiEquivalentCostMicros: v.optional(v.number()),
+    apiEquivalentCost,
     computedAt: v.number(),
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
@@ -146,8 +133,7 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
-    apiEquivalentCost: v.optional(apiEquivalentCost),
-    apiEquivalentCostMicros: v.optional(v.number()),
+    apiEquivalentCost,
     displayName: v.string(),
     touchGrassId: v.string(),
     computedAt: v.number(),
