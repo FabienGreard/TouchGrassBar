@@ -38,7 +38,7 @@ const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
 const TRANSCRIPT_PARSER_VERSION: i64 = 4;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
-pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 6;
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
 const PARSER_CORRECTION_PROVENANCE: &str = "parser-correction";
 
@@ -207,7 +207,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
         && (usage.cache_creation_input == 0 || cache_breakdown_matches);
     let pricing = ClaudePricingMetadata {
         service_tier: normalized_modifier(line.message.usage.service_tier),
-        inference_geo: normalized_modifier(line.message.usage.inference_geo),
+        inference_geo: normalized_inference_geo(line.message.usage.inference_geo),
         speed: normalized_modifier(line.message.usage.speed),
         web_search_requests: line
             .message
@@ -405,6 +405,13 @@ fn normalized_modifier(value: Option<String>) -> Option<String> {
             Some(value)
         }
         Some(_) => Some(INVALID_PRICING_MODIFIER.to_owned()),
+    }
+}
+
+fn normalized_inference_geo(value: Option<String>) -> Option<String> {
+    match value.as_deref() {
+        Some("") => None,
+        _ => normalized_modifier(value),
     }
 }
 
@@ -642,7 +649,7 @@ pub(crate) fn usage_index_schema_version(connection: &Connection) -> Result<i64,
         .map_err(|_| ())
 }
 
-fn daily_usage_correction_columns(connection: &Connection) -> Result<(bool, bool), ()> {
+fn daily_usage_optional_columns(connection: &Connection) -> Result<(bool, bool, bool), ()> {
     let mut statement = connection
         .prepare("PRAGMA table_info(claude_usage_daily)")
         .map_err(|_| ())?;
@@ -651,14 +658,16 @@ fn daily_usage_correction_columns(connection: &Connection) -> Result<(bool, bool
         .map_err(|_| ())?;
     let mut has_provenance = false;
     let mut has_source_revision = false;
+    let mut has_cost_modeled = false;
     for column in columns {
         match column.map_err(|_| ())?.as_str() {
             "correction_provenance" => has_provenance = true,
             "correction_source_revision" => has_source_revision = true,
+            "cost_modeled" => has_cost_modeled = true,
             _ => {}
         }
     }
-    Ok((has_provenance, has_source_revision))
+    Ok((has_provenance, has_source_revision, has_cost_modeled))
 }
 
 fn supersede_edges_have_aggregate_applied(connection: &Connection) -> Result<bool, ()> {
@@ -857,6 +866,7 @@ fn ensure_index_schema(connection: &mut Connection, database_path: &Path) -> Res
                revision INTEGER NOT NULL CHECK (revision >= 1),
                priced_tokens INTEGER NOT NULL DEFAULT 0,
                cost_usd REAL,
+               cost_modeled INTEGER NOT NULL DEFAULT 0 CHECK (cost_modeled IN (0, 1)),
                pricing_basis TEXT,
                pricing_fingerprint TEXT,
                correction_provenance TEXT,
@@ -874,7 +884,8 @@ fn ensure_index_schema(connection: &mut Connection, database_path: &Path) -> Res
              );",
         )
         .map_err(|_| ())?;
-    let (has_provenance, has_source_revision) = daily_usage_correction_columns(&transaction)?;
+    let (has_provenance, has_source_revision, has_cost_modeled) =
+        daily_usage_optional_columns(&transaction)?;
     if !has_provenance {
         transaction
             .execute_batch(
@@ -908,6 +919,15 @@ fn ensure_index_schema(connection: &mut Connection, database_path: &Path) -> Res
                      AND correction_source_revision <= revision
                    )
                  );",
+            )
+            .map_err(|_| ())?;
+    }
+    if !has_cost_modeled {
+        transaction
+            .execute_batch(
+                "ALTER TABLE claude_usage_daily
+                 ADD COLUMN cost_modeled INTEGER NOT NULL DEFAULT 0
+                 CHECK (cost_modeled IN (0, 1));",
             )
             .map_err(|_| ())?;
     }
@@ -1436,6 +1456,7 @@ struct DailyAccumulator {
     observed_through: Option<OffsetDateTime>,
     priced_tokens: u64,
     cost_usd: f64,
+    modeled: bool,
     pricing_rule_fingerprints: BTreeSet<String>,
 }
 
@@ -1612,6 +1633,7 @@ struct StoredDailyAggregate {
     revision: u64,
     priced_tokens: u64,
     cost_usd: Option<f64>,
+    modeled: bool,
     pricing_basis: Option<String>,
     pricing_fingerprint: Option<String>,
     correction: Option<ProviderCorrection>,
@@ -1645,7 +1667,7 @@ fn load_stored_daily_aggregates(
     let mut statement = connection
         .prepare(
             "SELECT day, observed_tokens, coverage, observed_through, revision,
-                    priced_tokens, cost_usd, pricing_basis, pricing_fingerprint,
+                    priced_tokens, cost_usd, cost_modeled, pricing_basis, pricing_fingerprint,
                     correction_provenance, correction_source_revision
              FROM claude_usage_daily
              WHERE day >= ?1 AND day <= ?2
@@ -1668,9 +1690,10 @@ fn load_stored_daily_aggregates(
                     priced_tokens: from_i64(row.get(5)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     cost_usd: row.get(6)?,
-                    pricing_basis: row.get(7)?,
-                    pricing_fingerprint: row.get(8)?,
-                    correction: decode_stored_correction(row.get(9)?, row.get(10)?, revision)
+                    modeled: row.get(7)?,
+                    pricing_basis: row.get(8)?,
+                    pricing_fingerprint: row.get(9)?,
+                    correction: decode_stored_correction(row.get(10)?, row.get(11)?, revision)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
             ))
@@ -1840,6 +1863,7 @@ fn refresh_daily_aggregates_with_catalog(
                     .checked_add(decision.priced_tokens)
                     .ok_or(())?;
                 entry.cost_usd += cost_usd;
+                entry.modeled |= decision.modeled;
             }
         }
         entry.observed_through = Some(
@@ -1911,6 +1935,7 @@ fn refresh_daily_aggregates_with_catalog(
             revision,
             priced_tokens,
             cost_usd,
+            modeled,
             pricing_basis,
             pricing_fingerprint,
             correction,
@@ -1922,6 +1947,7 @@ fn refresh_daily_aggregates_with_catalog(
                 1,
                 candidate.priced_tokens,
                 candidate_cost_usd,
+                candidate.modeled,
                 candidate_pricing_basis,
                 candidate_pricing_fingerprint,
                 None,
@@ -1941,11 +1967,12 @@ fn refresh_daily_aggregates_with_catalog(
                     previous.observed_tokens.max(candidate.observed_tokens)
                 };
                 let observed_through = previous.observed_through.max(observed_through);
-                let (priced_tokens, cost_usd, accepted_pricing_basis, pricing_fingerprint) =
+                let (priced_tokens, cost_usd, modeled, accepted_pricing_basis, pricing_fingerprint) =
                     if accept_candidate {
                         (
                             candidate.priced_tokens,
                             candidate_cost_usd,
+                            candidate.modeled,
                             candidate_pricing_basis,
                             candidate_pricing_fingerprint,
                         )
@@ -1953,6 +1980,7 @@ fn refresh_daily_aggregates_with_catalog(
                         (
                             previous.priced_tokens,
                             previous.cost_usd,
+                            previous.modeled,
                             previous.pricing_basis.clone(),
                             previous.pricing_fingerprint.clone(),
                         )
@@ -1962,6 +1990,7 @@ fn refresh_daily_aggregates_with_catalog(
                     || previous.coverage != coverage
                     || previous.priced_tokens != priced_tokens
                     || previous.cost_usd.map(f64::to_bits) != cost_usd.map(f64::to_bits)
+                    || previous.modeled != modeled
                     || previous.pricing_fingerprint != pricing_fingerprint;
                 let pricing_basis =
                     if accept_candidate && !material_changed && previous.pricing_basis.is_some() {
@@ -1987,6 +2016,7 @@ fn refresh_daily_aggregates_with_catalog(
                     revision,
                     priced_tokens,
                     cost_usd,
+                    modeled,
                     pricing_basis,
                     pricing_fingerprint,
                     correction,
@@ -2006,9 +2036,9 @@ fn refresh_daily_aggregates_with_catalog(
             .execute(
                 "INSERT INTO claude_usage_daily(
                    day, observed_tokens, coverage, observed_through, revision,
-                   priced_tokens, cost_usd, pricing_basis, pricing_fingerprint,
+                   priced_tokens, cost_usd, cost_modeled, pricing_basis, pricing_fingerprint,
                    correction_provenance, correction_source_revision
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(day) DO UPDATE SET
                    observed_tokens=excluded.observed_tokens,
                    coverage=excluded.coverage,
@@ -2016,6 +2046,7 @@ fn refresh_daily_aggregates_with_catalog(
                    revision=excluded.revision,
                    priced_tokens=excluded.priced_tokens,
                    cost_usd=excluded.cost_usd,
+                   cost_modeled=excluded.cost_modeled,
                    pricing_basis=excluded.pricing_basis,
                    pricing_fingerprint=excluded.pricing_fingerprint,
                    correction_provenance=excluded.correction_provenance,
@@ -2028,6 +2059,7 @@ fn refresh_daily_aggregates_with_catalog(
                     to_i64(revision)?,
                     to_i64(priced_tokens)?,
                     cost_usd,
+                    modeled,
                     pricing_basis,
                     pricing_fingerprint,
                     correction_provenance,
@@ -2142,10 +2174,12 @@ fn prune_private_message_details(connection: &Connection, today: Date) -> Result
             "UPDATE claude_usage_daily
              SET priced_tokens = 0,
                  cost_usd = NULL,
+                 cost_modeled = 0,
                  pricing_basis = NULL,
                  pricing_fingerprint = NULL
              WHERE day < ?1 AND (
                priced_tokens != 0 OR cost_usd IS NOT NULL
+               OR cost_modeled != 0
                OR pricing_basis IS NOT NULL OR pricing_fingerprint IS NOT NULL
              )",
             [detail_cutoff.to_string()],
@@ -2167,7 +2201,7 @@ fn read_indexed_usage(
     let mut statement = connection
         .prepare(
             "SELECT day, observed_tokens, coverage, observed_through,
-                    priced_tokens, cost_usd, pricing_basis, revision,
+                    priced_tokens, cost_usd, cost_modeled, pricing_basis, revision,
                     correction_provenance, correction_source_revision
              FROM claude_usage_daily
              WHERE day >= ?1 AND day <= ?2 ORDER BY day",
@@ -2193,9 +2227,10 @@ fn read_indexed_usage(
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
             let priced_tokens = from_i64(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
             let cost_usd = row.get::<_, Option<f64>>(5)?;
-            let pricing_basis = row.get::<_, Option<String>>(6)?;
-            let revision = from_i64(row.get(7)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
-            let correction = decode_stored_correction(row.get(8)?, row.get(9)?, revision)
+            let modeled = row.get::<_, bool>(6)?;
+            let pricing_basis = row.get::<_, Option<String>>(7)?;
+            let revision = from_i64(row.get(8)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let correction = decode_stored_correction(row.get(9)?, row.get(10)?, revision)
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
             Ok((
                 day,
@@ -2204,6 +2239,7 @@ fn read_indexed_usage(
                 observed_through,
                 priced_tokens,
                 cost_usd,
+                modeled,
                 pricing_basis,
                 correction,
             ))
@@ -2222,6 +2258,7 @@ fn read_indexed_usage(
         observed_through,
         priced_tokens,
         cost_usd,
+        modeled,
         pricing_basis,
         stored_correction,
     ) in rows
@@ -2246,6 +2283,7 @@ fn read_indexed_usage(
                         observed_tokens,
                         priced_tokens,
                         api_equivalent_cost_usd: Some(cost_usd),
+                        modeled,
                         complete: priced_tokens == observed_tokens,
                         observed_through: Some(observed_through),
                         priced_observed_through: Some(observed_through),
@@ -3050,21 +3088,22 @@ mod tests {
         );
         let stored = connection
             .query_row(
-                "SELECT observed_tokens, revision, correction_provenance,
-                        correction_source_revision
+                "SELECT observed_tokens, revision, cost_modeled,
+                        correction_provenance, correction_source_revision
                  FROM claude_usage_daily WHERE day = '2026-08-07'",
                 [],
                 |row| {
                     Ok((
                         row.get::<_, u64>(0)?,
                         row.get::<_, u64>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<u64>>(3)?,
+                        row.get::<_, bool>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<u64>>(4)?,
                     ))
                 },
             )
             .unwrap();
-        assert_eq!(stored, (40, 3, None, None));
+        assert_eq!(stored, (40, 3, false, None, None));
         assert!(usage_index_backup_path(&database, 3).is_file());
     }
 
@@ -4617,6 +4656,64 @@ mod tests {
         );
         let cost_coverage = api_equivalent_cost_coverage_percent.expect("partial price coverage");
         assert!((cost_coverage - (200.0 / 3.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn unavailable_geo_uses_persisted_modeled_global_cost() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let transcript = transcript_line(
+            "fixture-unavailable-geo",
+            now() - Duration::minutes(5),
+            "claude-opus-4-8",
+            usage(1_000_000, 0, 0, 1_000_000),
+        )
+        .replacen(
+            r#""server_tool_use""#,
+            r#""service_tier":"standard","inference_geo":"not_available","speed":"standard","server_tool_use""#,
+            1,
+        );
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[transcript],
+        );
+
+        let indexed = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("unavailable geo must retain a modeled standard cost");
+        let detail = &indexed.daily_cost[&now().date()];
+        assert_eq!(detail.observed_tokens, 2_000_000);
+        assert_eq!(detail.priced_tokens, 2_000_000);
+        assert_eq!(detail.api_equivalent_cost_usd, Some(30.0));
+        assert!(detail.modeled);
+
+        let restored = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("the modeled marker must survive a cached scan");
+        assert!(restored.daily_cost[&now().date()].modeled);
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = project_usage_periods(Some(&restored), now()).today
+        else {
+            panic!("today must be available");
+        };
+        assert_eq!(api_equivalent_cost_usd, Some(30.0));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
+        assert!(
+            Connection::open(fixture.database())
+                .unwrap()
+                .query_row(
+                    "SELECT cost_modeled FROM claude_usage_daily WHERE day = ?1",
+                    [now().date().to_string()],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        );
     }
 
     #[test]

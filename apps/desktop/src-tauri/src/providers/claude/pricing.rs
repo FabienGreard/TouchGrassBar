@@ -128,6 +128,7 @@ impl BillableUsage<'_> {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PriceDecision {
     pub(super) cost_usd: Option<f64>,
+    pub(super) modeled: bool,
     pub(super) priced_tokens: u64,
     pub(super) rule_fingerprint: String,
 }
@@ -136,6 +137,7 @@ impl PriceDecision {
     fn unavailable(reason: &str) -> Self {
         Self {
             cost_usd: None,
+            modeled: false,
             priced_tokens: 0,
             rule_fingerprint: stable_fingerprint(&format!("unavailable:{reason}")),
         }
@@ -205,10 +207,13 @@ impl PricingCatalog {
             Some("batch") => self.batch_factor,
             Some(_) => return Err("unknown-service-tier"),
         };
-        let geo_factor = match (model.supports_us_inference, usage.inference_geo) {
-            (true, Some("global")) | (false, None | Some("global")) => 1.0,
-            (true, Some("us")) => self.us_inference_factor,
-            (true, None) => return Err("missing-inference-geo"),
+        // Claude Code subscription logs can omit the inference location. Use
+        // the standard global rate, but retain that this rate was modeled.
+        let (geo_factor, modeled) = match (model.supports_us_inference, usage.inference_geo) {
+            (true, Some("global")) => (1.0, false),
+            (true, Some("us")) => (self.us_inference_factor, false),
+            (true, None | Some("not_available")) => (1.0, true),
+            (false, None | Some("global" | "not_available")) => (1.0, false),
             (_, Some(_)) => return Err("unknown-inference-geo"),
         };
         let applicable_fast_entry = model
@@ -249,7 +254,12 @@ impl PricingCatalog {
             (tokens > 0).then(|| format!("{:016x}", (rate * token_factor).to_bits()))
         };
         let rule_fingerprint = stable_fingerprint(&format!(
-            "priced:input={}:cache-write-5m={}:cache-write-1h={}:cache-read={}:output={}:web-search={}",
+            "priced:geo={}:input={}:cache-write-5m={}:cache-write-1h={}:cache-read={}:output={}:web-search={}",
+            if modeled {
+                "assumed-global"
+            } else {
+                "reported"
+            },
             applicable_rate(usage.input_tokens, entry.input_usd_per_million)
                 .unwrap_or_else(|| "unused".to_owned()),
             applicable_rate(cache_write_5m, entry.cache_write_5m_usd_per_million)
@@ -272,6 +282,7 @@ impl PricingCatalog {
         let _ = usage.web_fetch_requests;
         Ok(PriceDecision {
             cost_usd: Some(cost_usd),
+            modeled,
             priced_tokens: observed_tokens,
             rule_fingerprint,
         })
@@ -772,6 +783,24 @@ mod tests {
                 .cost_usd,
             None
         );
+    }
+
+    #[test]
+    fn uses_modeled_standard_price_when_supported_model_geo_is_unavailable() {
+        let manifest = catalog().expect("bundled catalog");
+        for inference_geo in [None, Some("not_available")] {
+            let decision = manifest.price_message(
+                "claude-opus-4-8",
+                date("2026-08-01"),
+                BillableUsage {
+                    inference_geo,
+                    ..usage()
+                },
+            );
+
+            assert!(decision.modeled);
+            assert_cost(decision, 30.0);
+        }
     }
 
     #[test]
