@@ -8,6 +8,12 @@ Always use ASD-STE100 Simplified Technical English.
 
 Issues and PRDs are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
+### Migrations and cleanup
+
+Record active data migrations, compatibility bridges, and deferred schema or
+code cleanup in `docs/cleanup`. Follow `docs/cleanup/README.md` for the required
+owner issue, execution evidence, and exit condition.
+
 ### Triage labels
 
 Use the default Matt Pocock triage label vocabulary. See `docs/agents/triage-labels.md`.
