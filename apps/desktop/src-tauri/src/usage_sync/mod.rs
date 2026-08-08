@@ -18,7 +18,7 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
+use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 use crate::sanitized::{
     ApiEquivalentCostQuality, CodingProvider, SanitizedDesktopStateV3, UsageCoverage,
@@ -32,6 +32,7 @@ const MAX_LOCAL_VALUE_BYTES: usize = 4_096;
 const MAX_ACKNOWLEDGEMENT_BYTES: usize = 64 * 1_024;
 const INSTALLATION_CREDENTIAL_BYTES: usize = 52;
 const FUTURE_OBSERVATION_TOLERANCE_MILLIS: u64 = 5 * 60 * 1_000;
+const USAGE_HISTORY_RETENTION_DAYS: i64 = 60;
 
 const GENERATION_ACTIVE: &str = "active";
 const GENERATION_BLOCKED: &str = "blocked";
@@ -924,6 +925,7 @@ pub(crate) fn queue_daily_aggregate(
     validate_generation(active_mac_generation)?;
     aggregate.validate()?;
     validate_current_day_aggregate(&aggregate, now)?;
+    prune_expired_usage_sync_rows(transaction, now)?;
     let queue_state = ensure_generation(transaction, active_mac_generation)?;
     if queue_state == QueueState::Abandoned {
         return Err(UsageSyncError::ABANDONED_GENERATION);
@@ -1061,6 +1063,29 @@ pub(crate) fn queue_daily_aggregate(
         revision: u64::try_from(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?,
         state: queue_state,
     })
+}
+
+fn prune_expired_usage_sync_rows(
+    transaction: &Transaction<'_>,
+    now: OffsetDateTime,
+) -> Result<usize, UsageSyncError> {
+    let first_retained_day = now
+        .to_offset(UtcOffset::UTC)
+        .date()
+        .checked_sub(Duration::days(USAGE_HISTORY_RETENTION_DAYS - 1))
+        .ok_or(UsageSyncError::INVALID_VALUE)?
+        .to_string();
+    let aggregates = transaction.execute(
+        "DELETE FROM usage_sync_daily_aggregates WHERE ranking_day < ?1",
+        [&first_retained_day],
+    )?;
+    let outbox = transaction.execute(
+        "DELETE FROM usage_sync_latest_outbox WHERE ranking_day < ?1",
+        [&first_retained_day],
+    )?;
+    aggregates
+        .checked_add(outbox)
+        .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
 /// Load no more than 62 latest pending revisions for one generation.
@@ -2957,18 +2982,53 @@ mod tests {
     fn pending_batch_is_limited_to_sixty_two_rows() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
-        for day_offset in 0..63 {
+        for day_offset in (0..32).rev() {
             let candidate_now = now() - Duration::days(day_offset);
             let day = candidate_now.date().to_string();
-            let mut value = aggregate(CodingProvider::Codex, day_offset as u64, 1000);
-            value.ranking_day = day;
-            value.observed_at = offset_date_time_millis(candidate_now).unwrap();
-            super::queue_daily_aggregate(&transaction, 1, value, candidate_now).unwrap();
+            for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+                let mut value = aggregate(provider, day_offset as u64, 1000);
+                value.ranking_day = day.clone();
+                value.observed_at = offset_date_time_millis(candidate_now).unwrap();
+                super::queue_daily_aggregate(&transaction, 1, value, candidate_now).unwrap();
+            }
         }
         transaction.commit().unwrap();
 
         let batch = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
         assert_eq!(batch.snapshots().len(), MAX_USAGE_SYNC_BATCH);
+    }
+
+    #[test]
+    fn queue_prunes_aggregate_and_outbox_rows_older_than_sixty_utc_days() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        for day_offset in (0..=USAGE_HISTORY_RETENTION_DAYS).rev() {
+            let candidate_now = now() - Duration::days(day_offset);
+            let day = candidate_now.date().to_string();
+            for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+                let mut value = aggregate(provider, day_offset as u64, 1_000);
+                value.ranking_day = day.clone();
+                value.observed_at = offset_date_time_millis(candidate_now).unwrap();
+                super::queue_daily_aggregate(&transaction, 1, value, candidate_now).unwrap();
+            }
+        }
+        transaction.commit().unwrap();
+
+        let first_retained_day = (now() - Duration::days(USAGE_HISTORY_RETENTION_DAYS - 1))
+            .date()
+            .to_string();
+        for table in ["usage_sync_daily_aggregates", "usage_sync_latest_outbox"] {
+            let (count, first_day, last_day): (i64, String, String) = connection
+                .query_row(
+                    &format!("SELECT count(*), min(ranking_day), max(ranking_day) FROM {table}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(count, USAGE_HISTORY_RETENTION_DAYS * 2);
+            assert_eq!(first_day, first_retained_day);
+            assert_eq!(last_day, "2026-08-08");
+        }
     }
 
     #[test]
