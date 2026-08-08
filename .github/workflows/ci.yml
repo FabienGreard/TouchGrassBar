@@ -30,9 +30,17 @@ jobs:
         run: bun run quality:code
 
   native:
-    name: Native app
-    runs-on: macos-15
+    name: Native app - ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 15 floor (Apple silicon)
+            runner: macos-15
+          - name: macOS 26 latest stable (Apple silicon)
+            runner: macos-26
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,7 +51,7 @@ jobs:
       - name: Restore Cargo dependencies
         uses: Swatinem/rust-cache@v2.9.1
         with:
-          shared-key: desktop-native
+          shared-key: desktop-native-${{ matrix.runner }}
           workspaces: apps/desktop/src-tauri -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: oven-sh/setup-bun@v2

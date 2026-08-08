@@ -144,6 +144,11 @@ The workflow has no publication step. After all candidate, physical QA,
 performance, backend, and evidence gates pass, issue #39 must use the separate
 `public-release` approval for the exact draft.
 
+Run the [macOS release gates](macos-release-gates.md) against the exact app and
+DMG from this draft. Keep its sanitized PASS receipt and required physical
+checklist with the candidate evidence. A rebuilt or changed bundle requires a
+new candidate and a new gate run.
+
 ## Retention and key response
 
 Keep a rejected or abandoned draft for 90 days, then delete the draft and its

@@ -3,8 +3,10 @@ mod daily_usage_aggregate;
 mod dev_instance;
 pub mod lifecycle;
 mod network;
+mod performance;
 pub mod profile;
 mod providers;
+mod release_gate;
 pub mod sanitized;
 pub mod updater;
 
@@ -22,6 +24,10 @@ use lifecycle::{
     BootstrapStateV3, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
     SETTINGS_RECOVERY_CLEAR_EVENT, SettingsNavigationRequest, SettingsProfileAuthorization,
     SettingsSection, SettingsStateV4,
+};
+use performance::{
+    PANEL_PAINT_REQUEST_EVENT, PanelPaintProbe, PanelPaintRequest, PanelPaintSource,
+    acknowledge_after_visible_frame,
 };
 use sanitized::{
     NativeCore, PANEL_ADD_TOKENMAXXER_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
@@ -346,30 +352,46 @@ impl ProfileRuntime {
 }
 
 #[cfg(target_os = "macos")]
+fn macos_panel_collection_behavior(
+    current: objc2_app_kit::NSWindowCollectionBehavior,
+) -> objc2_app_kit::NSWindowCollectionBehavior {
+    use objc2_app_kit::NSWindowCollectionBehavior;
+
+    current
+        | NSWindowCollectionBehavior::CanJoinAllSpaces
+        | NSWindowCollectionBehavior::FullScreenAuxiliary
+        | NSWindowCollectionBehavior::Transient
+        | NSWindowCollectionBehavior::IgnoresCycle
+}
+
+#[cfg(target_os = "macos")]
 fn configure_macos_panel(panel: &WebviewWindow) -> tauri::Result<()> {
-    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::NSWindow;
 
     panel.with_webview(|webview| unsafe {
         let window: &NSWindow = &*webview.ns_window().cast();
-        let behavior = window.collectionBehavior()
-            | NSWindowCollectionBehavior::CanJoinAllSpaces
-            | NSWindowCollectionBehavior::FullScreenAuxiliary
-            | NSWindowCollectionBehavior::Transient
-            | NSWindowCollectionBehavior::IgnoresCycle;
-        window.setCollectionBehavior(behavior);
+        window.setCollectionBehavior(macos_panel_collection_behavior(window.collectionBehavior()));
     })?;
 
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
+fn macos_current_space_collection_behavior(
+    current: objc2_app_kit::NSWindowCollectionBehavior,
+) -> objc2_app_kit::NSWindowCollectionBehavior {
+    current | objc2_app_kit::NSWindowCollectionBehavior::MoveToActiveSpace
+}
+
+#[cfg(target_os = "macos")]
 fn configure_macos_window_for_current_space(window: &WebviewWindow) -> tauri::Result<()> {
-    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+    use objc2_app_kit::NSWindow;
 
     window.with_webview(|webview| unsafe {
         let window: &NSWindow = &*webview.ns_window().cast();
-        let behavior = window.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
-        window.setCollectionBehavior(behavior);
+        window.setCollectionBehavior(macos_current_space_collection_behavior(
+            window.collectionBehavior(),
+        ));
     })?;
 
     Ok(())
@@ -392,9 +414,13 @@ fn panel_origin(tray: Frame, panel: PhysicalSize<u32>, monitor: Frame) -> Physic
     let min_y = monitor.y + inset;
     let max_y = monitor.y + monitor.height - f64::from(panel.height) - inset;
 
+    let clamp_axis = |desired: f64, minimum: f64, maximum: f64| {
+        desired.clamp(minimum, maximum.max(minimum)).round() as i32
+    };
+
     PhysicalPosition::new(
-        desired_x.clamp(min_x, max_x).round() as i32,
-        desired_y.clamp(min_y, max_y).round() as i32,
+        clamp_axis(desired_x, min_x, max_x),
+        clamp_axis(desired_y, min_y, max_y),
     )
 }
 
@@ -453,6 +479,13 @@ fn monitor_for_tray(window: &WebviewWindow, tray: Frame) -> tauri::Result<Frame>
     })
 }
 
+fn position_panel(panel: &WebviewWindow, tray_rect: Rect) -> tauri::Result<()> {
+    let scale_factor = panel.scale_factor()?;
+    let tray = frame_for_rect(tray_rect, scale_factor);
+    let monitor = monitor_for_tray(panel, tray)?;
+    panel.set_position(panel_origin(tray, panel.outer_size()?, monitor))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TrayForegroundDestination {
     Onboarding,
@@ -467,12 +500,25 @@ fn tray_foreground_destination(bootstrap_required: bool) -> TrayForegroundDestin
     }
 }
 
-fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
-    let destination = app
-        .try_state::<DesktopLifecycle>()
+fn app_tray_foreground_destination(
+    app: &AppHandle,
+    route_to_bootstrap: bool,
+) -> TrayForegroundDestination {
+    if !route_to_bootstrap {
+        return TrayForegroundDestination::Panel;
+    }
+    app.try_state::<DesktopLifecycle>()
         .map_or(TrayForegroundDestination::Panel, |lifecycle| {
             tray_foreground_destination(lifecycle.should_show_bootstrap())
-        });
+        })
+}
+
+fn show_panel_with_bootstrap_route(
+    app: &AppHandle,
+    tray_rect: Rect,
+    route_to_bootstrap: bool,
+) -> tauri::Result<bool> {
+    let destination = app_tray_foreground_destination(app, route_to_bootstrap);
     match destination {
         TrayForegroundDestination::Onboarding => {
             show_onboarding(app)?;
@@ -485,11 +531,7 @@ fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
         return Ok(false);
     };
 
-    let scale_factor = panel.scale_factor()?;
-    let tray = frame_for_rect(tray_rect, scale_factor);
-    let monitor = monitor_for_tray(&panel, tray)?;
-    let origin = panel_origin(tray, panel.outer_size()?, monitor);
-    panel.set_position(origin)?;
+    position_panel(&panel, tray_rect)?;
     panel.show()?;
     panel.set_focus()?;
     if let Some(updates) = app.try_state::<UpdateRuntime>() {
@@ -501,22 +543,49 @@ fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
     Ok(true)
 }
 
-fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
-    let destination = app
-        .try_state::<DesktopLifecycle>()
-        .map_or(TrayForegroundDestination::Panel, |lifecycle| {
-            tray_foreground_destination(lifecycle.should_show_bootstrap())
-        });
+fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
+    show_panel_with_bootstrap_route(app, tray_rect, true)
+}
+
+fn show_panel_and_request_paint(
+    app: &AppHandle,
+    tray_rect: Rect,
+    started_at: Instant,
+    route_to_bootstrap: bool,
+    source: PanelPaintSource,
+) -> tauri::Result<bool> {
+    if !show_panel_with_bootstrap_route(app, tray_rect, route_to_bootstrap)? {
+        return Ok(false);
+    }
+    if let Some(probe) = app.try_state::<PanelPaintProbe>() {
+        let request = probe
+            .begin(started_at, source)
+            .map_err(|_| tauri::Error::AssetNotFound("panel paint probe".into()))?;
+        app.emit(PANEL_PAINT_REQUEST_EVENT, request)?;
+    }
+    Ok(true)
+}
+
+fn handle_tray_release(
+    app: &AppHandle,
+    tray_rect: Rect,
+    started_at: Instant,
+    source: PanelPaintSource,
+) -> tauri::Result<bool> {
+    let route_to_bootstrap = source == PanelPaintSource::Tray;
+    let destination = app_tray_foreground_destination(app, route_to_bootstrap);
     if destination == TrayForegroundDestination::Panel
         && let Some(panel) = app.get_webview_window(PANEL_LABEL)
         && panel.is_visible()?
     {
         panel.hide()?;
-        return Ok(());
+        if let Some(probe) = app.try_state::<PanelPaintProbe>() {
+            probe.cancel();
+        }
+        return Ok(false);
     }
 
-    show_panel(app, tray_rect)?;
-    Ok(())
+    show_panel_and_request_paint(app, tray_rect, started_at, route_to_bootstrap, source)
 }
 
 fn show_panel_add_tokenmaxxer(app: &AppHandle) -> tauri::Result<()> {
@@ -541,9 +610,66 @@ fn show_panel_add_tokenmaxxer(app: &AppHandle) -> tauri::Result<()> {
 #[tauri::command]
 fn hide_panel(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
     require_panel(&window)?;
+    if let Some(probe) = app.try_state::<PanelPaintProbe>() {
+        probe.cancel();
+    }
     if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
         panel.hide().map_err(|_| "panel unavailable".to_owned())?;
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn take_panel_paint_request(
+    window: WebviewWindow,
+    probe: State<'_, PanelPaintProbe>,
+) -> Result<Option<PanelPaintRequest>, String> {
+    require_panel(&window)?;
+    probe
+        .pending()
+        .map_err(|_| "panel paint instrumentation unavailable".to_owned())
+}
+
+#[tauri::command]
+fn acknowledge_panel_paint(
+    window: WebviewWindow,
+    probe: State<'_, PanelPaintProbe>,
+    sequence: u64,
+) -> Result<(), String> {
+    require_panel(&window)?;
+    if !window
+        .is_visible()
+        .map_err(|_| "panel unavailable".to_owned())?
+    {
+        probe.cancel();
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let probe = probe.inner().clone();
+        let fallback_probe = probe.clone();
+        window
+            .with_webview(move |webview| unsafe {
+                let view: &objc2_app_kit::NSView = &*webview.inner().cast();
+                if acknowledge_after_visible_frame(view, probe, sequence).is_err() {
+                    fallback_probe.cancel();
+                }
+            })
+            .map_err(|_| "panel paint instrumentation unavailable".to_owned())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    acknowledge_after_visible_frame(probe.inner().clone(), sequence)
+        .map_err(|_| "panel paint instrumentation unavailable".to_owned())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn acknowledge_panel_runtime_ready(
+    window: WebviewWindow,
+    driver: State<'_, release_gate::ReleaseGateDriver>,
+) -> Result<(), String> {
+    require_panel(&window)?;
+    driver.renderer_ready();
     Ok(())
 }
 
@@ -605,13 +731,23 @@ fn should_show_bootstrap_on_start(bootstrap_required: bool, launched_in_backgrou
     bootstrap_required && !launched_in_background
 }
 
+fn should_hide_panel_after_focus_loss(is_focused_now: bool) -> bool {
+    !is_focused_now
+}
+
 #[tauri::command]
-fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
+fn resize_panel(window: WebviewWindow, app: AppHandle, height: f64) -> Result<(), String> {
     require_panel(&window)?;
     let bounded_height = bounded_panel_height(height).map_err(str::to_owned)?;
     window
         .set_size(LogicalSize::new(PANEL_WIDTH, bounded_height))
-        .map_err(|_| "panel unavailable".to_owned())
+        .map_err(|_| "panel unavailable".to_owned())?;
+    if let Some(tray) = app.tray_by_id("touchgrassbar")
+        && let Ok(Some(rect)) = tray.rect()
+    {
+        position_panel(&window, rect).map_err(|_| "panel unavailable".to_owned())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -934,6 +1070,7 @@ fn hide_surface(window: WebviewWindow) -> Result<(), String> {
 pub fn run() {
     install_tls_crypto_provider();
     let process_started_at = Instant::now();
+    let release_gate_driver = release_gate::ReleaseGateDriver::from_process();
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
     #[cfg(debug_assertions)]
     let development_instance = dev_instance::DevelopmentInstance::from_environment();
@@ -986,6 +1123,8 @@ pub fn run() {
         ));
     let mut app = builder
         .invoke_handler(tauri::generate_handler![
+            acknowledge_panel_paint,
+            acknowledge_panel_runtime_ready,
             check_for_updates,
             complete_bootstrap,
             get_bootstrap_state,
@@ -1006,10 +1145,12 @@ pub fn run() {
             set_automatic_update_checks,
             set_launch_at_login,
             set_provider_enabled,
+            take_panel_paint_request,
             update_profile_display_name,
             take_panel_add_tokenmaxxer_request
         ])
         .setup(move |app| {
+            app.manage(release_gate_driver.clone());
             #[cfg(debug_assertions)]
             let database_directory = development_instance.as_ref().map_or_else(
                 || app.path().app_data_dir(),
@@ -1021,48 +1162,70 @@ pub fn run() {
             );
             #[cfg(not(debug_assertions))]
             let database_directory = app.path().app_data_dir();
-            let database_path = database_directory.ok().and_then(|directory| {
-                std::fs::create_dir_all(&directory)
-                    .ok()
-                    .map(|()| directory.join("touchgrassbar.sqlite3"))
-            });
+            let database_path = if release_gate_driver.enabled() {
+                None
+            } else {
+                database_directory.ok().and_then(|directory| {
+                    std::fs::create_dir_all(&directory)
+                        .ok()
+                        .map(|()| directory.join("touchgrassbar.sqlite3"))
+                })
+            };
             let lifecycle = database_path
                 .as_deref()
                 .and_then(|path| DesktopLifecycle::open(path).ok())
                 .unwrap_or_else(DesktopLifecycle::unavailable);
             let provider_enablement: Arc<dyn providers::ProviderEnablementPolicy> =
-                Arc::new(lifecycle.clone());
-            let core = database_path.as_deref().map_or_else(
-                || {
-                    NativeCore::unavailable_with_provider_enablement(Arc::clone(
-                        &provider_enablement,
-                    ))
-                },
-                |path| {
-                    NativeCore::open_with_provider_enablement(
-                        path,
-                        Arc::clone(&provider_enablement),
-                    )
-                    .unwrap_or_else(|_| {
+                if release_gate_driver.enabled() {
+                    providers::all_providers_enabled_policy()
+                } else {
+                    Arc::new(lifecycle.clone())
+                };
+            let core = if release_gate_driver.enabled() {
+                NativeCore::release_gate_with_refresh_adapter(
+                    Arc::clone(&provider_enablement),
+                    release_gate_driver.refresh_adapter(),
+                )
+            } else {
+                database_path.as_deref().map_or_else(
+                    || {
                         NativeCore::unavailable_with_provider_enablement(Arc::clone(
                             &provider_enablement,
                         ))
-                    })
-                },
-            );
-            let show_bootstrap = should_show_bootstrap_on_start(
-                lifecycle.should_show_bootstrap(),
-                launched_in_background,
-            );
+                    },
+                    |path| {
+                        NativeCore::open_with_provider_enablement(
+                            path,
+                            Arc::clone(&provider_enablement),
+                        )
+                        .unwrap_or_else(|_| {
+                            NativeCore::unavailable_with_provider_enablement(Arc::clone(
+                                &provider_enablement,
+                            ))
+                        })
+                    },
+                )
+            };
+            let show_bootstrap = !release_gate_driver.enabled()
+                && should_show_bootstrap_on_start(
+                    lifecycle.should_show_bootstrap(),
+                    launched_in_background,
+                );
             app.manage(lifecycle.clone());
             app.manage(core.clone());
             app.manage(PanelActionState::default());
+            app.manage(PanelPaintProbe::default());
 
-            let online_gate = OnlineFeatureGate::default();
+            let online_gate = if release_gate_driver.enabled() {
+                OnlineFeatureGate::paused()
+            } else {
+                OnlineFeatureGate::default()
+            };
             #[cfg(debug_assertions)]
-            let updater_available = development_instance.is_none();
+            let updater_available =
+                development_instance.is_none() && !release_gate_driver.enabled();
             #[cfg(not(debug_assertions))]
-            let updater_available = true;
+            let updater_available = !release_gate_driver.enabled();
             app.manage(UpdateRuntime::open(
                 app.handle().clone(),
                 database_path.as_deref(),
@@ -1166,12 +1329,12 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let toggle_started_at = Instant::now();
-                        if toggle_panel(tray.app_handle(), rect).is_ok() {
-                            eprintln!(
-                                "touchgrassbar_metric panel_toggle_ms={}",
-                                toggle_started_at.elapsed().as_millis()
-                            );
+                        let app = tray.app_handle();
+                        if handle_tray_release(app, rect, Instant::now(), PanelPaintSource::Tray)
+                            .is_err()
+                            && let Some(probe) = app.try_state::<PanelPaintProbe>()
+                        {
+                            probe.cancel();
                         }
                     }
                 });
@@ -1181,6 +1344,8 @@ pub fn run() {
                 None => tray_builder,
             };
             tray_builder.build(app)?;
+
+            release_gate_driver.start(app.handle().clone())?;
 
             if show_bootstrap {
                 show_onboarding(app.handle())?;
@@ -1200,7 +1365,12 @@ pub fn run() {
                 }
             }
             tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {
-                let _ = window.hide();
+                if should_hide_panel_after_focus_loss(window.is_focused().unwrap_or(false)) {
+                    if let Some(probe) = window.app_handle().try_state::<PanelPaintProbe>() {
+                        probe.cancel();
+                    }
+                    let _ = window.hide();
+                }
             }
             tauri::WindowEvent::Focused(false) if window.label() == SETTINGS_LABEL => {
                 let _ = window.emit(SETTINGS_RECOVERY_CLEAR_EVENT, ());
@@ -1317,6 +1487,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_panel_collection_behavior_matches_the_space_contract() {
+        use objc2_app_kit::NSWindowCollectionBehavior;
+
+        let behavior = macos_panel_collection_behavior(NSWindowCollectionBehavior::empty());
+        assert!(behavior.contains(NSWindowCollectionBehavior::CanJoinAllSpaces));
+        assert!(behavior.contains(NSWindowCollectionBehavior::FullScreenAuxiliary));
+        assert!(behavior.contains(NSWindowCollectionBehavior::Transient));
+        assert!(behavior.contains(NSWindowCollectionBehavior::IgnoresCycle));
+        assert!(
+            macos_current_space_collection_behavior(NSWindowCollectionBehavior::empty())
+                .contains(NSWindowCollectionBehavior::MoveToActiveSpace)
+        );
+    }
+
+    #[test]
     fn production_webviews_disable_local_file_drop() {
         let config = native_config();
         let windows = config
@@ -1359,6 +1545,12 @@ mod tests {
         assert!(!should_show_bootstrap_on_start(true, true));
         assert!(!should_show_bootstrap_on_start(false, false));
         assert!(!should_show_bootstrap_on_start(false, true));
+    }
+
+    #[test]
+    fn a_delayed_old_focus_loss_does_not_hide_a_new_panel_show() {
+        assert!(!should_hide_panel_after_focus_loss(true));
+        assert!(should_hide_panel_after_focus_loss(false));
     }
 
     #[test]
@@ -1481,6 +1673,57 @@ mod tests {
             },
         );
         assert_eq!(origin, PhysicalPosition::new(1318, 30));
+    }
+
+    #[test]
+    fn clamps_every_monitor_edge_without_panicking_for_an_oversized_panel() {
+        let monitor = Frame {
+            x: 100.0,
+            y: -200.0,
+            width: 800.0,
+            height: 600.0,
+        };
+        let panel = PhysicalSize::new(402, 300);
+
+        assert_eq!(
+            panel_origin(
+                Frame {
+                    x: 100.0,
+                    y: -200.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+                panel,
+                monitor,
+            ),
+            PhysicalPosition::new(108, -170),
+        );
+        assert_eq!(
+            panel_origin(
+                Frame {
+                    x: 500.0,
+                    y: 390.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+                panel,
+                monitor,
+            ),
+            PhysicalPosition::new(311, 92),
+        );
+        assert_eq!(
+            panel_origin(
+                Frame {
+                    x: 500.0,
+                    y: -200.0,
+                    width: 24.0,
+                    height: 24.0,
+                },
+                PhysicalSize::new(900, 700),
+                monitor,
+            ),
+            PhysicalPosition::new(108, -192),
+        );
     }
 
     #[test]

@@ -24,6 +24,7 @@ use crate::lifecycle::{
     SETTINGS_RECOVERY_CLEAR_EVENT, bootstrap_state_schema, settings_navigation_schema,
     settings_state_schema,
 };
+use crate::performance::{PANEL_PAINT_REQUEST_EVENT, panel_paint_request_schema};
 pub use crate::providers::{CodingProvider, ProviderPresenceStatus};
 use crate::providers::{
     PROVIDER_REGISTRY, ProviderEnablementPolicy, all_providers_enabled_policy,
@@ -1914,6 +1915,20 @@ impl NativeCore {
         core
     }
 
+    pub(crate) fn release_gate_with_refresh_adapter(
+        enablement: Arc<dyn ProviderEnablementPolicy>,
+        refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
+    ) -> Self {
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        Self::with_components(
+            unavailable_state_at(1, clock.now()),
+            ReadModelStore::Memory,
+            clock,
+            refresh_adapter,
+            enablement,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn test_unavailable() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
@@ -2699,6 +2714,8 @@ pub fn native_contract_export() -> Value {
         "bootstrapStateSchema": bootstrap_state_schema(),
         "contractVersion": CONTRACT_VERSION,
         "panelAddTokenmaxxerEvent": PANEL_ADD_TOKENMAXXER_EVENT,
+        "panelPaintRequestEvent": PANEL_PAINT_REQUEST_EVENT,
+        "panelPaintRequestSchema": panel_paint_request_schema(),
         "refreshReceiptSchema": schema_for!(RefreshReceipt),
         "revisionNoticeEvent": REVISION_NOTICE_EVENT,
         "revisionNoticeSchema": schema_for!(RevisionNotice),

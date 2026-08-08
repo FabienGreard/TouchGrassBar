@@ -148,7 +148,10 @@ Profile and social features may be unavailable offline, but provider limits and 
 
 The application runs as a menu-bar-only Tauri process with no Dock icon. The tray interaction controls a compact panel, while onboarding and settings use separate windows. Background refresh, SQLite persistence, backend transport, and update checks run in the native process.
 
-The Tauri viability spike validated the implementation path and identified the remaining physical and release gates documented in `docs/spikes/tauri-menubar-viability.md`.
+Native instrumentation binds startup, complete panel paint, process-tree
+resource use, artifact size, and a deterministic local refresh fixture to the
+exact candidate. The executable limits and physical checks are in the [macOS
+release-gate runbook](macos-release-gates.md).
 
 ## Release trust
 
@@ -163,4 +166,5 @@ The release build binds the validated tag version into Tauri, signs and
 notarizes the app, creates the Tauri updater archive and signature, and then
 independently notarizes and staples the DMG. Sanitized receipts contain public
 trust facts and artifact digests only. The executable controls and operator
-procedure are in [the release runbook](release.md).
+procedure are in [the release runbook](release.md). Performance and physical QA
+use the separate [macOS release-gate runbook](macos-release-gates.md).

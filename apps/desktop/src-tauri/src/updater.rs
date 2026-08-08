@@ -93,6 +93,12 @@ impl UpdateStateV1 {
 pub struct OnlineFeatureGate(Arc<std::sync::atomic::AtomicBool>);
 
 impl OnlineFeatureGate {
+    pub(crate) fn paused() -> Self {
+        let gate = Self::default();
+        gate.set_paused(true);
+        gate
+    }
+
     pub fn is_paused(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Acquire)
     }

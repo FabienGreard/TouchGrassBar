@@ -43,6 +43,9 @@ unicode-normalization = "=0.1.25"
 zeroize = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "=0.3.2", features = ["NSWindow", "objc2-core-foundation"] }
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", features = ["NSResponder", "NSView", "NSWindow", "objc2-core-foundation", "objc2-quartz-core"] }
+objc2-foundation = { version = "=0.3.2", features = ["NSDate", "NSObjCRuntime", "NSObject", "NSRunLoop"] }
+objc2-quartz-core = { version = "=0.3.2", features = ["CADisplayLink"] }
 security-framework = { version = "=3.7.0", features = ["OSX_10_15"] }
 security-framework-sys = "=2.17.0"

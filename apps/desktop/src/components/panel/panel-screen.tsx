@@ -5,6 +5,10 @@ import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tok
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
+import {
+  activatePanelPaintAcknowledgement,
+  trackPanelNativeResize,
+} from "@/native-state/panel-paint-acknowledgement";
 import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
 import { createUpdateDelivery } from "@/native-state/update-delivery";
 
@@ -62,6 +66,23 @@ function PanelScreen({
 
     let active = true;
     let stop: (() => void) | undefined;
+    void activatePanelPaintAcknowledgement().then((stopAcknowledging) => {
+      if (active) {
+        stop = stopAcknowledging;
+        void invoke("acknowledge_panel_runtime_ready");
+      } else stopAcknowledging();
+    });
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, [hasNativeRuntime]);
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return undefined;
+
+    let active = true;
+    let stop: (() => void) | undefined;
     void subscribeToPanelAddTokenmaxxer(() => {
       if (active) setAddTokenmaxxerOpen(true);
     }).then((stopListening) => {
@@ -100,7 +121,7 @@ function PanelScreen({
       const height = Math.ceil(panel.getBoundingClientRect().height);
       if (height === lastHeight) return;
       lastHeight = height;
-      void invoke("resize_panel", { height });
+      trackPanelNativeResize(invoke("resize_panel", { height }));
     });
     observer.observe(panel);
 

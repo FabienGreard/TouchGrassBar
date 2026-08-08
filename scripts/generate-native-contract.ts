@@ -25,6 +25,8 @@ type NativeContractExport = {
   bootstrapStateSchema: JsonSchema;
   contractVersion: number;
   panelAddTokenmaxxerEvent: string;
+  panelPaintRequestEvent: string;
+  panelPaintRequestSchema: JsonSchema;
   refreshReceiptSchema: JsonSchema;
   revisionNoticeEvent: string;
   revisionNoticeSchema: JsonSchema;
@@ -61,6 +63,7 @@ if ((await process.exited) !== 0)
 const schema = contract.stateSchema;
 const bootstrapStateSchema = contract.bootstrapStateSchema;
 const refreshReceiptSchema = contract.refreshReceiptSchema;
+const panelPaintRequestSchema = contract.panelPaintRequestSchema;
 const revisionNoticeSchema = contract.revisionNoticeSchema;
 const settingsNavigationSchema = contract.settingsNavigationSchema;
 const settingsStateSchema = contract.settingsStateSchema;
@@ -68,6 +71,7 @@ const updateStateSchema = contract.updateStateSchema;
 const definitions = {
   ...(bootstrapStateSchema.$defs ?? {}),
   ...(refreshReceiptSchema.$defs ?? {}),
+  ...(panelPaintRequestSchema.$defs ?? {}),
   ...(schema.$defs ?? {}),
   ...(revisionNoticeSchema.$defs ?? {}),
   ...(settingsNavigationSchema.$defs ?? {}),
@@ -213,6 +217,7 @@ import * as z from "zod";
 export const BOOTSTRAP_CONTRACT_VERSION = ${JSON.stringify(contract.bootstrapContractVersion)} as const;
 export const CONTRACT_VERSION = ${JSON.stringify(contract.contractVersion)} as const;
 export const PANEL_ADD_TOKENMAXXER_EVENT = ${JSON.stringify(contract.panelAddTokenmaxxerEvent)} as const;
+export const PANEL_PAINT_REQUEST_EVENT = ${JSON.stringify(contract.panelPaintRequestEvent)} as const;
 export const REVISION_NOTICE_EVENT = ${JSON.stringify(contract.revisionNoticeEvent)} as const;
 export const SETTINGS_CONTRACT_VERSION = ${JSON.stringify(contract.settingsContractVersion)} as const;
 export const SETTINGS_NAVIGATION_EVENT = ${JSON.stringify(contract.settingsNavigationEvent)} as const;
@@ -224,6 +229,7 @@ ${ordered.map((name) => `export const ${schemaName(name)} = ${renderDefinition(n
 export const bootstrapStateSchema = ${render({ ...bootstrapStateSchema, properties: { ...bootstrapStateSchema.properties, contractVersion: { const: contract.bootstrapContractVersion } } })};
 export const sanitizedDesktopStateSchema = ${render({ ...schema, properties: { ...schema.properties, contractVersion: { const: contract.contractVersion } } })};
 export const refreshReceiptSchema = ${render(refreshReceiptSchema)};
+export const panelPaintRequestSchema = ${render(panelPaintRequestSchema)};
 export const revisionNoticeSchema = ${render(revisionNoticeSchema)};
 export const settingsNavigationRequestSchema = ${render(settingsNavigationSchema)};
 export const settingsStateSchema = ${render({ ...settingsStateSchema, properties: { ...settingsStateSchema.properties, contractVersion: { const: contract.settingsContractVersion } } })};
@@ -233,6 +239,7 @@ ${ordered.map((name) => `export type ${name} = z.infer<typeof ${schemaName(name)
 export type BootstrapState = z.infer<typeof bootstrapStateSchema>;
 export type SanitizedDesktopState = z.infer<typeof sanitizedDesktopStateSchema>;
 export type RefreshReceipt = z.infer<typeof refreshReceiptSchema>;
+export type PanelPaintRequest = z.infer<typeof panelPaintRequestSchema>;
 export type RevisionNotice = z.infer<typeof revisionNoticeSchema>;
 export type SettingsNavigationRequest = z.infer<typeof settingsNavigationRequestSchema>;
 export type SettingsState = z.infer<typeof settingsStateSchema>;
