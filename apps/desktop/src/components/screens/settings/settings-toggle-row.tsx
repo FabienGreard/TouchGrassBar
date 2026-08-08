@@ -15,7 +15,7 @@ function SettingsToggleRow({
 }) {
   return (
     <label
-      className="grid cursor-pointer grid-cols-[1fr_auto] items-center gap-8 rounded-[12px] bg-sheet-row px-4 py-3.5"
+      className="grid cursor-pointer grid-cols-[1fr_auto] items-center gap-8 rounded-[12px] border border-sheet-row-border bg-sheet-row px-4 py-3.5"
       data-slot="settings-toggle-row"
     >
       <span>
