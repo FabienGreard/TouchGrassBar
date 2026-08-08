@@ -1,6 +1,12 @@
 @import "@touchgrass/ui/theme.css";
 @import "./brand-prototype.css";
-@import "./night-garden.css";
+@import "./landing-shell.css";
+@import "./garden-hero.css";
+@import "./doomerboard-section.css";
+@import "./invite-section.css";
+@import "./setup-section.css";
+@import "./download-section.css";
+@import "./landing-responsive.css";
 
 :root {
   background: #070d0a;
@@ -93,6 +99,8 @@ html.garden-time-pending .d-garden-hero {
 }
 
 .product-panel-preview {
+  position: relative;
+  z-index: 2;
   width: min(var(--product-specimen-width), 100%);
   min-width: 0;
   justify-self: end;
@@ -103,77 +111,9 @@ html.garden-time-pending .d-garden-hero {
   max-width: none;
 }
 
-.product-invite-card {
-  position: relative;
-  padding: 42px 34px 34px;
-}
-
-.product-invite-card .product-direct-icon {
-  width: 118px;
-  height: 118px;
-  margin: -96px auto 10px;
-}
-
-.product-invite-card h3 {
-  margin: 8px 0 0;
-  font-size: 31px;
-  line-height: 1.02;
-  letter-spacing: -0.045em;
-}
-
-.product-invite-card p {
-  color: var(--sheet-muted);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.product-invite-card > div {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 24px;
-  padding: 7px 7px 7px 13px;
-  border: 1px solid var(--sheet-line);
-  border-radius: 10px;
-  background: #ffffff8f;
-  box-shadow: var(--surface-shadow);
-}
-
-.product-invite-card > div b {
-  margin-right: auto;
-  color: var(--sheet-muted);
-  font: 10px var(--font-mono);
-}
-
-.product-direct-icon {
-  display: block;
-  object-fit: contain;
-}
-
-.product-onboarding-specimen {
-  width: min(100%, 760px);
-  margin: 0 auto;
-}
-
-.product-onboarding-window {
-  grid-template-columns: 220px minmax(0, 1fr);
-  width: 760px;
-  max-width: none;
-  min-height: 580px;
-}
-
-.product-onboarding-window > aside {
-  display: flex;
-  flex-direction: column;
-}
-
 @media (max-width: 900px) {
   .direction-d .d-menubar .d-brand [data-slot="brand-wordmark"] {
     display: flex;
-  }
-
-  .product-invite-card .product-direct-icon {
-    margin-top: -82px;
   }
 }
 
@@ -198,9 +138,7 @@ html.garden-time-pending .d-garden-hero {
     display: none;
   }
 
-  .product-panel-preview,
-  .product-invite-card,
-  .product-onboarding-window {
+  .product-panel-preview {
     border-width: 2px;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

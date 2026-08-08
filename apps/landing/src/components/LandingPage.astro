@@ -7,19 +7,27 @@ import dayGarden from "../styles/assets/day-garden.avif?url";
 import goldenGarden from "../styles/assets/golden-garden.avif?url";
 import nightGarden from "../styles/assets/night-garden.avif?url";
 
-type Props = {
-  invitation?: boolean;
-};
-
-const { invitation = false } = Astro.props;
 const timeParam = Astro.url.searchParams.get("time");
 const initialGardenTime = isGardenTime(timeParam) ? timeParam : undefined;
-const title = invitation
-  ? "Join a TouchGrassBar Doomerboard"
-  : "TouchGrassBar — your token problem, in the menu bar";
-const description = invitation
-  ? "Install TouchGrassBar, create your Profile on your Mac, and join the Doomerboard."
-  : "See Codex and Claude limits in the menu bar, then compare observed tokens on the Doomerboard.";
+const title = "TouchGrassBar — Codex & Claude Usage in Your Menu Bar";
+const description = "See Codex and Claude usage limits from your Mac menu bar. Compare observed token counts while prompts and provider data stay on your Mac.";
+const siteUrl = Astro.site ?? new URL("https://touchgrassbar.com");
+const canonicalUrl = new URL(Astro.url.pathname, siteUrl);
+const socialImageUrl = new URL("/og.jpg", siteUrl);
+const socialImageAlt = "Humanity built intelligence. Then added a usage limit. Download TouchGrassBar for macOS and install it in the Applications folder.";
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  applicationCategory: "DeveloperApplication",
+  description,
+  downloadUrl: "https://github.com/FabienGreard/TouchGrassBar/releases/latest",
+  image: socialImageUrl.toString(),
+  isAccessibleForFree: true,
+  name: "TouchGrassBar",
+  operatingSystem: "macOS",
+  sameAs: ["https://github.com/FabienGreard/TouchGrassBar"],
+  url: canonicalUrl.toString(),
+};
 const gardenAssets = {
   dawn: dawnGarden,
   day: dayGarden,
@@ -33,10 +41,31 @@ const gardenAssets = {
   <head>
     <meta charset="UTF-8" />
     <meta name="description" content={description} />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#070d0a" />
-    <link rel="icon" href="/favicon.png" type="image/png" />
+    <link rel="canonical" href={canonicalUrl} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="TouchGrassBar" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalUrl} />
+    <meta property="og:image" content={socialImageUrl} />
+    <meta property="og:image:secure_url" content={socialImageUrl} />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={socialImageAlt} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:creator" content="@FabienGreard" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={socialImageUrl} />
+    <meta name="twitter:image:alt" content={socialImageAlt} />
     <title>{title}</title>
+    <script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
     <noscript><style>html.garden-time-pending .d-garden-hero{visibility:visible}</style></noscript>
     <script is:inline define:vars={{ gardenAssets }}>
       (() => {
@@ -63,10 +92,10 @@ const gardenAssets = {
       })();
     </script>
   </head>
-  <body data-page={invitation ? "invitation" : "landing"}>
+  <body data-page="landing">
     <a class="skip-link" href="#main-content">Skip to content</a>
-    <LandingExperience initialGardenTime={initialGardenTime} invitation={invitation} />
-    <script is:inline define:vars={{ gardenCopy: GARDEN_COPY, invitation }}>
+    <LandingExperience initialGardenTime={initialGardenTime} />
+    <script is:inline define:vars={{ gardenCopy: GARDEN_COPY }}>
       (() => {
         try {
           const gardenTime = document.documentElement.dataset.gardenTime;
@@ -79,13 +108,11 @@ const gardenAssets = {
             layer.className = `d-time-layer ${layerTime === gardenTime ? "active" : ""} time-${layerTime}`;
           });
 
-          if (!invitation) {
-            hero.querySelectorAll("[data-garden-copy-line]").forEach((line) => {
-              const index = Number(line.dataset.gardenCopyLine);
-              const nextCopy = gardenCopy[gardenTime][index];
-              if (line.textContent !== nextCopy) line.textContent = nextCopy;
-            });
-          }
+          hero.querySelectorAll("[data-garden-copy-line]").forEach((line) => {
+            const index = Number(line.dataset.gardenCopyLine);
+            const nextCopy = gardenCopy[gardenTime][index];
+            if (line.textContent !== nextCopy) line.textContent = nextCopy;
+          });
         } finally {
           document.documentElement.classList.remove("garden-time-pending");
         }
@@ -95,8 +122,10 @@ const gardenAssets = {
       import { installAnalytics } from "../lib/analytics";
       import { installDownloadResolver } from "../lib/download-resolver";
       import { GARDEN_COPY, gardenTimeForHour, isGardenTime } from "../lib/garden-time";
+      import { installWebMcp } from "../lib/webmcp";
 
       installAnalytics();
+      void installWebMcp(document);
 
       const updateGarden = () => {
         const requestedGardenTime = new URLSearchParams(window.location.search).get("time");
@@ -114,12 +143,10 @@ const gardenAssets = {
           layer.className = `d-time-layer ${layerTime === gardenTime ? "active" : ""} time-${layerTime}`;
         }
 
-        if (document.body.dataset.page !== "invitation") {
-          for (const line of hero.querySelectorAll<HTMLElement>("[data-garden-copy-line]")) {
-            const index = Number(line.dataset.gardenCopyLine);
-            const nextCopy = GARDEN_COPY[gardenTime][index];
-            if (nextCopy && line.textContent !== nextCopy) line.textContent = nextCopy;
-          }
+        for (const line of hero.querySelectorAll<HTMLElement>("[data-garden-copy-line]")) {
+          const index = Number(line.dataset.gardenCopyLine);
+          const nextCopy = GARDEN_COPY[gardenTime][index];
+          if (nextCopy && line.textContent !== nextCopy) line.textContent = nextCopy;
         }
       };
 
@@ -128,12 +155,12 @@ const gardenAssets = {
       updateHeader();
       window.addEventListener("scroll", updateHeader, { passive: true });
 
-      const specimenObservers: ResizeObserver[] = [];
       for (const frame of document.querySelectorAll<HTMLElement>(".product-specimen-frame")) {
         const canvas = frame.querySelector<HTMLElement>(".product-specimen-canvas");
         if (!canvas) continue;
 
         let animationFrame = 0;
+        let previousAvailableHeight = -1;
         let previousCanvasHeight = -1;
         let previousFrameWidth = -1;
         const updateScale = () => {
@@ -141,15 +168,23 @@ const gardenAssets = {
           animationFrame = window.requestAnimationFrame(() => {
             const canvasHeight = canvas.offsetHeight;
             const frameWidth = frame.clientWidth;
-            if (canvasHeight === previousCanvasHeight && frameWidth === previousFrameWidth) return;
+            const availableHeight = window.matchMedia("(min-width: 901px)").matches
+              ? Math.max(0, window.innerHeight - 96)
+              : Number.POSITIVE_INFINITY;
+            if (
+              availableHeight === previousAvailableHeight &&
+              canvasHeight === previousCanvasHeight &&
+              frameWidth === previousFrameWidth
+            ) return;
 
+            previousAvailableHeight = availableHeight;
             previousCanvasHeight = canvasHeight;
             previousFrameWidth = frameWidth;
             const designWidth = Number.parseFloat(
               window.getComputedStyle(frame).getPropertyValue("--product-specimen-width"),
             );
             const scale = Number.isFinite(designWidth) && designWidth > 0
-              ? Math.min(1, frameWidth / designWidth)
+              ? Math.min(1, frameWidth / designWidth, availableHeight / canvasHeight)
               : 1;
             frame.style.setProperty("--product-specimen-scale", String(scale));
             frame.style.height = `${canvasHeight * scale}px`;
@@ -159,7 +194,7 @@ const gardenAssets = {
         const observer = new ResizeObserver(updateScale);
         observer.observe(canvas);
         observer.observe(frame);
-        specimenObservers.push(observer);
+        window.addEventListener("resize", updateScale, { passive: true });
         updateScale();
       }
 

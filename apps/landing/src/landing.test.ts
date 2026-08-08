@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
 
 import LandingExperience from "./components/LandingExperience";
 import {
@@ -9,6 +10,7 @@ import {
   resolveApprovedDownload,
 } from "./lib/download-resolver";
 import { gardenTimeForHour } from "./lib/garden-time";
+import { installWebMcp } from "./lib/webmcp";
 
 function releaseAsset(name: string, tag = "v1.2.3") {
   return {
@@ -93,6 +95,84 @@ describe("production landing contract", () => {
     for (const placement of ["github", "x"]) {
       expect(markup).toContain(`data-analytics-event="outbound link clicked" data-analytics-placement="${placement}"`);
     }
+  });
+
+  test("publishes canonical SEO and AI discovery files", () => {
+    const landingSource = readFileSync(
+      new URL("./components/LandingPage.astro", import.meta.url),
+      "utf8",
+    );
+    const llmsText = readFileSync(
+      new URL("../public/llms.txt", import.meta.url),
+      "utf8",
+    );
+    const robotsText = readFileSync(
+      new URL("../public/robots.txt", import.meta.url),
+      "utf8",
+    );
+    const sitemapText = readFileSync(
+      new URL("../public/sitemap.xml", import.meta.url),
+      "utf8",
+    );
+
+    expect(landingSource).toContain('rel="canonical"');
+    expect(landingSource).toContain('property="og:image"');
+    expect(landingSource).toContain('new URL("/og.jpg", siteUrl)');
+    expect(landingSource).toContain('content="image/jpeg"');
+    expect(landingSource).toContain('name="twitter:card"');
+    expect(landingSource).toContain('type="application/ld+json"');
+    expect(llmsText).toMatch(/^# TouchGrassBar\n/);
+    expect(llmsText).toContain("\n> TouchGrassBar is an open-source macOS menu bar app");
+    expect(llmsText.match(/^## /gm)).toEqual(["## "]);
+    expect(llmsText).toContain("## Primary links");
+    expect(robotsText).toContain("Sitemap: https://touchgrassbar.com/sitemap.xml");
+    expect(sitemapText).toContain("<loc>https://touchgrassbar.com/</loc>");
+  });
+
+  test("registers a valid WebMCP download tool when the browser supports it", async () => {
+    let clickCount = 0;
+    let registeredTool:
+      | {
+          execute: () => { content: Array<{ text: string; type: string }> };
+          inputSchema: unknown;
+          name: string;
+        }
+      | undefined;
+    const documentObject = {
+      modelContext: {
+        registerTool(tool: NonNullable<typeof registeredTool>) {
+          registeredTool = tool;
+        },
+      },
+      querySelector() {
+        return { click: () => clickCount++ };
+      },
+    } as unknown as Document;
+
+    expect(await installWebMcp(documentObject)).toBe(true);
+    expect(registeredTool).toMatchObject({
+      inputSchema: {
+        additionalProperties: false,
+        properties: {},
+        type: "object",
+      },
+      name: "download-touchgrassbar-for-macos",
+    });
+    expect(registeredTool?.execute().content[0]?.type).toBe("text");
+    expect(clickCount).toBe(1);
+  });
+
+  test("lazy-loads only the below-fold site brand image", () => {
+    const markup = renderToStaticMarkup(
+      createElement(LandingExperience, { initialGardenTime: "day" }),
+    );
+    const siteBrandImages = markup.match(
+      /<div[^>]*class="[^"]*site-brand site-brand--reversed"[^>]*><img[^>]*data-slot="brand-mark"[^>]*>/g,
+    );
+
+    expect(siteBrandImages).toHaveLength(2);
+    expect(siteBrandImages?.[0]).not.toContain('loading="lazy"');
+    expect(siteBrandImages?.[1]).toContain('loading="lazy"');
   });
 
   test("maps each local hour to the approved garden scene", () => {

@@ -19,30 +19,20 @@ import type {
 import {
   type CSSProperties,
   type ReactNode,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
 } from "react";
 
 import appleLogo from "../assets/providers/apple.svg?url";
 import githubLogo from "../assets/providers/github.svg?url";
 import xLogo from "../assets/providers/x.svg?url";
-import {
-  downloadFallbackUrl,
-  installDownloadResolver,
-} from "../lib/download-resolver";
+import { downloadFallbackUrl } from "../lib/download-resolver";
 import {
   GARDEN_COPY,
-  gardenTimeForHour,
   isGardenTime,
   type GardenTime,
 } from "../lib/garden-time";
 
-type GardenTimeChoice = GardenTime | "auto";
 type LandingExperienceProps = {
   initialGardenTime?: GardenTime | undefined;
-  invitation?: boolean;
 };
 
 type ProductSpecimenProps = {
@@ -155,69 +145,20 @@ function ProductSpecimen({
   className,
   designWidth,
 }: ProductSpecimenProps) {
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const frameRef = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    const canvas = canvasRef.current;
-    const frame = frameRef.current;
-    if (!canvas || !frame) return;
-
-    let animationFrame = 0;
-    let previousCanvasHeight = -1;
-    let previousFrameWidth = -1;
-    const updateScale = () => {
-      window.cancelAnimationFrame(animationFrame);
-      animationFrame = window.requestAnimationFrame(() => {
-        const canvasHeight = canvas.offsetHeight;
-        const frameWidth = frame.clientWidth;
-        if (
-          canvasHeight === previousCanvasHeight &&
-          frameWidth === previousFrameWidth
-        ) {
-          return;
-        }
-
-        previousCanvasHeight = canvasHeight;
-        previousFrameWidth = frameWidth;
-        const scale = Math.min(1, frameWidth / designWidth);
-        frame.style.setProperty("--product-specimen-scale", String(scale));
-        frame.style.height = `${canvasHeight * scale}px`;
-      });
-    };
-
-    const resizeObserver = new ResizeObserver(updateScale);
-    resizeObserver.observe(canvas);
-    resizeObserver.observe(frame);
-    updateScale();
-
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      resizeObserver.disconnect();
-    };
-  }, [designWidth]);
-
   return (
     <div
       className={`product-specimen-frame ${className}`}
-      ref={frameRef}
       style={
         {
           "--product-specimen-width": `${designWidth}px`,
         } as ProductSpecimenStyle
       }
     >
-      <div className="product-specimen-canvas" ref={canvasRef}>
+      <div className="product-specimen-canvas">
         {children}
       </div>
     </div>
   );
-}
-
-function readGardenTimeChoice(): GardenTimeChoice {
-  if (typeof window === "undefined") return "auto";
-  const choice = new URLSearchParams(window.location.search).get("time");
-  return isGardenTime(choice) ? choice : "auto";
 }
 
 function initialGardenTimeForRender(initialGardenTime?: GardenTime): GardenTime {
@@ -229,8 +170,8 @@ function initialGardenTimeForRender(initialGardenTime?: GardenTime): GardenTime 
   return "day";
 }
 
-function SiteBrand({ reversed = false }: { reversed?: boolean }) {
-  return <Brand className={reversed ? "site-brand site-brand--reversed" : "site-brand"} />;
+function SiteBrand({ loading, reversed = false }: { loading?: "eager" | "lazy"; reversed?: boolean }) {
+  return <Brand className={reversed ? "site-brand site-brand--reversed" : "site-brand"} markProps={{ loading }} />;
 }
 
 function DoomerboardSurface() {
@@ -340,7 +281,7 @@ function InviteVariantD() {
       <div className="d-invite-note-rain" aria-hidden="true">
         <span>“One more prompt.”</span>
         <span>“No need to review.”</span>
-        <span>“The agent understands.”</span>
+        <span>“It’s a harness problem.”</span>
         <span>“It’s not a loop. It’s orchestration.”</span>
         <span>“It’s a reasoning graph.”</span>
         <span>“Human in the loop. Eventually.”</span>
@@ -349,9 +290,9 @@ function InviteVariantD() {
         <span>“The diff has a scrollbar.”</span>
         <span>“That’s good AI slop right there.”</span>
         <span>“Is it AGI yet?”</span>
-        <span>“We need an evaluator agent.”</span>
+        <span>“There’s a skill for that.”</span>
         <span>“I approve for a living.”</span>
-        <span>“That’s not what I asked.”</span>
+        <span>“There’s an MCP for that.”</span>
         <span>“Glad I learned algorithms.”</span>
         <span>“10x engineer. $200/month.”</span>
         <span>“Who wrote this? Yes.”</span>
@@ -410,53 +351,18 @@ function DownloadSection() {
   );
 }
 
-function NightGarden({ initialGardenTime, invitation = false }: LandingExperienceProps) {
-  const [gardenTime, setGardenTime] = useState<GardenTime>(() =>
-    initialGardenTimeForRender(initialGardenTime),
-  );
-  const [suppressTimeFade, setSuppressTimeFade] = useState(true);
-  const [headerScrolled, setHeaderScrolled] = useState(false);
-  const heroCopy = invitation
-    ? (["Install the app.", "Create your Profile.", "Join the board."] as const)
-    : GARDEN_COPY[gardenTime];
-
-  useEffect(() => {
-    const updateGarden = () => {
-      const choice = readGardenTimeChoice();
-      const nextGardenTime = choice === "auto" ? gardenTimeForHour(new Date().getHours()) : choice;
-      document.documentElement.dataset.gardenTime = nextGardenTime;
-      setGardenTime(nextGardenTime);
-    };
-    updateGarden();
-    const timer = window.setInterval(updateGarden, 60_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!suppressTimeFade) return;
-    const frame = window.requestAnimationFrame(() => setSuppressTimeFade(false));
-    return () => window.cancelAnimationFrame(frame);
-  }, [suppressTimeFade]);
-
-  useEffect(() => {
-    const updateHeader = () => setHeaderScrolled(window.scrollY > 24);
-    updateHeader();
-    window.addEventListener("scroll", updateHeader, { passive: true });
-    return () => window.removeEventListener("scroll", updateHeader);
-  }, []);
-
-  useEffect(() => {
-    void installDownloadResolver(document, window.fetch.bind(window));
-  }, []);
+export default function LandingExperience({ initialGardenTime }: LandingExperienceProps) {
+  const gardenTime = initialGardenTimeForRender(initialGardenTime);
+  const heroCopy = GARDEN_COPY[gardenTime];
 
   return (
     <main className="direction direction-d identity-native" id="main-content">
-      <header className={`d-menubar ${headerScrolled ? "scrolled" : ""}`}>
+      <header className="d-menubar">
         <div className="d-brand"><SiteBrand reversed /></div>
         <a className="d-header-download" data-analytics-event="download clicked" data-analytics-placement="header" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
       </header>
 
-      <section className={`d-garden-hero garden-${gardenTime} ${suppressTimeFade ? "d-time-instant" : ""}`} suppressHydrationWarning>
+      <section className={`d-garden-hero garden-${gardenTime} d-time-instant`} suppressHydrationWarning>
         {(["dawn", "day", "golden", "night"] as const).map((time) => (
           <div
             className={`d-time-layer ${time === gardenTime ? "active" : ""} time-${time}`}
@@ -469,9 +375,9 @@ function NightGarden({ initialGardenTime, invitation = false }: LandingExperienc
         <div className="d-life-layer" aria-hidden="true">{Array.from({ length: 24 }, (_, index) => <i className={index >= 14 ? "day-only" : undefined} key={index} />)}</div>
         <div className="d-hero-inner">
           <div className="d-hero-copy">
-            <span>{invitation ? "Doomerboard invitation" : "Built for Codex & Claude"}</span>
+            <span>Built for Codex & Claude</span>
             <h1><span data-garden-copy-line="0" suppressHydrationWarning>{heroCopy[0]}</span><br /><span data-garden-copy-line="1" suppressHydrationWarning>{heroCopy[1]}</span><br /><em data-garden-copy-line="2" suppressHydrationWarning>{heroCopy[2]}</em></h1>
-            <p>{invitation ? "Install TouchGrassBar on your Mac, create or restore your Profile, then join the Doomerboard with your TouchGrass ID." : "Lives in your menu bar. See your limits and compare Observed Tokens on the Doomerboard."}</p>
+            <p>Lives in your menu bar. See your limits and compare Observed Tokens on the Doomerboard.</p>
             <a className="d-macos-download" data-analytics-event="download clicked" data-analytics-placement="hero" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
           </div>
           <ProductPanel />
@@ -490,13 +396,9 @@ function NightGarden({ initialGardenTime, invitation = false }: LandingExperienc
       <DownloadSection />
 
       <footer className="d-footer">
-        <div className="d-footer-brand"><SiteBrand reversed /><span>Open Source. Public score. Private work.</span></div>
+        <div className="d-footer-brand"><SiteBrand loading="lazy" reversed /><span>Open Source. Public score. Private work.</span></div>
         <nav aria-label="Project links"><a data-analytics-event="outbound link clicked" data-analytics-placement="github" href="https://github.com/FabienGreard/TouchGrassBar" rel="noreferrer" target="_blank"><img alt="" src={githubLogo} /><span>Star on GitHub</span></a><a data-analytics-event="outbound link clicked" data-analytics-placement="x" href="https://x.com/FabienGreard" rel="noreferrer" target="_blank"><img alt="" src={xLogo} /><span>@FabienGreard</span></a></nav>
       </footer>
     </main>
   );
-}
-
-export default function LandingExperience({ initialGardenTime, invitation = false }: LandingExperienceProps) {
-  return <NightGarden initialGardenTime={initialGardenTime} invitation={invitation} />;
 }

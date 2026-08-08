@@ -8,6 +8,10 @@ type BrandMarkProps = ComponentProps<"img"> & {
   tone?: "color" | "ink" | "reversed";
 };
 
+type BrandProps = ComponentProps<"div"> & {
+  markProps?: BrandMarkProps;
+};
+
 function BrandMark({
   className,
   size = "panel",
@@ -53,7 +57,7 @@ function BrandWordmark({ className, ...props }: ComponentProps<"span">) {
   );
 }
 
-function Brand({ className, ...props }: ComponentProps<"div">) {
+function Brand({ className, markProps, ...props }: BrandProps) {
   return (
     <div
       aria-label="TouchGrassBar"
@@ -61,11 +65,11 @@ function Brand({ className, ...props }: ComponentProps<"div">) {
       data-slot="brand"
       {...props}
     >
-      <BrandMark />
+      <BrandMark {...markProps} />
       <BrandWordmark />
     </div>
   );
 }
 
 export { Brand, BrandMark, BrandWordmark };
-export type { BrandMarkProps };
+export type { BrandMarkProps, BrandProps };

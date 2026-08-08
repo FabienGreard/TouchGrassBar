@@ -5,14 +5,14 @@ type AnalyticsProperties = {
   placement: string;
 };
 
-const posthogKey = import.meta.env.PUBLIC_POSTHOG_KEY?.trim();
-const posthogHost = import.meta.env.PUBLIC_POSTHOG_HOST?.trim() || "https://eu.i.posthog.com";
+const posthogKey = "phc_ocvsy75kVuyKwh8rstDHb2Tzw6WwRN75H85MrJuzf27D";
+const posthogHost = "https://eu.i.posthog.com";
 
-let analyticsPromise: Promise<typeof import("posthog-js/dist/module.no-external")> | undefined;
+let analyticsPromise: Promise<typeof import("posthog-js/dist/module")> | undefined;
 
 function loadAnalytics() {
   if (!posthogKey) return undefined;
-  analyticsPromise ??= import("posthog-js/dist/module.no-external").then((module) => {
+  analyticsPromise ??= import("posthog-js/dist/module").then((module) => {
     module.default.init(posthogKey, {
       api_host: posthogHost,
       autocapture: false,
@@ -20,7 +20,6 @@ function loadAnalytics() {
       capture_pageleave: false,
       capture_pageview: false,
       cookieless_mode: "always",
-      disable_external_dependency_loading: true,
       disable_session_recording: true,
       person_profiles: "never",
     });
