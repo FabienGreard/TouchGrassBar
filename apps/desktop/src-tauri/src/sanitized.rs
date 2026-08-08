@@ -1008,11 +1008,26 @@ impl SqliteReadModelStore {
         state: &mut SanitizedDesktopStateV3,
         now: OffsetDateTime,
         usage_sync: UsageSyncCommit<'_>,
+        previous_enabled_providers: &BTreeSet<CodingProvider>,
+        enabled_providers: &BTreeSet<CodingProvider>,
     ) -> Result<bool, &'static str> {
         let transaction = self
             .connection
             .transaction()
             .map_err(|_| "native state persistence unavailable")?;
+        let pending_before = self
+            .active_mac_generation
+            .map(|generation| {
+                load_current_pending_usage_batch(
+                    &transaction,
+                    generation,
+                    now,
+                    previous_enabled_providers,
+                )
+            })
+            .transpose()
+            .map_err(|_| "native state persistence unavailable")?
+            .flatten();
         let mut pending_usage_changed = false;
         match usage_sync {
             UsageSyncCommit::QueueCurrent(corrections) => {
@@ -1023,6 +1038,7 @@ impl SqliteReadModelStore {
                         state,
                         now,
                         &corrections,
+                        enabled_providers,
                     )
                     .map_err(|_| "native state persistence unavailable")?;
                     pending_usage_changed = updates.iter().any(|update| {
@@ -1034,7 +1050,14 @@ impl SqliteReadModelStore {
                             }
                         )
                     });
-                    apply_queue_status(&transaction, generation, state, now, &updates)?;
+                    apply_queue_status(
+                        &transaction,
+                        generation,
+                        state,
+                        now,
+                        &updates,
+                        enabled_providers,
+                    )?;
                 } else {
                     stage_usage_sync_corrections(&transaction, now, &corrections)
                         .map_err(|_| "native state persistence unavailable")?;
@@ -1045,9 +1068,17 @@ impl SqliteReadModelStore {
                     .map_err(|_| "native state persistence unavailable")?;
                 self.active_mac_generation = Some(generation);
                 state.sync.status = SyncStatus::Pending;
-                let updates = queue_current_utc_day(&transaction, generation, state, now)
-                    .map_err(|_| "native state persistence unavailable")?;
-                apply_queue_status(&transaction, generation, state, now, &updates)?;
+                let updates =
+                    queue_current_utc_day(&transaction, generation, state, now, enabled_providers)
+                        .map_err(|_| "native state persistence unavailable")?;
+                apply_queue_status(
+                    &transaction,
+                    generation,
+                    state,
+                    now,
+                    &updates,
+                    enabled_providers,
+                )?;
             }
             UsageSyncCommit::Acknowledge {
                 acknowledgements,
@@ -1070,9 +1101,14 @@ impl SqliteReadModelStore {
                 } else {
                     SyncStatus::Synced
                 };
-                let updates =
-                    queue_current_utc_day(&transaction, batch.active_mac_generation(), state, now)
-                        .map_err(|_| "native state persistence unavailable")?;
+                let updates = queue_current_utc_day(
+                    &transaction,
+                    batch.active_mac_generation(),
+                    state,
+                    now,
+                    enabled_providers,
+                )
+                .map_err(|_| "native state persistence unavailable")?;
                 pending_usage_changed |= updates.iter().any(|update| {
                     matches!(
                         update,
@@ -1088,6 +1124,7 @@ impl SqliteReadModelStore {
                     state,
                     now,
                     &updates,
+                    enabled_providers,
                 )?;
             }
             UsageSyncCommit::Offline => {
@@ -1096,7 +1133,14 @@ impl SqliteReadModelStore {
             UsageSyncCommit::Pending => {
                 state.sync.status = SyncStatus::Pending;
                 if let Some(generation) = self.active_mac_generation {
-                    apply_queue_status(&transaction, generation, state, now, &[])?;
+                    apply_queue_status(
+                        &transaction,
+                        generation,
+                        state,
+                        now,
+                        &[],
+                        enabled_providers,
+                    )?;
                 }
             }
             UsageSyncCommit::AuthorityRejected(generation) => {
@@ -1110,6 +1154,15 @@ impl SqliteReadModelStore {
                 state.sync.status = SyncStatus::AuthorityRejected;
             }
         }
+        let pending_after = self
+            .active_mac_generation
+            .map(|generation| {
+                load_current_pending_usage_batch(&transaction, generation, now, enabled_providers)
+            })
+            .transpose()
+            .map_err(|_| "native state persistence unavailable")?
+            .flatten();
+        pending_usage_changed |= pending_after.is_some() && pending_after != pending_before;
         persist_snapshot(&transaction, state)?;
         transaction
             .commit()
@@ -1121,12 +1174,18 @@ impl SqliteReadModelStore {
         &self,
         active_mac_generation: u64,
         now: OffsetDateTime,
+        enabled_providers: &BTreeSet<CodingProvider>,
     ) -> Result<Option<PendingUsageBatch>, &'static str> {
         if self.active_mac_generation != Some(active_mac_generation) {
             return Ok(None);
         }
-        load_current_pending_usage_batch(&self.connection, active_mac_generation, now)
-            .map_err(|_| "native state persistence unavailable")
+        load_current_pending_usage_batch(
+            &self.connection,
+            active_mac_generation,
+            now,
+            enabled_providers,
+        )
+        .map_err(|_| "native state persistence unavailable")
     }
 
     fn flush(&self) -> Result<(), &'static str> {
@@ -1150,6 +1209,7 @@ fn apply_queue_status(
     state: &mut SanitizedDesktopStateV3,
     now: OffsetDateTime,
     updates: &[QueueUpdate],
+    enabled_providers: &BTreeSet<CodingProvider>,
 ) -> Result<(), &'static str> {
     if updates.iter().any(|update| {
         matches!(
@@ -1164,9 +1224,14 @@ fn apply_queue_status(
         return Ok(());
     }
 
-    let pending = load_current_pending_usage_batch(transaction, active_mac_generation, now)
-        .map_err(|_| "native state persistence unavailable")?
-        .is_some();
+    let pending = load_current_pending_usage_batch(
+        transaction,
+        active_mac_generation,
+        now,
+        enabled_providers,
+    )
+    .map_err(|_| "native state persistence unavailable")?
+    .is_some();
     if pending {
         if !matches!(
             state.sync.status,
@@ -1362,6 +1427,13 @@ impl CachedProjection {
     ) -> Result<(SanitizedDesktopStateV3, BTreeSet<CodingProvider>), &'static str> {
         let state = self.state.lock().map_err(|_| "native state unavailable")?;
         Ok((state.snapshot.clone(), state.enabled_providers.clone()))
+    }
+
+    fn enabled_providers(&self) -> Result<BTreeSet<CodingProvider>, &'static str> {
+        self.state
+            .lock()
+            .map(|state| state.enabled_providers.clone())
+            .map_err(|_| "native state unavailable")
     }
 
     fn snapshot_with_first_observation_waits(
@@ -1597,6 +1669,15 @@ impl CachedProjection {
             force_revision,
             provider_enablement_change,
         } = options;
+        let previous_enabled_providers = self.enabled_providers()?;
+        let mut enabled_providers = previous_enabled_providers.clone();
+        if let Some(change) = provider_enablement_change {
+            if change.enabled {
+                enabled_providers.insert(change.provider);
+            } else {
+                enabled_providers.remove(&change.provider);
+            }
+        }
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
@@ -1627,7 +1708,13 @@ impl CachedProjection {
         // is unavailable instead of leaving expired values marked as current.
         let (persistence_failed, pending_usage_changed) = match store {
             ReadModelStore::Persistent(persistent) => {
-                match persistent.commit(&mut refreshed, now, usage_sync) {
+                match persistent.commit(
+                    &mut refreshed,
+                    now,
+                    usage_sync,
+                    &previous_enabled_providers,
+                    &enabled_providers,
+                ) {
                     Ok(pending_usage_changed) => (false, pending_usage_changed),
                     Err(_) => {
                         *store = ReadModelStore::Memory;
@@ -1645,14 +1732,6 @@ impl CachedProjection {
         }
         validate_snapshot(&refreshed)?;
         let mut state = self.state.lock().map_err(|_| "native state unavailable")?;
-        let mut enabled_providers = state.enabled_providers.clone();
-        if let Some(change) = provider_enablement_change {
-            if change.enabled {
-                enabled_providers.insert(change.provider);
-            } else {
-                enabled_providers.remove(&change.provider);
-            }
-        }
         *state = CachedProjectionState {
             snapshot: refreshed,
             first_observation_waits,
@@ -2670,6 +2749,7 @@ impl NativeCore {
             .store
             .lock()
             .map_err(|_| "native state unavailable")?;
+        let enabled_providers = self.inner.projection.enabled_providers()?;
         let already_active = match &*store {
             ReadModelStore::Persistent(persistent)
                 if persistent.active_mac_generation == Some(active_mac_generation) =>
@@ -2692,9 +2772,11 @@ impl NativeCore {
                 .notice
         };
         let batch = match &*store {
-            ReadModelStore::Persistent(persistent) => {
-                persistent.pending_usage_batch(active_mac_generation, self.inner.clock.now())?
-            }
+            ReadModelStore::Persistent(persistent) => persistent.pending_usage_batch(
+                active_mac_generation,
+                self.inner.clock.now(),
+                &enabled_providers,
+            )?,
             ReadModelStore::Memory => None,
         };
         drop(store);
@@ -2736,10 +2818,13 @@ impl NativeCore {
             .store
             .lock()
             .map_err(|_| "native state unavailable")?;
+        let enabled_providers = self.inner.projection.enabled_providers()?;
         match &*store {
-            ReadModelStore::Persistent(persistent) => {
-                persistent.pending_usage_batch(active_mac_generation, self.inner.clock.now())
-            }
+            ReadModelStore::Persistent(persistent) => persistent.pending_usage_batch(
+                active_mac_generation,
+                self.inner.clock.now(),
+                &enabled_providers,
+            ),
             ReadModelStore::Memory => Ok(None),
         }
     }
@@ -2759,13 +2844,18 @@ impl NativeCore {
             .store
             .lock()
             .map_err(|_| "native state unavailable")?;
+        let enabled_providers = self.inner.projection.enabled_providers()?;
         if matches!(result, UsageSyncAttemptResult::Deferred)
             && self.inner.projection.snapshot()?.sync.status == SyncStatus::Pending
             && matches!(
                 &*store,
                 ReadModelStore::Persistent(persistent)
                     if persistent
-                        .pending_usage_batch(batch.active_mac_generation(), self.inner.clock.now())?
+                        .pending_usage_batch(
+                            batch.active_mac_generation(),
+                            self.inner.clock.now(),
+                            &enabled_providers,
+                        )?
                         .is_some()
             )
         {
@@ -4728,6 +4818,83 @@ mod tests {
             SyncStatus::AuthorityRejected
         );
         assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+    }
+
+    #[test]
+    fn disabled_provider_is_excluded_before_activation_and_delivery() {
+        let database = TestDatabase::new();
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
+        let policy = Arc::new(ClaudeTogglePolicy {
+            enabled: AtomicBool::new(true),
+        });
+        let enablement: Arc<dyn ProviderEnablementPolicy> = policy.clone();
+        let mut state = observed_state(test_time(), 42);
+        let mut claude_usage = state
+            .provider(CodingProvider::Codex)
+            .expect("Codex fixture")
+            .usage
+            .clone();
+        let UsageTotal::Current { evidence_basis, .. } = &mut claude_usage.today else {
+            panic!("fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::LocallyDerived;
+        let claude = state
+            .provider_mut(CodingProvider::Claude)
+            .expect("Claude fixture");
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.usage = claude_usage;
+        state.refresh_combined_usage();
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(state))]));
+        let core =
+            NativeCore::open_without_launch_with_enablement(&database.0, clock, source, enablement)
+                .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        policy.enabled.store(false, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        core.activate_usage_sync_generation(7).unwrap();
+
+        let before_activation = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        assert_eq!(
+            before_activation
+                .snapshots()
+                .iter()
+                .map(|snapshot| snapshot.provider)
+                .collect::<Vec<_>>(),
+            vec![CodingProvider::Codex]
+        );
+        assert!(matches!(
+            core.inner
+                .projection
+                .snapshot()
+                .unwrap()
+                .provider(CodingProvider::Claude)
+                .unwrap()
+                .usage
+                .today,
+            UsageTotal::Current { .. }
+        ));
+
+        policy.enabled.store(true, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, true)
+            .unwrap();
+        let enabled = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        assert_eq!(enabled.snapshots().len(), 2);
+
+        policy.enabled.store(false, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        let before_delivery = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        assert_eq!(
+            before_delivery
+                .snapshots()
+                .iter()
+                .map(|snapshot| snapshot.provider)
+                .collect::<Vec<_>>(),
+            vec![CodingProvider::Codex]
+        );
     }
 
     #[test]

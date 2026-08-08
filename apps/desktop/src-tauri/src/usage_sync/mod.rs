@@ -812,13 +812,24 @@ pub(crate) fn current_utc_daily_aggregates(
     state: &SanitizedDesktopStateV3,
     now: OffsetDateTime,
 ) -> Result<Vec<DailyUsageAggregate>, UsageSyncError> {
-    current_utc_daily_aggregates_with_corrections(state, now, &UsageSyncCorrections::default())
+    let enabled_providers = state
+        .providers
+        .iter()
+        .map(|presentation| presentation.provider)
+        .collect();
+    current_utc_daily_aggregates_with_corrections(
+        state,
+        now,
+        &UsageSyncCorrections::default(),
+        &enabled_providers,
+    )
 }
 
 fn current_utc_daily_aggregates_with_corrections(
     state: &SanitizedDesktopStateV3,
     now: OffsetDateTime,
     corrections: &UsageSyncCorrections,
+    enabled_providers: &BTreeSet<CodingProvider>,
 ) -> Result<Vec<DailyUsageAggregate>, UsageSyncError> {
     let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
     validate_ranking_day(&ranking_day)?;
@@ -827,6 +838,9 @@ fn current_utc_daily_aggregates_with_corrections(
     for presentation in &state.providers {
         if !seen.insert(presentation.provider) {
             return Err(UsageSyncError::INVALID_VALUE);
+        }
+        if !enabled_providers.contains(&presentation.provider) {
+            continue;
         }
         let Some(mut aggregate) = aggregate_from_total(
             presentation.provider,
@@ -850,6 +864,7 @@ pub(crate) fn queue_current_utc_day(
     active_mac_generation: u64,
     state: &SanitizedDesktopStateV3,
     now: OffsetDateTime,
+    enabled_providers: &BTreeSet<CodingProvider>,
 ) -> Result<Vec<QueueUpdate>, UsageSyncError> {
     queue_current_utc_day_with_corrections(
         transaction,
@@ -857,6 +872,7 @@ pub(crate) fn queue_current_utc_day(
         state,
         now,
         &UsageSyncCorrections::default(),
+        enabled_providers,
     )
 }
 
@@ -866,12 +882,14 @@ pub(crate) fn queue_current_utc_day_with_corrections(
     state: &SanitizedDesktopStateV3,
     now: OffsetDateTime,
     corrections: &UsageSyncCorrections,
+    enabled_providers: &BTreeSet<CodingProvider>,
 ) -> Result<Vec<QueueUpdate>, UsageSyncError> {
     validate_generation(active_mac_generation)?;
     stage_usage_sync_corrections(transaction, now, corrections)?;
     let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
     let staged = load_staged_usage_sync_corrections(transaction, &ranking_day)?;
-    let aggregates = current_utc_daily_aggregates_with_corrections(state, now, &staged)?;
+    let aggregates =
+        current_utc_daily_aggregates_with_corrections(state, now, &staged, enabled_providers)?;
     let mut updates = Vec::with_capacity(aggregates.len());
     for aggregate in aggregates {
         let provider = aggregate.provider;
@@ -1051,7 +1069,7 @@ pub(crate) fn load_pending_usage_batch(
     connection: &Connection,
     active_mac_generation: u64,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
-    load_pending_usage_batch_for_day(connection, active_mac_generation, None)
+    load_pending_usage_batch_for_day(connection, active_mac_generation, None, None)
 }
 
 /// Load only the current UTC Ranking Day for issue #26 transport.
@@ -1059,16 +1077,23 @@ pub(crate) fn load_current_pending_usage_batch(
     connection: &Connection,
     active_mac_generation: u64,
     now: OffsetDateTime,
+    enabled_providers: &BTreeSet<CodingProvider>,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
     let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
     validate_ranking_day(&ranking_day)?;
-    load_pending_usage_batch_for_day(connection, active_mac_generation, Some(&ranking_day))
+    load_pending_usage_batch_for_day(
+        connection,
+        active_mac_generation,
+        Some(&ranking_day),
+        Some(enabled_providers),
+    )
 }
 
 fn load_pending_usage_batch_for_day(
     connection: &Connection,
     active_mac_generation: u64,
     ranking_day: Option<&str>,
+    enabled_providers: Option<&BTreeSet<CodingProvider>>,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
     validate_generation(active_mac_generation)?;
     let mut statement = connection.prepare(
@@ -1104,6 +1129,12 @@ fn load_pending_usage_batch_for_day(
             correction_reason,
             correction_revision,
         ) = row?;
+        let expected_provider = provider_from_database_value(&provider)?;
+        if enabled_providers
+            .is_some_and(|enabled_providers| !enabled_providers.contains(&expected_provider))
+        {
+            continue;
+        }
         if snapshot_json.len() > MAX_LOCAL_VALUE_BYTES {
             return Err(UsageSyncError::STORAGE_UNAVAILABLE);
         }
@@ -1112,7 +1143,7 @@ fn load_pending_usage_batch_for_day(
         snapshot
             .validate()
             .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-        if snapshot.provider != provider_from_database_value(&provider)?
+        if snapshot.provider != expected_provider
             || snapshot.ranking_day != ranking_day
             || snapshot.revision
                 != u64::try_from(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?
@@ -1877,6 +1908,12 @@ mod tests {
         OffsetDateTime::parse(NOW, &Rfc3339).unwrap()
     }
 
+    fn enabled_providers() -> BTreeSet<CodingProvider> {
+        [CodingProvider::Codex, CodingProvider::Claude]
+            .into_iter()
+            .collect()
+    }
+
     fn unavailable_periods() -> UsagePeriods {
         UsagePeriods {
             scan_status: UsageScanStatus::Complete,
@@ -2421,8 +2458,15 @@ mod tests {
             .record_parser_correction(CodingProvider::Claude, 2)
             .unwrap();
         let transaction = connection.transaction().unwrap();
-        queue_current_utc_day_with_corrections(&transaction, 1, &state, now(), &corrections)
-            .unwrap();
+        queue_current_utc_day_with_corrections(
+            &transaction,
+            1,
+            &state,
+            now(),
+            &corrections,
+            &enabled_providers(),
+        )
+        .unwrap();
         transaction.commit().unwrap();
 
         let pending = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
@@ -2494,7 +2538,14 @@ mod tests {
         );
         let transaction = connection.transaction().unwrap();
         activate_generation(&transaction, 1).unwrap();
-        queue_current_utc_day(&transaction, 1, &corrected_then_increased, now()).unwrap();
+        queue_current_utc_day(
+            &transaction,
+            1,
+            &corrected_then_increased,
+            now(),
+            &enabled_providers(),
+        )
+        .unwrap();
         transaction.commit().unwrap();
         let first = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
         assert_eq!(
@@ -2533,8 +2584,15 @@ mod tests {
             ),
         );
         let transaction = connection.transaction().unwrap();
-        queue_current_utc_day_with_corrections(&transaction, 1, &later_usage, now(), &corrections)
-            .unwrap();
+        queue_current_utc_day_with_corrections(
+            &transaction,
+            1,
+            &later_usage,
+            now(),
+            &corrections,
+            &enabled_providers(),
+        )
+        .unwrap();
         transaction.commit().unwrap();
         let second = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
         assert_eq!(second.snapshots()[0].observed_tokens, 60);
@@ -2552,7 +2610,14 @@ mod tests {
         );
         let transaction = connection.transaction().unwrap();
         assert!(matches!(
-            queue_current_utc_day(&transaction, 1, &unsupported_decrease, now()).unwrap()[0],
+            queue_current_utc_day(
+                &transaction,
+                1,
+                &unsupported_decrease,
+                now(),
+                &enabled_providers(),
+            )
+            .unwrap()[0],
             QueueUpdate::Stale { revision: 2, .. }
         ));
         transaction.commit().unwrap();
