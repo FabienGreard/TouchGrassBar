@@ -86,7 +86,7 @@ function renderHeader({
 
 describe("panel sync status", () => {
   test.each([
-    ["synced", "Synced"],
+    ["synced", "Live"],
     ["pending", "Waiting to sync"],
     ["stale", "Sync is stale"],
     ["offline", "Offline"],
@@ -113,7 +113,7 @@ describe("panel sync status", () => {
 
     expect(markup).toContain('data-provider-availability="stale"');
     expect(markup).toContain('data-sync-status="synced"');
-    expect(markup).toContain(">Synced</small>");
+    expect(markup).toContain(">Live</small>");
     expect(markup).not.toContain("Sync is stale");
   });
 

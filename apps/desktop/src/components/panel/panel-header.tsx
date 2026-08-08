@@ -33,7 +33,7 @@ const syncLabels = {
   offline: "Offline",
   pending: "Waiting to sync",
   stale: "Sync is stale",
-  synced: "Synced",
+  synced: "Live",
   unavailable: "Sync unavailable",
 } as const satisfies Record<PanelSyncStatus, string>;
 
