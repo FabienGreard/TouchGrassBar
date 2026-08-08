@@ -57,6 +57,7 @@ complete.
 ## Active entries
 
 - [Issue 67: retire legacy Active Mac authority](./issue-67-retire-legacy-active-device-authority.md)
+- [Issue 68: retire pre-contract usage compatibility](./issue-68-retire-precontract-usage-compatibility.md)
 
 ## Entry template
 

@@ -31,6 +31,13 @@ type SnapshotPlan = {
   snapshot: UsageSnapshot;
 };
 
+type CurrentUsageBucket = Doc<"usageBuckets"> & {
+  apiEquivalentCost: UsageSnapshot["apiEquivalentCost"];
+  correctionReason: UsageSnapshot["correctionReason"];
+  correctionRevision: UsageSnapshot["correctionRevision"];
+  evidenceBasis: UsageSnapshot["evidenceBasis"];
+};
+
 type CorrectionLineage = {
   reason: NonNullable<UsageSnapshot["correctionReason"]>;
   revision: number;
@@ -57,7 +64,11 @@ async function upsertDailyUsage(
   };
 
   if (existing) {
-    await ctx.db.patch(existing._id, values);
+    await ctx.db.patch(existing._id, {
+      ...values,
+      apiEquivalentCostMicros: undefined,
+      costIsComplete: undefined,
+    });
     return;
   }
   await ctx.db.insert("userDailyUsage", {
@@ -120,7 +131,7 @@ function sameApiEquivalentCost(
 }
 
 function sameUsageSnapshot(
-  existing: Doc<"usageBuckets">,
+  existing: CurrentUsageBucket,
   snapshot: UsageSnapshot,
 ) {
   return (
@@ -135,6 +146,31 @@ function sameUsageSnapshot(
     existing.correctionRevision === snapshot.correctionRevision &&
     existing.observedAt === snapshot.observedAt
   );
+}
+
+function isCurrentUsageBucket(
+  existing: Doc<"usageBuckets">,
+): existing is CurrentUsageBucket {
+  return (
+    existing.apiEquivalentCost !== undefined &&
+    existing.correctionReason !== undefined &&
+    existing.correctionRevision !== undefined &&
+    existing.evidenceBasis !== undefined
+  );
+}
+
+function currentUsageBucket(existing: Doc<"usageBuckets">): CurrentUsageBucket {
+  if (isCurrentUsageBucket(existing)) return existing;
+  const normalized: CurrentUsageBucket = {
+    ...existing,
+    apiEquivalentCost: null,
+    correctionReason: null,
+    correctionRevision: null,
+    evidenceBasis: "locally-derived",
+  };
+  delete normalized.lastCorrectionReason;
+  delete normalized.lastCorrectionRevision;
+  return normalized;
 }
 
 function snapshotCorrectionLineage(
@@ -153,7 +189,7 @@ function snapshotCorrectionLineage(
 }
 
 function storedCorrectionLineage(
-  existing: Doc<"usageBuckets"> | null,
+  existing: CurrentUsageBucket | null,
 ): CorrectionLineage | null {
   if (!existing) return null;
   if (
@@ -195,7 +231,7 @@ function assertCompatibleFinalEvidence(
 }
 
 function assertNewCorrectionProvenance(
-  existing: Doc<"usageBuckets"> | null,
+  existing: CurrentUsageBucket | null,
   lineage: CorrectionLineage,
   snapshot: UsageSnapshot,
 ) {
@@ -216,7 +252,7 @@ function assertNewCorrectionProvenance(
 }
 
 function planCorrectionLineage(
-  existing: Doc<"usageBuckets"> | null,
+  existing: CurrentUsageBucket | null,
   snapshot: UsageSnapshot,
 ): CorrectionLineage | null {
   const incoming = snapshotCorrectionLineage(snapshot);
@@ -261,13 +297,14 @@ async function planSnapshots(
           .eq("rankingDay", snapshot.rankingDay),
       )
       .unique();
-    if (existing && snapshot.revision < existing.revision) {
+    const currentExisting = existing ? currentUsageBucket(existing) : null;
+    if (currentExisting && snapshot.revision < currentExisting.revision) {
       plans.push({
         acknowledgement: {
           outcome: "stale",
           provider: snapshot.provider,
           rankingDay: snapshot.rankingDay,
-          revision: existing.revision,
+          revision: currentExisting.revision,
         },
         correctionAudit: null,
         existing,
@@ -275,10 +312,11 @@ async function planSnapshots(
       });
       continue;
     }
-    if (existing && snapshot.revision === existing.revision) {
-      const outcome = sameUsageSnapshot(existing, snapshot)
+    if (currentExisting && snapshot.revision === currentExisting.revision) {
+      const outcome = sameUsageSnapshot(currentExisting, snapshot)
         ? "idempotent"
-        : snapshot.observedTokens < existing.observedTokens
+        : snapshot.observedAt < currentExisting.observedAt ||
+            snapshot.observedTokens < currentExisting.observedTokens
           ? "conflict"
           : "stale";
       plans.push({
@@ -286,7 +324,7 @@ async function planSnapshots(
           outcome,
           provider: snapshot.provider,
           rankingDay: snapshot.rankingDay,
-          revision: existing.revision,
+          revision: currentExisting.revision,
         },
         correctionAudit: null,
         existing,
@@ -294,7 +332,21 @@ async function planSnapshots(
       });
       continue;
     }
-    const correctionAudit = planCorrectionLineage(existing, snapshot);
+    if (currentExisting && snapshot.observedAt < currentExisting.observedAt) {
+      plans.push({
+        acknowledgement: {
+          outcome: "conflict",
+          provider: snapshot.provider,
+          rankingDay: snapshot.rankingDay,
+          revision: snapshot.revision,
+        },
+        correctionAudit: null,
+        existing,
+        snapshot,
+      });
+      continue;
+    }
+    const correctionAudit = planCorrectionLineage(currentExisting, snapshot);
     plans.push({
       acknowledgement: {
         outcome: "committed",
@@ -337,7 +389,18 @@ async function commitSnapshot(
   };
   let bucketId: GenericId<"usageBuckets">;
   if (existing) {
-    await ctx.db.patch(existing._id, values);
+    await ctx.db.patch(existing._id, {
+      ...values,
+      apiEquivalentCostMicros: undefined,
+      ...(!isCurrentUsageBucket(existing) && !lineage
+        ? {
+            lastCorrectionReason: undefined,
+            lastCorrectionRevision: undefined,
+          }
+        : {}),
+      priceBasisVersion: undefined,
+      source: undefined,
+    });
     bucketId = existing._id;
   } else {
     bucketId = await ctx.db.insert("usageBuckets", {

@@ -1326,8 +1326,8 @@ pub(crate) fn parse_provider_settings_acknowledgement(
 /// Apply one complete success value to the exact submitted batch.
 ///
 /// A committed, conflict, or idempotent acknowledgement must name the
-/// submitted revision. A conflict stops an unproved lower value after local
-/// state was rebuilt. A stale acknowledgement names the same or a newer server
+/// submitted revision. A conflict stops an unproved lower value or a backward
+/// observation time. A stale acknowledgement names the same or a newer server
 /// revision. The delete always uses the submitted revision. Therefore, a late
 /// response cannot remove a newer local revision.
 pub(crate) fn apply_usage_acknowledgements(

@@ -55,6 +55,8 @@ export default defineSchema({
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
     .index("by_tokenmaxxer_id_and_installation_id", ["tokenmaxxerId", "installationId"]),
 
+  // Issue #68 owns the temporary optional fields in the four usage and score
+  // tables. Current writes remove the pre-contract fields.
   usageBuckets: defineTable({
     deviceId: v.id("devices"),
     tokenmaxxerId: v.id("tokenmaxxers"),
@@ -62,13 +64,16 @@ export default defineSchema({
     rankingDay: v.string(),
     revision: v.number(),
     observedTokens: v.number(),
-    apiEquivalentCost,
+    apiEquivalentCost: v.optional(apiEquivalentCost),
+    apiEquivalentCostMicros: v.optional(v.number()),
     coverage,
-    evidenceBasis,
-    correctionReason: v.union(correctionReason, v.null()),
-    correctionRevision: v.union(v.number(), v.null()),
+    evidenceBasis: v.optional(evidenceBasis),
+    correctionReason: v.optional(v.union(correctionReason, v.null())),
+    correctionRevision: v.optional(v.union(v.number(), v.null())),
     lastCorrectionReason: v.optional(correctionReason),
     lastCorrectionRevision: v.optional(v.number()),
+    priceBasisVersion: v.optional(v.string()),
+    source: v.optional(v.literal("local-observed")),
     observedAt: v.number(),
     syncedAt: v.number(),
   })
@@ -105,7 +110,9 @@ export default defineSchema({
     provider,
     rankingDay: v.string(),
     observedTokens: v.number(),
-    apiEquivalentCost,
+    apiEquivalentCost: v.optional(apiEquivalentCost),
+    apiEquivalentCostMicros: v.optional(v.number()),
+    costIsComplete: v.optional(v.boolean()),
     updatedAt: v.number(),
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
@@ -121,7 +128,8 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
-    apiEquivalentCost,
+    apiEquivalentCost: v.optional(apiEquivalentCost),
+    apiEquivalentCostMicros: v.optional(v.number()),
     computedAt: v.number(),
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
@@ -138,7 +146,8 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
-    apiEquivalentCost,
+    apiEquivalentCost: v.optional(apiEquivalentCost),
+    apiEquivalentCostMicros: v.optional(v.number()),
     displayName: v.string(),
     touchGrassId: v.string(),
     computedAt: v.number(),

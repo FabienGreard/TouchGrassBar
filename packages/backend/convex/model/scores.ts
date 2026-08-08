@@ -146,6 +146,7 @@ async function upsertPublicScore(
     await ctx.db.patch(existing._id, {
       ...values,
       apiEquivalentCost: score.apiEquivalentCost,
+      apiEquivalentCostMicros: undefined,
     });
     await globalDoomerboard.replace(
       ctx,
@@ -201,7 +202,15 @@ export async function recomputeScores(
     .query("userDailyUsage")
     .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))
     .take(1_000))
-    .filter((row) => enabledProviders.has(row.provider));
+    .filter((row) => enabledProviders.has(row.provider))
+    .map(
+      (row): DailyUsageRow => ({
+        apiEquivalentCost: row.apiEquivalentCost ?? null,
+        observedTokens: row.observedTokens,
+        provider: row.provider,
+        rankingDay: row.rankingDay,
+      }),
+    );
   const existingScores = await ctx.db
     .query("userScores")
     .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))
@@ -225,6 +234,7 @@ export async function recomputeScores(
         await ctx.db.patch(existing._id, {
           ...values,
           apiEquivalentCost: score.apiEquivalentCost,
+          apiEquivalentCostMicros: undefined,
         });
       } else {
         await ctx.db.insert("userScores", {

@@ -13,6 +13,8 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api, components, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
+import { globalDoomerboard } from "./model/aggregate";
+import { recomputeScores } from "./model/scores";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
 
@@ -304,6 +306,37 @@ test("both providers commit atomically and retries report exact revision outcome
       provider: "claude",
       rankingDay: TODAY,
       revision: 1,
+    },
+  ]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
+    beforeRetry,
+  );
+
+  const olderObservations = snapshots.map((snapshot) =>
+    Object.assign({}, snapshot, {
+      observedAt: snapshot.observedAt - 1,
+      observedTokens: snapshot.observedTokens + 1,
+      revision: 2,
+    }),
+  );
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: olderObservations,
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "conflict",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 2,
+    },
+    {
+      outcome: "conflict",
+      provider: "claude",
+      rankingDay: TODAY,
+      revision: 2,
     },
   ]);
   expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
@@ -777,6 +810,252 @@ test("the governed legacy-device migration enables a fresh proved authority clai
     installationCredentialDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
   });
   expect(authority.active?._id).not.toBe(legacyDeviceId);
+});
+
+test("governed migrations replace pre-contract usage rows without inferred cost", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const profile = await createProfile(t, credential, "Fabien");
+  await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", profile.touchGrassId))
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) throw new Error("Active Mac missing");
+    await ctx.db.insert("usageBuckets", {
+      apiEquivalentCostMicros: 123,
+      coverage: "complete",
+      deviceId: tokenmaxxer.activeDeviceId,
+      observedAt: NOW.getTime(),
+      observedTokens: 100,
+      priceBasisVersion: "pre-contract",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 1,
+      source: "local-observed",
+      syncedAt: NOW.getTime(),
+      tokenmaxxerId: tokenmaxxer._id,
+    });
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCostMicros: 123,
+      costIsComplete: true,
+      observedTokens: 100,
+      provider: "codex",
+      rankingDay: TODAY,
+      tokenmaxxerId: tokenmaxxer._id,
+      updatedAt: NOW.getTime(),
+    });
+    await ctx.db.insert("userScores", {
+      apiEquivalentCostMicros: 123,
+      boardKey: "tokens-v1:codex:1d",
+      computedAt: NOW.getTime(),
+      scope: "codex",
+      tokenmaxxerId: tokenmaxxer._id,
+      tokenScore: 100,
+      windowDays: 1,
+    });
+    await ctx.db.insert("publicScores", {
+      apiEquivalentCostMicros: 123,
+      boardKey: "tokens-v1:codex:1d",
+      computedAt: NOW.getTime(),
+      displayName: tokenmaxxer.displayName,
+      scope: "codex",
+      tokenmaxxerId: tokenmaxxer._id,
+      tokenScore: 100,
+      touchGrassId: tokenmaxxer.publicId,
+      windowDays: 1,
+    });
+  });
+
+  await t.run(async (ctx) => {
+    for (const migration of [
+      internal.internal.migrations.upgradePrecontractUsageBuckets,
+      internal.internal.migrations.upgradePrecontractUserDailyUsage,
+      internal.internal.migrations.upgradePrecontractUserScores,
+      internal.internal.migrations.upgradePrecontractPublicScores,
+    ]) {
+      await runToCompletion(
+        ctx,
+        components.migrations,
+        migration as MigrationFunctionReference,
+      );
+    }
+  });
+
+  const upgraded = await t.run(async (ctx) => ({
+    aggregate: await globalDoomerboard.paginate(ctx, {
+      namespace: "tokens-v1:codex:1d",
+      order: "desc",
+      pageSize: 10,
+    }),
+    buckets: await ctx.db.query("usageBuckets").collect(),
+    daily: await ctx.db.query("userDailyUsage").collect(),
+    privateScores: await ctx.db.query("userScores").collect(),
+    publicScores: await ctx.db.query("publicScores").collect(),
+  }));
+  expect(upgraded.buckets[0]).toMatchObject({
+    apiEquivalentCost: null,
+    correctionReason: null,
+    correctionRevision: null,
+    evidenceBasis: "locally-derived",
+  });
+  expect(upgraded.daily[0]?.apiEquivalentCost).toBeNull();
+  expect(upgraded.privateScores[0]?.apiEquivalentCost).toBeNull();
+  expect(upgraded.publicScores[0]?.apiEquivalentCost).toBeNull();
+  expect(upgraded.aggregate.page).toEqual([
+    {
+      id: upgraded.publicScores[0]?._id,
+      key: 100,
+      sumValue: 0,
+    },
+  ]);
+  const serialized = JSON.stringify(upgraded);
+  expect(serialized).not.toContain("apiEquivalentCostMicros");
+  expect(serialized).not.toContain("costIsComplete");
+  expect(serialized).not.toContain("priceBasisVersion");
+  expect(serialized).not.toContain('"source"');
+});
+
+test("live score recomputation keeps pre-contract tokens without inferring cost", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const profile = await createProfile(t, credential, "Fabien");
+  const tokenmaxxerId = await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", profile.touchGrassId))
+      .unique();
+    if (!tokenmaxxer) throw new Error("Tokenmaxxer missing");
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCostMicros: 123,
+      costIsComplete: true,
+      observedTokens: 100,
+      provider: "codex",
+      rankingDay: TODAY,
+      tokenmaxxerId: tokenmaxxer._id,
+      updatedAt: NOW.getTime(),
+    });
+    return tokenmaxxer._id;
+  });
+
+  const overview = await t.run((ctx) =>
+    recomputeScores(ctx, tokenmaxxerId, TODAY),
+  );
+  expect(
+    overview.find(
+      (score) => score.scope === "codex" && score.windowDays === 1,
+    ),
+  ).toEqual({
+    apiEquivalentCost: null,
+    scope: "codex",
+    tokenScore: 100,
+    windowDays: 1,
+  });
+  const projected = await t.run(async (ctx) => ({
+    privateScore: await ctx.db
+      .query("userScores")
+      .withIndex("by_tokenmaxxer_id_and_scope_and_window_days", (q) =>
+        q
+          .eq("tokenmaxxerId", tokenmaxxerId)
+          .eq("scope", "codex")
+          .eq("windowDays", 1),
+      )
+      .unique(),
+    publicScore: await ctx.db
+      .query("publicScores")
+      .withIndex("by_tokenmaxxer_id_and_scope_and_window_days", (q) =>
+        q
+          .eq("tokenmaxxerId", tokenmaxxerId)
+          .eq("scope", "codex")
+          .eq("windowDays", 1),
+      )
+      .unique(),
+  }));
+  expect(projected.privateScore).toMatchObject({
+    apiEquivalentCost: null,
+    tokenScore: 100,
+  });
+  expect(projected.publicScore).toMatchObject({
+    apiEquivalentCost: null,
+    tokenScore: 100,
+  });
+});
+
+test("an unmigrated bucket keeps revision and time guards before a live upgrade", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const profile = await createProfile(t, credential, "Fabien");
+  const before = await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", profile.touchGrassId))
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) throw new Error("Active Mac missing");
+    await ctx.db.insert("usageBuckets", {
+      apiEquivalentCostMicros: 123,
+      coverage: "complete",
+      deviceId: tokenmaxxer.activeDeviceId,
+      observedAt: NOW.getTime(),
+      observedTokens: 100,
+      priceBasisVersion: "pre-contract",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 5,
+      source: "local-observed",
+      syncedAt: NOW.getTime(),
+      tokenmaxxerId: tokenmaxxer._id,
+    });
+    return ctx.db.query("usageBuckets").collect();
+  });
+
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [usageSnapshot({ revision: 1 })],
+    }),
+  ).resolves.toMatchObject([{ outcome: "stale", revision: 5 }]);
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({
+          observedAt: NOW.getTime() - 1,
+          observedTokens: 101,
+          revision: 6,
+        }),
+      ],
+    }),
+  ).resolves.toMatchObject([{ outcome: "conflict", revision: 6 }]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
+    before,
+  );
+
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({
+          observedAt: NOW.getTime() + 1,
+          observedTokens: 101,
+          revision: 6,
+        }),
+      ],
+    }),
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 6 }]);
+  const upgraded = await t.run(async (ctx) => ctx.db.query("usageBuckets").collect());
+  expect(upgraded[0]).toMatchObject({
+    apiEquivalentCost: expect.any(Object),
+    evidenceBasis: "locally-derived",
+    observedAt: NOW.getTime() + 1,
+    observedTokens: 101,
+    revision: 6,
+  });
+  expect(JSON.stringify(upgraded)).not.toContain("apiEquivalentCostMicros");
+  expect(JSON.stringify(upgraded)).not.toContain("priceBasisVersion");
+  expect(JSON.stringify(upgraded)).not.toContain('"source"');
 });
 
 test("an unproved decrease rolls back the whole batch and an explicit correction commits", async () => {
