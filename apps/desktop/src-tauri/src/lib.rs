@@ -2,14 +2,17 @@ mod daily_usage_aggregate;
 #[cfg(debug_assertions)]
 mod dev_instance;
 pub mod lifecycle;
+mod menu_bar;
 mod network;
 pub mod profile;
 mod providers;
+mod quota_headroom;
 pub mod sanitized;
 pub mod updater;
 
 use std::{
     env,
+    path::Path,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -23,6 +26,7 @@ use lifecycle::{
     SETTINGS_RECOVERY_CLEAR_EVENT, SettingsNavigationRequest, SettingsProfileAuthorization,
     SettingsSection, SettingsStateV4,
 };
+use menu_bar::{MenuBarDelivery, MenuBarPresentation, apply_to_tray};
 use sanitized::{
     NativeCore, PANEL_ADD_TOKENMAXXER_EVENT, REVISION_NOTICE_EVENT, RefreshReceipt, RefreshSource,
     RevisionNotice, SanitizedDesktopStateV3, SanitizedProfileOutcome,
@@ -43,8 +47,20 @@ const ONBOARDING_LABEL: &str = "onboarding";
 const PANEL_WIDTH: f64 = 402.0;
 const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
-const MENU_BAR_ICON: &[u8] =
-    include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
+
+fn production_native_core(
+    database_path: Option<&Path>,
+    enablement: Arc<dyn providers::ProviderEnablementPolicy>,
+) -> NativeCore {
+    database_path.map_or_else(
+        || NativeCore::unavailable_with_provider_enablement(Arc::clone(&enablement)),
+        |path| {
+            NativeCore::open_with_provider_enablement(path, Arc::clone(&enablement)).unwrap_or_else(
+                |_| NativeCore::unavailable_with_provider_enablement(Arc::clone(&enablement)),
+            )
+        },
+    )
+}
 
 #[doc(hidden)]
 pub fn run_codex_usage_debug_pass(
@@ -937,6 +953,15 @@ pub fn run() {
     let launched_in_background = env::args_os().any(|argument| argument == "--background");
     #[cfg(debug_assertions)]
     let development_instance = dev_instance::DevelopmentInstance::from_environment();
+    #[cfg(debug_assertions)]
+    let physical_menu_bar_fixture =
+        match menu_bar::PhysicalMenuBarFixture::from_environment(development_instance.is_some()) {
+            Ok(fixture) => fixture,
+            Err(error) => {
+                eprintln!("TouchGrassBar did not start: {error}");
+                return;
+            }
+        };
     let builder = tauri::Builder::default();
     #[cfg(debug_assertions)]
     let builder = if development_instance.is_none() {
@@ -1032,24 +1057,15 @@ pub fn run() {
                 .unwrap_or_else(DesktopLifecycle::unavailable);
             let provider_enablement: Arc<dyn providers::ProviderEnablementPolicy> =
                 Arc::new(lifecycle.clone());
-            let core = database_path.as_deref().map_or_else(
-                || {
-                    NativeCore::unavailable_with_provider_enablement(Arc::clone(
-                        &provider_enablement,
-                    ))
-                },
-                |path| {
-                    NativeCore::open_with_provider_enablement(
-                        path,
-                        Arc::clone(&provider_enablement),
-                    )
-                    .unwrap_or_else(|_| {
-                        NativeCore::unavailable_with_provider_enablement(Arc::clone(
-                            &provider_enablement,
-                        ))
-                    })
-                },
-            );
+            #[cfg(debug_assertions)]
+            let core = if physical_menu_bar_fixture.is_some() {
+                NativeCore::no_io_unavailable()
+            } else {
+                production_native_core(database_path.as_deref(), Arc::clone(&provider_enablement))
+            };
+            #[cfg(not(debug_assertions))]
+            let core =
+                production_native_core(database_path.as_deref(), Arc::clone(&provider_enablement));
             let show_bootstrap = should_show_bootstrap_on_start(
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,
@@ -1057,6 +1073,10 @@ pub fn run() {
             app.manage(lifecycle.clone());
             app.manage(core.clone());
             app.manage(PanelActionState::default());
+            #[cfg(debug_assertions)]
+            if let Some(fixture) = physical_menu_bar_fixture.clone() {
+                app.manage(fixture);
+            }
 
             let online_gate = OnlineFeatureGate::default();
             #[cfg(debug_assertions)]
@@ -1105,15 +1125,6 @@ pub fn run() {
             }
 
             let revision_notices = core.revision_notices().map_err(std::io::Error::other)?;
-            let revision_notice_app = app.handle().clone();
-            std::thread::Builder::new()
-                .name("sanitized-state-revision-notices".to_owned())
-                .spawn(move || {
-                    while let Ok(notice) = revision_notices.recv() {
-                        let _ = revision_notice_app
-                            .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
-                    }
-                })?;
             let refresh = MenuItemBuilder::with_id("refresh", "Sync now").build(app)?;
             let add_tokenmaxxer =
                 MenuItemBuilder::with_id("add_tokenmaxxer", "Add a Tokenmaxxer…").build(app)?;
@@ -1131,23 +1142,41 @@ pub fn run() {
                 .items(&[&refresh, &add_tokenmaxxer, &settings, &separator, &quit])
                 .build()?;
 
-            let tray_icon = tauri::image::Image::from_bytes(MENU_BAR_ICON)?;
+            let initial_menu_bar =
+                MenuBarPresentation::from(core.menu_bar_headroom().map_err(std::io::Error::other)?);
             #[cfg(debug_assertions)]
-            let tray_tooltip = development_instance.as_ref().map_or_else(
-                || "TouchGrassBar".to_owned(),
-                dev_instance::DevelopmentInstance::tooltip,
-            );
+            let initial_menu_bar =
+                physical_menu_bar_fixture
+                    .as_ref()
+                    .map_or(initial_menu_bar.clone(), |fixture| MenuBarPresentation {
+                        revision: initial_menu_bar.revision,
+                        visible: fixture.visible(),
+                    });
+            #[cfg(debug_assertions)]
+            let physical_menu_bar_fixture_active = physical_menu_bar_fixture.is_some();
             #[cfg(not(debug_assertions))]
-            let tray_tooltip = "TouchGrassBar";
+            let physical_menu_bar_fixture_active = false;
             let tray_builder = TrayIconBuilder::with_id("touchgrassbar")
-                .tooltip(tray_tooltip)
-                .icon(tray_icon)
                 .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "refresh" => {
-                        let _ = request_native_refresh(app);
+                        #[cfg(debug_assertions)]
+                        let fixture_active = app
+                            .try_state::<menu_bar::PhysicalMenuBarFixture>()
+                            .map(|fixture| {
+                                if let Some(visible) = fixture.advance()
+                                    && let Some(tray) = app.tray_by_id("touchgrassbar")
+                                {
+                                    let _ = apply_to_tray(&tray, &visible);
+                                }
+                            });
+                        #[cfg(not(debug_assertions))]
+                        let fixture_active: Option<()> = None;
+                        if fixture_active.is_none() {
+                            let _ = request_native_refresh(app);
+                        }
                     }
                     "add_tokenmaxxer" => {
                         let _ = show_panel_add_tokenmaxxer(app);
@@ -1176,11 +1205,36 @@ pub fn run() {
                     }
                 });
             #[cfg(debug_assertions)]
-            let tray_builder = match development_instance.as_ref() {
-                Some(instance) => tray_builder.title(instance.tag()),
-                None => tray_builder,
+            let tray_builder = if physical_menu_bar_fixture_active {
+                tray_builder
+            } else {
+                match development_instance.as_ref() {
+                    Some(instance) => tray_builder.title(instance.tag()),
+                    None => tray_builder,
+                }
             };
-            tray_builder.build(app)?;
+            let tray = tray_builder.build(app)?;
+            let mut menu_bar_delivery =
+                MenuBarDelivery::install(initial_menu_bar, |visible| apply_to_tray(&tray, visible))
+                    .map_err(std::io::Error::other)?;
+
+            let revision_notice_app = app.handle().clone();
+            let revision_notice_core = core.clone();
+            std::thread::Builder::new()
+                .name("sanitized-state-revision-notices".to_owned())
+                .spawn(move || {
+                    while let Ok(notice) = revision_notices.recv() {
+                        if !physical_menu_bar_fixture_active
+                            && let Ok(headroom) = revision_notice_core.menu_bar_headroom()
+                        {
+                            let next_menu_bar = MenuBarPresentation::from(headroom);
+                            let _ = menu_bar_delivery
+                                .accept(next_menu_bar, |visible| apply_to_tray(&tray, visible));
+                        }
+                        let _ = revision_notice_app
+                            .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
+                    }
+                })?;
 
             if show_bootstrap {
                 show_onboarding(app.handle())?;
@@ -1312,6 +1366,7 @@ mod tests {
 
         let info_plist = include_str!("../Info.plist");
         assert!(info_plist.contains("<key>LSUIElement</key>"));
+        assert!(info_plist.contains("<key>NSHighResolutionCapable</key>"));
         assert!(info_plist.contains("<true/>"));
         assert!(!info_plist.contains("LSBackgroundOnly"));
     }

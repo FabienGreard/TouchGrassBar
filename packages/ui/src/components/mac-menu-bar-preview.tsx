@@ -30,7 +30,28 @@ function MacMenuBarPreview({
     >
       <div className="flex h-8 items-center justify-end gap-2.5 px-2.5 text-white">
         <span className="menu-bar-app-target relative grid size-7 shrink-0 place-items-center rounded-[5px]">
-          <BrandMark className="size-[19px]" tone="reversed" />
+          <span
+            aria-hidden="true"
+            className="relative h-6 w-[26.7px]"
+            data-meter-shape="rounded-pill"
+            data-native-meter-geometry="332x48"
+            data-preview-value="illustrative"
+            data-slot="menu-bar-headroom-icon"
+          >
+            <BrandMark
+              className="absolute top-0 left-1/2 size-[19.2px] -translate-x-1/2"
+              tone="reversed"
+            />
+            <span
+              className="absolute bottom-[0.6px] left-[0.9px] h-[3.6px] w-[24.9px] overflow-hidden rounded-full bg-white/35"
+              data-slot="menu-bar-headroom-meter"
+            >
+              <span
+                className="block h-full w-3/5 rounded-full bg-white"
+                data-slot="menu-bar-headroom-fill"
+              />
+            </span>
+          </span>
           <img
             alt=""
             className="menu-bar-cursor-click absolute top-[15px] left-[15px] z-10 h-[23px] w-[17px]"

@@ -13,7 +13,7 @@ Whether a Coding Provider installation is locally detected, not detected, or can
 _Avoid_: Provider connection, provider authorization, provider availability
 
 **Provider Enablement**:
-Whether a Coding Provider is active in TouchGrassBar. Providers are enabled by default. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Observed Usage and API-Equivalent Cost do not contribute to Combined totals. Disabling a provider does not delete its local history. Re-enabling it restores the still-valid cached Quota Lanes, Observed Usage, and API-Equivalent Cost before the fresh read completes, without replacing that cache with a loading state.
+Whether a Coding Provider is active in TouchGrassBar. Providers are enabled by default. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Provider Quota Headroom does not contribute to Overall Quota Headroom, and it does not make that result incomplete. Its Observed Usage and API-Equivalent Cost do not contribute to Combined totals. Disabling a provider does not delete its local history. Re-enabling it restores the still-valid cached Quota Lanes, Observed Usage, and API-Equivalent Cost before the fresh read completes, without replacing that cache with a loading state.
 _Avoid_: Provider Presence, provider authentication, data deletion
 
 **Quota**:
@@ -25,7 +25,7 @@ The provider-defined period over which a quota applies, ending at a reset time.
 _Avoid_: Day, billing period
 
 **Quota Lane**:
-One provider-reported limit with its provider-defined label, unit, remaining value, and Quota Window. Its provider-native values remain visible even when its remaining share contributes to Overall Quota Headroom.
+One provider-reported limit with its provider-defined label, unit, remaining value, and Quota Window. Its provider-native values remain visible even when its remaining share contributes to Overall Quota Headroom. At reset, the old lane leaves the active set until the provider reports the next window.
 The model-specific Codex `GPT-5.3-Codex-Spark` weekly limit is not a supported Quota Lane.
 _Avoid_: Token Score, usage total, quota headroom
 
@@ -34,7 +34,7 @@ The lowest remaining share among one Coding Provider's active Quota Lanes. A gen
 _Avoid_: Provider usage, provider balance
 
 **Overall Quota Headroom**:
-The equal-weighted mean of calculable Provider Quota Headroom values across configured Coding Providers; current and still-valid stale values may contribute, any stale contributor makes the result stale, and an unavailable provider is excluded and makes the result incomplete rather than contributing zero. It is an at-a-glance index, not a sum of provider allowances or an estimate of tokens remaining.
+The equal-weighted mean of calculable Provider Quota Headroom values across enabled Coding Providers. Current and still-valid stale values may contribute. Any stale contributor makes the result stale. An unavailable enabled provider is excluded and makes the result incomplete rather than contributing zero. TouchGrassBar rounds only the final mean to the nearest whole percentage for its label, with an exact half rounded up. It is an at-a-glance index, not a sum of provider allowances or an estimate of tokens remaining.
 _Avoid_: Combined quota, usage left, quota total
 
 **Quota Snapshot**:
