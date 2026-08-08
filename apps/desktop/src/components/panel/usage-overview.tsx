@@ -1,4 +1,8 @@
-import type { UsagePeriods, UsageTotal } from "@touchgrass/contracts";
+import type {
+  TopModelUsage,
+  UsagePeriods,
+  UsageTotal,
+} from "@touchgrass/contracts";
 import {
   MetricCard,
   MetricCardDetail,
@@ -215,9 +219,11 @@ function UsageMetric({
 
 function UsageOverview({
   presentation,
+  topModelUsage,
   usage,
 }: {
   presentation?: UsagePresentation | undefined;
+  topModelUsage?: TopModelUsage | null | undefined;
   usage: UsagePeriods;
 }) {
   const [todayGauge, sevenDayGauge, thirtyDayGauge] = relativeGaugeFills(usage);
@@ -243,10 +249,10 @@ function UsageOverview({
     >
       <header className="flex items-center justify-between">
         <h2 className="m-0 text-[10px]" id="observed-usage-heading">
-          Observed tokens
+          Top model
         </h2>
-        <small className="text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
-          API equivalent
+        <small className="truncate text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
+          {topModelUsage?.model ?? "—"}
         </small>
       </header>
       <div className="mt-2">

@@ -151,6 +151,14 @@ impl PricingCatalog {
         &self.semantic_fingerprint
     }
 
+    pub(super) fn canonical_model_name(&self, model_name: &str) -> Option<&str> {
+        self.models
+            .iter()
+            .find(|model| model.names.iter().any(|name| name == model_name))
+            .and_then(|model| model.names.first())
+            .map(String::as_str)
+    }
+
     pub(super) fn price_message(
         &self,
         model_name: &str,

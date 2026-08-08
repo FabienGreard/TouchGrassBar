@@ -18,7 +18,8 @@ use crate::daily_usage_aggregate::{
     checked_sum, period_days,
 };
 use crate::sanitized::{
-    ApiEquivalentCostQuality, UsageCoverage, UsagePeriods, UsageScanStatus, UsageTotal,
+    ApiEquivalentCostQuality, TopModelUsage, UsageCoverage, UsagePeriods, UsageScanStatus,
+    UsageTotal,
 };
 
 const MAX_TRANSCRIPT_LINE_BYTES: usize = 4 * 1024 * 1024;
@@ -489,6 +490,7 @@ fn composite_pricing_basis(pricing_bases: BTreeSet<String>) -> Option<String> {
 pub(super) struct LocalUsageObservation {
     daily_usage: BTreeMap<Date, DailyUsageEvidence>,
     daily_cost: BTreeMap<Date, DailyCostEvidence>,
+    pub(super) top_model_usage: Option<TopModelUsage>,
     pricing_basis: Option<String>,
     scan_status: UsageScanStatus,
     latest_pending_modified_at: Option<OffsetDateTime>,
@@ -2071,9 +2073,11 @@ fn read_indexed_usage(
             .map_err(|_| ())
     };
     let pricing_basis = composite_pricing_basis(pricing_bases);
+    let top_model_usage = read_top_model_usage(connection, cost_cutoff, today)?;
     Ok(LocalUsageObservation {
         daily_usage,
         daily_cost,
+        top_model_usage,
         pricing_basis,
         scan_status,
         latest_pending_modified_at: parse_modified(latest_pending_ns)?,
@@ -2082,6 +2086,28 @@ fn read_indexed_usage(
         transcript_source_present,
         aggregate_changed,
     })
+}
+
+fn read_top_model_usage(
+    connection: &Connection,
+    cutoff: Date,
+    today: Date,
+) -> Result<Option<TopModelUsage>, ()> {
+    let catalog = super::pricing::catalog();
+    let entries = load_active_provider_messages(connection, cutoff, today)?
+        .into_iter()
+        .map(|message| {
+            let display_name = message
+                .details_retained
+                .then_some(message.model.as_str())
+                .and_then(|model| catalog.and_then(|catalog| catalog.canonical_model_name(model)))
+                .and_then(crate::providers::normalized_model_display_name);
+            let grouping_key = display_name
+                .clone()
+                .unwrap_or_else(|| message.model.clone());
+            (grouping_key, display_name, message.observed_tokens)
+        });
+    Ok(crate::providers::select_top_model_usage(entries))
 }
 
 fn debug_cost_quality(quality: Option<ApiEquivalentCostQuality>) -> &'static str {
@@ -4460,6 +4486,23 @@ mod tests {
                 "claude-sonnet-4-5-20250929",
                 usage(10, 20, 30, 40),
             )],
+        );
+
+        let local = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("the synthetic usage index must load");
+        assert_eq!(
+            local
+                .top_model_usage
+                .as_ref()
+                .and_then(|top| top.model.as_deref()),
+            Some("Claude Sonnet 4.5")
+        );
+        assert_eq!(
+            local
+                .top_model_usage
+                .as_ref()
+                .map(|top| top.observed_tokens),
+            Some(100)
         );
 
         let report = debug_usage_report(&fixture.database(), &config, &fixture.probe(), now())

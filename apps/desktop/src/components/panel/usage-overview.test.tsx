@@ -17,6 +17,20 @@ function unavailablePeriods(todayScanStatus: "indexing" | "unavailable") {
 }
 
 describe("usage overview", () => {
+  test("shows one normalized top-model line", () => {
+    const markup = renderToStaticMarkup(
+      <UsageOverview
+        topModelUsage={{ model: "GPT 5.6 Sol", observedTokens: 100 }}
+        usage={unavailablePeriods("unavailable")}
+      />,
+    );
+
+    expect(markup).toContain(">Top model</h2>");
+    expect(markup).toContain(">GPT 5.6 Sol</small>");
+    expect(markup).not.toContain("Observed tokens");
+    expect(markup).not.toContain("API equivalent</small>");
+  });
+
   test("shows indexing when a period has no evidence while its scan continues", () => {
     const markup = renderToStaticMarkup(
       <UsageOverview usage={unavailablePeriods("indexing")} />,

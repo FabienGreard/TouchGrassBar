@@ -38,7 +38,8 @@ export const usageTotalSchema = z.discriminatedUnion("availability", [z.object({
   }
 });
 export const usagePeriodsSchema = z.object({ scanStatus: usageScanStatusSchema, todayScanStatus: usageScanStatusSchema.optional(), sevenDayScanStatus: usageScanStatusSchema.optional(), thirtyDayScanStatus: usageScanStatusSchema.optional(), today: usageTotalSchema, sevenDays: usageTotalSchema, thirtyDays: usageTotalSchema }).strict();
-export const providerPresentationSchema = z.object({ provider: codingProviderSchema, displayName: z.string().min(1).max(40), presence: providerPresenceStatusSchema, quota: providerSnapshotSchema, usage: usagePeriodsSchema }).strict();
+export const topModelUsageSchema = z.object({ model: z.string().min(1).max(48).nullable().optional(), observedTokens: z.number().int().nonnegative().min(1) }).strict();
+export const providerPresentationSchema = z.object({ provider: codingProviderSchema, displayName: z.string().min(1).max(40), presence: providerPresenceStatusSchema, quota: providerSnapshotSchema, usage: usagePeriodsSchema, topModelUsage: topModelUsageSchema.nullable().optional() }).strict();
 export const sanitizedProfileOutcomeSchema = z.discriminatedUnion("status", [z.object({ status: z.literal("not-authorized") }).strict(), z.object({ status: z.literal("profile-pending") }).strict(), z.object({ displayName: z.string(), touchGrassId: z.string(), status: z.literal("ready") }).strict()]);
 export const settingsProviderSchema = z.object({ provider: codingProviderSchema, displayName: z.string().min(1).max(40), status: providerPresenceStatusSchema, enabled: z.boolean() }).strict();
 export const settingsSectionSchema = z.enum(["general","providers","profile"]);
@@ -47,7 +48,7 @@ export const syncStateSchema = z.object({ status: syncStatusSchema, lastSuccessf
 export const updateFailureSchema = z.enum(["download","interrupted","low-disk","network","permission","replacement","signature","unavailable"]);
 export const updateStatusSchema = z.discriminatedUnion("status", [z.object({ status: z.literal("unavailable") }).strict(), z.object({ status: z.literal("idle") }).strict(), z.object({ status: z.literal("checking") }).strict(), z.object({ status: z.literal("upToDate") }).strict(), z.object({ version: z.string().min(1).max(64), status: z.literal("available") }).strict(), z.object({ version: z.string().min(1).max(64), progressPercent: z.number().int().nonnegative().max(100).nullable().optional(), status: z.literal("downloading") }).strict(), z.object({ version: z.string().min(1).max(64), status: z.literal("installing") }).strict(), z.object({ version: z.string().min(1).max(64).nullable().optional(), failure: updateFailureSchema, status: z.literal("failed") }).strict()]);
 export const bootstrapStateSchema = z.object({ contractVersion: z.literal(3), bootstrap: bootstrapStatusSchema, profileProvisioning: profileProvisioningStatusSchema, persistence: persistenceStatusSchema, displayName: z.string().nullable().optional(), touchGrassId: z.string().nullable().optional(), providers: z.array(providerPresenceSchema).max(16) }).strict();
-export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal(3), generatedAt: z.string().datetime(), revision: z.string().regex(/^[1-9]\d*$/), providers: z.array(providerPresentationSchema).max(16), combinedUsage: usagePeriodsSchema, sync: syncStateSchema, profile: sanitizedProfileOutcomeSchema }).strict();
+export const sanitizedDesktopStateSchema = z.object({ contractVersion: z.literal(3), generatedAt: z.string().datetime(), revision: z.string().regex(/^[1-9]\d*$/), providers: z.array(providerPresentationSchema).max(16), topModelUsage: topModelUsageSchema.nullable().optional(), combinedUsage: usagePeriodsSchema, sync: syncStateSchema, profile: sanitizedProfileOutcomeSchema }).strict();
 export const refreshReceiptSchema = z.object({ accepted: z.boolean() }).strict();
 export const revisionNoticeSchema = z.object({ revision: z.string().regex(/^[1-9]\d*$/) }).strict();
 export const settingsNavigationRequestSchema = z.object({ section: settingsSectionSchema }).strict();
@@ -69,6 +70,7 @@ export type UsageEvidenceBasis = z.infer<typeof usageEvidenceBasisSchema>;
 export type UsageCoverage = z.infer<typeof usageCoverageSchema>;
 export type UsageTotal = z.infer<typeof usageTotalSchema>;
 export type UsagePeriods = z.infer<typeof usagePeriodsSchema>;
+export type TopModelUsage = z.infer<typeof topModelUsageSchema>;
 export type ProviderPresentation = z.infer<typeof providerPresentationSchema>;
 export type SanitizedProfileOutcome = z.infer<typeof sanitizedProfileOutcomeSchema>;
 export type SettingsProvider = z.infer<typeof settingsProviderSchema>;

@@ -21,7 +21,7 @@ use crate::daily_usage_aggregate::preserve_best_known_costs;
 use crate::providers::process::ProviderProcessSupervisor;
 use crate::sanitized::{
     Clock, CodingProvider, ProviderPresentation, ProviderSnapshot, QuotaLane, RefreshAttempt,
-    RefreshFailure,
+    RefreshFailure, TopModelUsage, UsagePeriods,
 };
 
 #[cfg(debug_assertions)]
@@ -200,10 +200,10 @@ impl ClaudeProviderObservationAdapter {
         })
     }
 
-    fn observe_usage(&self, now: OffsetDateTime) -> Option<crate::sanitized::UsagePeriods> {
+    fn observe_usage(&self, now: OffsetDateTime) -> Option<(UsagePeriods, Option<TopModelUsage>)> {
         #[cfg(test)]
         if let Some(usage) = &self.fixture_usage {
-            return Some(usage.clone());
+            return Some((usage.clone(), None));
         }
 
         usage::scan_local_usage(
@@ -212,7 +212,12 @@ impl ClaudeProviderObservationAdapter {
             now,
         )
         .as_ref()
-        .map(|local| usage::project_usage_periods(Some(local), now))
+        .map(|local| {
+            (
+                usage::project_usage_periods(Some(local), now),
+                local.top_model_usage.clone(),
+            )
+        })
     }
 }
 
@@ -239,9 +244,14 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
         } else {
             None
         };
-        let usage = projected_usage
-            .map(|usage| preserve_best_known_costs(usage, &cached.usage))
-            .unwrap_or_else(|| cached.usage.clone());
+        let (usage, top_model_usage) = projected_usage
+            .map(|(usage, top_model_usage)| {
+                (
+                    preserve_best_known_costs(usage, &cached.usage),
+                    top_model_usage,
+                )
+            })
+            .unwrap_or_else(|| (cached.usage.clone(), cached.top_model_usage.clone()));
         let mut quota_failed = false;
         let quota = if skip_quota {
             cached.quota.clone()
@@ -264,7 +274,10 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
                 Err(failure) => return Err(failure),
             }
         };
-        if cached.quota == quota && cached.usage == usage {
+        if cached.quota == quota
+            && cached.usage == usage
+            && cached.top_model_usage == top_model_usage
+        {
             if quota_failed {
                 return Err(RefreshFailure::SourceUnavailable);
             }
@@ -272,7 +285,11 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
             return Ok(None);
         }
         debug_event("refresh_loaded");
-        Ok(Some(ProviderObservation { quota, usage }))
+        Ok(Some(ProviderObservation {
+            quota,
+            usage,
+            top_model_usage,
+        }))
     }
 }
 

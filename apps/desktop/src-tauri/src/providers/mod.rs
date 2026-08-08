@@ -15,7 +15,7 @@ use std::{
 
 use crate::sanitized::{
     Clock, ProviderPresentation, ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshTrigger,
-    SanitizedDesktopStateV3, SnapshotRefreshAdapter, UsagePeriods,
+    SanitizedDesktopStateV3, SnapshotRefreshAdapter, TopModelUsage, UsagePeriods,
 };
 use time::OffsetDateTime;
 
@@ -45,6 +45,82 @@ pub(crate) fn all_providers_enabled_policy() -> Arc<dyn ProviderEnablementPolicy
 pub(crate) struct ProviderObservation {
     pub(crate) quota: ProviderSnapshot,
     pub(crate) usage: UsagePeriods,
+    pub(crate) top_model_usage: Option<TopModelUsage>,
+}
+
+pub(crate) fn normalized_model_display_name(canonical: &str) -> Option<String> {
+    let mut parts = canonical.split('-').collect::<Vec<_>>();
+    if parts.last().is_some_and(|part| {
+        part.len() == 8 && part.bytes().all(|character| character.is_ascii_digit())
+    }) {
+        parts.pop();
+    }
+    let display = match parts.as_slice() {
+        ["gpt", version, variants @ ..] => {
+            let mut display = format!("GPT {version}");
+            for variant in variants {
+                display.push(' ');
+                display.push_str(&title_ascii_word(variant)?);
+            }
+            display
+        }
+        ["claude", first, rest @ ..] if first.bytes().all(|value| value.is_ascii_digit()) => {
+            let family_index = rest
+                .iter()
+                .position(|part| !part.bytes().all(|value| value.is_ascii_digit()))?;
+            let mut version = vec![*first];
+            version.extend_from_slice(&rest[..family_index]);
+            let family = title_ascii_word(rest[family_index])?;
+            format!("Claude {family} {}", version.join("."))
+        }
+        ["claude", family, version @ ..] if !version.is_empty() => {
+            let family = title_ascii_word(family)?;
+            if !version
+                .iter()
+                .all(|part| part.bytes().all(|value| value.is_ascii_digit()))
+            {
+                return None;
+            }
+            format!("Claude {family} {}", version.join("."))
+        }
+        _ => return None,
+    };
+    (display.len() <= 48).then_some(display)
+}
+
+fn title_ascii_word(value: &str) -> Option<String> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|character| character.is_ascii_lowercase())
+    {
+        return None;
+    }
+    let mut characters = value.chars();
+    let mut titled = characters.next()?.to_uppercase().to_string();
+    titled.extend(characters);
+    Some(titled)
+}
+
+pub(crate) fn select_top_model_usage(
+    entries: impl IntoIterator<Item = (String, Option<String>, u64)>,
+) -> Option<TopModelUsage> {
+    let mut totals = BTreeMap::<String, (Option<String>, u64)>::new();
+    for (grouping_key, model, tokens) in entries {
+        let (stored_model, total) = totals.entry(grouping_key).or_insert((model.clone(), 0));
+        if *stored_model != model {
+            return None;
+        }
+        *total = total.checked_add(tokens)?;
+    }
+    totals
+        .into_iter()
+        .filter(|(_, (_, tokens))| *tokens > 0)
+        .map(|(_, (model, observed_tokens))| TopModelUsage {
+            model,
+            observed_tokens,
+        })
+        .reduce(crate::sanitized::preferred_top_model)
 }
 
 /// A deep adapter for one coding provider.
@@ -402,6 +478,7 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
                     };
                     presentation.quota = observation.quota;
                     presentation.usage = observation.usage;
+                    presentation.top_model_usage = observation.top_model_usage;
                     debug_refresh_event(provider, "completed");
                 }
                 Ok(Ok(None)) => {
@@ -771,6 +848,7 @@ mod tests {
                     quota_lanes: [],
                 },
                 usage: usage_with_tokens(tokens),
+                top_model_usage: None,
             }))
         }
     }
@@ -797,6 +875,51 @@ mod tests {
             seven_days: UsageTotal::Unavailable,
             thirty_days: UsageTotal::Unavailable,
         }
+    }
+
+    #[test]
+    fn model_labels_and_rankings_are_sanitized_and_deterministic() {
+        assert_eq!(
+            normalized_model_display_name("gpt-5.6-sol").as_deref(),
+            Some("GPT 5.6 Sol")
+        );
+        assert_eq!(
+            normalized_model_display_name("claude-sonnet-4-5-20250929").as_deref(),
+            Some("Claude Sonnet 4.5")
+        );
+        assert_eq!(
+            normalized_model_display_name("claude-3-5-haiku-20241022").as_deref(),
+            Some("Claude Haiku 3.5")
+        );
+        assert_eq!(normalized_model_display_name("PRIVATE MODEL"), None);
+
+        let top = select_top_model_usage([
+            ("GPT 5.6 Sol".to_owned(), Some("GPT 5.6 Sol".to_owned()), 40),
+            ("GPT 5.6 Sol".to_owned(), Some("GPT 5.6 Sol".to_owned()), 20),
+            (
+                "Claude Sonnet 4.5".to_owned(),
+                Some("Claude Sonnet 4.5".to_owned()),
+                50,
+            ),
+        ])
+        .unwrap();
+        assert_eq!(top.model.as_deref(), Some("GPT 5.6 Sol"));
+        assert_eq!(top.observed_tokens, 60);
+
+        let unknown_tie = select_top_model_usage([
+            ("GPT 5.6 Sol".to_owned(), Some("GPT 5.6 Sol".to_owned()), 60),
+            ("private-model".to_owned(), None, 60),
+        ])
+        .unwrap();
+        assert_eq!(unknown_tie.model, None);
+
+        let distinct_unknowns = select_top_model_usage([
+            ("GPT 5.6 Sol".to_owned(), Some("GPT 5.6 Sol".to_owned()), 60),
+            ("private-model-a".to_owned(), None, 40),
+            ("private-model-b".to_owned(), None, 40),
+        ])
+        .unwrap();
+        assert_eq!(distinct_unknowns.model.as_deref(), Some("GPT 5.6 Sol"));
     }
 
     #[test]
@@ -886,6 +1009,7 @@ mod tests {
                     quota_lanes: [],
                 },
                 usage: usage_with_tokens(42),
+                top_model_usage: None,
             })),
         });
         let claude = Arc::new(FixedAdapter {
@@ -1225,6 +1349,7 @@ mod tests {
                         quota_lanes: [],
                     },
                     usage,
+                    top_model_usage: None,
                 })),
             })
         };
@@ -1292,6 +1417,13 @@ mod tests {
                             quota_lanes: [],
                         },
                         usage: usage_with_tokens(tokens),
+                        top_model_usage: Some(TopModelUsage {
+                            model: Some(match provider {
+                                CodingProvider::Codex => "GPT 5.6 Sol".to_owned(),
+                                CodingProvider::Claude => "Claude Sonnet 4.5".to_owned(),
+                            }),
+                            observed_tokens: tokens,
+                        }),
                     })),
                 },
                 runs: AtomicUsize::new(0),
@@ -1317,6 +1449,13 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(
+            codex_only
+                .top_model_usage
+                .as_ref()
+                .and_then(|top| top.model.as_deref()),
+            Some("GPT 5.6 Sol")
+        );
 
         policy.claude_enabled.store(true, Ordering::Release);
         let both = coordinator
@@ -1331,5 +1470,11 @@ mod tests {
                 ..
             }
         ));
+        assert_eq!(
+            both.top_model_usage
+                .as_ref()
+                .and_then(|top| top.model.as_deref()),
+            Some("Claude Sonnet 4.5")
+        );
     }
 }

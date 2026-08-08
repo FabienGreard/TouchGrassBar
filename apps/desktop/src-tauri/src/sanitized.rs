@@ -60,6 +60,8 @@ pub struct SanitizedDesktopStateV3 {
     pub revision: String,
     #[schemars(length(max = 16))]
     pub providers: Vec<ProviderPresentation>,
+    #[serde(default)]
+    pub top_model_usage: Option<TopModelUsage>,
     pub combined_usage: UsagePeriods,
     pub sync: SyncState,
     pub profile: SanitizedProfileOutcome,
@@ -74,6 +76,18 @@ pub struct ProviderPresentation {
     pub presence: ProviderPresenceStatus,
     pub quota: ProviderSnapshot,
     pub usage: UsagePeriods,
+    #[serde(default)]
+    pub top_model_usage: Option<TopModelUsage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopModelUsage {
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 48))]
+    pub model: Option<String>,
+    #[schemars(range(min = 1))]
+    pub observed_tokens: u64,
 }
 
 #[derive(Deserialize)]
@@ -139,6 +153,7 @@ impl LegacySanitizedDesktopState {
                     presence: detect_provider_presence(provider),
                     quota,
                     usage: usage.get(provider).clone(),
+                    top_model_usage: None,
                 }
             })
             .collect();
@@ -147,6 +162,7 @@ impl LegacySanitizedDesktopState {
             generated_at,
             revision,
             providers,
+            top_model_usage: None,
             combined_usage: unavailable_periods(),
             sync,
             profile,
@@ -173,13 +189,17 @@ impl SanitizedDesktopStateV3 {
     }
 
     pub(crate) fn refresh_combined_usage(&mut self) {
-        let periods = self
+        let visible = self
             .providers
             .iter()
             .filter(|presentation| presentation.is_visible())
+            .collect::<Vec<_>>();
+        let periods = visible
+            .iter()
             .map(|presentation| &presentation.usage)
             .collect::<Vec<_>>();
         self.combined_usage = combine_usage_periods(&periods);
+        self.top_model_usage = combined_top_model_usage(&visible);
     }
 
     fn apply_provider_enablement(
@@ -201,6 +221,7 @@ impl SanitizedDesktopStateV3 {
                         quota_lanes: [],
                     };
                     presentation.usage = unavailable_periods();
+                    presentation.top_model_usage = None;
                 }
                 presentation
             })
@@ -214,7 +235,44 @@ impl SanitizedDesktopStateV3 {
             .map(|presentation| &presentation.usage)
             .collect::<Vec<_>>();
         self.combined_usage = combine_usage_periods(&periods);
+        self.top_model_usage = combined_top_model_usage(
+            &self
+                .providers
+                .iter()
+                .filter(|presentation| {
+                    enablement.is_provider_enabled(presentation.provider)
+                        && presentation.is_visible()
+                })
+                .collect::<Vec<_>>(),
+        );
         disabled_providers
+    }
+}
+
+fn combined_top_model_usage(providers: &[&ProviderPresentation]) -> Option<TopModelUsage> {
+    providers
+        .iter()
+        .filter_map(|provider| provider.top_model_usage.as_ref())
+        .cloned()
+        .reduce(preferred_top_model)
+}
+
+pub(crate) fn preferred_top_model(
+    current: TopModelUsage,
+    candidate: TopModelUsage,
+) -> TopModelUsage {
+    if candidate.observed_tokens > current.observed_tokens
+        || (candidate.observed_tokens == current.observed_tokens
+            && candidate.model.is_none()
+            && current.model.is_some())
+        || (candidate.observed_tokens == current.observed_tokens
+            && candidate.model.is_some()
+            && current.model.is_some()
+            && candidate.model < current.model)
+    {
+        candidate
+    } else {
+        current
     }
 }
 
@@ -230,6 +288,7 @@ impl ProviderPresentation {
                 quota_lanes: [],
             },
             usage: unavailable_periods(),
+            top_model_usage: None,
         }
     }
 
@@ -2540,6 +2599,7 @@ fn validate_snapshot(snapshot: &SanitizedDesktopStateV3) -> Result<(), &'static 
         {
             return Err("native state unavailable");
         }
+        validate_top_model_usage(presentation.top_model_usage.as_ref())?;
         for usage in [
             &presentation.usage.today,
             &presentation.usage.seven_days,
@@ -2564,6 +2624,35 @@ fn validate_snapshot(snapshot: &SanitizedDesktopStateV3) -> Result<(), &'static 
             .collect::<Vec<_>>(),
     );
     if snapshot.combined_usage != expected_combined {
+        return Err("native state unavailable");
+    }
+    validate_top_model_usage(snapshot.top_model_usage.as_ref())?;
+    let expected_top_model = combined_top_model_usage(
+        &snapshot
+            .providers
+            .iter()
+            .filter(|presentation| presentation.is_visible())
+            .collect::<Vec<_>>(),
+    );
+    if snapshot.top_model_usage != expected_top_model {
+        return Err("native state unavailable");
+    }
+    Ok(())
+}
+
+fn validate_top_model_usage(usage: Option<&TopModelUsage>) -> Result<(), &'static str> {
+    let Some(usage) = usage else {
+        return Ok(());
+    };
+    if usage.observed_tokens == 0
+        || usage.model.as_ref().is_some_and(|model| {
+            model.is_empty()
+                || model.len() > 48
+                || !model.bytes().all(|character| {
+                    character.is_ascii_alphanumeric() || character == b' ' || character == b'.'
+                })
+        })
+    {
         return Err("native state unavailable");
     }
     Ok(())
@@ -2660,6 +2749,7 @@ fn unavailable_state_at(revision: u64, now: OffsetDateTime) -> SanitizedDesktopS
         generated_at: format_time(now),
         revision: revision.max(1).to_string(),
         providers,
+        top_model_usage: None,
         combined_usage: unavailable_periods(),
         sync: SyncState {
             status: SyncStatus::Unavailable,
@@ -2978,6 +3068,7 @@ mod tests {
                         }],
                     },
                     usage: codex_usage,
+                    top_model_usage: None,
                 },
                 ProviderPresentation {
                     provider: CodingProvider::Claude,
@@ -2988,8 +3079,10 @@ mod tests {
                         quota_lanes: [],
                     },
                     usage: unavailable_periods(),
+                    top_model_usage: None,
                 },
             ],
+            top_model_usage: None,
             combined_usage: unavailable_periods(),
             sync: SyncState {
                 status: SyncStatus::Unavailable,
@@ -3096,6 +3189,11 @@ mod tests {
         *api_equivalent_cost_usd = Some(4.2);
         *api_equivalent_cost_basis = Some("openai-fixture".to_owned());
         *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::Reconciled);
+        let codex = state.provider_mut(CodingProvider::Codex).unwrap();
+        codex.top_model_usage = Some(TopModelUsage {
+            model: Some("GPT 5.6 Sol".to_owned()),
+            observed_tokens: 42,
+        });
         let mut claude_usage = state.provider(CodingProvider::Codex).unwrap().usage.clone();
         let UsageTotal::Current {
             evidence_basis,
@@ -3127,6 +3225,10 @@ mod tests {
             }],
         };
         claude.usage = claude_usage;
+        claude.top_model_usage = Some(TopModelUsage {
+            model: Some("Claude Sonnet 4.5".to_owned()),
+            observed_tokens: 58,
+        });
         state.refresh_combined_usage();
         let policy = Arc::new(ClaudeTogglePolicy {
             enabled: AtomicBool::new(true),
@@ -3170,6 +3272,13 @@ mod tests {
         };
         assert_eq!(*observed_tokens, 58);
         assert_eq!(*api_equivalent_cost_usd, Some(5.8));
+        assert_eq!(
+            cached_claude
+                .top_model_usage
+                .as_ref()
+                .and_then(|top| top.model.as_deref()),
+            Some("Claude Sonnet 4.5")
+        );
         assert_eq!(panel.providers.len(), 2);
         assert_eq!(panel.providers[0].provider, CodingProvider::Codex);
         assert_eq!(panel.providers[1].provider, CodingProvider::Claude);
@@ -3182,6 +3291,7 @@ mod tests {
             }
         ));
         assert_eq!(claude.usage, unavailable_periods());
+        assert_eq!(claude.top_model_usage, None);
         let UsageTotal::Current {
             observed_tokens,
             api_equivalent_cost_usd,
@@ -3194,6 +3304,13 @@ mod tests {
         assert_eq!(observed_tokens, 42);
         assert_eq!(api_equivalent_cost_usd, Some(4.2));
         assert_eq!(api_equivalent_cost_basis.as_deref(), Some("openai-fixture"));
+        assert_eq!(
+            panel
+                .top_model_usage
+                .as_ref()
+                .and_then(|top| top.model.as_deref()),
+            Some("GPT 5.6 Sol")
+        );
         assert_eq!(
             panel.combined_usage,
             panel.provider(CodingProvider::Codex).unwrap().usage
