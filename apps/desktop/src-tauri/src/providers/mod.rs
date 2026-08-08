@@ -5,18 +5,20 @@ mod registry;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
     thread,
 };
 
 use crate::sanitized::{
     Clock, ProviderPresentation, ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshTrigger,
-    SanitizedDesktopStateV3, SnapshotRefreshAdapter, SnapshotRefreshOutcome, TopModelUsage,
-    UsagePeriods,
+    SanitizedDesktopStateV3, SnapshotRefreshAdapter, SnapshotRefreshOutcome,
+    SnapshotRefreshProgress, TopModelUsage, UsagePeriods,
 };
 use time::OffsetDateTime;
 
@@ -237,6 +239,131 @@ impl ProviderObservationCoordinator {
             })
             .collect();
     }
+
+    fn refresh_observations(
+        &self,
+        mut cached: SanitizedDesktopStateV3,
+        attempt: &RefreshAttempt,
+        progress: Option<&dyn SnapshotRefreshProgress>,
+    ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
+        attempt.remaining()?;
+        let cancellation_generations = self
+            .cancellation_generations
+            .iter()
+            .map(|(provider, generation)| {
+                (
+                    *provider,
+                    (Arc::clone(generation), generation.load(Ordering::Acquire)),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let previous = cached.clone();
+        self.normalize_registry(&mut cached);
+        let mut completed_providers = BTreeSet::new();
+
+        thread::scope(|scope| -> Result<(), RefreshFailure> {
+            let (result_sender, result_receiver) = mpsc::channel();
+            let mut worker_count = 0;
+            for adapter in &self.adapters {
+                let provider = adapter.provider();
+                if !self.enablement.is_provider_enabled(provider) {
+                    debug_refresh_event(provider, "disabled");
+                    continue;
+                }
+                let Some(presentation) = cached.provider(provider).cloned() else {
+                    continue;
+                };
+                let Some((generation, expected_generation)) =
+                    cancellation_generations.get(&provider).cloned()
+                else {
+                    continue;
+                };
+                let provider_attempt =
+                    attempt.with_provider_cancellation(generation, expected_generation);
+                let worker_attempt = provider_attempt.clone();
+                let result_sender = result_sender.clone();
+                worker_count += 1;
+                debug_refresh_event(provider, "started");
+                scope.spawn(move || {
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        adapter.refresh(&presentation, &worker_attempt)
+                    }));
+                    let _ = result_sender.send((provider, provider_attempt, result));
+                });
+            }
+            drop(result_sender);
+
+            for _ in 0..worker_count {
+                let (provider, provider_attempt, result) = result_receiver
+                    .recv()
+                    .map_err(|_| RefreshFailure::SourceUnavailable)?;
+                if attempt.is_cancelled() {
+                    return Err(RefreshFailure::Cancelled);
+                }
+                if provider_attempt.is_cancelled() {
+                    debug_refresh_event(provider, "cancelled");
+                    continue;
+                }
+                let provider_completed = !matches!(&result, Ok(Err(RefreshFailure::Cancelled)));
+                if provider_completed {
+                    completed_providers.insert(provider);
+                }
+
+                let mut provider_changed = false;
+                match result {
+                    Ok(Ok(Some(observation))) => {
+                        if observation.quota.provider() != provider {
+                            debug_refresh_failure(provider, "invalid_provider");
+                        } else if let Some(presentation) = cached.provider_mut(provider) {
+                            let previous_presentation = presentation.clone();
+                            presentation.quota = observation.quota;
+                            presentation.usage = observation.usage;
+                            presentation.top_model_usage = observation.top_model_usage;
+                            provider_changed = *presentation != previous_presentation;
+                            debug_refresh_event(provider, "completed");
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        debug_refresh_event(provider, "unchanged");
+                    }
+                    Ok(Err(RefreshFailure::Cancelled)) => {
+                        return Err(RefreshFailure::Cancelled);
+                    }
+                    Ok(Err(RefreshFailure::DeadlineExceeded)) => {
+                        debug_refresh_failure(provider, "deadline_exceeded");
+                    }
+                    Ok(Err(RefreshFailure::SourceUnavailable)) => {
+                        debug_refresh_failure(provider, "source_unavailable");
+                    }
+                    Err(_) => {
+                        debug_refresh_failure(provider, "adapter_panicked");
+                    }
+                }
+
+                if provider_changed {
+                    cached.refresh_combined_usage();
+                }
+                if let Some(progress) = progress
+                    && (provider_changed || provider_completed)
+                {
+                    progress.report(SnapshotRefreshOutcome {
+                        snapshot: provider_changed.then(|| cached.clone()),
+                        completed_providers: provider_completed
+                            .then(|| BTreeSet::from([provider]))
+                            .unwrap_or_default(),
+                    })?;
+                }
+            }
+            Ok(())
+        })?;
+
+        attempt.remaining()?;
+        cached.refresh_combined_usage();
+        Ok(SnapshotRefreshOutcome {
+            snapshot: (cached != previous).then_some(cached),
+            completed_providers,
+        })
+    }
 }
 
 pub(crate) fn production_observation_coordinator(
@@ -304,6 +431,97 @@ pub(crate) fn test_claude_observation_coordinator(
     ProviderObservationCoordinator::with_processes(vec![claude], processes)
 }
 
+#[cfg(test)]
+struct SignallingProviderObservationAdapter {
+    inner: Arc<dyn ProviderObservationAdapter>,
+    finished: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+impl ProviderObservationAdapter for SignallingProviderObservationAdapter {
+    fn provider(&self) -> CodingProvider {
+        self.inner.provider()
+    }
+
+    fn refresh(
+        &self,
+        cached: &ProviderPresentation,
+        attempt: &RefreshAttempt,
+    ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+        let result = self.inner.refresh(cached, attempt);
+        let _ = self.finished.send(());
+        result
+    }
+}
+
+#[cfg(test)]
+struct ReleasedProviderObservationAdapter {
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+#[cfg(test)]
+impl ProviderObservationAdapter for ReleasedProviderObservationAdapter {
+    fn provider(&self) -> CodingProvider {
+        CodingProvider::Codex
+    }
+
+    fn refresh(
+        &self,
+        _cached: &ProviderPresentation,
+        attempt: &RefreshAttempt,
+    ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+        let release = self
+            .release
+            .lock()
+            .map_err(|_| RefreshFailure::SourceUnavailable)?;
+        loop {
+            match release.recv_timeout(std::time::Duration::from_millis(10)) {
+                Ok(()) => return Ok(None),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    attempt.remaining()?;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(RefreshFailure::SourceUnavailable);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_staggered_observation_coordinator(
+    clock: Arc<dyn Clock>,
+) -> (
+    Arc<dyn SnapshotRefreshAdapter>,
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let processes = process::ProviderProcessSupervisor::default();
+    let observation = claude::fixture_observation(clock.now());
+    let (claude_finished, claude_finished_receiver) = std::sync::mpsc::channel();
+    let claude: Arc<dyn ProviderObservationAdapter> =
+        Arc::new(SignallingProviderObservationAdapter {
+            inner: Arc::new(claude::ClaudeProviderObservationAdapter::fixture(
+                clock,
+                observation,
+                processes.clone(),
+            )),
+            finished: claude_finished,
+        });
+    let (codex_release, codex_release_receiver) = std::sync::mpsc::channel();
+    let codex: Arc<dyn ProviderObservationAdapter> = Arc::new(ReleasedProviderObservationAdapter {
+        release: std::sync::Mutex::new(codex_release_receiver),
+    });
+    (
+        Arc::new(ProviderObservationCoordinator::with_processes(
+            vec![codex, claude],
+            processes,
+        )),
+        claude_finished_receiver,
+        codex_release,
+    )
+}
+
 impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
     fn install_refresh_trigger(&self, trigger: RefreshTrigger) {
         for adapter in &self.adapters {
@@ -313,101 +531,23 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
 
     fn refresh(
         &self,
-        mut cached: SanitizedDesktopStateV3,
+        cached: SanitizedDesktopStateV3,
         attempt: &RefreshAttempt,
     ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
-        attempt.remaining()?;
-        let cancellation_generations = self
-            .cancellation_generations
-            .iter()
-            .map(|(provider, generation)| {
-                (
-                    *provider,
-                    (Arc::clone(generation), generation.load(Ordering::Acquire)),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let previous = cached.clone();
-        self.normalize_registry(&mut cached);
+        self.refresh_observations(cached, attempt, None)
+    }
 
-        let results = thread::scope(|scope| {
-            self.adapters
-                .iter()
-                .filter_map(|adapter| {
-                    let provider = adapter.provider();
-                    if !self.enablement.is_provider_enabled(provider) {
-                        debug_refresh_event(provider, "disabled");
-                        return None;
-                    }
-                    let presentation = cached.provider(provider)?;
-                    let (generation, expected_generation) =
-                        cancellation_generations.get(&provider)?.clone();
-                    let provider_attempt =
-                        attempt.with_provider_cancellation(generation, expected_generation);
-                    let worker_attempt = provider_attempt.clone();
-                    debug_refresh_event(provider, "started");
-                    Some((
-                        provider,
-                        provider_attempt,
-                        scope.spawn(move || adapter.refresh(presentation, &worker_attempt)),
-                    ))
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|(provider, provider_attempt, handle)| {
-                    (provider, provider_attempt, handle.join())
-                })
-                .collect::<Vec<_>>()
-        });
-
-        let mut completed_providers = BTreeSet::new();
-        for (provider, provider_attempt, result) in results {
-            if attempt.is_cancelled() {
-                return Err(RefreshFailure::Cancelled);
-            }
-            if provider_attempt.is_cancelled() {
-                debug_refresh_event(provider, "cancelled");
-                continue;
-            }
-            if !matches!(&result, Ok(Err(RefreshFailure::Cancelled))) {
-                completed_providers.insert(provider);
-            }
-            match result {
-                Ok(Ok(Some(observation))) => {
-                    if observation.quota.provider() != provider {
-                        debug_refresh_failure(provider, "invalid_provider");
-                        continue;
-                    }
-                    let Some(presentation) = cached.provider_mut(provider) else {
-                        continue;
-                    };
-                    presentation.quota = observation.quota;
-                    presentation.usage = observation.usage;
-                    presentation.top_model_usage = observation.top_model_usage;
-                    debug_refresh_event(provider, "completed");
-                }
-                Ok(Ok(None)) => {
-                    debug_refresh_event(provider, "unchanged");
-                }
-                Ok(Err(RefreshFailure::Cancelled)) => return Err(RefreshFailure::Cancelled),
-                Ok(Err(RefreshFailure::DeadlineExceeded)) => {
-                    debug_refresh_failure(provider, "deadline_exceeded");
-                }
-                Ok(Err(RefreshFailure::SourceUnavailable)) => {
-                    debug_refresh_failure(provider, "source_unavailable");
-                }
-                Err(_) => {
-                    debug_refresh_failure(provider, "adapter_panicked");
-                }
-            }
+    fn refresh_with_progress(
+        &self,
+        cached: SanitizedDesktopStateV3,
+        attempt: &RefreshAttempt,
+        progress: &dyn SnapshotRefreshProgress,
+    ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
+        let outcome = self.refresh_observations(cached, attempt, Some(progress))?;
+        if let Some(snapshot) = outcome.snapshot {
+            progress.report(SnapshotRefreshOutcome::from(Some(snapshot)))?;
         }
-
-        attempt.remaining()?;
-        cached.refresh_combined_usage();
-        Ok(SnapshotRefreshOutcome {
-            snapshot: (cached != previous).then_some(cached),
-            completed_providers,
-        })
+        Ok(SnapshotRefreshOutcome::default())
     }
 
     fn cancel_provider(&self, provider: CodingProvider) {

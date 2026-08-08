@@ -198,7 +198,7 @@ impl ProductScenario {
         self.core
             .request_refresh(RefreshSource::Manual)
             .expect("manual refresh request");
-        self.expect_revision();
+        self.expect_refresh_completion();
         self.panel()
     }
 
@@ -227,6 +227,14 @@ impl ProductScenario {
         self.notices
             .recv_timeout(NOTICE_TIMEOUT)
             .expect("native revision before timeout");
+    }
+
+    fn expect_refresh_completion(&self) {
+        self.expect_revision();
+        self.core
+            .wait_for_refresh_completion()
+            .expect("native refresh completion");
+        while self.notices.try_recv().is_ok() {}
     }
 
     fn wait_for_manual_runs(&self, expected: usize) {
@@ -520,7 +528,7 @@ fn unchanged_refresh_finishes_only_the_matching_no_history_reenable_wait() {
         UsageScanStatus::Indexing
     );
 
-    scenario.expect_revision();
+    scenario.expect_refresh_completion();
     let settled = scenario.panel();
     assert_eq!(
         settled
@@ -557,7 +565,7 @@ fn repeated_reenable_before_the_first_refresh_still_finishes_the_loading_state()
         UsageScanStatus::Indexing
     );
 
-    scenario.expect_revision();
+    scenario.expect_refresh_completion();
     assert_eq!(
         scenario
             .panel()
@@ -766,7 +774,7 @@ fn provider_toggles_during_a_refresh_commit_both_follow_up_contributions_once() 
     );
 
     gate.release();
-    scenario.expect_revision();
+    scenario.expect_refresh_completion();
     let refreshed = scenario.panel();
 
     assert_usage(
