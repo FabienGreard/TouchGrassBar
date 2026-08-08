@@ -76,37 +76,43 @@ function UpdatesSettings({
 
   return (
     <div className="grid gap-3" data-slot="updates-settings">
-      <div className="flex items-center justify-between gap-6 px-4 py-3.5">
-        <span>
-          <strong className="block text-[12px]">
-            Version {state?.currentVersion ?? "unavailable"}
-          </strong>
-          <small className="mt-0.5 block text-[9px] text-sheet-muted">
-            {updateSummary(state)}
-          </small>
-        </span>
-        <Button
-          disabled={
-            primaryAction === undefined ||
-            primaryBusy ||
-            status === "unavailable"
-          }
-          onClick={primaryAction}
-          type="button"
-          variant="ghost"
-        >
-          {primaryLabel}
-        </Button>
+      <div
+        className="overflow-hidden rounded-[12px] border border-sheet-row-border bg-sheet-row"
+        data-slot="update-settings-group"
+      >
+        <div className="flex items-center justify-between gap-6 px-4 py-3.5">
+          <span>
+            <strong className="block text-[12px]">
+              Version {state?.currentVersion ?? "unavailable"}
+            </strong>
+            <small className="mt-0.5 block text-[9px] text-sheet-muted">
+              {updateSummary(state)}
+            </small>
+          </span>
+          <Button
+            disabled={
+              primaryAction === undefined ||
+              primaryBusy ||
+              status === "unavailable"
+            }
+            onClick={primaryAction}
+            type="button"
+            variant="ghost"
+          >
+            {primaryLabel}
+          </Button>
+        </div>
+        <SettingsToggleRow
+          checked={autoUpdates ?? false}
+          disabled={autoUpdates === null}
+          grouped
+          label="Check automatically"
+          onCheckedChange={onAutoUpdatesChange}
+          {...(autoUpdates === null
+            ? { description: "Not connected in this build." }
+            : {})}
+        />
       </div>
-      <SettingsToggleRow
-        checked={autoUpdates ?? false}
-        disabled={autoUpdates === null}
-        label="Check automatically"
-        onCheckedChange={onAutoUpdatesChange}
-        {...(autoUpdates === null
-          ? { description: "Not connected in this build." }
-          : {})}
-      />
       <div className="flex items-center justify-between gap-6 border-t border-sheet-line px-4 pt-3">
         <span>
           <strong className="block text-[11px]">

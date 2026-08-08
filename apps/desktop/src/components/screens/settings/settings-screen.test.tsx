@@ -170,6 +170,8 @@ describe("settings screen", () => {
     expect(markup).toContain("Version 1.3.2");
     expect(markup).toContain("Version 1.4.0 is ready.");
     expect(markup).toContain("Install &amp; Relaunch");
+    expect(markup).toContain('data-slot="update-settings-group"');
+    expect(markup).toContain('data-grouped="true"');
     expect(markup).toMatch(/<button[^>]*>View on GitHub ↗<\/button>/);
     expect(markup).not.toContain('data-slot="update-sheet"');
 
