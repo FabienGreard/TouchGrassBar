@@ -348,9 +348,11 @@ impl ProviderObservationCoordinator {
                 {
                     progress.report(SnapshotRefreshOutcome {
                         snapshot: provider_changed.then(|| cached.clone()),
-                        completed_providers: provider_completed
-                            .then(|| BTreeSet::from([provider]))
-                            .unwrap_or_default(),
+                        completed_providers: if provider_completed {
+                            BTreeSet::from([provider])
+                        } else {
+                            BTreeSet::new()
+                        },
                     })?;
                 }
             }
