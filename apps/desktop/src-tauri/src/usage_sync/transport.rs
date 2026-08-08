@@ -68,17 +68,7 @@ impl HttpUsageSyncTransport {
         let Some(convex_url) = self.convex_url else {
             return UsageSyncTransportOutcome::Deferred;
         };
-        let runtime = match tokio::runtime::Runtime::new() {
-            Ok(runtime) => runtime,
-            Err(_) => return UsageSyncTransportOutcome::Deferred,
-        };
-        match runtime.block_on(tokio::time::timeout(
-            SYNC_MUTATION_TIMEOUT,
-            send_mutation(convex_url, jwt, args),
-        )) {
-            Ok(outcome) => outcome,
-            Err(_) => UsageSyncTransportOutcome::Offline,
-        }
+        send_with_runtime(convex_url, jwt, args)
     }
 
     fn fetch_convex_jwt(&self, session: &Secret) -> TokenFetchOutcome {
@@ -123,6 +113,25 @@ impl HttpUsageSyncTransport {
         }
         TokenFetchOutcome::Jwt(response.token)
     }
+}
+
+fn send_with_runtime(
+    convex_url: &str,
+    jwt: Zeroizing<String>,
+    args: BTreeMap<String, Value>,
+) -> UsageSyncTransportOutcome {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(_) => return UsageSyncTransportOutcome::Deferred,
+    };
+    runtime.block_on(async move {
+        match tokio::time::timeout(SYNC_MUTATION_TIMEOUT, send_mutation(convex_url, jwt, args))
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => UsageSyncTransportOutcome::Offline,
+        }
+    })
 }
 
 enum TokenFetchOutcome {
@@ -317,6 +326,17 @@ mod tests {
 
     fn now() -> OffsetDateTime {
         OffsetDateTime::parse(NOW, &Rfc3339).unwrap()
+    }
+
+    #[test]
+    fn mutation_timeout_is_created_inside_the_owned_runtime() {
+        let outcome = send_with_runtime(
+            "not-a-convex-url",
+            Zeroizing::new("test-jwt".to_owned()),
+            BTreeMap::new(),
+        );
+
+        assert_eq!(outcome, UsageSyncTransportOutcome::Offline);
     }
 
     fn batch() -> PendingUsageBatch {

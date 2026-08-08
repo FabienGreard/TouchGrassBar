@@ -683,7 +683,7 @@ mod tests {
 
     use crate::sanitized::{
         CONTRACT_VERSION, Clock, CodingProvider, ProviderPresenceStatus, ProviderPresentation,
-        ProviderSnapshot, RefreshAttempt, RefreshFailure, SanitizedDesktopStateV3,
+        ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshSource, SanitizedDesktopStateV3,
         SanitizedProfileOutcome, SnapshotRefreshAdapter, SnapshotRefreshOutcome, SyncState,
         SyncStatus, UsageCoverage, UsageEvidenceBasis, UsagePeriods, UsageScanStatus, UsageTotal,
     };
@@ -1057,6 +1057,51 @@ mod tests {
             thread::yield_now();
         }
         assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+
+        runtime.shutdown();
+        core.shutdown();
+    }
+
+    #[test]
+    fn provider_observation_after_authority_activation_requests_delivery() {
+        let now = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixedSynchronizationClock(now));
+        let observations = Arc::new(OneObservation(Mutex::new(None)));
+        let core = NativeCore::open_with(&database.0, clock.clone(), observations.clone()).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let (delivered, observed_delivery) = mpsc::sync_channel(2);
+        let runtime = PendingUsageSynchronization::start(SynchronizationEnvironment {
+            state: Arc::new(NativePendingUsageSnapshotState { core: core.clone() }),
+            online_gate: OnlineFeatureGate::default(),
+            authority: Arc::new(ReadyAuthority),
+            delivery: Arc::new(CommittingDelivery(delivered)),
+            clock,
+            retry_interval: Duration::from_secs(60),
+        })
+        .unwrap();
+
+        runtime.request();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while core.active_usage_sync_generation().unwrap() != Some(7) {
+            assert!(Instant::now() < deadline, "authority did not activate");
+            thread::yield_now();
+        }
+        assert!(observed_delivery.try_recv().is_err());
+
+        *observations.0.lock().unwrap() = Some(observed_state(now));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        assert_eq!(
+            observed_delivery.recv_timeout(Duration::from_secs(1)),
+            Ok((CodingProvider::Codex, 1))
+        );
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while core.panel_state().unwrap().sync.status != SyncStatus::Synced {
+            assert!(Instant::now() < deadline, "synchronization did not commit");
+            thread::yield_now();
+        }
 
         runtime.shutdown();
         core.shutdown();
