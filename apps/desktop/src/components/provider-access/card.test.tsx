@@ -13,7 +13,7 @@ const states = [
     state: "unavailable",
   },
   {
-    action: "Check again",
+    action: null,
     copy: "Codex was detected on this Mac.",
     detail: null,
     label: "Ready",
@@ -90,14 +90,9 @@ describe("coding provider access", () => {
       'aria-label="Show Claude and include its quota and usage in totals"',
     );
     expect(markup).not.toContain("Show and include");
-    expect(markup).toContain("mt-auto flex items-center justify-end");
-    expect(markup).toContain("pt-1");
-    expect(markup).not.toContain("pt-2.5");
-    expect(markup).not.toContain("absolute bottom-4 right-5");
     expect(markup).toContain('class="-mr-9 flex h-5 items-center"');
     expect(markup).toContain('data-slot="provider-action-spacer"');
-    expect(markup).toContain('aria-label="Check Claude again"');
-    expect(markup).toContain("-mr-1.5 mb-1");
+    expect(markup).not.toContain('aria-label="Check Claude again"');
   });
 
   test("keeps Ready, Excluded, and Unavailable compact", () => {
@@ -135,6 +130,7 @@ describe("coding provider access", () => {
       <CodingProviderAccessCard
         displayName="Claude"
         enabled
+        onCheck={() => undefined}
         onEnabledChange={() => undefined}
         provider="claude"
         state="detected"
@@ -146,6 +142,7 @@ describe("coding provider access", () => {
     expect(unavailable).toContain("h-[108px]");
     expect(unavailable).toContain('aria-label="Check Claude again"');
     expect(ready).toContain("h-[108px]");
+    expect(ready).not.toContain('aria-label="Check Claude again"');
     expect(excluded).toContain('data-slot="provider-action-spacer"');
     expect(excluded).not.toContain("Connect Claude");
     expect(excluded).not.toContain('aria-label="Check Claude again"');

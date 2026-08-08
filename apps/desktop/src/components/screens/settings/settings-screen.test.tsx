@@ -241,7 +241,7 @@ describe("settings screen", () => {
     expect(markup).toMatch(/<button[^>]*>Check now<\/button>/);
   });
 
-  test("names provider actions independently for VoiceOver", () => {
+  test("names provider controls independently for VoiceOver", () => {
     const markup = renderToStaticMarkup(
       <SettingsScreen
         onCheckProviders={() => undefined}
@@ -250,7 +250,7 @@ describe("settings screen", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Check Codex again"');
+    expect(markup).not.toContain('aria-label="Check Codex again"');
     expect(markup).not.toContain('aria-label="Check Claude again"');
     expect(markup).toContain(
       'aria-label="Show Codex and include its quota and usage in totals"',

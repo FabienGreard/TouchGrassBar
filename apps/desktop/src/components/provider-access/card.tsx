@@ -60,7 +60,7 @@ function CodingProviderAccessCard({
           ? "attention"
           : "neutral";
   const checkAction =
-    enabled === false || onCheck === undefined ? null : (
+    enabled === false || state === "detected" || onCheck === undefined ? null : (
       <Button
         aria-label={
           busy ? `Checking ${label}` : `Check ${label} again`

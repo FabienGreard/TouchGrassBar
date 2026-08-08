@@ -9,7 +9,7 @@ html[data-desktop-preview="true"] #root {
 }
 
 html[data-desktop-preview="true"] [data-slot="native-window"] {
-  width: min(760px, 100%);
+  width: min(760px, calc(100vw - 48px));
   height: 580px;
   min-height: 580px;
 }

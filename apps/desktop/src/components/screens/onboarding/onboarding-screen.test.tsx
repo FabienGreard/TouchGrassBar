@@ -14,7 +14,7 @@ describe("onboarding screen", () => {
       <OnboardingScreen providers={providers} />,
     );
     const profileMarkup = renderToStaticMarkup(
-      <OnboardingScreen initialStep="profile" />,
+      <OnboardingScreen appVersion="1.3.2" initialStep="profile" />,
     );
     const finishMarkup = renderToStaticMarkup(
       <OnboardingScreen initialStep="finish" setupState="required" />,
@@ -62,6 +62,9 @@ describe("onboarding screen", () => {
     expect(markup).not.toContain(">Ready<");
     expect(markup).not.toContain(">Not installed<");
     expect(profileMarkup).toContain('aria-label="Display name"');
+    expect(profileMarkup).toContain("Version 1.3.2");
+    expect(profileMarkup).toMatch(/<form[^>]*>/);
+    expect(profileMarkup).toMatch(/<button[^>]*type="submit"[^>]*>Continue<\/button>/);
     expect(profileMarkup).not.toContain("Fabien");
     expect(profileMarkup).toContain(
       "Other people can see your Display Name, TouchGrass ID, and daily scores on the Doomerboard.",
@@ -69,6 +72,18 @@ describe("onboarding screen", () => {
     expect(profileMarkup).toContain(
       "They cannot see your prompts, conversations, credentials, logs, or files.",
     );
+    expect(profileMarkup).toContain('data-profile-recovery-state="planned"');
+    expect(profileMarkup).toContain(
+      'data-profile-recovery-layout="step-actions"',
+    );
+    expect(profileMarkup).not.toContain("Already have a Profile?");
+    expect(profileMarkup).not.toContain(
+      "Restore it with your TouchGrass ID and Recovery Key.",
+    );
+    expect(profileMarkup).toMatch(
+      /<button[^>]*disabled=""[^>]*>I have a Profile<\/button>/,
+    );
+    expect(profileMarkup).not.toContain("Coming soon");
     expect(profileMarkup).not.toContain('type="checkbox"');
     expect(unavailableFinishMarkup).toContain('data-setup-state="unavailable"');
     expect(unavailableFinishMarkup).toContain("Setup is not connected yet");
@@ -92,13 +107,20 @@ describe("onboarding screen", () => {
 
   test("accepts explicit development-only presentation values", () => {
     const profileMarkup = renderToStaticMarkup(
-      <OnboardingScreen initialDisplayName="Fabien" initialStep="profile" />,
+      <OnboardingScreen
+        initialDisplayName="Fabien"
+        initialStep="profile"
+        onStartRecovery={() => undefined}
+      />,
     );
     const finishMarkup = renderToStaticMarkup(
       <OnboardingScreen initialStep="finish" setupReady />,
     );
 
     expect(profileMarkup).toContain('value="Fabien"');
+    expect(profileMarkup).toMatch(
+      /<button(?![^>]*disabled="")[^>]*>I have a Profile<\/button>/,
+    );
     expect(finishMarkup).toContain('data-setup-state="ready"');
     expect(finishMarkup).toContain("Local setup ready");
   });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CodingProvider, UpdateState } from "@touchgrass/contracts";
 
 import { App } from "@/App";
@@ -80,6 +80,7 @@ function persistProviderEnablement(providerEnablement: ProviderEnablement) {
 }
 
 function DevPreviewApp() {
+  const surfaceContainerRef = useRef<HTMLDivElement>(null);
   const [scenario] = useState(() =>
     resolveDevPreviewScenario(window.location.search),
   );
@@ -138,10 +139,12 @@ function DevPreviewApp() {
         <App
           hasNativeRuntime={false}
           onboarding={{
+            appVersion: currentUpdate.currentVersion,
             initialDisplayName: "Fabien",
             initialStep: scenario.onboarding.initialStep,
             onCheckProvider: () => undefined,
             onFinish: () => undefined,
+            onStartRecovery: () => setRecoveryOpen(true),
             providers: [
               {
                 displayName: "Codex",
@@ -224,12 +227,21 @@ function DevPreviewApp() {
       break;
   }
 
+  const recoveryPortalContainer = recoveryOpen
+    ? (surfaceContainerRef.current?.querySelector<HTMLElement>(
+        '[data-slot="native-window"]',
+      ) ?? null)
+    : null;
+
   return (
     <>
-      {surface}
+      <div ref={surfaceContainerRef}>
+        {surface}
+      </div>
       <RecoverySheetPreview
         onOpenChange={setRecoveryOpen}
         open={recoveryOpen}
+        portalContainer={recoveryPortalContainer}
       />
       <DevPreviewSwitcher
         activeFixture={scenario.fixture}

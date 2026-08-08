@@ -17,11 +17,13 @@ import {
 type RecoverySheetPreviewProps = {
   onOpenChange: (open: boolean) => void;
   open: boolean;
+  portalContainer?: HTMLElement | null | undefined;
 };
 
 function RecoverySheetPreview({
   onOpenChange,
   open,
+  portalContainer = null,
 }: RecoverySheetPreviewProps) {
   const [recoveryKey, setRecoveryKey] = useState("");
   const [submitted, setSubmitted] = useState(false);
@@ -40,11 +42,13 @@ function RecoverySheetPreview({
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogContent
+        container={portalContainer}
         data-dev-only="recovery-sheet-preview"
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           focusAndSelectRecoveryInput(inputRef.current);
         }}
+        position={portalContainer ? "container" : "viewport"}
       >
         <div className="relative px-8 text-center">
           <DialogTitle className="m-0 text-[14px] font-bold">
