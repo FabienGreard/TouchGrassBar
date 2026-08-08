@@ -1,12 +1,15 @@
 ---
 import LandingExperience from "./LandingExperience";
 import "../styles/global.css";
+import { GARDEN_COPY, isGardenTime } from "../lib/garden-time";
 
 type Props = {
   invitation?: boolean;
 };
 
 const { invitation = false } = Astro.props;
+const timeParam = Astro.url.searchParams.get("time");
+const initialGardenTime = isGardenTime(timeParam) ? timeParam : undefined;
 const title = invitation
   ? "Join a TouchGrassBar Doomerboard"
   : "TouchGrassBar — your token problem, in the menu bar";
@@ -16,16 +19,58 @@ const description = invitation
 ---
 
 <!doctype html>
-<html lang="en">
+<html class:list={{ "garden-time-pending": !initialGardenTime }} lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="description" content={description} />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#070d0a" />
     <title>{title}</title>
+    <noscript><style>html.garden-time-pending .d-garden-hero{visibility:visible}</style></noscript>
+    <script is:inline>
+      (() => {
+        const requestedGardenTime = new URLSearchParams(window.location.search).get("time");
+        const explicitGardenTime = ["dawn", "day", "golden", "night"].includes(requestedGardenTime)
+          ? requestedGardenTime
+          : undefined;
+        const hour = new Date().getHours();
+        const localGardenTime = hour >= 5 && hour < 9
+          ? "dawn"
+          : hour >= 9 && hour < 17
+            ? "day"
+            : hour >= 17 && hour < 21
+              ? "golden"
+              : "night";
+        document.documentElement.dataset.gardenTime = explicitGardenTime || localGardenTime;
+      })();
+    </script>
   </head>
   <body data-page={invitation ? "invitation" : "landing"}>
     <a class="skip-link" href="#main-content">Skip to content</a>
-    <LandingExperience client:load />
+    <LandingExperience client:load initialGardenTime={initialGardenTime} invitation={invitation} />
+    <script is:inline define:vars={{ gardenCopy: GARDEN_COPY, invitation }}>
+      (() => {
+        try {
+          const gardenTime = document.documentElement.dataset.gardenTime;
+          const hero = document.querySelector(".d-garden-hero");
+          if (!hero || !gardenTime) return;
+
+          hero.className = `d-garden-hero garden-${gardenTime} d-time-instant`;
+          hero.querySelectorAll("[data-garden-layer]").forEach((layer) => {
+            const layerTime = layer.dataset.gardenLayer;
+            layer.className = `d-time-layer ${layerTime === gardenTime ? "active" : ""} time-${layerTime}`;
+          });
+
+          if (!invitation) {
+            hero.querySelectorAll("[data-garden-copy-line]").forEach((line) => {
+              const index = Number(line.dataset.gardenCopyLine);
+              line.textContent = gardenCopy[gardenTime][index];
+            });
+          }
+        } finally {
+          document.documentElement.classList.remove("garden-time-pending");
+        }
+      })();
+    </script>
   </body>
 </html>

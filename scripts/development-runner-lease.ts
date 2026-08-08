@@ -33,7 +33,7 @@ function verifiedDevelopmentRunner(processId: number) {
   ).trim();
   if (!command.includes("scripts/run-dev.ts")) return false;
   const workingDirectoryOutput = execFileSync(
-    "/usr/sbin/lsof",
+    "lsof",
     ["-a", "-p", String(processId), "-d", "cwd", "-Fn"],
     { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
   );

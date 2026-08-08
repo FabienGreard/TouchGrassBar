@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import LandingExperience from "./components/LandingExperience";
 import {
   approvedDownloadFromRelease,
   downloadFallbackUrl,
@@ -37,6 +40,48 @@ function fullRelease(overrides: Record<string, unknown> = {}) {
 }
 
 describe("production landing contract", () => {
+  test("uses the approved night headline", () => {
+    const markup = renderToStaticMarkup(
+      createElement(LandingExperience, { initialGardenTime: "night" }),
+    );
+
+    expect(markup).toContain("Nothing good");
+    expect(markup).toContain("Gets deployed");
+    expect(markup).toContain("At this hour.");
+  });
+
+  test("uses the current desktop UI wording in product previews", () => {
+    const markup = renderToStaticMarkup(
+      createElement(LandingExperience, { initialGardenTime: "day" }),
+    );
+
+    for (const copy of [
+      "Live",
+      "Usage",
+      "Most used",
+      "GPT 5.6 Sol",
+      "Leaderboard",
+      "Global Doomerboard",
+      "Prompts and provider data stay on your Mac",
+      "See who burned the most tokens and who still remembers daylight.",
+      "PROMPT ENJOYER",
+      "nora",
+      "Friends",
+      "Codex and Claude, detected locally on your Mac.",
+      "Vibe code alone.",
+      "Tokenmaxx together.",
+      "Add your friends.",
+      "Download for macOS",
+      "Drag to install",
+      "Applications",
+    ]) {
+      expect(markup).toContain(copy);
+    }
+    expect(markup).not.toContain("Step 1 of 3");
+    expect(markup).not.toContain("Privacy boundary");
+    expect(markup).not.toContain("No browser account.");
+  });
+
   test("maps each local hour to the approved garden scene", () => {
     expect(Array.from({ length: 24 }, (_, hour) => gardenTimeForHour(hour))).toEqual([
       "night", "night", "night", "night", "night",

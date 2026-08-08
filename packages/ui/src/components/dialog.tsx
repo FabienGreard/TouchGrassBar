@@ -2,6 +2,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import type { ComponentProps } from "react";
 
 import { cn } from "../lib/utils";
+import { nativeSheetSurfaceClassName } from "#lib/native-sheet-styles";
 
 function Dialog(props: ComponentProps<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
@@ -51,7 +52,8 @@ function DialogContent({
       />
       <DialogPrimitive.Content
         className={cn(
-          "top-1/2 left-1/2 z-50 w-[calc(100%_-_32px)] max-w-[340px] -translate-x-1/2 -translate-y-1/2 rounded-[14px] border border-pearl-border bg-native-sheet p-4 text-pearl-ink shadow-native-sheet outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 motion-reduce:animate-none contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight",
+          nativeSheetSurfaceClassName,
+          "top-1/2 left-1/2 z-50 w-[calc(100%_-_32px)] max-w-[340px] -translate-x-1/2 -translate-y-1/2 p-4 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 motion-reduce:animate-none",
           contained ? "absolute" : "fixed",
           className,
         )}
