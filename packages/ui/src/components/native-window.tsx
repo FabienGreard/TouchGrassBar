@@ -57,13 +57,13 @@ function NativeWindowNav({ className, ...props }: ComponentProps<"nav">) {
 }
 
 const nativeWindowNavItemVariants = cva(
-  "group/native-window-nav-item rounded-[8px] text-sheet-muted outline-none select-none transition-colors hover:bg-pearl-ink/5 hover:text-sheet-ink active:bg-pearl-ink/10 focus-visible:ring-3 focus-visible:ring-ring/50 aria-disabled:pointer-events-none aria-disabled:opacity-45",
+  "group/native-window-nav-item rounded-[8px] text-sheet-muted outline-none select-none transition-colors hover:bg-pearl-ink/5 hover:text-sheet-ink active:bg-pearl-ink/10 focus-visible:bg-pearl-ink/5 focus-visible:text-sheet-ink focus-visible:ring-3 focus-visible:ring-ring/50 aria-disabled:pointer-events-none aria-disabled:opacity-45",
   {
     variants: {
       variant: {
         section:
-          "px-3 py-2.5 aria-[current=page]:bg-action aria-[current=page]:font-semibold aria-[current=page]:text-accent-foreground aria-[current=page]:hover:bg-action aria-[current=page]:hover:text-accent-foreground aria-[current=page]:active:bg-action",
-        step: "grid grid-cols-[22px_1fr] items-center gap-2 px-2 py-2.5 text-left text-[11px] aria-[current=step]:bg-sheet-active aria-[current=step]:font-semibold aria-[current=step]:text-sheet-ink aria-[current=step]:hover:bg-sheet-active aria-[current=step]:hover:text-sheet-ink aria-[current=step]:active:bg-sheet-active",
+          "px-3 py-2.5 aria-[current=page]:bg-action aria-[current=page]:font-semibold aria-[current=page]:text-accent-foreground aria-[current=page]:hover:bg-action aria-[current=page]:hover:text-accent-foreground aria-[current=page]:active:bg-action aria-[current=page]:focus-visible:bg-action aria-[current=page]:focus-visible:text-accent-foreground",
+        step: "grid grid-cols-[22px_1fr] items-center gap-2 px-2 py-2.5 text-left text-[11px] aria-[current=step]:bg-sheet-active aria-[current=step]:font-semibold aria-[current=step]:text-sheet-ink aria-[current=step]:hover:bg-sheet-active aria-[current=step]:hover:text-sheet-ink aria-[current=step]:active:bg-sheet-active aria-[current=step]:focus-visible:bg-sheet-active aria-[current=step]:focus-visible:text-sheet-ink",
       },
     },
     defaultVariants: {
