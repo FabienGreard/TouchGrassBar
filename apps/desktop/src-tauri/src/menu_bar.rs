@@ -521,10 +521,7 @@ mod tests {
 
         assert_eq!(alpha(&empty, METER_LEFT, METER_TOP), 0);
         assert_eq!(alpha(&full, METER_LEFT, METER_TOP), 0);
-        assert_eq!(
-            alpha(&full, METER_LEFT + METER_WIDTH - 1, METER_TOP),
-            0
-        );
+        assert_eq!(alpha(&full, METER_LEFT + METER_WIDTH - 1, METER_TOP), 0);
         assert_eq!(alpha(&empty, METER_LEFT, middle_y), TRACK_ALPHA);
         assert_eq!(alpha(&full, METER_LEFT, middle_y), u8::MAX);
         assert_eq!(alpha(&half, half_end, METER_TOP), TRACK_ALPHA);
