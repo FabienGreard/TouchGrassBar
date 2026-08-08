@@ -980,6 +980,12 @@ struct ProviderEnablementChange {
 }
 
 #[derive(Default)]
+struct SnapshotCommitOptions {
+    force_revision: bool,
+    provider_enablement_change: Option<ProviderEnablementChange>,
+}
+
+#[derive(Default)]
 struct RevisionSubscribersState {
     closed: bool,
     senders: Vec<Sender<RevisionNotice>>,
@@ -1097,8 +1103,10 @@ impl CachedProjection {
             cached,
             first_observation_waits,
             now,
-            first_observation_wait_changed,
-            None,
+            SnapshotCommitOptions {
+                force_revision: first_observation_wait_changed,
+                ..SnapshotCommitOptions::default()
+            },
         )
     }
 
@@ -1123,8 +1131,7 @@ impl CachedProjection {
             cached,
             first_observation_waits,
             now,
-            false,
-            None,
+            SnapshotCommitOptions::default(),
         )
     }
 
@@ -1158,8 +1165,10 @@ impl CachedProjection {
             cached,
             first_observation_waits,
             now,
-            change.is_some(),
-            change,
+            SnapshotCommitOptions {
+                force_revision: change.is_some(),
+                provider_enablement_change: change,
+            },
         )
     }
 
@@ -1170,9 +1179,12 @@ impl CachedProjection {
         cached: SanitizedDesktopStateV3,
         first_observation_waits: BTreeSet<CodingProvider>,
         now: OffsetDateTime,
-        force_revision: bool,
-        provider_enablement_change: Option<ProviderEnablementChange>,
+        options: SnapshotCommitOptions,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
+        let SnapshotCommitOptions {
+            force_revision,
+            provider_enablement_change,
+        } = options;
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
