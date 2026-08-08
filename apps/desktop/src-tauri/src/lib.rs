@@ -624,13 +624,20 @@ fn get_sanitized_state(
 }
 
 #[tauri::command]
-fn request_refresh(
+async fn request_refresh(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
 ) -> Result<RefreshReceipt, String> {
     require_panel(&window)?;
-    core.request_refresh(RefreshSource::Manual)
-        .map_err(str::to_owned)
+    let core = core.inner().clone();
+    let receipt = core
+        .request_refresh(RefreshSource::Manual)
+        .map_err(str::to_owned)?;
+    tauri::async_runtime::spawn_blocking(move || core.wait_for_refresh_completion())
+        .await
+        .map_err(|_| "refresh completion unavailable".to_owned())?
+        .map_err(str::to_owned)?;
+    Ok(receipt)
 }
 
 fn request_native_refresh(app: &AppHandle) -> Result<(), String> {
@@ -1107,7 +1114,7 @@ pub fn run() {
                             .emit::<RevisionNotice>(REVISION_NOTICE_EVENT, notice);
                     }
                 })?;
-            let refresh = MenuItemBuilder::with_id("refresh", "Force sync").build(app)?;
+            let refresh = MenuItemBuilder::with_id("refresh", "Sync now").build(app)?;
             let add_tokenmaxxer =
                 MenuItemBuilder::with_id("add_tokenmaxxer", "Add a Tokenmaxxer…").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;

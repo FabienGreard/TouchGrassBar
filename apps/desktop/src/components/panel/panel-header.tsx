@@ -24,13 +24,15 @@ type PanelHeaderProps = {
   updateActionLabel: string | null;
 };
 
-function syncLabel(error: boolean, state: SanitizedDesktopState | null) {
-  if (error) return "Local state unavailable";
-  if (!state) return "Opening local cache";
-  if (state.sync.status === "synced") return "Synced locally";
-  if (state.sync.status === "pending") return "Sync pending";
-  if (state.sync.status === "stale") return "Local snapshot is stale";
-  return "Sync unavailable";
+function syncLabel(
+  error: boolean,
+  refreshing: boolean,
+  state: SanitizedDesktopState | null,
+) {
+  if (refreshing) return "Syncing…";
+  if (error) return "Sync unavailable";
+  if (!state) return "Connecting…";
+  return "Live";
 }
 
 function PanelHeader({
@@ -48,7 +50,7 @@ function PanelHeader({
       <div className="flex min-w-0 items-center gap-2.5">
         <Brand />
         <small className="truncate border-l border-pearl-line pl-2.5 text-[10px] text-pearl-muted contrast-more:border-pearl-ink contrast-more:text-pearl-ink">
-          {syncLabel(error, state)}
+          {syncLabel(error, refreshing, state)}
         </small>
       </div>
 
@@ -83,7 +85,7 @@ function PanelHeader({
           <PanelMenuContent align="end" sideOffset={7}>
             <PanelMenuItem disabled={refreshing} onSelect={onRefresh}>
               <RefreshIcon aria-hidden="true" spin={refreshing} />
-              {refreshing ? "Forcing sync…" : "Force sync"}
+              {refreshing ? "Syncing…" : "Sync now"}
             </PanelMenuItem>
             <PanelMenuItem onSelect={onAddTokenmaxxer}>
               <InviteIcon aria-hidden="true" />

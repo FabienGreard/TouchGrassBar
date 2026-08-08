@@ -5,7 +5,7 @@ import {
   sanitizedDesktopStateSchema,
 } from "@touchgrass/contracts";
 
-const REFRESH_ACKNOWLEDGEMENT_TIMEOUT_MS = 2_000;
+const REFRESH_COMPLETION_TIMEOUT_MS = 305_000;
 const SUBSCRIPTION_HANDSHAKE_TIMEOUT_MS = 1_000;
 type StopListening = () => void;
 
@@ -314,7 +314,7 @@ export function createSanitizedDesktopStateDelivery(
         const timeout = new Promise<{ status: "timed-out" }>((resolve) => {
           timeoutId = setTimeout(
             () => resolve({ status: "timed-out" }),
-            REFRESH_ACKNOWLEDGEMENT_TIMEOUT_MS,
+            REFRESH_COMPLETION_TIMEOUT_MS,
           );
         });
         const result = await Promise.race([

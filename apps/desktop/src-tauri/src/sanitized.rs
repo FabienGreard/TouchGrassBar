@@ -2058,6 +2058,40 @@ impl NativeCore {
         self.inner.coordinator.request(source)
     }
 
+    pub(crate) fn wait_for_refresh_completion(&self) -> Result<(), &'static str> {
+        let deadline = Instant::now() + REFRESH_ATTEMPT_TIMEOUT + Duration::from_secs(5);
+        loop {
+            if self
+                .inner
+                .coordinator
+                .inbox
+                .stopping
+                .load(Ordering::Acquire)
+            {
+                return Err("refresh coordinator unavailable");
+            }
+            let pending = self
+                .inner
+                .coordinator
+                .inbox
+                .pending_sources
+                .load(Ordering::Acquire);
+            let in_flight = self
+                .inner
+                .coordinator
+                .inbox
+                .in_flight
+                .load(Ordering::Acquire);
+            if pending == 0 && !in_flight {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("refresh completion unavailable");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub(crate) fn request_provider_refresh(&self) -> Result<RefreshReceipt, &'static str> {
         self.inner.coordinator.request_provider_refresh()
     }
@@ -3692,6 +3726,36 @@ mod tests {
         assert_eq!(core.panel_state().unwrap().revision, "2");
         assert!(notices.recv_timeout(Duration::from_millis(50)).is_err());
         assert_eq!(source.runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn refresh_completion_waits_for_the_native_worker() {
+        let source = Arc::new(BlockingRefreshSource::new());
+        let core = NativeCore::with_refresh_adapter(source.clone());
+
+        assert!(
+            core.request_refresh(RefreshSource::Manual)
+                .unwrap()
+                .accepted
+        );
+        source.started.wait();
+
+        let (completed, completion) = mpsc::sync_channel(1);
+        let waiting_core = core.clone();
+        let waiter = thread::spawn(move || {
+            completed
+                .send(waiting_core.wait_for_refresh_completion())
+                .unwrap();
+        });
+
+        assert!(completion.recv_timeout(Duration::from_millis(50)).is_err());
+        source.release.wait();
+        assert_eq!(
+            completion.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Ok(())
+        );
+        waiter.join().unwrap();
+        assert_eq!(core.panel_state().unwrap().revision, "2");
     }
 
     #[test]
