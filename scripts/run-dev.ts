@@ -39,7 +39,7 @@ const desktop: ChildSpecification = {
   label: "desktop",
 };
 const landing: ChildSpecification = {
-  argumentsList: ["bunx", "--bun", "astro", "dev", "--ignore-lock"],
+  argumentsList: ["bunx", "--bun", "astro", "dev", "--host", "--ignore-lock"],
   cwd: join(workspaceRoot, "apps", "landing"),
   environment: { ASTRO_DEV_BACKGROUND: "0" },
   label: "landing",

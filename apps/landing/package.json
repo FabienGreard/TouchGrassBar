@@ -8,17 +8,24 @@
     "build": "bunx --bun astro build",
     "dev": "bun run --cwd ../.. dev:landing",
     "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src astro.config.ts",
-    "test": "bun -e \"process.exit(0)\"",
+    "test": "bunx vitest run src/landing.test.ts",
     "typecheck": "bunx --bun astro check"
   },
   "dependencies": {
+    "@astrojs/react": "6.0.2",
     "@tailwindcss/vite": "4.3.3",
+    "@touchgrass/contracts": "workspace:*",
     "@touchgrass/ui": "workspace:*",
-    "astro": "7.1.6",
+    "astro": "7.2.0",
+    "posthog-js": "^1.414.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "tailwindcss": "4.3.3"
   },
   "devDependencies": {
-    "@astrojs/check": "0.9.6",
+    "@astrojs/check": "0.9.10",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
     "typescript": "6.0.3"
   }
 }

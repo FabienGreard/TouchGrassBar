@@ -1,0 +1,9 @@
+.convex/
+.turbo/
+**/.astro/
+**/.turbo/
+**/dist/
+**/node_modules/
+**/target/
+coverage/
+storybook-static/

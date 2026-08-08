@@ -1,0 +1,110 @@
+.direction-d .d-bootstrap-stage.d-setup-section {
+  --d-section-accent: #8ff052;
+  display: grid;
+  grid-template-columns: minmax(360px, 0.8fr) minmax(520px, 1.2fr);
+  align-items: center;
+  gap: clamp(54px, 7vw, 100px);
+  min-height: 680px;
+  padding: 100px var(--d-site-gutter);
+  overflow: hidden;
+  background: radial-gradient(circle at 12% 85%, #24365a 0, transparent 34rem), #17223a;
+  color: #f6f0e5;
+}
+
+.direction-d .d-setup-section > header {
+  position: relative;
+  z-index: 2;
+  grid-row: 1;
+  grid-column: 1;
+  max-width: none;
+  margin: 0;
+}
+
+.d-setup-section > header h2 {
+  margin: 0 0 26px -0.04em;
+  font-size: var(--d-section-title-size) !important;
+  line-height: var(--d-section-title-line);
+}
+
+.d-setup-section > header h2 br {
+  display: block;
+}
+
+.d-setup-section > header h2 > span,
+.d-setup-section > header h2 em {
+  white-space: nowrap;
+}
+
+.d-setup-section > header h2 em {
+  color: #8ff052;
+  font-style: normal;
+}
+
+.d-setup-section > header p {
+  max-width: 420px;
+  margin: 0;
+  color: #aeb8c8 !important;
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+.d-setup-ledger {
+  display: grid;
+  grid-row: 1;
+  grid-column: 2;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  border: 0;
+}
+
+.d-setup-ledger article {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 132px;
+  padding: 14px 18px;
+  border: 1px solid #f6f0e538;
+  animation: d-setup-provider-signal 5.8s ease-in-out infinite;
+}
+
+.d-setup-ledger article:nth-child(2) {
+  animation-delay: -2.9s;
+}
+
+.d-setup-ledger article.result {
+  grid-column: 1 / -1;
+  background: linear-gradient(105deg, #8ff052 0%, #8ff052 35%, #baff7d 50%, #8ff052 66%, #8ff052 100%);
+  background-size: 240% 100%;
+  color: #171a16;
+  animation: d-setup-result-sheen 8s ease-in-out infinite;
+}
+
+.d-setup-ledger img,
+.d-setup-ledger svg {
+  width: 48px;
+  height: 48px;
+}
+
+.d-setup-ledger b {
+  font-size: 22px;
+}
+
+.d-setup-ledger span {
+  color: #aeb8c8;
+  font-size: 9px;
+}
+
+.d-setup-ledger .result span {
+  color: #2e4c20;
+}
+
+@keyframes d-setup-provider-signal {
+  0%, 100% { border-color: #f6f0e538; }
+  50% { border-color: #8ff05275; }
+}
+
+@keyframes d-setup-result-sheen {
+  0%, 55% { background-position: 100% 50%; }
+  100% { background-position: -100% 50%; }
+}

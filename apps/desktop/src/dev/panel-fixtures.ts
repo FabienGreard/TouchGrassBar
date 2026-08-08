@@ -6,50 +6,62 @@ import type { UsagePresentation } from "@/components/panel/usage-overview";
 
 export const currentDoomerboardRows = [
   {
-    id: "#TG-4COLD7",
-    name: "laura",
+    displayName: "laura",
     note: "ABSOLUTELY FINE",
     rank: 1,
-    score: "18.2M",
+    tokenScore: "18.2M",
+    touchGrassId: "#TG-4COLD7",
   },
-  { id: "#TG-7K4P9D", name: "Fabien", note: "YOU", rank: 2, score: "12.8M" },
   {
-    id: "#TG-BURN42",
-    name: "max",
+    displayName: "Fabien",
+    note: "YOU",
+    rank: 2,
+    tokenScore: "12.8M",
+    touchGrassId: "#TG-7K4P9D",
+  },
+  {
+    displayName: "max",
     note: "STILL ONLINE",
     rank: 3,
-    score: "9.1M",
+    tokenScore: "9.1M",
+    touchGrassId: "#TG-BURN42",
   },
-  { id: "#TG-NULL77", name: "nora", rank: 4, score: "7.8M" },
-  { id: "#TG-LOOP55", name: "eli", rank: 5, score: "6.4M" },
-  { id: "#TG-DIM420", name: "mia", rank: 6, score: "4.9M" },
-  { id: "#TG-GRASS7", name: "theo", rank: 7, score: "3.8M" },
-  { id: "#TG-SLEEP8", name: "zara", rank: 8, score: "2.4M" },
+  { displayName: "nora", rank: 4, tokenScore: "7.8M", touchGrassId: "#TG-NULL77" },
+  { displayName: "eli", rank: 5, tokenScore: "6.4M", touchGrassId: "#TG-LOOP55" },
+  { displayName: "mia", rank: 6, tokenScore: "4.9M", touchGrassId: "#TG-DIM420" },
+  { displayName: "theo", rank: 7, tokenScore: "3.8M", touchGrassId: "#TG-GRASS7" },
+  { displayName: "zara", rank: 8, tokenScore: "2.4M", touchGrassId: "#TG-SLEEP8" },
 ] as const satisfies readonly DoomerboardRow[];
 
 export const myTokenmaxxerRows = [
-  { id: "#TG-7K4P9D", name: "Fabien", note: "YOU", rank: 1, score: "12.8M" },
   {
-    id: "#TG-BURN42",
-    name: "max",
+    displayName: "Fabien",
+    note: "YOU",
+    rank: 1,
+    tokenScore: "12.8M",
+    touchGrassId: "#TG-7K4P9D",
+  },
+  {
+    displayName: "max",
     note: "TOUCH GRASS?",
     rank: 2,
-    score: "9.1M",
+    tokenScore: "9.1M",
+    touchGrassId: "#TG-BURN42",
   },
   {
-    id: "#TG-NULL77",
-    name: "nora",
+    displayName: "nora",
     note: "STILL ONLINE",
     rank: 3,
-    score: "7.8M",
+    tokenScore: "7.8M",
+    touchGrassId: "#TG-NULL77",
   },
-  { id: "#TG-LOOP55", name: "eli", rank: 4, score: "6.4M" },
-  { id: "#TG-DIM420", name: "mia", rank: 5, score: "4.9M" },
+  { displayName: "eli", rank: 4, tokenScore: "6.4M", touchGrassId: "#TG-LOOP55" },
+  { displayName: "mia", rank: 5, tokenScore: "4.9M", touchGrassId: "#TG-DIM420" },
 ] as const satisfies readonly DoomerboardRow[];
 
 export const currentProfile = {
-  id: "#TG-7K4P9D",
-  name: "Fabien",
+  displayName: "Fabien",
+  touchGrassId: "#TG-7K4P9D",
 } as const satisfies CurrentProfile;
 
 // Development-only values reproduce the approved prototype and never enter a native snapshot.

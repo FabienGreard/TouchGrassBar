@@ -55,7 +55,7 @@ function AddTokenmaxxerDialog({
           <span className="absolute -top-1 -right-1 text-[16px]">
             <DialogClose asChild>
               <Button
-                aria-label="Close invite friend dialog"
+                aria-label="Close add Tokenmaxxer dialog"
                 size="icon"
                 type="button"
                 variant="ghost"
@@ -99,10 +99,10 @@ function AddTokenmaxxerDialog({
             id="touchgrass-tokenmaxxer-id-help"
           >
             {submitted
-              ? "Friend lookup is not connected yet."
+              ? "Tokenmaxxer lookup is not connected yet."
               : touchGrassId && !valid
                 ? "Use the format TG-ABC123."
-                : "Ask your friend for their TouchGrass ID."}
+                : "Ask the Tokenmaxxer for their TouchGrass ID."}
           </small>
           <div className="mt-3 flex justify-end gap-2">
             <DialogClose asChild>
@@ -111,7 +111,7 @@ function AddTokenmaxxerDialog({
               </Button>
             </DialogClose>
             <Button disabled={!valid} size="default" type="submit">
-              Invite friend
+              Add Tokenmaxxer
             </Button>
           </div>
         </form>

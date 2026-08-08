@@ -26,7 +26,7 @@ function AudienceControl({
       value={currentSelection}
     >
       <SegmentedControlItem disabled={disabled} value="mine">
-        Tokenmaxxers
+        Friends
       </SegmentedControlItem>
       <SegmentedControlItem disabled={disabled} value="global">
         Global

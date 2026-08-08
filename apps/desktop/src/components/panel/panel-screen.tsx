@@ -110,8 +110,8 @@ function PanelScreen({
   const nativeProfile =
     deliveryView.snapshot?.profile?.status === "ready"
       ? {
-          id: `#${deliveryView.snapshot.profile.touchGrassId}`,
-          name: deliveryView.snapshot.profile.displayName,
+          displayName: deliveryView.snapshot.profile.displayName,
+          touchGrassId: `#${deliveryView.snapshot.profile.touchGrassId}`,
         }
       : null;
   const currentProfile =

@@ -1,0 +1,7 @@
+:root { color-scheme: dark; }
+body { user-select: text; }
+@layer base {
+  button, a { cursor: pointer; }
+}
+.direction { min-height: 100vh; overflow: hidden; padding-bottom: 96px; }
+.specimen { max-width: 1240px; margin: 0 auto; }

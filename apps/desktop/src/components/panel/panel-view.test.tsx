@@ -16,14 +16,18 @@ import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-de
 import { createTauriSanitizedDesktopStateAdapter } from "@/native-state/tauri-sanitized-desktop-state-adapter";
 
 function localDateTime(iso: string) {
-  return new Intl.DateTimeFormat("en-GB", {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     hour: "2-digit",
     hourCycle: "h23",
     minute: "2-digit",
     month: "short",
     weekday: "short",
-  }).format(new Date(iso));
+  }).formatToParts(new Date(iso));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? "";
+
+  return `${part("weekday")} ${part("day")} ${part("month")}, ${part("hour")}:${part("minute")}`;
 }
 
 function localTime(iso: string) {
@@ -106,7 +110,6 @@ describe("panel states", () => {
     expect(markup).toContain('data-slot="doomerboard-viewport"');
     expect(markup).toContain("h-[180px]");
     expect(markup).toContain("Friends");
-    expect(markup).not.toContain("My Tokenmaxxers");
     expect(markup).toContain("Global");
     expect(markup).toMatch(
       /aria-label="Select Leaderboard period"[^>]*>Today<\/button>/,
@@ -334,7 +337,7 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/data-doomerboard-scroll=""[^>]*tabindex/);
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
     expect(markup).not.toContain("Leaderboard unavailable");
-    expect(markup).not.toContain("My Tokenmaxxers");
+    expect(markup).toContain("Friends");
   });
 
   test("renders the provider visibility selected by the native snapshot", async () => {
@@ -675,9 +678,9 @@ describe("panel states", () => {
   test("offers an honest invitation state for an empty Tokenmaxxers board", () => {
     const markup = renderToStaticMarkup(<TokenmaxxersEmpty />);
 
-    expect(markup).toContain("Your leaderboard is lonely");
+    expect(markup).toContain("Your Leaderboard is lonely");
     expect(markup).toContain(
-      "Invite friends by TouchGrass ID to compare scores.",
+      "Add Tokenmaxxers by TouchGrass ID to compare scores.",
     );
     expect(markup).toContain("Add a Tokenmaxxer");
     expect(markup).toContain('data-icon-provider="hugeicons"');
@@ -697,11 +700,11 @@ describe("panel states", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Friends rankings"');
+    expect(markup).toContain('aria-label="My Tokenmaxxers rankings"');
     expect(markup).toContain("TOUCH GRASS?");
     expect(markup).toContain("STILL ONLINE");
     expect(markup).toContain("Fabien");
-    expect(markup).not.toContain("Your leaderboard is lonely");
+    expect(markup).not.toContain("Your Doomerboard is lonely");
   });
 
   test("does not infer the current Profile from fixture conventions", () => {
@@ -711,5 +714,34 @@ describe("panel states", () => {
 
     expect(markup).toContain('aria-label="Current user profile unavailable"');
     expect(markup).not.toContain("Copy current user profile");
+  });
+
+  test("keeps every Tokenmaxxer when Token Scores share a rank", () => {
+    const tiedRows = [
+      {
+        displayName: "ada",
+        rank: 1,
+        tokenScore: "18.2M",
+        touchGrassId: "#TG-AAAAAA",
+      },
+      {
+        displayName: "bea",
+        rank: 1,
+        tokenScore: "18.2M",
+        touchGrassId: "#TG-BBBBBB",
+      },
+      {
+        displayName: "max",
+        rank: 3,
+        tokenScore: "9.1M",
+        touchGrassId: "#TG-CCCCCC",
+      },
+    ];
+    const markup = renderToStaticMarkup(<Doomerboard rows={tiedRows} />);
+
+    expect(markup).toContain("ada");
+    expect(markup).toContain("bea");
+    expect(markup).toContain("#TG-AAAAAA");
+    expect(markup).toContain("#TG-BBBBBB");
   });
 });

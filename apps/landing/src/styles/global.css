@@ -1,13 +1,146 @@
-@import "tailwindcss";
 @import "@touchgrass/ui/theme.css";
-@source "../../../../packages/ui/src";
+@import "./brand-prototype.css";
+@import "./landing-shell.css";
+@import "./garden-hero.css";
+@import "./doomerboard-section.css";
+@import "./invite-section.css";
+@import "./setup-section.css";
+@import "./download-section.css";
+@import "./landing-responsive.css";
 
-html {
-  background:
-    radial-gradient(circle at 50% -15%, rgb(49 201 87 / 20%), transparent 35rem),
-    var(--color-ash-950);
+:root {
+  background: #070d0a;
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
 }
 
-a {
-  color: inherit;
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  overflow-x: hidden;
+}
+
+@layer base {
+  body,
+  button,
+  a {
+    font: inherit;
+  }
+
+  a {
+    color: inherit;
+  }
+}
+
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  padding: 9px 13px;
+  border-radius: 8px;
+  background: #f4f5f1;
+  color: #111713;
+  font-size: 12px;
+  font-weight: 700;
+  transform: translateY(-180%);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+:focus-visible:not([data-slot]) {
+  outline: 3px solid #baff74;
+  outline-offset: 4px;
+}
+
+.product-surface {
+  color: var(--pearl-ink);
+  color-scheme: light;
+  font-family: var(--font-sans);
+  text-shadow: none;
+}
+
+.site-brand--reversed [data-slot="brand-mark"] {
+  filter: brightness(0) invert(1);
+}
+
+.site-brand--reversed [data-slot="brand-wordmark"] strong {
+  color: #f7faf5;
+}
+
+.product-specimen-frame {
+  --product-specimen-scale: 1;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.product-specimen-canvas {
+  width: var(--product-specimen-width);
+  transform: scale(var(--product-specimen-scale));
+  transform-origin: top left;
+}
+
+html.garden-time-pending .d-garden-hero {
+  visibility: hidden;
+}
+
+.product-panel-preview {
+  position: relative;
+  z-index: 2;
+  width: min(var(--product-specimen-width), 100%);
+  min-width: 0;
+  justify-self: end;
+}
+
+.product-panel-canvas {
+  width: 402px;
+  max-width: none;
+}
+
+@media (max-width: 900px) {
+  .direction-d .d-menubar .d-brand [data-slot="brand-wordmark"] {
+    display: flex;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .d-mist-layer,
+  .d-life-layer {
+    display: none;
+  }
+
+  .product-panel-preview {
+    border-width: 2px;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
