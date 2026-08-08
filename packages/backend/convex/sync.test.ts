@@ -304,8 +304,6 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   expect(stored.userDailyUsage).toHaveLength(1);
   expect(stored.userDailyUsage[0]).toMatchObject({
     apiEquivalentCost,
-    apiEquivalentCostMicros: apiEquivalentCost.micros,
-    costIsComplete: false,
   });
   expect(
     stored.userScores.find(
@@ -313,7 +311,6 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
     ),
   ).toMatchObject({
     apiEquivalentCost,
-    apiEquivalentCostMicros: apiEquivalentCost.micros,
   });
   expect(
     stored.publicScores.find(
@@ -321,7 +318,6 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
     ),
   ).toMatchObject({
     apiEquivalentCost,
-    apiEquivalentCostMicros: apiEquivalentCost.micros,
   });
 
   await expect(
@@ -333,7 +329,6 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   ).resolves.toEqual([
     {
       apiEquivalentCost,
-      apiEquivalentCostMicros: apiEquivalentCost.micros,
       displayName: "Fabien",
       rank: 1,
       tokenScore: 1_458_285,

@@ -3,7 +3,6 @@ import { v } from "convex/values";
 
 import {
   apiEquivalentCostValidator as apiEquivalentCost,
-  apiEquivalentCostValueValidator as apiEquivalentCostValue,
   correctionReasonValidator as correctionReason,
   coverageValidator as coverage,
   evidenceBasisValidator as evidenceBasis,
@@ -63,16 +62,11 @@ export default defineSchema({
     rankingDay: v.string(),
     revision: v.number(),
     observedTokens: v.number(),
-    // Optional legacy fields. The complete cost object below is the current
-    // write contract.
-    apiEquivalentCostMicros: v.optional(v.number()),
-    priceBasisVersion: v.optional(v.string()),
-    apiEquivalentCost: v.optional(apiEquivalentCost),
+    apiEquivalentCost,
     coverage,
-    source: v.optional(v.literal("local-observed")),
-    evidenceBasis: v.optional(evidenceBasis),
-    correctionReason: v.optional(v.union(correctionReason, v.null())),
-    correctionRevision: v.optional(v.union(v.number(), v.null())),
+    evidenceBasis,
+    correctionReason: v.union(correctionReason, v.null()),
+    correctionRevision: v.union(v.number(), v.null()),
     lastCorrectionReason: v.optional(correctionReason),
     lastCorrectionRevision: v.optional(v.number()),
     observedAt: v.number(),
@@ -101,10 +95,7 @@ export default defineSchema({
     provider,
     rankingDay: v.string(),
     observedTokens: v.number(),
-    apiEquivalentCost: v.optional(apiEquivalentCostValue),
-    // Compatibility fields for rows written before the complete cost object.
-    apiEquivalentCostMicros: v.optional(v.number()),
-    costIsComplete: v.boolean(),
+    apiEquivalentCost,
     updatedAt: v.number(),
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
@@ -120,9 +111,7 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
-    apiEquivalentCost: v.optional(apiEquivalentCostValue),
-    // Compatibility field for clients that read only the numeric estimate.
-    apiEquivalentCostMicros: v.optional(v.number()),
+    apiEquivalentCost,
     computedAt: v.number(),
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
@@ -139,9 +128,7 @@ export default defineSchema({
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
-    apiEquivalentCost: v.optional(apiEquivalentCostValue),
-    // Compatibility field for clients that read only the numeric estimate.
-    apiEquivalentCostMicros: v.optional(v.number()),
+    apiEquivalentCost,
     displayName: v.string(),
     touchGrassId: v.string(),
     computedAt: v.number(),

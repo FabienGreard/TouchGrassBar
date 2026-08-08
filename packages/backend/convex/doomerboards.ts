@@ -5,7 +5,7 @@ import { requireAuthUser } from "./auth";
 import { globalDoomerboard } from "./model/aggregate";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
-  apiEquivalentCostValueValidator,
+  apiEquivalentCostValidator,
   boardKey,
   scoreScopeValidator,
   scoreWindowValidator,
@@ -13,8 +13,7 @@ import {
 } from "./model/values";
 
 const doomerboardRow = v.object({
-  apiEquivalentCost: v.union(apiEquivalentCostValueValidator, v.null()),
-  apiEquivalentCostMicros: v.union(v.number(), v.null()),
+  apiEquivalentCost: apiEquivalentCostValidator,
   displayName: v.string(),
   rank: v.number(),
   tokenScore: v.number(),
@@ -23,8 +22,7 @@ const doomerboardRow = v.object({
 
 export function rankRows<
   T extends {
-    apiEquivalentCost?: ApiEquivalentCost;
-    apiEquivalentCostMicros?: number;
+    apiEquivalentCost: ApiEquivalentCost | null;
     displayName: string;
     tokenScore: number;
     touchGrassId: string;
@@ -38,8 +36,7 @@ export function rankRows<
       previousScore = row.tokenScore;
     }
     return {
-      apiEquivalentCost: row.apiEquivalentCost ?? null,
-      apiEquivalentCostMicros: row.apiEquivalentCostMicros ?? null,
+      apiEquivalentCost: row.apiEquivalentCost,
       displayName: row.displayName,
       rank,
       tokenScore: row.tokenScore,

@@ -45,32 +45,18 @@ async function upsertDailyUsage(
         .eq("rankingDay", snapshot.rankingDay),
     )
     .unique();
-  const apiEquivalentCostMicros = snapshot.apiEquivalentCost?.micros;
-  const costIsComplete =
-    snapshot.observedTokens === 0 ||
-    (snapshot.apiEquivalentCost !== null &&
-      (snapshot.apiEquivalentCost.quality !== "modeled" ||
-        snapshot.apiEquivalentCost.coveragePercent === 100));
   const values = {
-    costIsComplete,
+    apiEquivalentCost: snapshot.apiEquivalentCost,
     observedTokens: snapshot.observedTokens,
     updatedAt: Date.now(),
   };
 
   if (existing) {
-    await ctx.db.patch(existing._id, {
-      ...values,
-      apiEquivalentCost: snapshot.apiEquivalentCost ?? undefined,
-      apiEquivalentCostMicros,
-    });
+    await ctx.db.patch(existing._id, values);
     return;
   }
   await ctx.db.insert("userDailyUsage", {
     ...values,
-    ...(snapshot.apiEquivalentCost === null
-      ? {}
-      : { apiEquivalentCost: snapshot.apiEquivalentCost }),
-    ...(apiEquivalentCostMicros === undefined ? {} : { apiEquivalentCostMicros }),
     provider: snapshot.provider,
     rankingDay: snapshot.rankingDay,
     tokenmaxxerId,
@@ -290,12 +276,7 @@ async function commitSnapshot(
   };
   let bucketId: GenericId<"usageBuckets">;
   if (existing) {
-    await ctx.db.patch(existing._id, {
-      ...values,
-      apiEquivalentCostMicros: undefined,
-      priceBasisVersion: undefined,
-      source: undefined,
-    });
+    await ctx.db.patch(existing._id, values);
     bucketId = existing._id;
   } else {
     bucketId = await ctx.db.insert("usageBuckets", {
