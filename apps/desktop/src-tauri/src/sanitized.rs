@@ -316,23 +316,6 @@ impl ProviderPresentation {
         !self.has_cached_quota_or_observed_usage()
             && self.usage.scan_status == UsageScanStatus::Indexing
     }
-
-    pub(crate) fn finish_first_observation_wait(&mut self) {
-        if self.is_waiting_for_first_observation() {
-            let period_statuses = [
-                self.usage.today_scan_status,
-                self.usage.seven_day_scan_status,
-                self.usage.thirty_day_scan_status,
-            ];
-            self.usage.scan_status = if period_statuses.contains(&UsageScanStatus::Indexing) {
-                UsageScanStatus::Indexing
-            } else if period_statuses.contains(&UsageScanStatus::Complete) {
-                UsageScanStatus::Complete
-            } else {
-                UsageScanStatus::Unavailable
-            };
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -518,7 +501,6 @@ pub struct RefreshReceipt {
 pub(crate) struct RefreshAttempt {
     cancelled: Arc<AtomicBool>,
     provider_cancellation: Option<(Arc<AtomicU64>, u64)>,
-    provider_settings_generation: Option<(Arc<AtomicU64>, u64)>,
     deadline: Instant,
     sources: RefreshSources,
 }
@@ -535,7 +517,6 @@ impl RefreshAttempt {
         Self {
             cancelled,
             provider_cancellation: None,
-            provider_settings_generation: None,
             deadline: Instant::now() + REFRESH_ATTEMPT_TIMEOUT,
             sources,
         }
@@ -549,25 +530,6 @@ impl RefreshAttempt {
         let mut attempt = self.clone();
         attempt.provider_cancellation = Some((generation, expected_generation));
         attempt
-    }
-
-    pub(crate) fn with_provider_settings_generation(
-        &self,
-        generation: Arc<AtomicU64>,
-        expected_generation: u64,
-    ) -> Self {
-        let mut attempt = self.clone();
-        attempt.provider_settings_generation = Some((generation, expected_generation));
-        attempt
-    }
-
-    pub(crate) fn provider_settings_are_current(&self, expected_generation: u64) -> bool {
-        self.provider_settings_generation.as_ref().is_none_or(
-            |(generation, captured_generation)| {
-                *captured_generation == expected_generation
-                    && generation.load(Ordering::Acquire) == expected_generation
-            },
-        )
     }
 
     pub(crate) fn is_manual(&self) -> bool {
@@ -641,26 +603,6 @@ impl RefreshAttempt {
 pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
     fn install_refresh_trigger(&self, _trigger: RefreshTrigger) {}
 
-    fn note_provider_enablement_commit(
-        &self,
-        _provider: CodingProvider,
-        _enabled: bool,
-        _waits_for_first_observation: bool,
-        _settings_generation: u64,
-    ) {
-    }
-
-    fn completed_provider_refreshes(&self, _settings_generation: u64) -> BTreeSet<CodingProvider> {
-        BTreeSet::new()
-    }
-
-    fn acknowledge_provider_refresh(
-        &self,
-        _settings_generation: u64,
-        _providers: &BTreeSet<CodingProvider>,
-    ) {
-    }
-
     fn cancel_provider(&self, _provider: CodingProvider) {}
 
     /// Stops resources that can block an active refresh.
@@ -676,7 +618,25 @@ pub(crate) trait SnapshotRefreshAdapter: Send + Sync {
         &self,
         cached: SanitizedDesktopStateV3,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure>;
+    ) -> Result<SnapshotRefreshOutcome, RefreshFailure>;
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SnapshotRefreshOutcome {
+    /// A complete replacement candidate. `None` means provider data did not change.
+    pub(crate) snapshot: Option<SanitizedDesktopStateV3>,
+    /// Providers whose own refresh work reached a non-cancelled terminal result.
+    /// The native commit uses this set to end only matching first-observation waits.
+    pub(crate) completed_providers: BTreeSet<CodingProvider>,
+}
+
+impl From<Option<SanitizedDesktopStateV3>> for SnapshotRefreshOutcome {
+    fn from(snapshot: Option<SanitizedDesktopStateV3>) -> Self {
+        Self {
+            snapshot,
+            completed_providers: BTreeSet::new(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -688,11 +648,11 @@ impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
         &self,
         _cached: SanitizedDesktopStateV3,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+    ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
         attempt.remaining()?;
         // Provider observation is not wired yet. An unchanged cached projection
         // does not create a false revision or notice.
-        Ok(None)
+        Ok(SnapshotRefreshOutcome::default())
     }
 }
 
@@ -940,11 +900,6 @@ struct SnapshotCommitOutcome {
     persistence_failed: bool,
 }
 
-struct ProviderEnablementCommitOutcome {
-    outcome: SnapshotCommitOutcome,
-    waits_for_first_observation: bool,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RefreshSource {
     Launch,
@@ -1160,15 +1115,14 @@ impl CachedProjection {
         store: &mut ReadModelStore,
         changed_provider: Option<(CodingProvider, bool)>,
         now: OffsetDateTime,
-    ) -> Result<ProviderEnablementCommitOutcome, &'static str> {
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
         let (cached, mut first_observation_waits) = self.snapshot_with_first_observation_waits()?;
         let mut refreshed = cached.clone();
-        let mut waits_for_first_observation = false;
         if let Some((provider, true)) = changed_provider
             && let Some(presentation) = refreshed.provider_mut(provider)
         {
             let (reenabled, _) = presentation.transition_at(now);
-            waits_for_first_observation = !reenabled.has_cached_quota_or_observed_usage()
+            let waits_for_first_observation = !reenabled.has_cached_quota_or_observed_usage()
                 && (first_observation_waits.contains(&provider)
                     || reenabled.usage.scan_status != UsageScanStatus::Indexing);
             if waits_for_first_observation {
@@ -1179,18 +1133,14 @@ impl CachedProjection {
             *presentation = reenabled;
         }
         refreshed.refresh_combined_usage();
-        let outcome = self.commit_snapshot_with_force(
+        self.commit_snapshot_with_force(
             store,
             refreshed,
             cached,
             first_observation_waits,
             now,
             changed_provider.is_some(),
-        )?;
-        Ok(ProviderEnablementCommitOutcome {
-            outcome,
-            waits_for_first_observation,
-        })
+        )
     }
 
     fn commit_snapshot_with_force(
@@ -1467,23 +1417,10 @@ impl RefreshCoordinator {
         self.refresh_adapter.cancel_provider(provider);
     }
 
-    fn note_provider_setting_commit(
-        &self,
-        provider: CodingProvider,
-        enabled: bool,
-        waits_for_first_observation: bool,
-    ) {
-        let settings_generation = self
-            .inbox
+    fn note_provider_setting_commit(&self) {
+        self.inbox
             .provider_settings_generation
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1);
-        self.refresh_adapter.note_provider_enablement_commit(
-            provider,
-            enabled,
-            waits_for_first_observation,
-            settings_generation,
-        );
+            .fetch_add(1, Ordering::AcqRel);
     }
 
     fn pause_for_update(&self) -> UpdatePauseGuard<'_> {
@@ -1722,15 +1659,16 @@ impl CoordinatorWorker {
             .inbox
             .provider_settings_generation
             .load(Ordering::Acquire);
-        let mut cached = match self.projection.snapshot() {
-            Ok(cached) => cached,
-            Err(_) => {
-                return RefreshRunResult::Completed {
-                    failed: true,
-                    notice: None,
-                };
-            }
-        };
+        let (mut cached, mut first_observation_waits) =
+            match self.projection.snapshot_with_first_observation_waits() {
+                Ok(cached) => cached,
+                Err(_) => {
+                    return RefreshRunResult::Completed {
+                        failed: true,
+                        notice: None,
+                    };
+                }
+            };
         let mut pre_refresh_failed = false;
         if let Some(transitioned) = transition_snapshot_at(&cached, self.clock.now()) {
             let transition = self
@@ -1751,19 +1689,18 @@ impl CoordinatorWorker {
                     if let Some(notice) = outcome.notice {
                         self.subscribers.publish(notice);
                     }
-                    match self.projection.snapshot() {
-                        Ok(transitioned) => cached = transitioned,
+                    match self.projection.snapshot_with_first_observation_waits() {
+                        Ok((transitioned, waits)) => {
+                            cached = transitioned;
+                            first_observation_waits = waits;
+                        }
                         Err(_) => pre_refresh_failed = true,
                     }
                 }
                 Err(_) => pre_refresh_failed = true,
             }
         }
-        let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled), sources)
-            .with_provider_settings_generation(
-                Arc::clone(&self.inbox.provider_settings_generation),
-                provider_settings_generation,
-            );
+        let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled), sources);
         let observation = catch_unwind(AssertUnwindSafe(|| {
             self.refresh_adapter.refresh(cached.clone(), &attempt)
         }));
@@ -1772,19 +1709,22 @@ impl CoordinatorWorker {
         }
         let completed_at = self.clock.now();
 
-        let (candidate, source_failed, observation_accepted) = match observation {
-            Ok(Ok(Some(refreshed))) if attempt.remaining().is_ok() => (
-                Some(transition_snapshot_at(&refreshed, completed_at).unwrap_or(refreshed)),
-                false,
-                true,
-            ),
-            Ok(Ok(None)) if attempt.remaining().is_ok() => {
-                (transition_snapshot_at(&cached, completed_at), false, true)
+        let (candidate, completed_providers, source_failed) = match observation {
+            Ok(Ok(outcome)) if attempt.remaining().is_ok() => {
+                let candidate = match outcome.snapshot {
+                    Some(refreshed) => {
+                        Some(transition_snapshot_at(&refreshed, completed_at).unwrap_or(refreshed))
+                    }
+                    None => transition_snapshot_at(&cached, completed_at),
+                };
+                (candidate, outcome.completed_providers, false)
             }
             Ok(Err(RefreshFailure::Cancelled)) => return RefreshRunResult::Cancelled,
-            Ok(Err(_)) | Ok(Ok(_)) | Err(_) => {
-                (transition_snapshot_at(&cached, completed_at), true, false)
-            }
+            Ok(Err(_)) | Ok(Ok(_)) | Err(_) => (
+                transition_snapshot_at(&cached, completed_at),
+                BTreeSet::new(),
+                true,
+            ),
         };
         if attempt.is_cancelled() {
             return RefreshRunResult::Cancelled;
@@ -1800,12 +1740,10 @@ impl CoordinatorWorker {
             {
                 return Ok(None);
             }
-            let mut completed_first_observations = if observation_accepted {
-                self.refresh_adapter
-                    .completed_provider_refreshes(provider_settings_generation)
-            } else {
-                BTreeSet::new()
-            };
+            let mut completed_first_observations = first_observation_waits
+                .intersection(&completed_providers)
+                .copied()
+                .collect::<BTreeSet<_>>();
             completed_first_observations
                 .retain(|provider| self.enablement.is_provider_enabled(*provider));
             let outcome = if candidate.is_some() || !completed_first_observations.is_empty() {
@@ -1819,12 +1757,6 @@ impl CoordinatorWorker {
             } else {
                 None
             };
-            if !completed_first_observations.is_empty() {
-                self.refresh_adapter.acknowledge_provider_refresh(
-                    provider_settings_generation,
-                    &completed_first_observations,
-                );
-            }
             Ok(outcome)
         });
         let failed = pre_refresh_failed
@@ -2074,13 +2006,9 @@ impl NativeCore {
             Some((provider, enabled)),
             self.inner.clock.now(),
         )?;
-        self.inner.coordinator.note_provider_setting_commit(
-            provider,
-            enabled,
-            commit.waits_for_first_observation,
-        );
+        self.inner.coordinator.note_provider_setting_commit();
         drop(store);
-        if let Some(notice) = commit.outcome.notice {
+        if let Some(notice) = commit.notice {
             self.inner.subscribers.publish(notice);
         }
         if !enabled {
@@ -2950,7 +2878,7 @@ mod tests {
             &self,
             _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
             attempt.remaining()?;
             if attempt.is_local_usage_only() {
                 self.local_runs.fetch_add(1, Ordering::SeqCst);
@@ -2975,7 +2903,7 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(None));
             self.completed.fetch_add(1, Ordering::SeqCst);
-            response
+            response.map(SnapshotRefreshOutcome::from)
         }
     }
 
@@ -3396,6 +3324,39 @@ mod tests {
     }
 
     #[test]
+    fn refresh_without_a_completed_provider_keeps_the_first_observation_wait() {
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
+        let policy = Arc::new(ClaudeTogglePolicy {
+            enabled: AtomicBool::new(false),
+        });
+        let enablement: Arc<dyn ProviderEnablementPolicy> = policy.clone();
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(None)]));
+        let core = NativeCore::with_components(
+            unavailable_state(1),
+            ReadModelStore::Memory,
+            clock,
+            source.clone(),
+            enablement,
+        );
+
+        policy.enabled.store(true, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, true)
+            .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        wait_for_completed_runs(source.as_ref(), 1);
+
+        assert_eq!(
+            core.panel_state()
+                .unwrap()
+                .provider(CodingProvider::Claude)
+                .unwrap()
+                .usage
+                .scan_status,
+            UsageScanStatus::Indexing
+        );
+    }
+
+    #[test]
     fn a_restart_does_not_restore_a_loading_state_without_an_active_refresh() {
         let database = TestDatabase::new();
         let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
@@ -3727,8 +3688,8 @@ mod tests {
             &self,
             _cached: SanitizedDesktopStateV3,
             _attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
-            Ok(None)
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
+            Ok(SnapshotRefreshOutcome::default())
         }
     }
 
@@ -3758,13 +3719,13 @@ mod tests {
             &self,
             _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
             attempt.remaining()?;
             self.runs.fetch_add(1, Ordering::SeqCst);
             self.started.wait();
             self.release.wait();
             attempt.remaining()?;
-            Ok(Some(observed_state(test_time(), 42)))
+            Ok(Some(observed_state(test_time(), 42)).into())
         }
     }
 
@@ -3789,7 +3750,7 @@ mod tests {
             &self,
             _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
             attempt.remaining()?;
             let run = self.runs.fetch_add(1, Ordering::SeqCst);
             if run < 2 {
@@ -3811,7 +3772,7 @@ mod tests {
                 stale_claude.usage = stale_usage;
                 state.refresh_combined_usage();
             }
-            Ok(Some(state))
+            Ok(Some(state).into())
         }
     }
 
@@ -3963,7 +3924,7 @@ mod tests {
             &self,
             _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
             let first = {
                 let mut attempts = self
                     .manual_attempts
@@ -3977,7 +3938,7 @@ mod tests {
                 self.release.wait();
             }
             attempt.remaining()?;
-            Ok(Some(observed_state(test_time(), 42)))
+            Ok(Some(observed_state(test_time(), 42)).into())
         }
     }
 
@@ -4042,7 +4003,7 @@ mod tests {
             &self,
             _cached: SanitizedDesktopStateV3,
             attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
             self.started.wait();
             while !attempt.is_cancelled() {
                 std::thread::yield_now();
@@ -4115,7 +4076,7 @@ mod tests {
             &self,
             _cached: SanitizedDesktopStateV3,
             _attempt: &RefreshAttempt,
-        ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
             self.started.wait();
             let (released, changed) = &self.released;
             let mut released = released

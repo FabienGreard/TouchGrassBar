@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
     },
     thread,
@@ -15,7 +15,8 @@ use std::{
 
 use crate::sanitized::{
     Clock, ProviderPresentation, ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshTrigger,
-    SanitizedDesktopStateV3, SnapshotRefreshAdapter, TopModelUsage, UsagePeriods,
+    SanitizedDesktopStateV3, SnapshotRefreshAdapter, SnapshotRefreshOutcome, TopModelUsage,
+    UsagePeriods,
 };
 use time::OffsetDateTime;
 
@@ -145,9 +146,6 @@ pub(crate) struct ProviderObservationCoordinator {
     adapters: Vec<Arc<dyn ProviderObservationAdapter>>,
     processes: BTreeMap<CodingProvider, process::ProviderProcessSupervisor>,
     cancellation_generations: BTreeMap<CodingProvider, Arc<AtomicU64>>,
-    provider_settings_generation: AtomicU64,
-    pending_first_observations: Mutex<BTreeMap<CodingProvider, u64>>,
-    completed_first_observations: Mutex<BTreeMap<u64, BTreeMap<CodingProvider, u64>>>,
     enablement: Arc<dyn ProviderEnablementPolicy>,
 }
 
@@ -220,71 +218,7 @@ impl ProviderObservationCoordinator {
             adapters,
             processes,
             cancellation_generations,
-            provider_settings_generation: AtomicU64::new(0),
-            pending_first_observations: Mutex::new(BTreeMap::new()),
-            completed_first_observations: Mutex::new(BTreeMap::new()),
             enablement,
-        }
-    }
-
-    fn matches_pending_first_observation(
-        &self,
-        provider: CodingProvider,
-        expected_observation_generation: Option<u64>,
-        expected_settings_generation: u64,
-        attempt: &RefreshAttempt,
-    ) -> bool {
-        let Some(expected_observation_generation) = expected_observation_generation else {
-            return false;
-        };
-        if !attempt.provider_settings_are_current(expected_settings_generation)
-            || self.provider_settings_generation.load(Ordering::Acquire)
-                != expected_settings_generation
-        {
-            return false;
-        }
-        let pending = self
-            .pending_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !attempt.provider_settings_are_current(expected_settings_generation)
-            || self.provider_settings_generation.load(Ordering::Acquire)
-                != expected_settings_generation
-            || pending.get(&provider).copied() != Some(expected_observation_generation)
-        {
-            return false;
-        }
-        true
-    }
-
-    fn stage_completed_first_observations(
-        &self,
-        settings_generation: u64,
-        attempt: &RefreshAttempt,
-        mut completed: BTreeMap<CodingProvider, u64>,
-    ) {
-        if completed.is_empty()
-            || !attempt.provider_settings_are_current(settings_generation)
-            || self.provider_settings_generation.load(Ordering::Acquire) != settings_generation
-        {
-            return;
-        }
-        let pending = self
-            .pending_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut staged = self
-            .completed_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !attempt.provider_settings_are_current(settings_generation)
-            || self.provider_settings_generation.load(Ordering::Acquire) != settings_generation
-        {
-            return;
-        }
-        completed.retain(|provider, generation| pending.get(provider) == Some(generation));
-        if !completed.is_empty() {
-            staged.insert(settings_generation, completed);
         }
     }
 
@@ -381,7 +315,7 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
         &self,
         mut cached: SanitizedDesktopStateV3,
         attempt: &RefreshAttempt,
-    ) -> Result<Option<SanitizedDesktopStateV3>, RefreshFailure> {
+    ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
         attempt.remaining()?;
         let cancellation_generations = self
             .cancellation_generations
@@ -393,13 +327,6 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let expected_settings_generation =
-            self.provider_settings_generation.load(Ordering::Acquire);
-        let pending_first_observations = self
-            .pending_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
         let previous = cached.clone();
         self.normalize_registry(&mut cached);
 
@@ -422,28 +349,19 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
                     Some((
                         provider,
                         provider_attempt,
-                        pending_first_observations.get(&provider).copied(),
                         scope.spawn(move || adapter.refresh(presentation, &worker_attempt)),
                     ))
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
-                .map(
-                    |(provider, provider_attempt, pending_first_observation, handle)| {
-                        (
-                            provider,
-                            provider_attempt,
-                            pending_first_observation,
-                            handle.join(),
-                        )
-                    },
-                )
+                .map(|(provider, provider_attempt, handle)| {
+                    (provider, provider_attempt, handle.join())
+                })
                 .collect::<Vec<_>>()
         });
 
-        let mut completed_first_observations = BTreeMap::new();
-
-        for (provider, provider_attempt, pending_first_observation, result) in results {
+        let mut completed_providers = BTreeSet::new();
+        for (provider, provider_attempt, result) in results {
             if attempt.is_cancelled() {
                 return Err(RefreshFailure::Cancelled);
             }
@@ -451,26 +369,13 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
                 debug_refresh_event(provider, "cancelled");
                 continue;
             }
-            let completed_first_observation =
-                !matches!(&result, Ok(Err(RefreshFailure::Cancelled)))
-                    && self.matches_pending_first_observation(
-                        provider,
-                        pending_first_observation,
-                        expected_settings_generation,
-                        attempt,
-                    );
-            if completed_first_observation && let Some(generation) = pending_first_observation {
-                completed_first_observations.insert(provider, generation);
+            if !matches!(&result, Ok(Err(RefreshFailure::Cancelled))) {
+                completed_providers.insert(provider);
             }
             match result {
                 Ok(Ok(Some(observation))) => {
                     if observation.quota.provider() != provider {
                         debug_refresh_failure(provider, "invalid_provider");
-                        if completed_first_observation
-                            && let Some(presentation) = cached.provider_mut(provider)
-                        {
-                            presentation.finish_first_observation_wait();
-                        }
                         continue;
                     }
                     let Some(presentation) = cached.provider_mut(provider) else {
@@ -482,115 +387,27 @@ impl SnapshotRefreshAdapter for ProviderObservationCoordinator {
                     debug_refresh_event(provider, "completed");
                 }
                 Ok(Ok(None)) => {
-                    if completed_first_observation
-                        && let Some(presentation) = cached.provider_mut(provider)
-                    {
-                        presentation.finish_first_observation_wait();
-                    }
                     debug_refresh_event(provider, "unchanged");
                 }
                 Ok(Err(RefreshFailure::Cancelled)) => return Err(RefreshFailure::Cancelled),
                 Ok(Err(RefreshFailure::DeadlineExceeded)) => {
-                    if completed_first_observation
-                        && let Some(presentation) = cached.provider_mut(provider)
-                    {
-                        presentation.finish_first_observation_wait();
-                    }
                     debug_refresh_failure(provider, "deadline_exceeded");
                 }
                 Ok(Err(RefreshFailure::SourceUnavailable)) => {
-                    if completed_first_observation
-                        && let Some(presentation) = cached.provider_mut(provider)
-                    {
-                        presentation.finish_first_observation_wait();
-                    }
                     debug_refresh_failure(provider, "source_unavailable");
                 }
                 Err(_) => {
-                    if completed_first_observation
-                        && let Some(presentation) = cached.provider_mut(provider)
-                    {
-                        presentation.finish_first_observation_wait();
-                    }
                     debug_refresh_failure(provider, "adapter_panicked");
                 }
             }
         }
 
         attempt.remaining()?;
-        self.stage_completed_first_observations(
-            expected_settings_generation,
-            attempt,
-            completed_first_observations,
-        );
         cached.refresh_combined_usage();
-        Ok((cached != previous).then_some(cached))
-    }
-
-    fn note_provider_enablement_commit(
-        &self,
-        provider: CodingProvider,
-        enabled: bool,
-        waits_for_first_observation: bool,
-        settings_generation: u64,
-    ) {
-        let mut pending = self
-            .pending_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut completed = self
-            .completed_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if enabled && waits_for_first_observation {
-            pending.insert(provider, settings_generation);
-        } else {
-            pending.remove(&provider);
-        }
-        completed.clear();
-        self.provider_settings_generation
-            .store(settings_generation, Ordering::Release);
-    }
-
-    fn completed_provider_refreshes(&self, settings_generation: u64) -> BTreeSet<CodingProvider> {
-        self.completed_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&settings_generation)
-            .map(|completed| completed.keys().copied().collect())
-            .unwrap_or_default()
-    }
-
-    fn acknowledge_provider_refresh(
-        &self,
-        settings_generation: u64,
-        providers: &BTreeSet<CodingProvider>,
-    ) {
-        let mut pending = self
-            .pending_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut completed = self
-            .completed_first_observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(staged) = completed.get_mut(&settings_generation) else {
-            return;
-        };
-        if self.provider_settings_generation.load(Ordering::Acquire) != settings_generation {
-            return;
-        }
-        for provider in providers {
-            let Some(generation) = staged.remove(provider) else {
-                continue;
-            };
-            if pending.get(provider).copied() == Some(generation) {
-                pending.remove(provider);
-            }
-        }
-        if staged.is_empty() {
-            completed.remove(&settings_generation);
-        }
+        Ok(SnapshotRefreshOutcome {
+            snapshot: (cached != previous).then_some(cached),
+            completed_providers,
+        })
     }
 
     fn cancel_provider(&self, provider: CodingProvider) {
@@ -950,10 +767,16 @@ mod tests {
             .expect("Claude refresh must start");
 
         coordinator.cancel_provider(CodingProvider::Claude);
-        let first = worker
+        let first_outcome = worker
             .join()
             .expect("provider refresh thread")
-            .expect("peer refresh must continue")
+            .expect("peer refresh must continue");
+        assert_eq!(
+            first_outcome.completed_providers,
+            BTreeSet::from([CodingProvider::Codex])
+        );
+        let first = first_outcome
+            .snapshot
             .expect("Codex must change the snapshot");
 
         assert!(claude.saw_cancellation.load(Ordering::Acquire));
@@ -973,9 +796,15 @@ mod tests {
             }
         ));
 
-        let second = coordinator
+        let second_outcome = coordinator
             .refresh(first, &RefreshAttempt::test())
-            .expect("fresh provider attempt")
+            .expect("fresh provider attempt");
+        assert_eq!(
+            second_outcome.completed_providers,
+            BTreeSet::from([CodingProvider::Codex, CodingProvider::Claude])
+        );
+        let second = second_outcome
+            .snapshot
             .expect("Claude must add fresh evidence");
         assert!(matches!(
             second
@@ -1018,9 +847,15 @@ mod tests {
         });
         let coordinator = ProviderObservationCoordinator::new(vec![codex, claude]);
 
-        let refreshed = coordinator
+        let outcome = coordinator
             .refresh(unavailable_state(1), &RefreshAttempt::test())
-            .unwrap()
+            .unwrap();
+        assert_eq!(
+            outcome.completed_providers,
+            BTreeSet::from([CodingProvider::Codex, CodingProvider::Claude])
+        );
+        let refreshed = outcome
+            .snapshot
             .expect("Codex result must change the snapshot");
 
         assert!(matches!(
@@ -1052,32 +887,22 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_refresh_finishes_first_observation_wait() {
-        let mut state = unavailable_state(1);
-        state
-            .provider_mut(CodingProvider::Claude)
-            .unwrap()
-            .usage
-            .scan_status = UsageScanStatus::Indexing;
+    fn unchanged_refresh_reports_the_provider_that_completed() {
         let claude = Arc::new(FixedAdapter {
             provider: CodingProvider::Claude,
             result: Ok(None),
         });
         let coordinator = ProviderObservationCoordinator::new(vec![claude]);
-        coordinator.note_provider_enablement_commit(CodingProvider::Claude, true, true, 1);
 
-        let refreshed = coordinator
-            .refresh(state, &RefreshAttempt::test())
-            .unwrap()
-            .expect("first observation wait must finish in the snapshot");
+        let outcome = coordinator
+            .refresh(unavailable_state(1), &RefreshAttempt::test())
+            .unwrap();
 
-        let claude = refreshed.provider(CodingProvider::Claude).unwrap();
-        assert_eq!(claude.usage.scan_status, UsageScanStatus::Unavailable);
-        assert!(matches!(
-            &claude.quota,
-            ProviderSnapshot::Unavailable { quota_lanes, .. } if quota_lanes.is_empty()
-        ));
-        assert!(matches!(&claude.usage.today, UsageTotal::Unavailable));
+        assert!(outcome.snapshot.is_none());
+        assert_eq!(
+            outcome.completed_providers,
+            BTreeSet::from([CodingProvider::Claude])
+        );
     }
 
     #[test]
@@ -1095,7 +920,7 @@ mod tests {
 
         let refreshed = coordinator.refresh(state, &RefreshAttempt::test()).unwrap();
 
-        assert!(refreshed.is_none());
+        assert!(refreshed.snapshot.is_none());
     }
 
     #[test]
@@ -1115,135 +940,7 @@ mod tests {
 
         let refreshed = coordinator.refresh(state, &RefreshAttempt::test()).unwrap();
 
-        assert!(refreshed.is_none());
-    }
-
-    #[test]
-    fn newer_provider_setting_keeps_a_stale_attempt_from_finishing_the_wait() {
-        let mut state = unavailable_state(1);
-        state
-            .provider_mut(CodingProvider::Claude)
-            .unwrap()
-            .usage
-            .scan_status = UsageScanStatus::Indexing;
-        state.refresh_combined_usage();
-        let claude = Arc::new(FixedAdapter {
-            provider: CodingProvider::Claude,
-            result: Ok(None),
-        });
-        let coordinator = ProviderObservationCoordinator::new(vec![claude]);
-        coordinator.note_provider_enablement_commit(CodingProvider::Claude, true, true, 1);
-        let settings_generation = Arc::new(AtomicU64::new(1));
-        let stale_attempt = RefreshAttempt::test()
-            .with_provider_settings_generation(Arc::clone(&settings_generation), 1);
-        settings_generation.store(2, Ordering::Release);
-
-        let stale = coordinator.refresh(state.clone(), &stale_attempt).unwrap();
-
-        assert!(stale.is_none());
-        coordinator.note_provider_enablement_commit(CodingProvider::Codex, false, false, 2);
-        let current_attempt = RefreshAttempt::test()
-            .with_provider_settings_generation(Arc::clone(&settings_generation), 2);
-        let refreshed = coordinator
-            .refresh(state, &current_attempt)
-            .unwrap()
-            .expect("current provider setting must finish the wait");
-        coordinator.acknowledge_provider_refresh(2, &BTreeSet::from([CodingProvider::Claude]));
-        assert_eq!(
-            refreshed
-                .provider(CodingProvider::Claude)
-                .unwrap()
-                .usage
-                .scan_status,
-            UsageScanStatus::Unavailable
-        );
-    }
-
-    #[test]
-    fn provider_setting_between_refresh_and_commit_keeps_the_wait_pending() {
-        let mut state = unavailable_state(1);
-        state
-            .provider_mut(CodingProvider::Claude)
-            .unwrap()
-            .usage
-            .scan_status = UsageScanStatus::Indexing;
-        state.refresh_combined_usage();
-        let claude = Arc::new(FixedAdapter {
-            provider: CodingProvider::Claude,
-            result: Ok(None),
-        });
-        let coordinator = ProviderObservationCoordinator::new(vec![claude]);
-        coordinator.note_provider_enablement_commit(CodingProvider::Claude, true, true, 1);
-        let settings_generation = Arc::new(AtomicU64::new(1));
-        let first_attempt = RefreshAttempt::test()
-            .with_provider_settings_generation(Arc::clone(&settings_generation), 1);
-
-        let first = coordinator
-            .refresh(state.clone(), &first_attempt)
-            .unwrap()
-            .expect("first provider refresh must settle the wait candidate");
-        assert_eq!(
-            first
-                .provider(CodingProvider::Claude)
-                .unwrap()
-                .usage
-                .scan_status,
-            UsageScanStatus::Unavailable
-        );
-        assert_eq!(
-            coordinator
-                .pending_first_observations
-                .lock()
-                .unwrap()
-                .get(&CodingProvider::Claude)
-                .copied(),
-            Some(1)
-        );
-        assert_eq!(
-            coordinator
-                .completed_first_observations
-                .lock()
-                .unwrap()
-                .get(&1)
-                .and_then(|providers| providers.get(&CodingProvider::Claude))
-                .copied(),
-            Some(1)
-        );
-
-        settings_generation.store(2, Ordering::Release);
-        coordinator.note_provider_enablement_commit(CodingProvider::Codex, false, false, 2);
-        coordinator.acknowledge_provider_refresh(1, &BTreeSet::from([CodingProvider::Claude]));
-        assert_eq!(
-            coordinator
-                .pending_first_observations
-                .lock()
-                .unwrap()
-                .get(&CodingProvider::Claude)
-                .copied(),
-            Some(1)
-        );
-
-        let current_attempt = RefreshAttempt::test()
-            .with_provider_settings_generation(Arc::clone(&settings_generation), 2);
-        coordinator
-            .refresh(state.clone(), &current_attempt)
-            .unwrap()
-            .expect("current provider refresh must settle the wait candidate");
-        coordinator.acknowledge_provider_refresh(2, &BTreeSet::from([CodingProvider::Claude]));
-        assert!(
-            !coordinator
-                .pending_first_observations
-                .lock()
-                .unwrap()
-                .contains_key(&CodingProvider::Claude)
-        );
-
-        assert!(
-            coordinator
-                .refresh(state, &current_attempt)
-                .unwrap()
-                .is_none()
-        );
+        assert!(refreshed.snapshot.is_none());
     }
 
     struct BlockingProcessAdapter {
@@ -1361,6 +1058,7 @@ mod tests {
         let refreshed = coordinator
             .refresh(unavailable_state(1), &RefreshAttempt::test())
             .unwrap()
+            .snapshot
             .expect("both provider results must change the snapshot");
 
         assert!(matches!(
@@ -1439,6 +1137,7 @@ mod tests {
         let codex_only = coordinator
             .refresh(unavailable_state(1), &RefreshAttempt::test())
             .unwrap()
+            .snapshot
             .unwrap();
         assert_eq!(codex.runs.load(Ordering::Acquire), 1);
         assert_eq!(claude.runs.load(Ordering::Acquire), 0);
@@ -1461,6 +1160,7 @@ mod tests {
         let both = coordinator
             .refresh(codex_only, &RefreshAttempt::test())
             .unwrap()
+            .snapshot
             .unwrap();
         assert_eq!(claude.runs.load(Ordering::Acquire), 1);
         assert!(matches!(
