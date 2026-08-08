@@ -16,14 +16,18 @@ import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-de
 import { createTauriSanitizedDesktopStateAdapter } from "@/native-state/tauri-sanitized-desktop-state-adapter";
 
 function localDateTime(iso: string) {
-  return new Intl.DateTimeFormat("en-GB", {
+  const parts = new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     hour: "2-digit",
     hourCycle: "h23",
     minute: "2-digit",
     month: "short",
     weekday: "short",
-  }).format(new Date(iso));
+  }).formatToParts(new Date(iso));
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((candidate) => candidate.type === type)?.value ?? "";
+
+  return `${part("weekday")} ${part("day")} ${part("month")}, ${part("hour")}:${part("minute")}`;
 }
 
 function localTime(iso: string) {
