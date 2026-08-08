@@ -512,20 +512,7 @@ impl ProfileCoordinator {
             .ok_or(ProfileError("Active Mac authority unavailable"))?;
         let mut session = match self.custody.read(SecretKind::BetterAuthSession)? {
             Some(session) => session,
-            None => {
-                let recovery_key = self
-                    .custody
-                    .read(SecretKind::RecoveryKey)?
-                    .ok_or(ProfileError("Active Mac authority unavailable"))?;
-                let SignInOutcome::Authenticated(session) =
-                    self.transport.sign_in(&touch_grass_id, &recovery_key)?
-                else {
-                    return Err(ProfileError::authority_rejected());
-                };
-                self.custody
-                    .write(SecretKind::BetterAuthSession, &session)?;
-                session
-            }
+            None => self.refresh_session_for(&touch_grass_id)?,
         };
         let cached_generation = *self
             .active_mac_generation
@@ -546,17 +533,7 @@ impl ProfileCoordinator {
             let generation = match first_attempt {
                 Ok(generation) => generation,
                 Err(_) => {
-                    let recovery_key = self
-                        .custody
-                        .read(SecretKind::RecoveryKey)?
-                        .ok_or(ProfileError("Active Mac authority unavailable"))?;
-                    let SignInOutcome::Authenticated(fresh_session) =
-                        self.transport.sign_in(&touch_grass_id, &recovery_key)?
-                    else {
-                        return Err(ProfileError::authority_rejected());
-                    };
-                    self.custody
-                        .write(SecretKind::BetterAuthSession, &fresh_session)?;
+                    let fresh_session = self.refresh_session_for(&touch_grass_id)?;
                     session = fresh_session;
                     let authority = self.transport.ensure_profile(
                         &session,
@@ -585,6 +562,31 @@ impl ProfileCoordinator {
             installation_credential,
             session,
         }))
+    }
+
+    /// Replace an expired Better Auth session with one Recovery Key sign-in.
+    pub(crate) fn refresh_active_sync_session(&self) -> Result<Option<Secret>, ProfileError> {
+        let SanitizedProfileOutcome::Ready { touch_grass_id, .. } =
+            self.lifecycle.sanitized_profile_outcome()
+        else {
+            return Ok(None);
+        };
+        self.refresh_session_for(&touch_grass_id).map(Some)
+    }
+
+    fn refresh_session_for(&self, touch_grass_id: &str) -> Result<Secret, ProfileError> {
+        let recovery_key = self
+            .custody
+            .read(SecretKind::RecoveryKey)?
+            .ok_or(ProfileError("Active Mac authority unavailable"))?;
+        let SignInOutcome::Authenticated(session) =
+            self.transport.sign_in(touch_grass_id, &recovery_key)?
+        else {
+            return Err(ProfileError::authority_rejected());
+        };
+        self.custody
+            .write(SecretKind::BetterAuthSession, &session)?;
+        Ok(session)
     }
 
     pub(crate) fn recovery_key(
@@ -982,6 +984,7 @@ mod tests {
         signup_proof: Secret,
         account_exists: AtomicBool,
         fail_next: AtomicBool,
+        sign_in_count: AtomicUsize,
         exchange_count: AtomicUsize,
         fixed_profile_mutation: AtomicBool,
         last_jwt: Mutex<Option<String>>,
@@ -1004,6 +1007,7 @@ mod tests {
                 signup_proof: Secret::new(generate_secret(36).unwrap()),
                 account_exists: AtomicBool::new(false),
                 fail_next: AtomicBool::new(false),
+                sign_in_count: AtomicUsize::new(0),
                 exchange_count: AtomicUsize::new(0),
                 fixed_profile_mutation: AtomicBool::new(false),
                 last_jwt: Mutex::new(None),
@@ -1032,6 +1036,10 @@ mod tests {
 
         fn exchange_count(&self) -> usize {
             self.exchange_count.load(Ordering::SeqCst)
+        }
+
+        fn sign_in_count(&self) -> usize {
+            self.sign_in_count.load(Ordering::SeqCst)
         }
 
         fn used_fixed_profile_mutation(&self) -> bool {
@@ -1077,6 +1085,7 @@ mod tests {
             _touch_grass_id: &str,
             _recovery_key: &Secret,
         ) -> Result<SignInOutcome, ProfileError> {
+            self.sign_in_count.fetch_add(1, Ordering::SeqCst);
             Ok(if self.account_exists.load(Ordering::SeqCst) {
                 SignInOutcome::Authenticated(Secret::new(generate_secret(42)?))
             } else {
@@ -1461,6 +1470,38 @@ mod tests {
         assert!(!first.session.expose().is_empty());
         assert_eq!(fixture.transport.exchange_count(), 1);
         assert!(!fixture.custody.contains(SecretKind::ConvexJwt));
+    }
+
+    #[test]
+    fn ready_profile_refreshes_an_expired_sync_session_with_the_recovery_key() {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture.coordinator.retry_pending().unwrap();
+        let previous = fixture
+            .custody
+            .read(SecretKind::BetterAuthSession)
+            .unwrap()
+            .unwrap();
+        let sign_ins_before_refresh = fixture.transport.sign_in_count();
+
+        let refreshed = fixture
+            .coordinator
+            .refresh_active_sync_session()
+            .unwrap()
+            .unwrap();
+        let stored = fixture
+            .custody
+            .read(SecretKind::BetterAuthSession)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            fixture.transport.sign_in_count(),
+            sign_ins_before_refresh + 1
+        );
+        assert!(previous.expose() != refreshed.expose());
+        assert!(stored.expose() == refreshed.expose());
+        assert_eq!(fixture.transport.exchange_count(), 1);
     }
 
     #[test]

@@ -25,6 +25,7 @@ const SYNC_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) enum UsageSyncTransportOutcome {
     Committed(Vec<UsageSyncAcknowledgement>),
     Offline,
+    SessionRejected,
     AuthorityRejected,
     Deferred,
 }
@@ -59,8 +60,8 @@ impl HttpUsageSyncTransport {
         let jwt = match self.fetch_convex_jwt(session) {
             TokenFetchOutcome::Jwt(jwt) => jwt,
             TokenFetchOutcome::Offline => return UsageSyncTransportOutcome::Offline,
-            TokenFetchOutcome::AuthorityRejected => {
-                return UsageSyncTransportOutcome::AuthorityRejected;
+            TokenFetchOutcome::SessionRejected => {
+                return UsageSyncTransportOutcome::SessionRejected;
             }
             TokenFetchOutcome::Deferred => return UsageSyncTransportOutcome::Deferred,
         };
@@ -96,8 +97,8 @@ impl HttpUsageSyncTransport {
         };
         match classify_token_http_status(response.status().as_u16()) {
             TokenHttpOutcome::Success => {}
-            TokenHttpOutcome::AuthorityRejected => {
-                return TokenFetchOutcome::AuthorityRejected;
+            TokenHttpOutcome::SessionRejected => {
+                return TokenFetchOutcome::SessionRejected;
             }
             TokenHttpOutcome::Deferred => return TokenFetchOutcome::Deferred,
         }
@@ -127,21 +128,21 @@ impl HttpUsageSyncTransport {
 enum TokenFetchOutcome {
     Jwt(Zeroizing<String>),
     Offline,
-    AuthorityRejected,
+    SessionRejected,
     Deferred,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TokenHttpOutcome {
     Success,
-    AuthorityRejected,
+    SessionRejected,
     Deferred,
 }
 
 fn classify_token_http_status(status: u16) -> TokenHttpOutcome {
     match status {
         200..=299 => TokenHttpOutcome::Success,
-        401 | 403 => TokenHttpOutcome::AuthorityRejected,
+        401 | 403 => TokenHttpOutcome::SessionRejected,
         _ => TokenHttpOutcome::Deferred,
     }
 }
@@ -512,14 +513,14 @@ mod tests {
     }
 
     #[test]
-    fn token_status_needs_direct_authority_evidence() {
+    fn token_rejection_requires_session_refresh_not_active_mac_rejection() {
         assert_eq!(
             classify_token_http_status(401),
-            TokenHttpOutcome::AuthorityRejected
+            TokenHttpOutcome::SessionRejected
         );
         assert_eq!(
             classify_token_http_status(403),
-            TokenHttpOutcome::AuthorityRejected
+            TokenHttpOutcome::SessionRejected
         );
         for status in [400, 404, 409, 429, 500] {
             assert_eq!(
