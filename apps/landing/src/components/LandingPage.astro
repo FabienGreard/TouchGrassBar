@@ -2,10 +2,10 @@
 import LandingExperience from "./LandingExperience";
 import "../styles/global.css";
 import { GARDEN_COPY, isGardenTime } from "../lib/garden-time";
-import dawnGarden from "../styles/assets/dawn-garden.webp?url";
-import dayGarden from "../styles/assets/day-garden.webp?url";
-import goldenGarden from "../styles/assets/golden-garden.webp?url";
-import nightGarden from "../styles/assets/night-garden.webp?url";
+import dawnGarden from "../styles/assets/dawn-garden.avif?url";
+import dayGarden from "../styles/assets/day-garden.avif?url";
+import goldenGarden from "../styles/assets/golden-garden.avif?url";
+import nightGarden from "../styles/assets/night-garden.avif?url";
 
 type Props = {
   invitation?: boolean;
@@ -65,7 +65,7 @@ const gardenAssets = {
   </head>
   <body data-page={invitation ? "invitation" : "landing"}>
     <a class="skip-link" href="#main-content">Skip to content</a>
-    <LandingExperience client:load initialGardenTime={initialGardenTime} invitation={invitation} />
+    <LandingExperience initialGardenTime={initialGardenTime} invitation={invitation} />
     <script is:inline define:vars={{ gardenCopy: GARDEN_COPY, invitation }}>
       (() => {
         try {
@@ -93,8 +93,84 @@ const gardenAssets = {
     </script>
     <script>
       import { installAnalytics } from "../lib/analytics";
+      import { installDownloadResolver } from "../lib/download-resolver";
+      import { GARDEN_COPY, gardenTimeForHour, isGardenTime } from "../lib/garden-time";
 
       installAnalytics();
+
+      const updateGarden = () => {
+        const requestedGardenTime = new URLSearchParams(window.location.search).get("time");
+        const gardenTime = isGardenTime(requestedGardenTime)
+          ? requestedGardenTime
+          : gardenTimeForHour(new Date().getHours());
+        const hero = document.querySelector<HTMLElement>(".d-garden-hero");
+
+        document.documentElement.dataset.gardenTime = gardenTime;
+        if (!hero) return;
+
+        hero.className = `d-garden-hero garden-${gardenTime}`;
+        for (const layer of hero.querySelectorAll<HTMLElement>("[data-garden-layer]")) {
+          const layerTime = layer.dataset.gardenLayer;
+          layer.className = `d-time-layer ${layerTime === gardenTime ? "active" : ""} time-${layerTime}`;
+        }
+
+        if (document.body.dataset.page !== "invitation") {
+          for (const line of hero.querySelectorAll<HTMLElement>("[data-garden-copy-line]")) {
+            const index = Number(line.dataset.gardenCopyLine);
+            const nextCopy = GARDEN_COPY[gardenTime][index];
+            if (nextCopy && line.textContent !== nextCopy) line.textContent = nextCopy;
+          }
+        }
+      };
+
+      const menubar = document.querySelector<HTMLElement>(".d-menubar");
+      const updateHeader = () => menubar?.classList.toggle("scrolled", window.scrollY > 24);
+      updateHeader();
+      window.addEventListener("scroll", updateHeader, { passive: true });
+
+      const specimenObservers: ResizeObserver[] = [];
+      for (const frame of document.querySelectorAll<HTMLElement>(".product-specimen-frame")) {
+        const canvas = frame.querySelector<HTMLElement>(".product-specimen-canvas");
+        if (!canvas) continue;
+
+        let animationFrame = 0;
+        let previousCanvasHeight = -1;
+        let previousFrameWidth = -1;
+        const updateScale = () => {
+          window.cancelAnimationFrame(animationFrame);
+          animationFrame = window.requestAnimationFrame(() => {
+            const canvasHeight = canvas.offsetHeight;
+            const frameWidth = frame.clientWidth;
+            if (canvasHeight === previousCanvasHeight && frameWidth === previousFrameWidth) return;
+
+            previousCanvasHeight = canvasHeight;
+            previousFrameWidth = frameWidth;
+            const designWidth = Number.parseFloat(
+              window.getComputedStyle(frame).getPropertyValue("--product-specimen-width"),
+            );
+            const scale = Number.isFinite(designWidth) && designWidth > 0
+              ? Math.min(1, frameWidth / designWidth)
+              : 1;
+            frame.style.setProperty("--product-specimen-scale", String(scale));
+            frame.style.height = `${canvasHeight * scale}px`;
+          });
+        };
+
+        const observer = new ResizeObserver(updateScale);
+        observer.observe(canvas);
+        observer.observe(frame);
+        specimenObservers.push(observer);
+        updateScale();
+      }
+
+      window.setInterval(updateGarden, 60_000);
+      window.addEventListener("popstate", updateGarden);
+      const resolveDownload = () => void installDownloadResolver(document, window.fetch.bind(window));
+      if (window.requestIdleCallback) {
+        window.requestIdleCallback(resolveDownload, { timeout: 2_000 });
+      } else {
+        window.setTimeout(resolveDownload, 1_000);
+      }
     </script>
   </body>
 </html>

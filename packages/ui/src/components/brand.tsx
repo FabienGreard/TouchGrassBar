@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react";
 
-import grassGlyph from "../assets/brand/grass-glyph-white.png?url";
+import grassGlyph from "../assets/brand/grass-glyph-white.webp?url";
 import { cn } from "#lib/utils";
 
 type BrandMarkProps = ComponentProps<"img"> & {

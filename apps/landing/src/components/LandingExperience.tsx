@@ -328,7 +328,7 @@ function SetupSection() {
       <div className="d-setup-ledger" aria-label="Two Coding Providers listed above the TouchGrassBar result">
         <article><ProviderMark provider="codex" size="large" /><b>Codex</b><span>Detected locally</span></article>
         <article><ProviderMark provider="claude" size="large" /><b>Claude</b><span>Detected locally</span></article>
-        <article className="result"><BrandMark aria-hidden="true" tone="ink" /><b>TouchGrassBar</b><span>One quiet place</span></article>
+        <article className="result"><BrandMark aria-hidden="true" decoding="async" loading="lazy" tone="ink" /><b>TouchGrassBar</b><span>One quiet place</span></article>
       </div>
     </section>
   );
@@ -375,7 +375,7 @@ function InviteSection() {
 function TouchGrassInstallItem() {
   return (
     <div className="d-install-item d-install-touchgrass">
-      <DesktopAppIcon className="d-install-app-icon" size="large" />
+      <DesktopAppIcon className="d-install-app-icon" decoding="async" loading="lazy" size="large" />
       <strong>TouchGrassBar</strong>
       <small>Drag to install</small>
     </div>
