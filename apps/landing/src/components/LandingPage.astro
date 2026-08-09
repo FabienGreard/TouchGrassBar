@@ -10,7 +10,7 @@ import nightGarden from "../styles/assets/night-garden.avif?url";
 const timeParam = Astro.url.searchParams.get("time");
 const initialGardenTime = isGardenTime(timeParam) ? timeParam : undefined;
 const title = "TouchGrassBar — Codex & Claude Usage in Your Menu Bar";
-const description = "See Codex and Claude usage limits from your Mac menu bar. Compare observed token counts while prompts and provider data stay on your Mac.";
+const description = "See your Codex and Claude usage limits in your Mac menu bar. Compare your usage on the leaderboard while prompts and provider data stay on your Mac.";
 const siteUrl = Astro.site ?? new URL("https://touchgrassbar.com");
 const canonicalUrl = new URL(Astro.url.pathname, siteUrl);
 const socialImageUrl = new URL("/og.jpg", siteUrl);
@@ -66,7 +66,6 @@ const gardenAssets = {
     <meta name="twitter:image:alt" content={socialImageAlt} />
     <title>{title}</title>
     <script is:inline type="application/ld+json" set:html={JSON.stringify(structuredData)} />
-    <noscript><style>html.garden-time-pending .d-garden-hero{visibility:visible}</style></noscript>
     <script is:inline define:vars={{ gardenAssets }}>
       (() => {
         const requestedGardenTime = new URLSearchParams(window.location.search).get("time");
@@ -122,9 +121,11 @@ const gardenAssets = {
       import { installAnalytics } from "../lib/analytics";
       import { installDownloadResolver } from "../lib/download-resolver";
       import { GARDEN_COPY, gardenTimeForHour, isGardenTime } from "../lib/garden-time";
+      import { installInviteParallax } from "../lib/invite-parallax";
       import { installWebMcp } from "../lib/webmcp";
 
       installAnalytics();
+      installInviteParallax(document, window);
       void installWebMcp(document);
 
       const updateGarden = () => {

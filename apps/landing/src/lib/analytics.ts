@@ -60,10 +60,13 @@ function installAnalytics() {
     });
   });
 
-  if (window.requestIdleCallback) {
-    window.requestIdleCallback(() => void loadAnalytics(), { timeout: 5_000 });
+  const loadAfterInitialExperience = () => {
+    window.setTimeout(() => void loadAnalytics(), 10_000);
+  };
+  if (document.readyState === "complete") {
+    loadAfterInitialExperience();
   } else {
-    window.setTimeout(() => void loadAnalytics(), 3_000);
+    window.addEventListener("load", loadAfterInitialExperience, { once: true });
   }
 }
 
