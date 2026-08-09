@@ -35,8 +35,8 @@ use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update
 pub const CONTRACT_VERSION: u8 = 3;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
-const READ_MODEL_SCHEMA_VERSION: i64 = 4;
-const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
+pub(crate) const READ_MODEL_SCHEMA_VERSION: i64 = 5;
+pub(crate) const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const REFRESH_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
@@ -664,10 +664,22 @@ impl SnapshotRefreshOutcome {
     }
 }
 
-#[cfg(any(test, debug_assertions))]
+struct UnavailableRefreshAdapter;
+
+impl SnapshotRefreshAdapter for UnavailableRefreshAdapter {
+    fn refresh(
+        &self,
+        _cached: SanitizedDesktopStateV3,
+        _attempt: &RefreshAttempt,
+    ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
+        Err(RefreshFailure::SourceUnavailable)
+    }
+}
+
+#[cfg(test)]
 struct CachedProjectionRefreshAdapter;
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 impl SnapshotRefreshAdapter for CachedProjectionRefreshAdapter {
     fn refresh(
         &self,
@@ -786,6 +798,32 @@ impl SqliteReadModelStore {
             let snapshot = snapshot.into_current(revision.clone(), version)?;
             validate_snapshot(&snapshot)?;
             (snapshot, revision)
+        } else if version == 4 {
+            let (schema_version, contract_version, revision, snapshot_json) = connection
+                .query_row(
+                    "SELECT schema_version, contract_version, revision, snapshot_json
+                     FROM sanitized_desktop_state WHERE singleton = 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, u8>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+            if schema_version != 4 || contract_version != CONTRACT_VERSION {
+                return Err("native state persistence unavailable");
+            }
+            let snapshot: SanitizedDesktopStateV3 = serde_json::from_str(&snapshot_json)
+                .map_err(|_| "native state persistence unavailable")?;
+            if snapshot.revision != revision {
+                return Err("native state persistence unavailable");
+            }
+            validate_snapshot(&snapshot)?;
+            (snapshot, revision)
         } else {
             (initial.clone(), initial.revision.clone())
         };
@@ -810,7 +848,7 @@ impl SqliteReadModelStore {
                  );
                  CREATE TABLE sanitized_desktop_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   schema_version INTEGER NOT NULL CHECK (schema_version = 4),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 5),
                    contract_version INTEGER NOT NULL CHECK (contract_version = 3),
                    revision TEXT NOT NULL CHECK (
                      length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
@@ -1401,6 +1439,27 @@ impl Drop for UpdatePauseGuard<'_> {
 }
 
 impl RefreshCoordinator {
+    fn unavailable(subscribers: Arc<RevisionSubscribers>) -> Self {
+        let (wake, receiver) = mpsc::sync_channel(1);
+        drop(receiver);
+        Self {
+            inbox: Arc::new(RefreshInbox {
+                admission: Mutex::new(()),
+                pending_sources: AtomicU8::new(0),
+                provider_settings_pending: AtomicBool::new(false),
+                provider_settings_generation: Arc::new(AtomicU64::new(0)),
+                in_flight: AtomicBool::new(false),
+                paused: AtomicBool::new(true),
+                stopping: AtomicBool::new(true),
+                wake,
+            }),
+            cancelled: Arc::new(AtomicBool::new(true)),
+            refresh_adapter: Arc::new(UnavailableRefreshAdapter),
+            worker: Mutex::new(None),
+            subscribers,
+        }
+    }
+
     fn start(
         projection: Arc<CachedProjection>,
         store: Arc<Mutex<ReadModelStore>>,
@@ -2054,14 +2113,30 @@ impl NativeCore {
 
     #[cfg(any(test, debug_assertions))]
     pub(crate) fn no_io_unavailable() -> Self {
+        Self::no_io_unavailable_with_provider_enablement(all_providers_enabled_policy())
+    }
+
+    pub(crate) fn no_io_unavailable_with_provider_enablement(
+        enablement: Arc<dyn ProviderEnablementPolicy>,
+    ) -> Self {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        Self::with_components(
-            unavailable_state_at(1, clock.now()),
-            ReadModelStore::Memory,
-            clock,
-            Arc::new(CachedProjectionRefreshAdapter),
-            all_providers_enabled_policy(),
-        )
+        let mut state = unavailable_state_at(1, clock.now());
+        drop(state.apply_provider_enablement(enablement.as_ref()));
+        let projection = Arc::new(CachedProjection::new(
+            state,
+            enabled_provider_set(enablement.as_ref()),
+        ));
+        let subscribers = Arc::new(RevisionSubscribers::new());
+        Self {
+            inner: Arc::new(NativeCoreInner {
+                projection,
+                store: Arc::new(Mutex::new(ReadModelStore::Memory)),
+                coordinator: RefreshCoordinator::unavailable(Arc::clone(&subscribers)),
+                subscribers,
+                clock,
+                enablement,
+            }),
+        }
     }
 
     #[cfg(test)]
@@ -2280,7 +2355,7 @@ fn read_model_backup_partial_path(path: &Path, source_version: i64) -> PathBuf {
     ))
 }
 
-fn read_model_schema_version(connection: &Connection) -> Result<i64, &'static str> {
+pub(crate) fn read_model_schema_version(connection: &Connection) -> Result<i64, &'static str> {
     let schema_table_exists = connection
         .query_row(
             "SELECT EXISTS(
@@ -2303,6 +2378,18 @@ fn read_model_schema_version(connection: &Connection) -> Result<i64, &'static st
         .optional()
         .map(|version| version.unwrap_or(0))
         .map_err(|_| "native state persistence unavailable")
+}
+
+pub(crate) fn prepare_database(path: &Path) -> Result<(), &'static str> {
+    let initial = unavailable_state(1);
+    let _ = SqliteReadModelStore::open(path, &initial)?;
+    Ok(())
+}
+
+pub(crate) fn read_database_state(
+    connection: &Connection,
+) -> Result<SanitizedDesktopStateV3, &'static str> {
+    SqliteReadModelStore::read_from(connection)
 }
 
 fn read_model_backup_is_valid(

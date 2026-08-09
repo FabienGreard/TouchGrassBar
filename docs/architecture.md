@@ -128,7 +128,7 @@ The native core retains 60 UTC Ranking Days of sanitized Daily Usage Aggregates 
 
 Each aggregate update and Pending Usage Snapshot upsert commits in one SQLite transaction. The outbox contains one latest cumulative revision per Active Mac generation, provider, and Ranking Day; uploads are bounded and idempotent, and acknowledged revisions alone leave the queue. Active Mac transfer permanently abandons the previous generation's pending rows without deleting local history.
 
-SQLite and IPC schemas use explicit forward-only versions. Database migrations are transactional and create a local backup first. An open or migration failure never silently deletes the database or resets revisions: provider utility may continue in memory, while synchronization reports unavailable until the cache and outbox are safely repaired or restored.
+SQLite and IPC schemas use explicit forward-only versions. One database coordinator inspects the complete SQLite format without a write, rejects an unknown or newer format, creates and verifies one durable backup, runs registered module migrations in a deterministic order, and checks structural and domain invariants. It issues an opaque Ready token only after every check succeeds. Native persistence, provider work, synchronization, and update checks require that token. An open or migration failure stops those operations and never deletes, resets, or partly accepts the database. Every official release keeps one sanitized database fixture. The release gate upgrades and reopens every fixture with the exact candidate code and records the result in release evidence. [ADR 0017](adr/0017-coordinate-forward-sqlite-compatibility.md) records this contract.
 
 ## Refresh and backend transport
 

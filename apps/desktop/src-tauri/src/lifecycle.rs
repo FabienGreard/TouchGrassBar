@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,8 @@ pub const LIFECYCLE_CONTRACT_VERSION: u8 = 3;
 pub const SETTINGS_CONTRACT_VERSION: u8 = 4;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
 pub const SETTINGS_RECOVERY_CLEAR_EVENT: &str = "settings-recovery-clear-requested";
-const DATABASE_SCHEMA_VERSION: i64 = 5;
+pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 5;
+pub(crate) const DATABASE_SCHEMA_MODULE: &str = "desktop-lifecycle";
 const PUBLIC_BACKFILL_WINDOW_DAYS: u8 = 30;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -167,6 +168,32 @@ struct SqliteLifecycleStore {
     connection: Mutex<Connection>,
 }
 
+pub(crate) fn lifecycle_schema_version(
+    connection: &Connection,
+) -> Result<Option<i64>, &'static str> {
+    let schema_table_exists = connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'touchgrassbar_schema_versions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|_| "lifecycle persistence unavailable")?;
+    if !schema_table_exists {
+        return Ok(None);
+    }
+    connection
+        .query_row(
+            "SELECT version FROM touchgrassbar_schema_versions WHERE module = ?1",
+            [DATABASE_SCHEMA_MODULE],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|_| "lifecycle persistence unavailable")
+}
+
 impl SqliteLifecycleStore {
     fn open(path: &Path) -> Result<Self, &'static str> {
         let Some(parent) = path.parent() else {
@@ -181,11 +208,17 @@ impl SqliteLifecycleStore {
     }
 
     fn migrate(connection: &Connection, path: &Path) -> Result<(), &'static str> {
-        let version = connection
-            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-            .map_err(|_| "lifecycle persistence unavailable")?;
+        let explicit_version = lifecycle_schema_version(connection)?;
+        let version = explicit_version.unwrap_or(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .map_err(|_| "lifecycle persistence unavailable")?,
+        );
         if version > DATABASE_SCHEMA_VERSION {
             return Err("lifecycle persistence unavailable");
+        }
+        if version == DATABASE_SCHEMA_VERSION && explicit_version.is_some() {
+            return Ok(());
         }
         if version == 0 {
             connection
@@ -334,7 +367,29 @@ impl SqliteLifecycleStore {
                      );
                      INSERT INTO provider_settings (provider, enabled)
                      VALUES ('codex', 1), ('claude', 1);
+                     CREATE TABLE IF NOT EXISTS touchgrassbar_schema_versions (
+                       module TEXT PRIMARY KEY,
+                       version INTEGER NOT NULL CHECK (version >= 1)
+                     );
+                     INSERT INTO touchgrassbar_schema_versions(module, version)
+                     VALUES ('desktop-lifecycle', 5)
+                     ON CONFLICT(module) DO UPDATE SET version = excluded.version;
                      PRAGMA user_version = 5;
+                     COMMIT;",
+                )
+                .map_err(|_| "lifecycle persistence unavailable")?;
+        } else if explicit_version.is_none() {
+            Self::backup_before_migration(connection, path, version)?;
+            connection
+                .execute_batch(
+                    "BEGIN IMMEDIATE;
+                     CREATE TABLE IF NOT EXISTS touchgrassbar_schema_versions (
+                       module TEXT PRIMARY KEY,
+                       version INTEGER NOT NULL CHECK (version >= 1)
+                     );
+                     INSERT INTO touchgrassbar_schema_versions(module, version)
+                     VALUES ('desktop-lifecycle', 5)
+                     ON CONFLICT(module) DO UPDATE SET version = excluded.version;
                      COMMIT;",
                 )
                 .map_err(|_| "lifecycle persistence unavailable")?;
@@ -913,6 +968,8 @@ mod tests {
             let _ = fs::remove_file(&self.0);
             let _ = fs::remove_file(self.0.with_extension("sqlite3-shm"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3-wal"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v0"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v0.partial"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v1"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v1.partial"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v2"));
@@ -921,6 +978,8 @@ mod tests {
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v3.partial"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v4"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v4.partial"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v5"));
+            let _ = fs::remove_file(self.0.with_extension("sqlite3.backup-v5.partial"));
         }
     }
 

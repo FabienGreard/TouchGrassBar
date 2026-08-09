@@ -42,8 +42,8 @@ const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const ROLLOUT_PARSER_VERSION: i64 = 8;
 const UNKNOWN_MODEL: &str = "__unknown__";
-const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
-const USAGE_INDEX_SCHEMA_VERSION: i64 = 2;
+pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -1406,7 +1406,7 @@ enum IndexLineOutcome {
     DeferredUntil(Date),
 }
 
-fn usage_index_schema_version(connection: &Connection) -> Result<i64, ()> {
+pub(crate) fn usage_index_schema_version(connection: &Connection) -> Result<i64, ()> {
     let schema_table_exists = connection
         .query_row(
             "SELECT EXISTS(
@@ -1693,6 +1693,11 @@ fn ensure_index_schema(
         )
         .map_err(|_| ())?;
     transaction.commit().map_err(|_| ())
+}
+
+pub(crate) fn prepare_database(database_path: &Path) -> Result<(), ()> {
+    let mut connection = Connection::open(database_path).map_err(|_| ())?;
+    ensure_index_schema(&mut connection, Some(database_path))
 }
 
 fn to_i64(value: u64) -> Result<i64, ()> {

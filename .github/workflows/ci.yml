@@ -20,12 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
+      - name: Verify SQLite release fixtures
+        run: bun scripts/generate-database-fixtures.ts --check
       - name: Run repository quality
         run: bun run quality:code
 

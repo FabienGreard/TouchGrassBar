@@ -609,12 +609,17 @@ function finalizeRelease() {
     outputDirectory,
     "release-configuration.json",
   );
+  const databaseCompatibilityPath = join(
+    outputDirectory,
+    names.databaseCompatibility,
+  );
   for (const expectedPath of [
     appPath,
     dmgPath,
     rawUpdaterArchivePath,
     rawUpdaterSignaturePath,
     configurationPath,
+    databaseCompatibilityPath,
   ]) {
     if (!existsSync(expectedPath)) {
       throw new Error("A required release artifact is absent.");
@@ -672,6 +677,7 @@ function finalizeRelease() {
       updaterArchivePath,
       updaterSignaturePath,
       latestPath,
+      databaseCompatibilityPath,
     ].map(artifactRecord);
     const checksumsPath = join(outputDirectory, names.checksums);
     writeFileSync(checksumsPath, formatChecksums(primaryArtifacts), {

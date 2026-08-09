@@ -36,8 +36,8 @@ const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
 const TRANSCRIPT_PARSER_VERSION: i64 = 4;
-const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
-const USAGE_INDEX_SCHEMA_VERSION: i64 = 3;
+pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 4;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
 
 #[derive(Clone, Copy)]
@@ -614,7 +614,7 @@ fn from_i64(value: i64) -> Result<u64, ()> {
     u64::try_from(value).map_err(|_| ())
 }
 
-fn usage_index_schema_version(connection: &Connection) -> Result<i64, ()> {
+pub(crate) fn usage_index_schema_version(connection: &Connection) -> Result<i64, ()> {
     let exists = connection
         .query_row(
             "SELECT EXISTS(
@@ -833,6 +833,11 @@ fn ensure_index_schema(connection: &mut Connection, database_path: &Path) -> Res
         )
         .map_err(|_| ())?;
     transaction.commit().map_err(|_| ())
+}
+
+pub(crate) fn prepare_database(database_path: &Path) -> Result<(), ()> {
+    let mut connection = Connection::open(database_path).map_err(|_| ())?;
+    ensure_index_schema(&mut connection, database_path)
 }
 
 fn salt_to_string(salt: &[u8; 32]) -> String {

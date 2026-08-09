@@ -10,6 +10,7 @@ Release evidence can contain these public facts:
 
 - configuration name, scope, present or absent state, and update time;
 - tag, commit, workflow run, job, and Action version;
+- database fixture tag, repository-relative path, SHA-256 value, and test result;
 - toolchain version;
 - artifact name, byte size, and SHA-256 value;
 - Developer ID identity and public certificate SHA-256 value;
@@ -50,10 +51,10 @@ rules**. This manual check is mandatory.
 Add these names only to the `macos-release` environment. Do not create a
 repository or organization copy.
 
-| Kind | Names |
-| --- | --- |
-| Secrets | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_NOTARY_KEY`, `APPLE_PROVISIONING_PROFILE_BASE64`, `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` |
-| Variables | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_SIGNING_IDENTITY`, `TOUCHGRASS_AUTH_SITE_URL`, `TOUCHGRASS_CONVEX_URL` |
+| Kind      | Names                                                                                                                                                                         |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Secrets   | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_NOTARY_KEY`, `APPLE_PROVISIONING_PROFILE_BASE64`, `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` |
+| Variables | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_SIGNING_IDENTITY`, `TOUCHGRASS_AUTH_SITE_URL`, `TOUCHGRASS_CONVEX_URL`                                                         |
 
 The production provisioning profile is release signing material. It stays in
 the secret-bearing environment because the Profile Keychain contract needs its
@@ -96,6 +97,26 @@ bun run release minor
 bun run release major
 ```
 
+The source fixture manifest must contain one candidate, and its tag must be the
+exact new tag. Every published, non-draft stable GitHub Release must have one
+official fixture. The official fixture set must match that Release set exactly.
+Preview and execution stop if an old official fixture is absent, if another
+candidate exists, or if a fixture file or SHA-256 value is invalid.
+
+The fixture generator can create or replace only the current candidate. It
+cannot delete or write an official fixture database. Use its check mode before
+you prepare a tag:
+
+```sh
+bun scripts/generate-database-fixtures.ts --check
+```
+
+The check validates every database and manifest hash. It also compares each
+official `sourceCommit` with its local Git tag when that tag is available. CI
+runs the same check. The complete fixture lifecycle and the schema change
+checklist are linked from
+[`apps/desktop/src-tauri/tests/fixtures/releases/README.md`](../apps/desktop/src-tauri/tests/fixtures/releases/README.md).
+
 After the automated preview passes and the mandatory administrator-bypass
 check is complete, use the execution command printed by the script. The script
 creates and pushes the annotated tag. The tag starts the release workflow.
@@ -117,20 +138,22 @@ work:
 
 1. It records required configuration as booleans. A missing name or the
    updater public-key marker stops the job.
-2. It installs the certificate, notary key, and provisioning profile only for
+2. It runs every released database fixture against the candidate code. It
+   records a sanitized result that is bound to the tag, commit, and workflow.
+3. It installs the certificate, notary key, and provisioning profile only for
    their consuming steps. Private files use runner-temporary storage and mode
    `0600`.
-3. It sets the app version from the validated tag. Tauri creates the signed,
+4. It sets the app version from the validated tag. Tauri creates the signed,
    hardened, timestamped, notarized, and stapled app plus its updater archive
    and detached signature.
-4. It independently submits the versioned DMG to Apple, requires `Accepted`,
+5. It independently submits the versioned DMG to Apple, requires `Accepted`,
    staples it, and checks Gatekeeper.
-5. It checks the app in the updater archive and DMG against the trusted app.
+6. It checks the app in the updater archive and DMG against the trusted app.
    It also checks arm64-only architecture, version, Developer ID identity,
    public certificate fingerprint, app and DMG signatures, notarization,
    stapling, Gatekeeper, and the Tauri updater signature.
-6. It creates `latest.json`, `SHA256SUMS`, and a sanitized trust receipt.
-7. It creates a draft GitHub Release and removes temporary release material.
+7. It creates `latest.json`, `SHA256SUMS`, and a sanitized trust receipt.
+8. It creates a draft GitHub Release and removes temporary release material.
 
 The draft contains these assets:
 
@@ -138,6 +161,7 @@ The draft contains these assets:
 - `TouchGrassBar_VERSION_aarch64.app.tar.gz` and its `.sig` file;
 - `latest.json`;
 - `SHA256SUMS`;
+- `database-compatibility-VERSION.json`;
 - `release-trust-VERSION.json`.
 
 The workflow has no publication step. After all candidate, physical QA,

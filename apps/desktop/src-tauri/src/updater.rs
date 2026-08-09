@@ -1,17 +1,22 @@
 use std::{
+    fs,
     io::ErrorKind,
-    path::Path,
-    process::Command,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{Connection, params};
+#[cfg(target_os = "macos")]
+use std::process::Command;
+
+use rusqlite::{Connection, OptionalExtension, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
+
+use crate::database::PreparedDatabase;
 
 pub const UPDATE_CONTRACT_VERSION: u8 = 2;
 pub const UPDATE_STATE_CHANGED_EVENT: &str = "update-state-changed";
@@ -20,6 +25,8 @@ pub const LATEST_DMG_RECOVERY_URL: &str =
 pub const SOURCE_REPOSITORY_URL: &str = "https://github.com/FabienGreard/TouchGrassBar";
 const AUTOMATIC_CHECK_INTERVAL_SECONDS: i64 = 60 * 60;
 const MAX_VERSION_LENGTH: usize = 64;
+pub(crate) const DATABASE_SCHEMA_MODULE: &str = "update-state";
+pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -93,6 +100,10 @@ impl UpdateStateV1 {
 pub struct OnlineFeatureGate(Arc<std::sync::atomic::AtomicBool>);
 
 impl OnlineFeatureGate {
+    pub(crate) fn paused() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    }
+
     pub fn is_paused(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -100,6 +111,18 @@ impl OnlineFeatureGate {
     fn set_paused(&self, paused: bool) {
         self.0.store(paused, std::sync::atomic::Ordering::Release);
     }
+}
+
+fn configure_initial_online_feature_gate(
+    gate: &OnlineFeatureGate,
+    available: bool,
+    persistence_available: bool,
+    minimum_required: bool,
+) -> bool {
+    if available {
+        gate.set_paused(!persistence_available || minimum_required);
+    }
+    gate.is_paused()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,11 +168,152 @@ struct UpdatePersistence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct PersistedUpdateState {
-    automatic_checks_enabled: bool,
-    last_automatic_check_at: Option<i64>,
-    minimum_required_version: Option<String>,
-    offered_version: Option<String>,
+pub(crate) struct PersistedUpdateState {
+    pub(crate) automatic_checks_enabled: bool,
+    pub(crate) last_automatic_check_at: Option<i64>,
+    pub(crate) minimum_required_version: Option<String>,
+    pub(crate) offered_version: Option<String>,
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool, ()> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|_| ())
+}
+
+fn column_exists(connection: &Connection, column: &str) -> Result<bool, ()> {
+    connection
+        .query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
+               WHERE name = ?1
+             )",
+            [column],
+            |row| row.get(0),
+        )
+        .map_err(|_| ())
+}
+
+fn table_columns(connection: &Connection) -> Result<Vec<String>, ()> {
+    let mut statement = connection
+        .prepare("SELECT name FROM pragma_table_info('touchgrassbar_update_state') ORDER BY cid")
+        .map_err(|_| ())?;
+    statement
+        .query_map([], |row| row.get(0))
+        .map_err(|_| ())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())
+}
+
+pub(crate) fn update_schema_version(connection: &Connection) -> Result<(i64, bool), ()> {
+    let explicit_version = if table_exists(connection, "touchgrassbar_schema_versions")? {
+        connection
+            .query_row(
+                "SELECT version FROM touchgrassbar_schema_versions WHERE module = ?1",
+                [DATABASE_SCHEMA_MODULE],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|_| ())?
+    } else {
+        None
+    };
+    if let Some(version) = explicit_version
+        && version >= DATABASE_SCHEMA_VERSION
+    {
+        return Ok((version, true));
+    }
+    if !table_exists(connection, "touchgrassbar_update_state")? {
+        return explicit_version.map_or(Ok((0, false)), |_| Err(()));
+    }
+    let columns = table_columns(connection)?;
+    let version = match columns
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["singleton", "last_automatic_check_at", "deferred_version"] => 0,
+        [
+            "singleton",
+            "last_automatic_check_at",
+            "offered_version",
+            "minimum_required_version",
+        ] => 1,
+        [
+            "singleton",
+            "automatic_checks_enabled",
+            "last_automatic_check_at",
+            "offered_version",
+            "minimum_required_version",
+        ] => 2,
+        _ => return Err(()),
+    };
+    if explicit_version.is_some_and(|explicit| explicit != version) {
+        return Err(());
+    }
+    Ok((version, explicit_version.is_some()))
+}
+
+fn backup_path(path: &Path, source_version: i64) -> PathBuf {
+    path.with_extension(format!("sqlite3.update-state-v{source_version}.backup"))
+}
+
+fn backup_partial_path(path: &Path, source_version: i64) -> PathBuf {
+    path.with_extension(format!(
+        "sqlite3.update-state-v{source_version}.backup.partial"
+    ))
+}
+
+fn backup_is_valid(connection: &Connection, source_version: i64) -> Result<bool, ()> {
+    let integrity = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|_| ())?;
+    Ok(integrity == "ok" && update_schema_version(connection)?.0 == source_version)
+}
+
+fn backup_before_migration(
+    connection: &Connection,
+    path: &Path,
+    source_version: i64,
+) -> Result<(), ()> {
+    let backup_path = backup_path(path, source_version);
+    if backup_path.exists() {
+        let backup =
+            Connection::open_with_flags(&backup_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|_| ())?;
+        return backup_is_valid(&backup, source_version)?
+            .then_some(())
+            .ok_or(());
+    }
+    let partial_path = backup_partial_path(path, source_version);
+    if partial_path.exists() {
+        fs::remove_file(&partial_path).map_err(|_| ())?;
+    }
+    connection
+        .backup(rusqlite::MAIN_DB, &partial_path, None)
+        .map_err(|_| ())?;
+    fs::File::open(&partial_path)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| ())?;
+    let backup =
+        Connection::open_with_flags(&partial_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| ())?;
+    if !backup_is_valid(&backup, source_version)? {
+        return Err(());
+    }
+    drop(backup);
+    fs::rename(&partial_path, &backup_path).map_err(|_| ())?;
+    let parent = backup_path.parent().ok_or(())?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| ())
 }
 
 impl Default for PersistedUpdateState {
@@ -166,115 +330,22 @@ impl Default for PersistedUpdateState {
 impl UpdatePersistence {
     fn open(path: Option<&Path>) -> Result<Self, ()> {
         let path = path.ok_or(())?;
-        let connection = Connection::open(path).map_err(|_| ())?;
+        let mut connection = Connection::open(path).map_err(|_| ())?;
+        connection
+            .busy_timeout(Duration::from_secs(2))
+            .map_err(|_| ())?;
+        Self::migrate(&mut connection, path)?;
         connection
             .execute_batch(
                 "PRAGMA journal_mode = WAL;
-                 PRAGMA synchronous = FULL;
-                 CREATE TABLE IF NOT EXISTS touchgrassbar_update_state (
-                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   automatic_checks_enabled INTEGER NOT NULL DEFAULT 1 CHECK (
-                     automatic_checks_enabled IN (0, 1)
-                   ),
-                   last_automatic_check_at INTEGER,
-                   offered_version TEXT CHECK (
-                     offered_version IS NULL OR
-                     length(offered_version) BETWEEN 1 AND 64
-                   ),
-                   minimum_required_version TEXT CHECK (
-                     minimum_required_version IS NULL OR
-                     length(minimum_required_version) BETWEEN 1 AND 64
-                   )
-                 );",
-            )
-            .map_err(|_| ())?;
-        let has_offered_column = connection
-            .query_row(
-                "SELECT EXISTS (
-                   SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
-                   WHERE name = 'offered_version'
-                 )",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|_| ())?;
-        if !has_offered_column {
-            let has_deferred_column = connection
-                .query_row(
-                    "SELECT EXISTS (
-                       SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
-                       WHERE name = 'deferred_version'
-                     )",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(|_| ())?;
-            let migration = if has_deferred_column {
-                "ALTER TABLE touchgrassbar_update_state
-                 RENAME COLUMN deferred_version TO offered_version;"
-            } else {
-                "ALTER TABLE touchgrassbar_update_state
-                 ADD COLUMN offered_version TEXT CHECK (
-                   offered_version IS NULL OR
-                   length(offered_version) BETWEEN 1 AND 64
-                 );"
-            };
-            connection.execute_batch(migration).map_err(|_| ())?;
-        }
-        let has_minimum_column = connection
-            .query_row(
-                "SELECT EXISTS (
-                   SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
-                   WHERE name = 'minimum_required_version'
-                 )",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|_| ())?;
-        if !has_minimum_column {
-            connection
-                .execute_batch(
-                    "ALTER TABLE touchgrassbar_update_state
-                     ADD COLUMN minimum_required_version TEXT CHECK (
-                       minimum_required_version IS NULL OR
-                       length(minimum_required_version) BETWEEN 1 AND 64
-                     );",
-                )
-                .map_err(|_| ())?;
-        }
-        let has_automatic_checks_column = connection
-            .query_row(
-                "SELECT EXISTS (
-                   SELECT 1 FROM pragma_table_info('touchgrassbar_update_state')
-                   WHERE name = 'automatic_checks_enabled'
-                 )",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|_| ())?;
-        if !has_automatic_checks_column {
-            connection
-                .execute_batch(
-                    "ALTER TABLE touchgrassbar_update_state
-                     ADD COLUMN automatic_checks_enabled INTEGER NOT NULL DEFAULT 1
-                     CHECK (automatic_checks_enabled IN (0, 1));",
-                )
-                .map_err(|_| ())?;
-        }
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO touchgrassbar_update_state (
-                   singleton, automatic_checks_enabled, last_automatic_check_at, offered_version,
-                   minimum_required_version
-                 ) VALUES (1, 1, NULL, NULL, NULL)",
-                [],
+                 PRAGMA synchronous = FULL;",
             )
             .map_err(|_| ())?;
         let persisted = connection
             .query_row(
                 "SELECT automatic_checks_enabled, last_automatic_check_at,
                         offered_version, minimum_required_version
-                 FROM touchgrassbar_update_state WHERE singleton = 1",
+                 FROM touchgrassbar_update_state_v3 WHERE singleton = 1",
                 [],
                 |row| {
                     Ok(PersistedUpdateState {
@@ -290,6 +361,111 @@ impl UpdatePersistence {
             connection: Mutex::new(connection),
             memory: Mutex::new(persisted),
         })
+    }
+
+    fn migrate(connection: &mut Connection, path: &Path) -> Result<(), ()> {
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|_| ())?;
+        let (source_version, explicit) = update_schema_version(connection)?;
+        if source_version > DATABASE_SCHEMA_VERSION {
+            return Err(());
+        }
+        if source_version == DATABASE_SCHEMA_VERSION && explicit {
+            return Ok(());
+        }
+        backup_before_migration(connection, path, source_version)?;
+        let transaction = connection.transaction().map_err(|_| ())?;
+        transaction
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS touchgrassbar_update_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   automatic_checks_enabled INTEGER NOT NULL DEFAULT 1 CHECK (
+                     automatic_checks_enabled IN (0, 1)
+                   ),
+                   last_automatic_check_at INTEGER,
+                   offered_version TEXT CHECK (
+                     offered_version IS NULL OR
+                     length(offered_version) BETWEEN 1 AND 64
+                   ),
+                   minimum_required_version TEXT CHECK (
+                     minimum_required_version IS NULL OR
+                     length(minimum_required_version) BETWEEN 1 AND 64
+                   )
+                 );
+                 CREATE TABLE IF NOT EXISTS touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL CHECK (version >= 1)
+                 );",
+            )
+            .map_err(|_| ())?;
+        if !column_exists(&transaction, "offered_version")? {
+            if column_exists(&transaction, "deferred_version")? {
+                transaction
+                    .execute_batch(
+                        "ALTER TABLE touchgrassbar_update_state
+                         RENAME COLUMN deferred_version TO offered_version;",
+                    )
+                    .map_err(|_| ())?;
+            } else {
+                transaction
+                    .execute_batch(
+                        "ALTER TABLE touchgrassbar_update_state
+                         ADD COLUMN offered_version TEXT CHECK (
+                           offered_version IS NULL OR
+                           length(offered_version) BETWEEN 1 AND 64
+                         );",
+                    )
+                    .map_err(|_| ())?;
+            }
+        }
+        if !column_exists(&transaction, "minimum_required_version")? {
+            transaction
+                .execute_batch(
+                    "ALTER TABLE touchgrassbar_update_state
+                     ADD COLUMN minimum_required_version TEXT CHECK (
+                       minimum_required_version IS NULL OR
+                       length(minimum_required_version) BETWEEN 1 AND 64
+                     );",
+                )
+                .map_err(|_| ())?;
+        }
+        if !column_exists(&transaction, "automatic_checks_enabled")? {
+            transaction
+                .execute_batch(
+                    "ALTER TABLE touchgrassbar_update_state
+                     ADD COLUMN automatic_checks_enabled INTEGER NOT NULL DEFAULT 1
+                     CHECK (automatic_checks_enabled IN (0, 1));",
+                )
+                .map_err(|_| ())?;
+        }
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO touchgrassbar_update_state (
+                   singleton, automatic_checks_enabled, last_automatic_check_at, offered_version,
+                   minimum_required_version
+                 ) VALUES (1, 1, NULL, NULL, NULL)",
+                [],
+            )
+            .map_err(|_| ())?;
+        transaction
+            .execute_batch(
+                "ALTER TABLE touchgrassbar_update_state
+                   RENAME TO touchgrassbar_update_state_v3;
+                 CREATE VIEW touchgrassbar_update_state AS
+                   SELECT singleton, automatic_checks_enabled, last_automatic_check_at,
+                          offered_version, minimum_required_version
+                   FROM touchgrassbar_update_state_v3;",
+            )
+            .map_err(|_| ())?;
+        transaction
+            .execute(
+                "INSERT INTO touchgrassbar_schema_versions(module, version) VALUES(?1, ?2)
+                 ON CONFLICT(module) DO UPDATE SET version = excluded.version",
+                params![DATABASE_SCHEMA_MODULE, DATABASE_SCHEMA_VERSION],
+            )
+            .map_err(|_| ())?;
+        transaction.commit().map_err(|_| ())
     }
 
     fn snapshot(&self) -> Result<PersistedUpdateState, ()> {
@@ -313,7 +489,7 @@ impl UpdatePersistence {
         let connection = self.connection.lock().map_err(|_| ())?;
         let changed = connection
             .execute(
-                "UPDATE touchgrassbar_update_state
+                "UPDATE touchgrassbar_update_state_v3
                  SET last_automatic_check_at = ?1 WHERE singleton = 1",
                 [now],
             )
@@ -330,7 +506,7 @@ impl UpdatePersistence {
         let connection = self.connection.lock().map_err(|_| ())?;
         let changed = connection
             .execute(
-                "UPDATE touchgrassbar_update_state
+                "UPDATE touchgrassbar_update_state_v3
                  SET automatic_checks_enabled = ?1 WHERE singleton = 1",
                 [enabled],
             )
@@ -351,7 +527,7 @@ impl UpdatePersistence {
         let connection = self.connection.lock().map_err(|_| ())?;
         let changed = connection
             .execute(
-                "UPDATE touchgrassbar_update_state
+                "UPDATE touchgrassbar_update_state_v3
                  SET offered_version = ?1, minimum_required_version = ?2
                  WHERE singleton = 1",
                 params![offered_version, minimum_required_version],
@@ -364,6 +540,16 @@ impl UpdatePersistence {
         memory.minimum_required_version = minimum_required_version.map(str::to_owned);
         Ok(())
     }
+}
+
+pub(crate) fn prepare_database(path: &Path) -> Result<(), ()> {
+    drop(UpdatePersistence::open(Some(path))?);
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn read_database_state(path: &Path) -> Result<PersistedUpdateState, ()> {
+    UpdatePersistence::open(Some(path))?.snapshot()
 }
 
 #[derive(Clone)]
@@ -386,15 +572,15 @@ pub struct UpdateRuntime {
 }
 
 impl UpdateRuntime {
-    pub fn open(
+    pub(crate) fn open(
         app: AppHandle,
-        database_path: Option<&Path>,
+        database: Option<&PreparedDatabase>,
         gate: OnlineFeatureGate,
         available: bool,
     ) -> Self {
         let current_version = app.package_info().version.clone();
         let persistence = available
-            .then(|| UpdatePersistence::open(database_path))
+            .then(|| UpdatePersistence::open(database.map(PreparedDatabase::path)))
             .and_then(Result::ok)
             .map(Arc::new);
         let persisted = persistence
@@ -403,7 +589,12 @@ impl UpdateRuntime {
         let minimum_required = persisted
             .as_ref()
             .is_some_and(|persisted| persisted_minimum_required(persisted, &current_version));
-        gate.set_paused(minimum_required);
+        let online_features_paused = configure_initial_online_feature_gate(
+            &gate,
+            available,
+            persistence.is_some(),
+            minimum_required,
+        );
         let initial_update = if !available || persistence.is_none() || persisted.is_none() {
             UpdateStatus::Unavailable
         } else if let Some(version) = persisted
@@ -419,7 +610,7 @@ impl UpdateRuntime {
         state.automatic_checks_enabled = persisted
             .as_ref()
             .is_none_or(|persisted| persisted.automatic_checks_enabled);
-        state.online_features_paused = minimum_required;
+        state.online_features_paused = online_features_paused;
         Self {
             app,
             current_version: current_version.clone(),
@@ -1015,7 +1206,36 @@ mod tests {
             let _ = fs::remove_file(&self.0);
             let _ = fs::remove_file(self.0.with_extension("sqlite3-shm"));
             let _ = fs::remove_file(self.0.with_extension("sqlite3-wal"));
+            for version in 0..=DATABASE_SCHEMA_VERSION {
+                let _ = fs::remove_file(backup_path(&self.0, version));
+                let _ = fs::remove_file(backup_partial_path(&self.0, version));
+            }
         }
+    }
+
+    #[test]
+    fn initial_state_reports_the_effective_online_feature_gate() {
+        let missing_persistence = OnlineFeatureGate::paused();
+        assert!(configure_initial_online_feature_gate(
+            &missing_persistence,
+            true,
+            false,
+            false,
+        ));
+        assert!(missing_persistence.is_paused());
+
+        let ready = OnlineFeatureGate::default();
+        assert!(!configure_initial_online_feature_gate(
+            &ready, true, true, false,
+        ));
+
+        let minimum_required = OnlineFeatureGate::default();
+        assert!(configure_initial_online_feature_gate(
+            &minimum_required,
+            true,
+            true,
+            true,
+        ));
     }
 
     #[test]
@@ -1137,6 +1357,69 @@ mod tests {
     }
 
     #[test]
+    fn unknown_legacy_update_shape_fails_before_backup_or_write() {
+        let database = TestDatabase::new();
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_update_state (
+                   singleton INTEGER PRIMARY KEY,
+                   last_automatic_check_at INTEGER,
+                   offered_version TEXT,
+                   minimum_required_version TEXT,
+                   future_private_value TEXT
+                 );
+                 INSERT INTO touchgrassbar_update_state VALUES(1, 10, NULL, NULL, 'kept');",
+            )
+            .unwrap();
+        drop(connection);
+        let before = fs::read(&database.0).unwrap();
+
+        assert!(UpdatePersistence::open(Some(&database.0)).is_err());
+        assert_eq!(fs::read(&database.0).unwrap(), before);
+        assert!(!backup_path(&database.0, 0).exists());
+        assert!(!backup_path(&database.0, 1).exists());
+    }
+
+    #[test]
+    fn failed_update_migration_rolls_back_and_keeps_its_backup() {
+        let database = TestDatabase::new();
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_update_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   last_automatic_check_at INTEGER,
+                   offered_version TEXT,
+                   minimum_required_version TEXT
+                 );
+                 INSERT INTO touchgrassbar_update_state VALUES(1, 10, '1.4.0', '1.3.0');
+                 CREATE TABLE touchgrassbar_update_state_v3(blocker TEXT);",
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(UpdatePersistence::open(Some(&database.0)).is_err());
+        let connection = Connection::open(&database.0).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT last_automatic_check_at, offered_version, minimum_required_version
+                     FROM touchgrassbar_update_state WHERE singleton = 1",
+                    [],
+                    |row| Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?
+                    )),
+                )
+                .unwrap(),
+            (10, "1.4.0".to_owned(), "1.3.0".to_owned())
+        );
+        assert!(backup_path(&database.0, 1).exists());
+    }
+
+    #[test]
     fn persistence_failures_do_not_claim_or_change_durable_state() {
         let database = TestDatabase::new();
         let persistence = UpdatePersistence::open(Some(&database.0)).unwrap();
@@ -1144,7 +1427,7 @@ mod tests {
             .connection
             .lock()
             .unwrap()
-            .execute("DROP TABLE touchgrassbar_update_state", [])
+            .execute("DROP TABLE touchgrassbar_update_state_v3", [])
             .unwrap();
 
         assert_eq!(persistence.claim_automatic_check(10_000), Err(()));

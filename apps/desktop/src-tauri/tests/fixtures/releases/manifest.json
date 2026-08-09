@@ -1,0 +1,497 @@
+{
+  "formatVersion": 1,
+  "generatedBy": "scripts/generate-database-fixtures.ts",
+  "fixtures": [
+    {
+      "tag": "v0.0.3",
+      "database": "v0.0.3/touchgrassbar.sqlite3",
+      "sha256": "16406c670085eb39f1fa7dcdba943ca9da6c2b10994e2dc14fbd73ba15129d83",
+      "sourceCommit": "1cb6d7a8eb308d297753f1a97cf1be449a6de9ac",
+      "releaseStatus": "official",
+      "sourceSchema": {
+        "databaseFormat": 4,
+        "lifecycle": 4,
+        "sanitizedDesktopState": 4,
+        "codexUsageIndex": 2,
+        "claudeUsageIndex": null,
+        "updateState": 1,
+        "databaseCoordinator": null
+      },
+      "sourceFeatures": {
+        "providerSettings": false,
+        "automaticUpdateChecks": false,
+        "claudeUsageIndex": false,
+        "retainedUsage": true,
+        "topModelUsage": false
+      },
+      "expectedState": {
+        "revision": "303",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-3"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": true,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1003,
+              "pricedTokens": 803,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1203,
+              "pricedTokens": 903,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": []
+        },
+        "automaticChecksEnabledAfterUpgrade": true,
+        "lastAutomaticCheckAt": 1700000303,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    },
+    {
+      "tag": "v0.0.4",
+      "database": "v0.0.4/touchgrassbar.sqlite3",
+      "sha256": "d3aff6ac7ab399c9322125231aa915fa157b9d9f4e9d40f02d3e2295b4c4e99f",
+      "sourceCommit": "eb809d7ba737c37f0c007c318a653c098b3512c6",
+      "releaseStatus": "official",
+      "sourceSchema": {
+        "databaseFormat": 4,
+        "lifecycle": 4,
+        "sanitizedDesktopState": 4,
+        "codexUsageIndex": 2,
+        "claudeUsageIndex": null,
+        "updateState": 1,
+        "databaseCoordinator": null
+      },
+      "sourceFeatures": {
+        "providerSettings": false,
+        "automaticUpdateChecks": false,
+        "claudeUsageIndex": false,
+        "retainedUsage": true,
+        "topModelUsage": false
+      },
+      "expectedState": {
+        "revision": "304",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-4"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": true,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1004,
+              "pricedTokens": 804,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1204,
+              "pricedTokens": 904,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": []
+        },
+        "automaticChecksEnabledAfterUpgrade": true,
+        "lastAutomaticCheckAt": 1700000304,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    },
+    {
+      "tag": "v0.0.5",
+      "database": "v0.0.5/touchgrassbar.sqlite3",
+      "sha256": "d7112245430a5d94328c4e366e85b3d52a558bb96a8dca64094a5b124cfd45da",
+      "sourceCommit": "7cae76253f7f5b9f318f8dcc04c90482d3816db0",
+      "releaseStatus": "official",
+      "sourceSchema": {
+        "databaseFormat": 4,
+        "lifecycle": 4,
+        "sanitizedDesktopState": 4,
+        "codexUsageIndex": 2,
+        "claudeUsageIndex": null,
+        "updateState": 1,
+        "databaseCoordinator": null
+      },
+      "sourceFeatures": {
+        "providerSettings": false,
+        "automaticUpdateChecks": false,
+        "claudeUsageIndex": false,
+        "retainedUsage": true,
+        "topModelUsage": false
+      },
+      "expectedState": {
+        "revision": "305",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-5"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": true,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1005,
+              "pricedTokens": 805,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1205,
+              "pricedTokens": 905,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": []
+        },
+        "automaticChecksEnabledAfterUpgrade": true,
+        "lastAutomaticCheckAt": 1700000305,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    },
+    {
+      "tag": "v0.0.6",
+      "database": "v0.0.6/touchgrassbar.sqlite3",
+      "sha256": "5b26717d03b1fd41889029de847ddd26d67cef2d89b407dafb7f3743f4dbab9a",
+      "sourceCommit": "2c6145ec9381eb188ca4d4921a2f9a2d66db626b",
+      "releaseStatus": "official",
+      "sourceSchema": {
+        "databaseFormat": 4,
+        "lifecycle": 4,
+        "sanitizedDesktopState": 4,
+        "codexUsageIndex": 2,
+        "claudeUsageIndex": null,
+        "updateState": 2,
+        "databaseCoordinator": null
+      },
+      "sourceFeatures": {
+        "providerSettings": false,
+        "automaticUpdateChecks": true,
+        "claudeUsageIndex": false,
+        "retainedUsage": true,
+        "topModelUsage": false
+      },
+      "expectedState": {
+        "revision": "306",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-6"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": true,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1006,
+              "pricedTokens": 806,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1206,
+              "pricedTokens": 906,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": []
+        },
+        "automaticChecksEnabledAfterUpgrade": false,
+        "lastAutomaticCheckAt": 1700000306,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    },
+    {
+      "tag": "v0.0.7",
+      "database": "v0.0.7/touchgrassbar.sqlite3",
+      "sha256": "9d73250ef8a9469217c9d93fb0d375354db2e89984d0d6af79e171e0d93f08d7",
+      "sourceCommit": "815dece502f2d762c7327d4a2e19fb007bcd665e",
+      "releaseStatus": "official",
+      "sourceSchema": {
+        "databaseFormat": 5,
+        "lifecycle": 5,
+        "sanitizedDesktopState": 4,
+        "codexUsageIndex": 2,
+        "claudeUsageIndex": 3,
+        "updateState": 2,
+        "databaseCoordinator": null
+      },
+      "sourceFeatures": {
+        "providerSettings": true,
+        "automaticUpdateChecks": true,
+        "claudeUsageIndex": true,
+        "retainedUsage": true,
+        "topModelUsage": true
+      },
+      "expectedState": {
+        "revision": "307",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-7"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": false,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1007,
+              "pricedTokens": 807,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1207,
+              "pricedTokens": 907,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 707,
+              "pricedTokens": 607,
+              "costUsd": 0.75,
+              "complete": true,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 907,
+              "pricedTokens": 707,
+              "costUsd": 1,
+              "complete": false,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            }
+          ]
+        },
+        "automaticChecksEnabledAfterUpgrade": false,
+        "lastAutomaticCheckAt": 1700000307,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    },
+    {
+      "tag": "v0.0.8",
+      "database": "v0.0.8/touchgrassbar.sqlite3",
+      "sha256": "38e372915e02b9c185877b5627f8e3104ed14b4ade5855e6c0ca4b918ecfdd35",
+      "sourceCommit": "78833ce632150750c40f483d2ffde015de35a65e",
+      "releaseStatus": "official",
+      "sourceSchema": {
+        "databaseFormat": 5,
+        "lifecycle": 5,
+        "sanitizedDesktopState": 4,
+        "codexUsageIndex": 2,
+        "claudeUsageIndex": 3,
+        "updateState": 2,
+        "databaseCoordinator": null
+      },
+      "sourceFeatures": {
+        "providerSettings": true,
+        "automaticUpdateChecks": true,
+        "claudeUsageIndex": true,
+        "retainedUsage": true,
+        "topModelUsage": true
+      },
+      "expectedState": {
+        "revision": "308",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-8"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": false,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1008,
+              "pricedTokens": 808,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1208,
+              "pricedTokens": 908,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 708,
+              "pricedTokens": 608,
+              "costUsd": 0.75,
+              "complete": true,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 908,
+              "pricedTokens": 708,
+              "costUsd": 1,
+              "complete": false,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            }
+          ]
+        },
+        "automaticChecksEnabledAfterUpgrade": false,
+        "lastAutomaticCheckAt": 1700000308,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    },
+    {
+      "tag": "v0.0.9",
+      "database": "v0.0.9/touchgrassbar.sqlite3",
+      "sha256": "ece6272f1e16fbbb5e06d504c59552a06f4245f12dbb325f619a5268f4fbb9ba",
+      "sourceCommit": "candidate",
+      "releaseStatus": "candidate",
+      "sourceSchema": {
+        "databaseFormat": 6,
+        "lifecycle": 5,
+        "sanitizedDesktopState": 5,
+        "codexUsageIndex": 3,
+        "claudeUsageIndex": 4,
+        "updateState": 3,
+        "databaseCoordinator": 1
+      },
+      "sourceFeatures": {
+        "providerSettings": true,
+        "automaticUpdateChecks": true,
+        "claudeUsageIndex": true,
+        "retainedUsage": true,
+        "topModelUsage": true
+      },
+      "expectedState": {
+        "revision": "309",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-9"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": false,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1009,
+              "pricedTokens": 809,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1209,
+              "pricedTokens": 909,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 709,
+              "pricedTokens": 609,
+              "costUsd": 0.75,
+              "complete": true,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 909,
+              "pricedTokens": 709,
+              "costUsd": 1,
+              "complete": false,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            }
+          ]
+        },
+        "automaticChecksEnabledAfterUpgrade": false,
+        "lastAutomaticCheckAt": 1700000309,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    }
+  ]
+}

@@ -2,7 +2,11 @@
 
 import { spawnSync } from "node:child_process";
 
-import { releaseRepository } from "./release-contract";
+import {
+  publishedStableReleaseTags,
+  releaseRepository,
+  verifyDatabaseFixtureCandidate,
+} from "./release-contract";
 
 type ReleaseLevel = "major" | "minor" | "patch";
 type StableVersion = {
@@ -98,12 +102,10 @@ function remoteStableTags() {
     "origin",
     "refs/tags/v*",
   ]);
-  return output
-    .split(/\r?\n/u)
-    .flatMap((line) => {
-      const match = /\srefs\/tags\/(v[^\s]+)$/u.exec(line);
-      return match?.[1] ? [match[1]] : [];
-    });
+  return output.split(/\r?\n/u).flatMap((line) => {
+    const match = /\srefs\/tags\/(v[^\s]+)$/u.exec(line);
+    return match?.[1] ? [match[1]] : [];
+  });
 }
 
 function exactMainCommit() {
@@ -190,6 +192,10 @@ function release(argumentsList: string[]) {
   const remoteTags = remoteStableTags();
   const current = latestStableTag(remoteTags);
   const next = bumpStableVersion(current, options.level);
+  verifyDatabaseFixtureCandidate(
+    next,
+    publishedStableReleaseTags(releaseRepository),
+  );
   if (remoteTags.includes(next)) {
     throw new Error(`Remote release tag already exists: ${next}.`);
   }
