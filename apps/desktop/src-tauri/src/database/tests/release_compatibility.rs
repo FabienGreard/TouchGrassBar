@@ -9,7 +9,7 @@ use std::{
 use rusqlite::{Connection, OpenFlags, types::ValueRef};
 use serde::Deserialize;
 
-use super::{coordinator_backup_path, prepare};
+use super::super::{migration::coordinator_backup_path, prepare};
 use crate::{
     lifecycle::DesktopLifecycle,
     providers::CodingProvider,
