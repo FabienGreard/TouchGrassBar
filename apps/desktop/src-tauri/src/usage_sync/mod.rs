@@ -849,9 +849,10 @@ fn current_utc_daily_aggregates_with_corrections(
     Ok(aggregates)
 }
 
-/// Store the cumulative provider totals that exist when a transferred Mac
-/// generation becomes active. Later queue writes use only the difference from
-/// these totals. Generation one has no earlier Active Mac contribution.
+/// Store cumulative provider totals observed at the exact transfer boundary.
+/// A stale pre-transfer total cannot become a baseline. The first later
+/// observation becomes a partial baseline instead. Generation one has no
+/// earlier Active Mac contribution.
 pub(crate) fn capture_generation_baselines(
     transaction: &Transaction<'_>,
     active_mac_generation: u64,
@@ -902,7 +903,7 @@ pub(crate) fn capture_generation_baselines(
         &UsageSyncCorrections::default(),
         &providers,
     )? {
-        if aggregate.observed_at > requested_activated_at {
+        if aggregate.observed_at != requested_activated_at {
             continue;
         }
         aggregate.correction_reason = None;
@@ -921,7 +922,7 @@ pub(crate) fn capture_generation_baselines(
             ],
             |row| row.get::<_, bool>(0),
         )?;
-        if aggregate.observed_at < requested_activated_at || abandoned_transfer_usage {
+        if abandoned_transfer_usage {
             aggregate.coverage = SyncCoverage::Partial;
         }
         let provider = provider_database_value(aggregate.provider);
@@ -986,12 +987,7 @@ fn generation_segment(
         .optional()?;
     let Some(baseline_json) = baseline_json else {
         if aggregate.observed_at < activated_at {
-            aggregate.correction_reason = None;
-            aggregate.coverage = SyncCoverage::Partial;
-            aggregate.observed_tokens = 0;
-            aggregate.api_equivalent_cost = None;
-            aggregate.validate()?;
-            return Ok(GenerationSegment::Queue(aggregate));
+            return Ok(GenerationSegment::BaselineOnly);
         }
         let mut baseline = aggregate.clone();
         baseline.correction_reason = None;
@@ -1344,6 +1340,10 @@ fn prune_expired_usage_sync_rows(
         "DELETE FROM usage_sync_generation_baselines WHERE ranking_day < ?1",
         [&first_retained_day],
     )?;
+    let correction_lineage = transaction.execute(
+        "DELETE FROM usage_sync_correction_lineage WHERE ranking_day < ?1",
+        [&first_retained_day],
+    )?;
     let activations = transaction.execute(
         "DELETE FROM usage_sync_generation_activations
          WHERE ranking_day < ?1
@@ -1354,11 +1354,81 @@ fn prune_expired_usage_sync_rows(
            )",
         [&first_retained_day],
     )?;
+    let provider_settings = transaction.execute(
+        "DELETE FROM usage_sync_provider_settings_outbox
+         WHERE delivery_state = 'abandoned'
+           AND active_generation IN (
+               SELECT generations.active_generation
+               FROM usage_sync_generations AS generations
+               WHERE generations.queue_state = 'abandoned'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM usage_sync_daily_aggregates AS aggregates
+                     WHERE aggregates.active_generation = generations.active_generation
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM usage_sync_latest_outbox AS outbox
+                     WHERE outbox.active_generation = generations.active_generation
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM usage_sync_terminal_conflicts AS conflicts
+                     WHERE conflicts.active_generation = generations.active_generation
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM usage_sync_generation_baselines AS baselines
+                     WHERE baselines.active_generation = generations.active_generation
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM usage_sync_generation_activations AS activations
+                     WHERE activations.active_generation = generations.active_generation
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM usage_sync_correction_lineage AS corrections
+                     WHERE corrections.consumed_generation = generations.active_generation
+                 )
+           )",
+        [],
+    )?;
+    let generations = transaction.execute(
+        "DELETE FROM usage_sync_generations
+         WHERE queue_state = 'abandoned'
+           AND NOT EXISTS (
+               SELECT 1 FROM usage_sync_daily_aggregates AS aggregates
+               WHERE aggregates.active_generation = usage_sync_generations.active_generation
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM usage_sync_latest_outbox AS outbox
+               WHERE outbox.active_generation = usage_sync_generations.active_generation
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM usage_sync_terminal_conflicts AS conflicts
+               WHERE conflicts.active_generation = usage_sync_generations.active_generation
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM usage_sync_generation_baselines AS baselines
+               WHERE baselines.active_generation = usage_sync_generations.active_generation
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM usage_sync_generation_activations AS activations
+               WHERE activations.active_generation = usage_sync_generations.active_generation
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM usage_sync_provider_settings_outbox AS settings
+               WHERE settings.active_generation = usage_sync_generations.active_generation
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM usage_sync_correction_lineage AS corrections
+               WHERE corrections.consumed_generation = usage_sync_generations.active_generation
+           )",
+        [],
+    )?;
     aggregates
         .checked_add(outbox)
         .and_then(|rows| rows.checked_add(terminal_conflicts))
         .and_then(|rows| rows.checked_add(baselines))
+        .and_then(|rows| rows.checked_add(correction_lineage))
         .and_then(|rows| rows.checked_add(activations))
+        .and_then(|rows| rows.checked_add(provider_settings))
+        .and_then(|rows| rows.checked_add(generations))
         .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
@@ -3793,6 +3863,106 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(activations, vec![1]);
+    }
+
+    #[test]
+    fn pruning_removes_only_unreferenced_abandoned_generation_metadata() {
+        let mut connection = connection();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        let expired_at = now() - Duration::days(USAGE_HISTORY_RETENTION_DAYS);
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute_batch(
+                "INSERT INTO usage_sync_generations(active_generation, queue_state)
+                     VALUES(1, 'active'), (2, 'abandoned'), (3, 'blocked'), (4, 'active');
+                 INSERT INTO usage_sync_provider_settings_outbox(
+                     active_generation, revision, codex_enabled, claude_enabled, delivery_state
+                 ) VALUES
+                     (1, 1, 1, 1, 'synced'),
+                     (2, 1, 1, 1, 'abandoned'),
+                     (3, 1, 1, 1, 'blocked'),
+                     (4, 1, 1, 1, 'abandoned');",
+            )
+            .unwrap();
+        for generation in 1_i64..=4 {
+            transaction
+                .execute(
+                    "INSERT INTO usage_sync_generation_activations(
+                         active_generation, ranking_day, activated_at
+                     ) VALUES(?1, ?2, ?3)",
+                    params![
+                        generation,
+                        expired_at.date().to_string(),
+                        offset_date_time_millis(expired_at).unwrap()
+                    ],
+                )
+                .unwrap();
+        }
+        super::queue_daily_aggregate(
+            &transaction,
+            4,
+            aggregate(CodingProvider::Codex, 100, 1_000),
+            now(),
+        )
+        .unwrap();
+        transaction
+            .execute(
+                "UPDATE usage_sync_generations
+                 SET queue_state = 'abandoned'
+                 WHERE active_generation = 4",
+                [],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "UPDATE usage_sync_latest_outbox
+                 SET queue_state = 'abandoned'
+                 WHERE active_generation = 4",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(
+            prune_expired_usage_sync_rows(&transaction, now()).unwrap(),
+            4
+        );
+        transaction.commit().unwrap();
+
+        let generations = connection
+            .prepare(
+                "SELECT active_generation FROM usage_sync_generations
+                 ORDER BY active_generation",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(generations, vec![1, 3, 4]);
+        let settings = connection
+            .prepare(
+                "SELECT active_generation FROM usage_sync_provider_settings_outbox
+                 ORDER BY active_generation",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(settings, vec![1, 3, 4]);
+        let activations = connection
+            .prepare(
+                "SELECT active_generation FROM usage_sync_generation_activations
+                 ORDER BY active_generation",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(activations, vec![1, 3]);
     }
 
     #[test]

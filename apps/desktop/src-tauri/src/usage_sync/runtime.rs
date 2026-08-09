@@ -1214,10 +1214,11 @@ mod tests {
     }
 
     #[test]
-    fn authority_install_captures_before_a_delayed_worker_delivers_the_segment() {
+    fn first_post_transfer_baseline_precedes_a_delayed_worker_delivery() {
         let baseline_time = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
         let activation_time = baseline_time + time::Duration::minutes(1);
-        let observation_time = activation_time + time::Duration::minutes(1);
+        let baseline_observation_time = activation_time + time::Duration::minutes(1);
+        let delivery_observation_time = activation_time + time::Duration::minutes(2);
         let worker_time = activation_time + time::Duration::minutes(5);
         let active_mac_activated_at =
             u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
@@ -1253,14 +1254,25 @@ mod tests {
                 generation: 2,
             })
             .unwrap();
-        *observations.0.lock().unwrap() =
-            Some(observed_state_with_usage(observation_time, 150, Some(1.5)));
+        *observations.0.lock().unwrap() = Some(observed_state_with_usage(
+            baseline_observation_time,
+            150,
+            Some(1.5),
+        ));
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
         assert_eq!(
             observed_acquisition.recv_timeout(Duration::from_secs(1)),
             Ok(())
         );
+
+        *observations.0.lock().unwrap() = Some(observed_state_with_usage(
+            delivery_observation_time,
+            200,
+            Some(2.0),
+        ));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
 
         release.send(()).unwrap();
         assert_eq!(

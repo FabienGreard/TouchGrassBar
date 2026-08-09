@@ -5277,7 +5277,9 @@ mod tests {
     }
 
     #[test]
-    fn transferred_generation_uses_the_install_boundary_baseline_as_partial() {
+    fn transferred_generation_ignores_a_stale_install_total() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
         let now = test_time();
         let activation_time = now + TimeDuration::minutes(1);
         let database = TestDatabase::new();
@@ -5285,7 +5287,11 @@ mod tests {
             Ok(Some(observed_state(now, 100))),
             Ok(Some(observed_state(
                 activation_time + TimeDuration::seconds(1),
-                150,
+                200,
+            ))),
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(2),
+                230,
             ))),
         ]));
         let core = NativeCore::open_without_launch(
@@ -5316,18 +5322,35 @@ mod tests {
             ),
             ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
         };
-        assert_eq!(stored_counts, (1, 0));
+        assert_eq!(stored_counts, (0, 0));
         let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
         assert!(activation.snapshots().is_empty());
         core.acknowledge_usage_sync(&activation, &[]).unwrap();
 
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
+        let marker = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(marker.snapshots().len(), 1);
+        assert_eq!(marker.snapshots()[0].revision, 1);
+        assert_eq!(marker.snapshots()[0].observed_tokens, 0);
+        assert_eq!(marker.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(marker.snapshots()[0].api_equivalent_cost, None);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Codex,
+            ranking_day: marker.snapshots()[0].ranking_day.clone(),
+            revision: marker.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&marker, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
 
         let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
         assert_eq!(pending.snapshots().len(), 1);
-        assert_eq!(pending.snapshots()[0].revision, 1);
-        assert_eq!(pending.snapshots()[0].observed_tokens, 50);
+        assert_eq!(pending.snapshots()[0].revision, 2);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 30);
         assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
         assert_eq!(pending.snapshots()[0].api_equivalent_cost, None);
     }

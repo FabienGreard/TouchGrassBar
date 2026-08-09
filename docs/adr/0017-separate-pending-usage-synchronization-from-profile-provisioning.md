@@ -33,8 +33,9 @@ The external synchronization Interface has two operations:
 
 The Module also has one internal Profile-facing operation.
 `install_authority` receives the server Generation and activation time. It
-captures the current sanitized baseline before the Profile runtime calls
-`request()`. This operation is not available to app callers.
+captures a sanitized baseline only when the observation matches the activation
+time. It ignores earlier totals. The first later observation becomes a partial
+baseline. This operation is not available to app callers.
 
 The app-facing Interface does not expose Active Mac Generation activation,
 Pending Usage Snapshot selection, outbox rows, transport outcomes,
