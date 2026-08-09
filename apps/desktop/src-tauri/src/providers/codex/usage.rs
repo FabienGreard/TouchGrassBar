@@ -3314,9 +3314,13 @@ fn index_local_usage_with_budget(
     ensure_index_schema(&mut connection, Some(database_path)).ok()?;
     let today = utc_ranking_day(now);
     let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
-    let fast_turn_evidence = load_fast_turn_evidence(home, cutoff, today)?;
-    reconcile_fast_turn_evidence(&connection, &fast_turn_evidence).ok()?;
-    let fast_turns = fast_turn_evidence.turns;
+    let fast_turns = match load_fast_turn_evidence(home, cutoff, today) {
+        Ok(fresh) => {
+            reconcile_fast_turn_evidence(&connection, &fresh).ok()?;
+            fresh.turns
+        }
+        Err(()) => load_stored_fast_turns(&connection).ok()?,
+    };
     // Trace evidence and rollout bytes are independent local inputs. A large
     // read-only trace database must not consume the bounded rollout budget.
     let started = Instant::now();
@@ -6059,7 +6063,110 @@ mod tests {
     }
 
     #[test]
-    fn fast_evidence_failure_fails_closed_to_standard_and_keeps_observed_tokens() {
+    fn fast_evidence_read_failure_preserves_committed_fast_turns() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"priority"}}"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let initial = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert!((initial.daily[&day].api_equivalent_cost_usd.unwrap() - 0.79).abs() < 1e-12);
+
+        fs::write(fixture.root.join("logs_2.sqlite"), b"not a SQLite database").unwrap();
+        let retained = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(retained.daily[&day].observed_tokens, 110_000);
+        assert!((retained.daily[&day].api_equivalent_cost_usd.unwrap() - 0.79).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT model || ':' || pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "gpt-5.6-sol:fast"
+        );
+    }
+
+    #[test]
+    fn authoritative_empty_fast_evidence_removes_committed_fast_turns() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"priority"}}"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace.execute("DELETE FROM logs", []).unwrap();
+        drop(trace);
+        let standard = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert!((standard.daily[&day].api_equivalent_cost_usd.unwrap() - 0.395).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM codex_usage_fast_turns", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "standard"
+        );
+    }
+
+    #[test]
+    fn fast_evidence_read_failure_without_stored_turns_keeps_standard_usage() {
         let fixture = TempUsage::new();
         let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
         let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
@@ -6071,7 +6178,7 @@ mod tests {
         fs::write(fixture.root.join("logs_2.sqlite"), b"not a SQLite database").unwrap();
 
         let local = index_local_usage_at(&fixture.database, &fixture.root, now)
-            .expect("optional Fast evidence must not hide observed usage");
+            .expect("an empty stored classification must keep observed usage");
 
         assert_eq!(local.daily[&day].observed_tokens, 110_000);
         assert!((local.daily[&day].api_equivalent_cost_usd.unwrap() - 0.395).abs() < 1e-12);

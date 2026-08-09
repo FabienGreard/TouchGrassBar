@@ -77,11 +77,10 @@ pub(super) fn load_fast_turn_evidence(
     codex_home: &Path,
     cutoff: Date,
     today: Date,
-) -> Option<FastTurnEvidence> {
-    let turns = load_fast_turns_from_database(&codex_home.join("logs_2.sqlite"), cutoff, today)
-        .unwrap_or_default();
+) -> Result<FastTurnEvidence, ()> {
+    let turns = load_fast_turns_from_database(&codex_home.join("logs_2.sqlite"), cutoff, today)?;
     let fingerprint = fast_turn_fingerprint(&turns);
-    Some(FastTurnEvidence { fingerprint, turns })
+    Ok(FastTurnEvidence { fingerprint, turns })
 }
 
 fn load_fast_turns_from_database(
