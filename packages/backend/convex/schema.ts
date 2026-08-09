@@ -110,23 +110,6 @@ export default defineSchema({
       "rankingDay",
     ]),
 
-  userScores: defineTable({
-    tokenmaxxerId: v.id("tokenmaxxers"),
-    boardKey: v.string(),
-    scope: scoreScope,
-    windowDays: scoreWindow,
-    tokenScore: v.number(),
-    apiEquivalentCost,
-    computedAt: v.number(),
-  })
-    .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
-    .index("by_board_key", ["boardKey"])
-    .index("by_tokenmaxxer_id_and_scope_and_window_days", [
-      "tokenmaxxerId",
-      "scope",
-      "windowDays",
-    ]),
-
   publicScores: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
     boardKey: v.string(),

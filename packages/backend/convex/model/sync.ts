@@ -70,7 +70,7 @@ async function upsertDailyUsage(
 
 function assertBatchSize(snapshots: UsageSnapshot[]) {
   if (snapshots.length === 0 || snapshots.length > 62) {
-    throw new Error("sync must contain between 1 and 62 Daily Usage Aggregates");
+    throw new Error("sync must contain between 1 and 62 Daily Usage Snapshots");
   }
 }
 

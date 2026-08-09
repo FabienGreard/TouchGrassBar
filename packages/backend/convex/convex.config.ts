@@ -1,4 +1,4 @@
-import aggregate from "@convex-dev/aggregate/convex.config.js";
+import doomerboardIndexComponent from "@convex-dev/aggregate/convex.config.js";
 import betterAuth from "@convex-dev/better-auth/convex.config";
 import migrations from "@convex-dev/migrations/convex.config.js";
 import rateLimiter from "@convex-dev/rate-limiter/convex.config.js";
@@ -10,7 +10,7 @@ const app = defineApp({
     BETTER_AUTH_SECRET: v.string(),
   },
 });
-app.use(aggregate, { name: "doomerboard" });
+app.use(doomerboardIndexComponent, { name: "doomerboard" });
 app.use(betterAuth);
 app.use(migrations);
 app.use(rateLimiter);

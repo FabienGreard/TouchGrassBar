@@ -1,14 +1,15 @@
 /// <reference types="vite/client" />
 
-import aggregateTest from "@convex-dev/aggregate/test";
+import doomerboardIndexTest from "@convex-dev/aggregate/test";
 import betterAuthTest from "@convex-dev/better-auth/test";
 import migrationsTest from "@convex-dev/migrations/test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
+import { globalDoomerboardIndex } from "./model/doomerboardIndex";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
 
@@ -18,7 +19,7 @@ const NOW = new Date(`${TODAY}T12:00:00.000Z`);
 
 function testBackend() {
   const t = convexTest(schema, modules);
-  aggregateTest.register(t, "doomerboard");
+  doomerboardIndexTest.register(t, "doomerboard");
   betterAuthTest.register(t);
   migrationsTest.register(t);
   rateLimiterTest.register(t);
@@ -140,9 +141,7 @@ async function createProfile(
   return profile;
 }
 
-function usageSnapshot(
-  overrides: Partial<UsageSnapshot> = {},
-): UsageSnapshot {
+function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
   const evidenceBasis = overrides.evidenceBasis ?? "locally-derived";
   const provider = overrides.provider ?? "codex";
   return {
@@ -153,7 +152,8 @@ function usageSnapshot(
         provider === "codex"
           ? "openai-api-2026-08-09-v2"
           : "anthropic-standard-2026-08-07-v1",
-      quality: evidenceBasis === "provider-reported" ? "reconciled" : "local-only",
+      quality:
+        evidenceBasis === "provider-reported" ? "reconciled" : "local-only",
     },
     correctionReason: null,
     correctionRevision: null,
@@ -222,7 +222,9 @@ test("both providers commit atomically and retries report exact revision outcome
     ctx.db.query("usageBuckets").collect(),
   );
   expect(beforeRetry).toHaveLength(2);
-  expect(await t.run(async (ctx) => ctx.db.query("publicScores").collect())).toHaveLength(9);
+  expect(
+    await t.run(async (ctx) => ctx.db.query("publicScores").collect()),
+  ).toHaveLength(9);
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
@@ -244,9 +246,9 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 1,
     },
   ]);
-  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
-    beforeRetry,
-  );
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual(beforeRetry);
 
   const higherSnapshots = snapshots.map((snapshot) =>
     Object.assign({}, snapshot, {
@@ -273,9 +275,9 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 1,
     },
   ]);
-  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
-    beforeRetry,
-  );
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual(beforeRetry);
 
   const lowerSnapshots = snapshots.map((snapshot) =>
     Object.assign({}, snapshot, {
@@ -302,9 +304,9 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 1,
     },
   ]);
-  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
-    beforeRetry,
-  );
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual(beforeRetry);
 
   const olderObservations = snapshots.map((snapshot) =>
     Object.assign({}, snapshot, {
@@ -333,9 +335,9 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 2,
     },
   ]);
-  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
-    beforeRetry,
-  );
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual(beforeRetry);
 
   await authenticated.mutation(api.sync.dailyUsage, {
     activeMacGeneration: 1,
@@ -398,7 +400,7 @@ test("provider settings exclude accepted usage and restore retained history", as
 
   const disabled = await t.run(async (ctx) => ({
     daily: await ctx.db.query("userDailyUsage").collect(),
-    scores: await ctx.db.query("userScores").collect(),
+    scores: await ctx.db.query("publicScores").collect(),
     settings: await ctx.db.query("deviceProviderSettings").collect(),
   }));
   expect(disabled.daily).toHaveLength(2);
@@ -434,7 +436,7 @@ test("provider settings exclude accepted usage and restore retained history", as
   ).resolves.toEqual({ outcome: "stale", revision: 2 });
 
   let combined = await t.run(async (ctx) =>
-    (await ctx.db.query("userScores").collect()).find(
+    (await ctx.db.query("publicScores").collect()).find(
       (row) => row.scope === "combined" && row.windowDays === 1,
     ),
   );
@@ -447,7 +449,7 @@ test("provider settings exclude accepted usage and restore retained history", as
     revision: 3,
   });
   combined = await t.run(async (ctx) =>
-    (await ctx.db.query("userScores").collect()).find(
+    (await ctx.db.query("publicScores").collect()).find(
       (row) => row.scope === "combined" && row.windowDays === 1,
     ),
   );
@@ -460,7 +462,7 @@ test("provider settings exclude accepted usage and restore retained history", as
     revision: 4,
   });
   combined = await t.run(async (ctx) =>
-    (await ctx.db.query("userScores").collect()).find(
+    (await ctx.db.query("publicScores").collect()).find(
       (row) => row.scope === "combined" && row.windowDays === 1,
     ),
   );
@@ -521,17 +523,9 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   const stored = await t.run(async (ctx) => ({
     publicScores: await ctx.db.query("publicScores").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
-    userScores: await ctx.db.query("userScores").collect(),
   }));
   expect(stored.userDailyUsage).toHaveLength(1);
   expect(stored.userDailyUsage[0]).toMatchObject({
-    apiEquivalentCost,
-  });
-  expect(
-    stored.userScores.find(
-      (row) => row.scope === "claude" && row.windowDays === 1,
-    ),
-  ).toMatchObject({
     apiEquivalentCost,
   });
   expect(
@@ -554,6 +548,65 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
       displayName: "Fabien",
       rank: 1,
       tokenScore: 1_458_285,
+      touchGrassId: expect.any(String),
+    },
+  ]);
+});
+
+test("the migration repairs the Doomerboard index from public scores", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [usageSnapshot()],
+  });
+
+  const publicScore = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicScores")
+      .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:codex:1d"))
+      .unique(),
+  );
+  if (!publicScore) throw new Error("Public Score missing");
+  await t.run(async (ctx) => {
+    await globalDoomerboardIndex.delete(ctx, {
+      id: publicScore._id,
+      key: publicScore.tokenScore,
+      namespace: publicScore.boardKey,
+    });
+  });
+  await expect(
+    t.query(api.doomerboards.global, {
+      limit: 10,
+      scope: "codex",
+      windowDays: 1,
+    }),
+  ).resolves.toEqual([]);
+
+  const args = { cursor: null, dryRun: false, oneBatchOnly: true };
+  await t.mutation(
+    internal.internal.migrations.backfillGlobalDoomerboardIndex,
+    args,
+  );
+  await t.mutation(
+    internal.internal.migrations.backfillGlobalDoomerboardIndex,
+    args,
+  );
+
+  await expect(
+    t.query(api.doomerboards.global, {
+      limit: 10,
+      scope: "codex",
+      windowDays: 1,
+    }),
+  ).resolves.toEqual([
+    {
+      apiEquivalentCost: expect.any(Object),
+      displayName: "Fabien",
+      rank: 1,
+      tokenScore: 100,
       touchGrassId: expect.any(String),
     },
   ]);
@@ -602,7 +655,9 @@ test("Active Mac authority is isolated by Profile, credential, generation, and r
       snapshots: [snapshot],
     }),
   ).rejects.toThrow("authority-rejected");
-  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual([]);
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual([]);
 });
 
 test("a mismatched live session cannot create or change Active Mac authority", async () => {
@@ -669,7 +724,6 @@ test("two Profiles commit both providers without crossing usage or score ownersh
     tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
-    userScores: await ctx.db.query("userScores").collect(),
   }));
   const owner = (touchGrassId: string) => {
     const tokenmaxxer = stored.tokenmaxxers.find(
@@ -693,7 +747,6 @@ test("two Profiles commit both providers without crossing usage or score ownersh
       .sort((left, right) => left - right),
   ).toEqual([201, 202]);
   expect(stored.userDailyUsage).toHaveLength(4);
-  expect(stored.userScores).toHaveLength(18);
   expect(stored.publicScores).toHaveLength(18);
   const serialized = JSON.stringify(stored);
   expect(serialized).not.toContain(aliceCredential);
@@ -732,7 +785,6 @@ test("an unproved decrease rolls back the whole batch and an explicit correction
     publicScores: await ctx.db.query("publicScores").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
-    userScores: await ctx.db.query("userScores").collect(),
   }));
 
   await expect(
@@ -749,7 +801,6 @@ test("an unproved decrease rolls back the whole batch and an explicit correction
     publicScores: await ctx.db.query("publicScores").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
-    userScores: await ctx.db.query("userScores").collect(),
   }));
   expect(afterRollback).toEqual(beforeRollback);
 
@@ -795,7 +846,9 @@ test("a corrected revision can be the first server insert", async () => {
       }),
     ).rejects.toThrow("final evidence");
   }
-  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual([]);
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual([]);
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
@@ -833,7 +886,9 @@ test("a corrected revision can be the first server insert", async () => {
     },
   ]);
 
-  const buckets = await t.run(async (ctx) => ctx.db.query("usageBuckets").collect());
+  const buckets = await t.run(async (ctx) =>
+    ctx.db.query("usageBuckets").collect(),
+  );
   expect(
     buckets.map((bucket) => ({
       lastCorrectionReason: bucket.lastCorrectionReason,
@@ -967,7 +1022,13 @@ test("lost correction acknowledgements keep one lineage for both providers", asy
   ]);
   expect(
     stored.buckets.map(
-      ({ correctionReason, correctionRevision, observedTokens, provider, revision }) => ({
+      ({
+        correctionReason,
+        correctionRevision,
+        observedTokens,
+        provider,
+        revision,
+      }) => ({
         correctionReason,
         correctionRevision,
         observedTokens,
@@ -1174,7 +1235,9 @@ test("correction reasons require exact evidence transitions", async () => {
     ).rejects.toThrow();
   }
 
-  const buckets = await t.run(async (ctx) => ctx.db.query("usageBuckets").collect());
+  const buckets = await t.run(async (ctx) =>
+    ctx.db.query("usageBuckets").collect(),
+  );
   expect(buckets).toHaveLength(1);
   expect(buckets[0]).toMatchObject({
     evidenceBasis: "provider-reported",
@@ -1266,7 +1329,12 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
             provider,
           }),
         ],
-        [usageSnapshot({ observedTokens: Number.MAX_SAFE_INTEGER + 1, provider })],
+        [
+          usageSnapshot({
+            observedTokens: Number.MAX_SAFE_INTEGER + 1,
+            provider,
+          }),
+        ],
         [usageSnapshot({ correctionRevision: 1, provider })],
         [
           usageSnapshot({
@@ -1383,17 +1451,15 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
       publicScores: await ctx.db.query("publicScores").collect(),
       usageBuckets: await ctx.db.query("usageBuckets").collect(),
       userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
-      userScores: await ctx.db.query("userScores").collect(),
     })),
   ).toEqual({
     publicScores: [],
     usageBuckets: [],
     userDailyUsage: [],
-    userScores: [],
   });
 });
 
-test("the app database stores only the installation digest and approved aggregate fields", async () => {
+test("the app database stores only the installation digest and approved usage fields", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
@@ -1416,16 +1482,19 @@ test("the app database stores only the installation digest and approved aggregat
     devices: await ctx.db.query("devices").collect(),
     publicScores: await ctx.db.query("publicScores").collect(),
     tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
-    usageCorrectionAudits: await ctx.db.query("usageCorrectionAudits").collect(),
+    usageCorrectionAudits: await ctx.db
+      .query("usageCorrectionAudits")
+      .collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
-    userScores: await ctx.db.query("userScores").collect(),
   }));
   const serialized = JSON.stringify(stored);
   expect(serialized).not.toContain(credential);
   expect(serialized).not.toContain("privatePath");
   expect(serialized).not.toContain("providerMessageId");
-  expect(stored.devices[0]?.installationCredentialDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+  expect(stored.devices[0]?.installationCredentialDigest).toMatch(
+    /^sha256:[0-9a-f]{64}$/,
+  );
   expect(stored.usageCorrectionAudits).toHaveLength(1);
   expect(stored.usageCorrectionAudits[0]).toMatchObject({
     provider: "claude",

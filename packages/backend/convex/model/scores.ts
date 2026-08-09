@@ -1,7 +1,7 @@
 import type { GenericId } from "convex/values";
 
 import type { MutationCtx } from "../_generated/server";
-import { globalDoomerboard } from "./aggregate";
+import { globalDoomerboardIndex } from "./doomerboardIndex";
 import {
   SCOPES,
   WINDOWS,
@@ -70,11 +70,7 @@ export function calculateScore(
       continue;
     }
     hasPricedEvidence = true;
-    costMicros = checkedAdd(
-      costMicros,
-      cost.micros,
-      "API-equivalent cost",
-    );
+    costMicros = checkedAdd(costMicros, cost.micros, "API-equivalent cost");
     pricingBases.add(cost.pricingBasis);
     quality = weakestQuality(quality, cost.quality);
     const coveragePercent =
@@ -147,9 +143,13 @@ async function upsertPublicScore(
       ...values,
       apiEquivalentCost: score.apiEquivalentCost,
     });
-    await globalDoomerboard.replace(
+    await globalDoomerboardIndex.replace(
       ctx,
-      { id: existing._id, key: existing.tokenScore, namespace: existing.boardKey },
+      {
+        id: existing._id,
+        key: existing.tokenScore,
+        namespace: existing.boardKey,
+      },
       { key: score.tokenScore, namespace },
     );
     return;
@@ -160,7 +160,7 @@ async function upsertPublicScore(
     apiEquivalentCost: score.apiEquivalentCost,
     tokenmaxxerId: tokenmaxxer._id,
   });
-  await globalDoomerboard.insert(ctx, {
+  await globalDoomerboardIndex.insert(ctx, {
     id: publicScoreId,
     key: score.tokenScore,
     namespace,
@@ -183,10 +183,7 @@ export async function recomputeScores(
         .withIndex("by_device_id", (q) => q.eq("deviceId", activeDeviceId))
         .unique()
     : null;
-  if (
-    providerSettings &&
-    providerSettings.tokenmaxxerId !== tokenmaxxer._id
-  ) {
+  if (providerSettings && providerSettings.tokenmaxxerId !== tokenmaxxer._id) {
     throw new Error("provider settings owner is invalid");
   }
   const enabledProviders = new Set(
@@ -197,42 +194,18 @@ export async function recomputeScores(
         ]
       : ["codex", "claude"],
   );
-  const dailyRows = (await ctx.db
-    .query("userDailyUsage")
-    .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))
-    .take(1_000))
-    .filter((row) => enabledProviders.has(row.provider));
-  const existingScores = await ctx.db
-    .query("userScores")
-    .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))
-    .take(20);
-
+  const dailyRows = (
+    await ctx.db
+      .query("userDailyUsage")
+      .withIndex("by_tokenmaxxer_id", (q) =>
+        q.eq("tokenmaxxerId", tokenmaxxerId),
+      )
+      .take(1_000)
+  ).filter((row) => enabledProviders.has(row.provider));
   const overview = [];
   for (const scope of SCOPES) {
     for (const windowDays of WINDOWS) {
       const score = calculateScore(dailyRows, scope, windowDays, asOfDay);
-      const existing = existingScores.find(
-        (candidate) => candidate.scope === scope && candidate.windowDays === windowDays,
-      );
-      const values = {
-        boardKey: boardKey(scope, windowDays),
-        computedAt: Date.now(),
-        scope,
-        tokenScore: score.tokenScore,
-        windowDays,
-      };
-      if (existing) {
-        await ctx.db.patch(existing._id, {
-          ...values,
-          apiEquivalentCost: score.apiEquivalentCost,
-        });
-      } else {
-        await ctx.db.insert("userScores", {
-          ...values,
-          apiEquivalentCost: score.apiEquivalentCost,
-          tokenmaxxerId,
-        });
-      }
       await upsertPublicScore(ctx, tokenmaxxer, scope, windowDays, score);
       overview.push({
         apiEquivalentCost: score.apiEquivalentCost,

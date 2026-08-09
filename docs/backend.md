@@ -6,9 +6,16 @@ Convex receives authenticated daily usage snapshots from the Rust native core an
 
 The deployed flow is:
 
-`usageBuckets → userDailyUsage → userScores → publicScores → @convex-dev/aggregate`
+`usageBuckets → userDailyUsage → publicScores → globalDoomerboardIndex`
 
-`deviceProviderSettings → filtered userScores/publicScores recompute`
+`deviceProviderSettings → filtered publicScores recompute`
+
+`usageBuckets` is the synchronization ledger. It owns Active Mac authority,
+revisions, evidence, and correction provenance. `userDailyUsage` is the
+canonical private history for one Tokenmaxxer, provider, and UTC day.
+`publicScores` materializes each public scope and window. The
+`globalDoomerboardIndex` symbol wraps `@convex-dev/aggregate` only for ordered
+pagination. It does not calculate daily usage or rolling scores.
 
 `packages/contracts` is not the sync contract. It is reserved for the sanitized Rust-to-React Tauri IPC boundary. Convex generates its own TypeScript API and data-model types in `convex/_generated`.
 
@@ -16,7 +23,7 @@ Rust is the only desktop Convex client. It exchanges its Keychain-held Better Au
 
 ## Snapshot invariant
 
-One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server treats an equal, exact payload as idempotent. A lower revision is stale. An equal revision with different data is also stale if its token total is not lower. The client rebases that snapshot to the server revision plus one. A snapshot is a conflict if its observation time moves backward or an equal revision has a lower unproved total. The client removes that request and keeps the server value. A new local observation can create a later revision. An older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. The request pairs that reason with the original correction revision. A later cumulative retry can identify the same correction without a second audit or authority for a new decrease. Disappearance of a local record is never valid downward evidence.
+One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Snapshot with a monotonically increasing revision. The server treats an equal, exact payload as idempotent. A lower revision is stale. An equal revision with different data is also stale if its token total is not lower. The client rebases that snapshot to the server revision plus one. A snapshot is a conflict if its observation time moves backward or an equal revision has a lower unproved total. The client removes that request and keeps the server value. A new local observation can create a later revision. An older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. The request pairs that reason with the original correction revision. A later cumulative retry can identify the same correction without a second audit or authority for a new decrease. Disappearance of a local record is never valid downward evidence.
 
 Each request contains at most 62 snapshots and commits atomically. A committed, conflict, or idempotent acknowledgement names the submitted revision. A stale acknowledgement names the same or a newer server revision. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. The current Active Mac's accepted snapshot updates the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
 
@@ -37,15 +44,23 @@ Automated fixtures must cover Quota Lane freshness and reset transitions; provid
 
 ## Score materialization
 
-Every accepted change recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates both `publicScores` and the global Aggregate entry. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
+Every accepted change writes `userDailyUsage` and recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates `publicScores` and `globalDoomerboardIndex`. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
 
-The Aggregate component has one installation named `doomerboard`. It partitions scores by keys such as:
+The `@convex-dev/aggregate` component has one installation named `doomerboard`.
+The local `globalDoomerboardIndex` symbol partitions score document IDs by keys
+such as:
 
 - `tokens-v1:codex:30d`
 - `tokens-v1:claude:7d`
 - `tokens-v1:combined:1d`
 
-Global Doomerboards page the Aggregate in descending order. `publicScores` and the Aggregate have one write path: every insert, replacement, or deletion changes both within the same mutation. A read-only invariant check proves a one-to-one match of document ID, Board Key, and Token Score, while an idempotent migration can repair divergence. Production dashboard edits to either side are prohibited.
+Global Doomerboards page this index in descending order. `publicScores` and
+`globalDoomerboardIndex` have one write path: every insert, replacement, or
+deletion changes both within the same mutation. A read-only invariant check
+proves a one-to-one match of document ID, Board Key, and Token Score. The
+`backfillGlobalDoomerboardIndex` migration can repair index divergence without
+recomputing usage or scores. Production dashboard edits to either side are
+prohibited.
 
 My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most those 100 indexed edges, performs indexed score lookups, and sorts only that bounded set in memory. It never scans the global score table.
 
@@ -53,7 +68,9 @@ My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most
 
 A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer whose rolling score can change has been processed, so expired Ranking Days leave all windows. The drain is idempotent, retries safely, alerts if progress stalls, and has no correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain within the approved backend performance budget.
 
-The migrations component owns repair/backfill work. Migrations are forward-only, resumable, idempotent, and bounded. A required-field or Board Key change adds new storage, backfills it, verifies counts and invariants, switches reads and writes, then removes legacy state only in a later release. Readiness includes an interruption/resume rehearsal on production-shaped data and Aggregate-repair coverage.
+The migrations component owns bounded repair work. The
+`backfillGlobalDoomerboardIndex` migration is forward-only, resumable, and
+idempotent. It rebuilds only missing index entries from `publicScores`.
 
 This feature requires the credential-based Active Mac and current usage schemas directly. It has no compatibility migration. Reset a local development deployment if it contains data from an earlier feature shape. This branch does not change a cloud deployment.
 
@@ -83,10 +100,10 @@ The automated evidence set contains:
 - authorization tests for absent, expired, revoked, and mismatched sessions; wrong installations; stale Active Mac generations; and transfer/sync races;
 - atomic synchronization tests for retries, duplicate and concurrent delivery, valid corrections, rollback, same-day transfer segmentation, and abandoned old-generation work;
 - fake-clock UTC rollover tests across month, year, leap-day, and daylight-saving boundaries, plus a complete paginated-drain test;
-- an independent reference oracle that applies randomized synchronization, correction, transfer, and rollover sequences and compares User Daily Usage, User Scores, Public Scores, and Aggregate ranks;
+- an independent reference oracle that applies randomized synchronization, correction, transfer, and rollover sequences and compares User Daily Usage, Public Scores, and Doomerboard index ranks;
 - bounded-query and rate-limit boundary tests, hostile-input tests, and an interrupted migration rehearsal;
 - a disposable authenticated canary against the exact production deployment before public visibility. It proves generated credentials, session/JWT exchange, Active Mac claim, synchronization and identical retry, public and private reads, transfer, old-Mac rejection, new-Mac synchronization, and complete internal cleanup without logging secrets; and
-- a production health check for the exact deployment, presence-only required environment variables, installed schema and components, the canary's sanitized correlation window, zero unhandled backend errors, and the Public Score/Aggregate invariant.
+- a production health check for the exact deployment, presence-only required environment variables, installed schema and components, the canary's sanitized correlation window, zero unhandled backend errors, and the Public Score/Doomerboard index invariant.
 
 The resulting Backend Readiness Evidence is one machine-readable CI artifact containing the exact Git commit, dependency-lock hash, schema and Board Key versions, policy version, deployment identity, suite results, migration rehearsal, production-canary result, and production-health result. Relevant code, configuration, schema, dependency, or policy changes make it stale. Before real traffic exists, production evidence is explicitly labeled `canary-only`; post-launch monitoring is a separate operational gate.
 
