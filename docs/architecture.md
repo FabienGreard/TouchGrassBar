@@ -141,12 +141,21 @@ a concrete internal seam and has no generic repository Interface. A narrow
 local-state Adapter lets the Sanitized Desktop State projection keep its safe
 status, revision, aggregate, and outbox in one outer transaction.
 
-App launch, a committed Pending Usage Snapshot, new or restored Active Mac
-authority, network recovery, app foreground, operating-system resume, the
-explicit **Refresh now** action, update resume, and the five-minute retry timer
-can request synchronization. The Module does not use every Sanitized Desktop
-State Revision Notice as a wake source, and it does not use a generic event
-bus. Work is single-flight. Requests during an attempt produce one rerun.
+These events can request synchronization:
+
+- app launch;
+- a committed Pending Usage Snapshot;
+- new or restored Active Mac authority;
+- network recovery;
+- app foreground;
+- operating-system resume;
+- the explicit **Refresh now** action;
+- update resume;
+- the five-minute retry timer.
+
+The Module does not use every Sanitized Desktop State Revision Notice as a
+wake source. It does not use a generic event bus. Work is single-flight.
+Requests during an attempt produce one rerun.
 
 Each Coding Provider can request delivery as soon as its own commit completes.
 It does not wait for another provider. Outbox changes, safe synchronization

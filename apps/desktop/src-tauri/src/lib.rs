@@ -353,14 +353,17 @@ impl ProfileRuntime {
             .retry_pending()
             .map_err(|_| "Profile Pending".to_owned());
         eprintln!("{}", profile_attempt_metric(&attempt));
-        let profile = attempt?;
-        if let Some(profile) = &profile {
-            self.core
-                .set_profile_outcome(profile.clone())
-                .map_err(str::to_owned)?;
-            self.usage_sync.request();
-        }
-        Ok(profile)
+        let Some(provisioned) = attempt? else {
+            return Ok(None);
+        };
+        self.usage_sync
+            .install_authority(provisioned.activation)
+            .map_err(str::to_owned)?;
+        self.core
+            .set_profile_outcome(provisioned.profile.clone())
+            .map_err(str::to_owned)?;
+        self.usage_sync.request();
+        Ok(Some(provisioned.profile))
     }
 
     fn attempt_now(&self) -> Result<Option<SanitizedProfileOutcome>, String> {

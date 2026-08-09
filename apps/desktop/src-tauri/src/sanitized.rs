@@ -51,6 +51,7 @@ pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
 pub(crate) const READ_MODEL_SCHEMA_VERSION: i64 = 6;
 pub(crate) const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const REFRESH_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
@@ -757,6 +758,14 @@ impl Clock for SystemClock {
     }
 }
 
+fn active_mac_activation_time(milliseconds: u64) -> Result<OffsetDateTime, &'static str> {
+    if milliseconds > MAX_SAFE_INTEGER {
+        return Err("native state persistence unavailable");
+    }
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(milliseconds) * 1_000_000)
+        .map_err(|_| "native state persistence unavailable")
+}
+
 fn production_refresh_adapter(
     clock: Arc<dyn Clock>,
     database_path: Option<PathBuf>,
@@ -776,7 +785,10 @@ struct SqliteReadModelStore {
 
 enum UsageSyncCommit<'a> {
     QueueCurrent(UsageSyncCorrections),
-    Activate(u64),
+    Activate {
+        activated_at: OffsetDateTime,
+        generation: u64,
+    },
     Acknowledge {
         acknowledgements: &'a UsageSyncAcknowledgements,
         batch: &'a PendingUsageBatch,
@@ -1075,10 +1087,13 @@ impl SqliteReadModelStore {
                         .map_err(|_| "native state persistence unavailable")?;
                 }
             }
-            UsageSyncCommit::Activate(generation) => {
+            UsageSyncCommit::Activate {
+                activated_at,
+                generation,
+            } => {
                 activate_generation(&transaction, generation)
                     .map_err(|_| "native state persistence unavailable")?;
-                capture_generation_baselines(&transaction, generation, state, now)
+                capture_generation_baselines(&transaction, generation, state, activated_at, now)
                     .map_err(|_| "native state persistence unavailable")?;
                 self.active_mac_generation = Some(generation);
                 pending_usage_changed |=
@@ -1249,6 +1264,33 @@ impl SqliteReadModelStore {
             enabled_providers,
         )
         .map_err(|_| "native state persistence unavailable")
+    }
+
+    fn confirm_active_mac_activation(
+        &mut self,
+        active_mac_generation: u64,
+        active_mac_activated_at: OffsetDateTime,
+        now: OffsetDateTime,
+        state: &SanitizedDesktopStateV3,
+    ) -> Result<(), &'static str> {
+        if self.active_mac_generation != Some(active_mac_generation) {
+            return Err("native state persistence unavailable");
+        }
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| "native state persistence unavailable")?;
+        capture_generation_baselines(
+            &transaction,
+            active_mac_generation,
+            state,
+            active_mac_activated_at,
+            now,
+        )
+        .map_err(|_| "native state persistence unavailable")?;
+        transaction
+            .commit()
+            .map_err(|_| "native state persistence unavailable")
     }
 
     fn flush(&self) -> Result<(), &'static str> {
@@ -2818,16 +2860,17 @@ impl NativeCore {
         Ok(())
     }
 
-    pub(crate) fn prepare_usage_sync_attempt(
+    pub(crate) fn install_usage_sync_authority(
         &self,
         active_mac_generation: u64,
-    ) -> Result<Option<PendingUsageBatch>, &'static str> {
+        active_mac_activated_at: u64,
+    ) -> Result<(), &'static str> {
+        let active_mac_activated_at = active_mac_activation_time(active_mac_activated_at)?;
         let mut store = self
             .inner
             .store
             .lock()
             .map_err(|_| "native state unavailable")?;
-        let enabled_providers = self.inner.projection.enabled_providers()?;
         let already_active = match &*store {
             ReadModelStore::Persistent(persistent)
                 if persistent.active_mac_generation == Some(active_mac_generation) =>
@@ -2838,6 +2881,16 @@ impl NativeCore {
             ReadModelStore::Memory => return Err("native state persistence unavailable"),
         };
         let notice = if already_active {
+            let state = self.inner.projection.snapshot()?;
+            let ReadModelStore::Persistent(persistent) = &mut *store else {
+                return Err("native state persistence unavailable");
+            };
+            persistent.confirm_active_mac_activation(
+                active_mac_generation,
+                active_mac_activated_at,
+                self.inner.clock.now(),
+                &state,
+            )?;
             None
         } else {
             self.inner
@@ -2845,23 +2898,40 @@ impl NativeCore {
                 .commit_usage_sync(
                     &mut store,
                     self.inner.clock.now(),
-                    UsageSyncCommit::Activate(active_mac_generation),
+                    UsageSyncCommit::Activate {
+                        activated_at: active_mac_activated_at,
+                        generation: active_mac_generation,
+                    },
                 )?
                 .notice
-        };
-        let batch = match &*store {
-            ReadModelStore::Persistent(persistent) => persistent.pending_usage_batch(
-                active_mac_generation,
-                self.inner.clock.now(),
-                &enabled_providers,
-            )?,
-            ReadModelStore::Memory => None,
         };
         drop(store);
         if let Some(notice) = notice {
             self.inner.subscribers.publish(notice);
         }
-        Ok(batch)
+        Ok(())
+    }
+
+    pub(crate) fn prepare_usage_sync_attempt(
+        &self,
+        active_mac_generation: u64,
+        active_mac_activated_at: u64,
+    ) -> Result<Option<PendingUsageBatch>, &'static str> {
+        self.install_usage_sync_authority(active_mac_generation, active_mac_activated_at)?;
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let enabled_providers = self.inner.projection.enabled_providers()?;
+        match &*store {
+            ReadModelStore::Persistent(persistent) => persistent.pending_usage_batch(
+                active_mac_generation,
+                self.inner.clock.now(),
+                &enabled_providers,
+            ),
+            ReadModelStore::Memory => Ok(None),
+        }
     }
 
     #[cfg(test)]
@@ -2869,8 +2939,15 @@ impl NativeCore {
         &self,
         active_mac_generation: u64,
     ) -> Result<(), &'static str> {
-        self.prepare_usage_sync_attempt(active_mac_generation)
-            .map(drop)
+        let activated_at = self
+            .inner
+            .clock
+            .now()
+            .unix_timestamp_nanos()
+            .div_euclid(1_000_000);
+        let activated_at =
+            u64::try_from(activated_at).map_err(|_| "native state persistence unavailable")?;
+        self.install_usage_sync_authority(active_mac_generation, activated_at)
     }
 
     #[cfg(test)]
@@ -5114,9 +5191,58 @@ mod tests {
     }
 
     #[test]
-    fn transferred_generation_records_a_late_baseline_as_partial() {
-        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+    fn delayed_install_after_rollover_does_not_relabel_current_usage() {
+        let activation_time = test_time();
+        let worker_time = activation_time + TimeDuration::days(1);
+        let active_mac_activated_at =
+            u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(
+            both_provider_observed_state(worker_time, 25, 0.25, 40, 0.4),
+        ))]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(worker_time)),
+            source,
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
 
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+
+        let baseline_count = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_generation_baselines",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(baseline_count, 0);
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        let codex = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.ranking_day, worker_time.date().to_string());
+        assert_eq!(codex.observed_tokens, 25);
+        let claude = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.ranking_day, worker_time.date().to_string());
+        assert_eq!(claude.observed_tokens, 40);
+    }
+
+    #[test]
+    fn transferred_generation_uses_the_install_boundary_baseline_as_partial() {
         let now = test_time();
         let activation_time = now + TimeDuration::minutes(1);
         let database = TestDatabase::new();
@@ -5155,7 +5281,51 @@ mod tests {
             ),
             ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
         };
-        assert_eq!(stored_counts, (0, 1));
+        assert_eq!(stored_counts, (1, 0));
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert!(activation.snapshots().is_empty());
+        core.acknowledge_usage_sync(&activation, &[]).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].revision, 1);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 50);
+        assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(pending.snapshots()[0].api_equivalent_cost, None);
+    }
+
+    #[test]
+    fn transferred_generation_keeps_a_missing_install_baseline_partial() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let activation_time = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(1),
+                150,
+            ))),
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(2),
+                180,
+            ))),
+        ]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(activation_time)),
+            source,
+        )
+        .unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert!(activation.snapshots().is_empty());
+        core.acknowledge_usage_sync(&activation, &[]).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
         let marker = core.pending_usage_sync_batch(2).unwrap().unwrap();
         assert_eq!(marker.snapshots().len(), 1);
         assert_eq!(marker.snapshots()[0].observed_tokens, 0);
@@ -5172,11 +5342,10 @@ mod tests {
 
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-
         let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
         assert_eq!(pending.snapshots().len(), 1);
         assert_eq!(pending.snapshots()[0].revision, 2);
-        assert_eq!(pending.snapshots()[0].observed_tokens, 0);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 30);
         assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
         assert_eq!(pending.snapshots()[0].api_equivalent_cost, None);
     }

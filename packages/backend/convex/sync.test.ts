@@ -135,6 +135,7 @@ async function createProfile(
       installationCredential: credential,
     }),
   ).resolves.toEqual({
+    activeMacActivatedAt: NOW.getTime(),
     activeMacGeneration: 1,
     displayName,
     touchGrassId: profile.touchGrassId,
@@ -149,7 +150,7 @@ async function transferActiveDevice(
   generation: number,
 ) {
   const credentialDigest = await installationCredentialDigest(credential);
-  await t.run(async (ctx) => {
+  return t.run(async (ctx) => {
     const tokenmaxxer = await ctx.db
       .query("tokenmaxxers")
       .withIndex("by_public_id", (q) => q.eq("publicId", touchGrassId))
@@ -158,14 +159,16 @@ async function transferActiveDevice(
       throw new Error("Active Mac missing");
     }
     await ctx.db.patch(tokenmaxxer.activeDeviceId, { revokedAt: Date.now() });
+    const activeMacActivatedAt = Date.now();
     const deviceId = await ctx.db.insert("devices", {
-      createdAt: Date.now(),
+      createdAt: activeMacActivatedAt,
       generation,
       installationCredentialDigest: credentialDigest,
       lastSeenAt: Date.now(),
       tokenmaxxerId: tokenmaxxer._id,
     });
     await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: deviceId });
+    return activeMacActivatedAt;
   });
 }
 
@@ -712,7 +715,24 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
       }),
     ],
   });
-  await transferActiveDevice(t, profile.touchGrassId, newCredential, 2);
+  const activeMacActivatedAt = await transferActiveDevice(
+    t,
+    profile.touchGrassId,
+    newCredential,
+    2,
+  );
+  await expect(
+    profile.authenticated.mutation(api.tokenmaxxers.ensureProfile, {
+      displayName: "Fabien",
+      expectedTouchGrassId: profile.touchGrassId,
+      installationCredential: newCredential,
+    }),
+  ).resolves.toEqual({
+    activeMacActivatedAt,
+    activeMacGeneration: 2,
+    displayName: "Fabien",
+    touchGrassId: profile.touchGrassId,
+  });
 
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {

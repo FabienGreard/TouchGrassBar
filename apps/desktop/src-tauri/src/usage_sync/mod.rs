@@ -856,34 +856,39 @@ pub(crate) fn capture_generation_baselines(
     transaction: &Transaction<'_>,
     active_mac_generation: u64,
     state: &SanitizedDesktopStateV3,
+    activated_at: OffsetDateTime,
     now: OffsetDateTime,
 ) -> Result<(), UsageSyncError> {
     validate_generation(active_mac_generation)?;
-    if active_mac_generation == 1 {
-        return Ok(());
-    }
-    let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
+    let ranking_day = activated_at.to_offset(UtcOffset::UTC).date().to_string();
     validate_ranking_day(&ranking_day)?;
     let generation = to_database_integer(active_mac_generation)?;
-    let activated_at = to_database_integer(offset_date_time_millis(now)?)?;
+    let requested_activated_at = offset_date_time_millis(activated_at)?;
+    let database_activated_at = to_database_integer(requested_activated_at)?;
     transaction.execute(
         "INSERT INTO usage_sync_generation_activations(
              active_generation, ranking_day, activated_at
          ) VALUES(?1, ?2, ?3)
          ON CONFLICT(active_generation) DO NOTHING",
-        params![generation, ranking_day, activated_at],
+        params![generation, ranking_day, database_activated_at],
     )?;
-    let (activation_day, activated_at) = transaction.query_row(
+    let (activation_day, stored_activated_at) = transaction.query_row(
         "SELECT ranking_day, activated_at FROM usage_sync_generation_activations
          WHERE active_generation = ?1",
         [generation],
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
     )?;
     validate_ranking_day(&activation_day).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-    let activated_at =
-        u64::try_from(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-    validate_safe_integer(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-    if activation_day != ranking_day {
+    let stored_activated_at =
+        u64::try_from(stored_activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    validate_safe_integer(stored_activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    if activation_day != ranking_day || stored_activated_at != requested_activated_at {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    if active_mac_generation == 1 {
+        return Ok(());
+    }
+    if activated_at.to_offset(UtcOffset::UTC).date() != now.to_offset(UtcOffset::UTC).date() {
         return Ok(());
     }
     let providers = state
@@ -893,14 +898,17 @@ pub(crate) fn capture_generation_baselines(
         .collect();
     for mut aggregate in current_utc_daily_aggregates_with_corrections(
         state,
-        now,
+        activated_at,
         &UsageSyncCorrections::default(),
         &providers,
     )? {
-        if aggregate.observed_at < activated_at {
+        if aggregate.observed_at > requested_activated_at {
             continue;
         }
         aggregate.correction_reason = None;
+        if aggregate.observed_at < requested_activated_at {
+            aggregate.coverage = SyncCoverage::Partial;
+        }
         let provider = provider_database_value(aggregate.provider);
         let aggregate_json = encode_local_value(&aggregate)?;
         transaction.execute(
@@ -1321,10 +1329,21 @@ fn prune_expired_usage_sync_rows(
         "DELETE FROM usage_sync_generation_baselines WHERE ranking_day < ?1",
         [&first_retained_day],
     )?;
+    let activations = transaction.execute(
+        "DELETE FROM usage_sync_generation_activations
+         WHERE ranking_day < ?1
+           AND active_generation IN (
+               SELECT active_generation
+               FROM usage_sync_generations
+               WHERE queue_state = 'abandoned'
+           )",
+        [&first_retained_day],
+    )?;
     aggregates
         .checked_add(outbox)
         .and_then(|rows| rows.checked_add(terminal_conflicts))
         .and_then(|rows| rows.checked_add(baselines))
+        .and_then(|rows| rows.checked_add(activations))
         .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
@@ -3698,6 +3717,28 @@ mod tests {
                 super::queue_daily_aggregate(&transaction, 1, value, candidate_now).unwrap();
             }
         }
+        let expired_at = now() - Duration::days(USAGE_HISTORY_RETENTION_DAYS);
+        transaction
+            .execute(
+                "INSERT INTO usage_sync_generations(active_generation, queue_state)
+                 VALUES(2, 'abandoned')",
+                [],
+            )
+            .unwrap();
+        for generation in [1_i64, 2] {
+            transaction
+                .execute(
+                    "INSERT INTO usage_sync_generation_activations(
+                         active_generation, ranking_day, activated_at
+                     ) VALUES(?1, ?2, ?3)",
+                    params![
+                        generation,
+                        expired_at.date().to_string(),
+                        offset_date_time_millis(expired_at).unwrap()
+                    ],
+                )
+                .unwrap();
+        }
         transaction.commit().unwrap();
 
         let transaction = connection.transaction().unwrap();
@@ -3726,6 +3767,17 @@ mod tests {
             assert_eq!(first_day, first_retained_day);
             assert_eq!(last_day, "2026-08-08");
         }
+        let activations = connection
+            .prepare(
+                "SELECT active_generation FROM usage_sync_generation_activations
+                 ORDER BY active_generation",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(activations, vec![1]);
     }
 
     #[test]

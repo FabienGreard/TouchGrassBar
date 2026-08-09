@@ -38,7 +38,10 @@ therefore, a late disable or re-enable request cannot restore an older setting.
 
 On same-day Active Mac transfer, the old generation's accepted contribution is frozen and the new generation contributes only its post-transfer segment. Later writes from the old generation fail, earlier Ranking Days are not rewritten, and a known unsynchronized old segment makes the transferred day partial.
 
-Native stores a sanitized activation baseline for the transfer day. It subtracts tokens and compatible cost. A late baseline makes the segment partial.
+Native records the server-owned activation time. It captures a sanitized
+baseline when Profile installs that authority. Native subtracts tokens and
+compatible cost for the transfer day. A late baseline makes the segment
+partial.
 
 ## Usage-contract verification
 

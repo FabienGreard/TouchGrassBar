@@ -215,6 +215,7 @@ test("Recovery Key signup is short-lived, hashed, and session-validating", async
       tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
     })),
   ).toEqual({ devices: [], tokenmaxxers: [] });
+  const activeMacActivatedAt = Date.now();
   await expect(
     authenticated.mutation(api.tokenmaxxers.ensureProfile, {
       displayName: "Fabien",
@@ -222,6 +223,7 @@ test("Recovery Key signup is short-lived, hashed, and session-validating", async
       installationCredential: INSTALLATION_CREDENTIAL,
     }),
   ).resolves.toEqual({
+    activeMacActivatedAt,
     activeMacGeneration: 1,
     displayName: "Fabien",
     touchGrassId: prepared.touchGrassId,

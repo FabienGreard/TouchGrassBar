@@ -10,6 +10,7 @@ use std::{
 
 use convex::{ConvexClient, FunctionResult, Value};
 use serde::Deserialize;
+use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 use crate::lifecycle::{DesktopLifecycle, SettingsProfileAuthorization};
@@ -27,6 +28,7 @@ const PROFILE_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PROFILE_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_PROFILE_JWT_BYTES: usize = 8 * 1_024;
 const AUTHORITY_REJECTED_MESSAGE: &str = "Active Mac authority rejected";
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const ID_ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const SECRET_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -377,14 +379,46 @@ fn ensure_profile_mutation_payload(
 }
 
 struct EnsuredProfileAuthority {
+    active_mac_activated_at: u64,
     active_mac_generation: u64,
     touch_grass_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ActiveMacActivation {
+    pub(crate) activated_at: u64,
+    pub(crate) generation: u64,
+}
+
+fn nonnegative_safe_integer(value: &Value) -> Option<u64> {
+    match value {
+        Value::Int64(value) => u64::try_from(*value)
+            .ok()
+            .filter(|value| *value <= MAX_SAFE_INTEGER),
+        Value::Float64(value)
+            if value.is_finite()
+                && value.fract() == 0.0
+                && (0.0..=MAX_SAFE_INTEGER as f64).contains(value) =>
+        {
+            Some(*value as u64)
+        }
+        _ => None,
+    }
+}
+
+fn valid_active_mac_activated_at(value: &Value) -> Option<u64> {
+    let milliseconds = nonnegative_safe_integer(value)?;
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(milliseconds) * 1_000_000).ok()?;
+    Some(milliseconds)
 }
 
 fn ensured_profile_authority(value: &Value) -> Option<EnsuredProfileAuthority> {
     let Value::Object(object) = value else {
         return None;
     };
+    let active_mac_activated_at = object
+        .get("activeMacActivatedAt")
+        .and_then(valid_active_mac_activated_at)?;
     let active_mac_generation = match object.get("activeMacGeneration") {
         Some(Value::Int64(value)) => u64::try_from(*value).ok().filter(|value| *value > 0),
         Some(Value::Float64(value))
@@ -402,28 +436,39 @@ fn ensured_profile_authority(value: &Value) -> Option<EnsuredProfileAuthority> {
         _ => return None,
     };
     Some(EnsuredProfileAuthority {
+        active_mac_activated_at,
         active_mac_generation,
         touch_grass_id,
     })
 }
 
-fn matching_active_mac_generation(
+fn matching_active_mac_authority(
     authority: EnsuredProfileAuthority,
     expected_touch_grass_id: &str,
-) -> Result<u64, ProfileError> {
+) -> Result<ActiveMacActivation, ProfileError> {
     (authority.touch_grass_id == expected_touch_grass_id)
-        .then_some(authority.active_mac_generation)
+        .then_some(ActiveMacActivation {
+            activated_at: authority.active_mac_activated_at,
+            generation: authority.active_mac_generation,
+        })
         .ok_or_else(ProfileError::authority_rejected)
 }
 
 pub(crate) struct ActiveSyncCredentials {
+    pub(crate) active_mac_activated_at: u64,
     pub(crate) active_mac_generation: u64,
     pub(crate) installation_credential: Secret,
     pub(crate) session: Secret,
 }
 
+#[derive(Debug)]
+pub(crate) struct ProfileProvisioningOutcome {
+    pub(crate) activation: ActiveMacActivation,
+    pub(crate) profile: SanitizedProfileOutcome,
+}
+
 pub(crate) struct ProfileCoordinator {
-    active_mac_generation: Mutex<Option<u64>>,
+    active_mac_authority: Mutex<Option<ActiveMacActivation>>,
     lifecycle: DesktopLifecycle,
     custody: Arc<dyn SecretCustody>,
     transport: Arc<dyn ProfileTransport>,
@@ -436,14 +481,14 @@ impl ProfileCoordinator {
         transport: Arc<dyn ProfileTransport>,
     ) -> Self {
         Self {
-            active_mac_generation: Mutex::new(None),
+            active_mac_authority: Mutex::new(None),
             lifecycle,
             custody,
             transport,
         }
     }
 
-    pub(crate) fn retry_pending(&self) -> Result<Option<SanitizedProfileOutcome>, ProfileError> {
+    pub(crate) fn retry_pending(&self) -> Result<Option<ProfileProvisioningOutcome>, ProfileError> {
         let Some(request) = self.lifecycle.profile_request() else {
             return Ok(None);
         };
@@ -495,18 +540,18 @@ impl ProfileCoordinator {
             &prepared.touch_grass_id,
             &installation_credential,
         )?;
-        let generation = match matching_active_mac_generation(authority, &prepared.touch_grass_id) {
-            Ok(generation) => generation,
+        let activation = match matching_active_mac_authority(authority, &prepared.touch_grass_id) {
+            Ok(activation) => activation,
             Err(error) => {
                 let _ = self.custody.delete(SecretKind::BetterAuthSession);
                 return Err(error);
             }
         };
         *self
-            .active_mac_generation
+            .active_mac_authority
             .lock()
             .map_err(|_| ProfileError::message("Active Mac authority unavailable"))? =
-            Some(generation);
+            Some(activation);
         self.lifecycle
             .mark_profile_ready(&prepared.touch_grass_id)
             .map_err(ProfileError::message)?;
@@ -515,7 +560,10 @@ impl ProfileCoordinator {
             display_name: request.display_name,
             touch_grass_id: prepared.touch_grass_id,
         };
-        Ok(Some(profile))
+        Ok(Some(ProfileProvisioningOutcome {
+            activation,
+            profile,
+        }))
     }
 
     pub(crate) fn active_sync_credentials(
@@ -536,12 +584,12 @@ impl ProfileCoordinator {
             Some(session) => session,
             None => self.refresh_session_for(&touch_grass_id)?,
         };
-        let cached_generation = *self
-            .active_mac_generation
+        let cached_authority = *self
+            .active_mac_authority
             .lock()
             .map_err(|_| ProfileError::message("Active Mac authority unavailable"))?;
-        let active_mac_generation = if let Some(generation) = cached_generation {
-            generation
+        let active_mac_authority = if let Some(authority) = cached_authority {
+            authority
         } else {
             let first_attempt = self
                 .transport
@@ -551,9 +599,9 @@ impl ProfileCoordinator {
                     &touch_grass_id,
                     &installation_credential,
                 )
-                .and_then(|authority| matching_active_mac_generation(authority, &touch_grass_id));
-            let generation = match first_attempt {
-                Ok(generation) => generation,
+                .and_then(|authority| matching_active_mac_authority(authority, &touch_grass_id));
+            let authority = match first_attempt {
+                Ok(authority) => authority,
                 Err(_) => {
                     let fresh_session = self.refresh_session_for(&touch_grass_id)?;
                     session = fresh_session;
@@ -563,8 +611,8 @@ impl ProfileCoordinator {
                         &touch_grass_id,
                         &installation_credential,
                     )?;
-                    match matching_active_mac_generation(authority, &touch_grass_id) {
-                        Ok(generation) => generation,
+                    match matching_active_mac_authority(authority, &touch_grass_id) {
+                        Ok(authority) => authority,
                         Err(error) => {
                             let _ = self.custody.delete(SecretKind::BetterAuthSession);
                             return Err(error);
@@ -573,15 +621,16 @@ impl ProfileCoordinator {
                 }
             };
             *self
-                .active_mac_generation
+                .active_mac_authority
                 .lock()
                 .map_err(|_| ProfileError::message("Active Mac authority unavailable"))? =
-                Some(generation);
-            generation
+                Some(authority);
+            authority
         };
 
         Ok(Some(ActiveSyncCredentials {
-            active_mac_generation,
+            active_mac_activated_at: active_mac_authority.activated_at,
+            active_mac_generation: active_mac_authority.generation,
             installation_credential,
             session,
         }))
@@ -964,6 +1013,7 @@ mod tests {
     use super::*;
 
     static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
+    const ACTIVE_MAC_ACTIVATED_AT: u64 = 1_775_908_800_000;
 
     #[derive(Default)]
     struct FakeCustody(Mutex<BTreeMap<SecretKind, Secret>>);
@@ -1143,6 +1193,7 @@ mod tests {
                 return Err(ProfileError::authority_rejected());
             }
             Ok(EnsuredProfileAuthority {
+                active_mac_activated_at: ACTIVE_MAC_ACTIVATED_AT,
                 active_mac_generation: 1,
                 touch_grass_id,
             })
@@ -1300,6 +1351,35 @@ mod tests {
     }
 
     #[test]
+    fn ensured_profile_authority_requires_a_safe_activation_time() {
+        let response = |active_mac_activated_at| {
+            Value::Object(BTreeMap::from([
+                ("activeMacActivatedAt".to_owned(), active_mac_activated_at),
+                ("activeMacGeneration".to_owned(), Value::Float64(2.0)),
+                (
+                    "touchGrassId".to_owned(),
+                    Value::String("TG-234567".to_owned()),
+                ),
+            ]))
+        };
+
+        let authority =
+            ensured_profile_authority(&response(Value::Float64(ACTIVE_MAC_ACTIVATED_AT as f64)))
+                .expect("valid authority");
+        assert_eq!(authority.active_mac_activated_at, ACTIVE_MAC_ACTIVATED_AT);
+        assert_eq!(authority.active_mac_generation, 2);
+
+        for invalid in [
+            Value::Float64(-1.0),
+            Value::Float64(1.5),
+            Value::Float64(MAX_SAFE_INTEGER as f64 + 2.0),
+            Value::String(ACTIVE_MAC_ACTIVATED_AT.to_string()),
+        ] {
+            assert!(ensured_profile_authority(&response(invalid)).is_none());
+        }
+    }
+
+    #[test]
     fn prepare_sends_json_to_the_better_auth_http_route() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -1432,7 +1512,10 @@ mod tests {
         let outcome = fixture.coordinator.retry_pending().unwrap();
         assert!(matches!(
             outcome,
-            Some(SanitizedProfileOutcome::Ready { .. })
+            Some(ProfileProvisioningOutcome {
+                profile: SanitizedProfileOutcome::Ready { .. },
+                ..
+            })
         ));
 
         let state = fixture
@@ -1492,6 +1575,8 @@ mod tests {
 
         assert_eq!(first.active_mac_generation, 1);
         assert_eq!(second.active_mac_generation, 1);
+        assert_eq!(first.active_mac_activated_at, ACTIVE_MAC_ACTIVATED_AT);
+        assert_eq!(second.active_mac_activated_at, ACTIVE_MAC_ACTIVATED_AT);
         assert_eq!(first.installation_credential.expose().len(), 52);
         assert!(!first.session.expose().is_empty());
         assert_eq!(fixture.transport.exchange_count(), 1);
@@ -1557,7 +1642,7 @@ mod tests {
         assert!(
             fixture
                 .coordinator
-                .active_mac_generation
+                .active_mac_authority
                 .lock()
                 .unwrap()
                 .is_none()
@@ -1586,7 +1671,7 @@ mod tests {
         };
 
         assert!(error.is_authority_rejected());
-        assert!(restarted.active_mac_generation.lock().unwrap().is_none());
+        assert!(restarted.active_mac_authority.lock().unwrap().is_none());
     }
 
     #[test]
@@ -1613,7 +1698,7 @@ mod tests {
         };
 
         assert!(error.is_authority_rejected());
-        assert!(restarted.active_mac_generation.lock().unwrap().is_none());
+        assert!(restarted.active_mac_authority.lock().unwrap().is_none());
     }
 
     #[test]

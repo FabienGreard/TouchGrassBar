@@ -13,7 +13,7 @@ use std::{
 use time::OffsetDateTime;
 
 use crate::{
-    profile::{ActiveSyncCredentials, ProfileCoordinator, Secret},
+    profile::{ActiveMacActivation, ActiveSyncCredentials, ProfileCoordinator, Secret},
     sanitized::NativeCore,
     updater::OnlineFeatureGate,
 };
@@ -42,9 +42,12 @@ pub(crate) enum UsageSyncAttemptResult {
 /// SQLite transaction. Test Adapters can drive the same state machine without
 /// Profile or network access.
 trait PendingUsageSnapshotState: Send + Sync {
+    fn install_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str>;
+
     fn prepare(
         &self,
         active_mac_generation: u64,
+        active_mac_activated_at: u64,
     ) -> Result<Option<PendingUsageBatch>, &'static str>;
 
     fn finish(
@@ -68,11 +71,18 @@ struct NativePendingUsageSnapshotState {
 }
 
 impl PendingUsageSnapshotState for NativePendingUsageSnapshotState {
+    fn install_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str> {
+        self.core
+            .install_usage_sync_authority(activation.generation, activation.activated_at)
+    }
+
     fn prepare(
         &self,
         active_mac_generation: u64,
+        active_mac_activated_at: u64,
     ) -> Result<Option<PendingUsageBatch>, &'static str> {
-        self.core.prepare_usage_sync_attempt(active_mac_generation)
+        self.core
+            .prepare_usage_sync_attempt(active_mac_generation, active_mac_activated_at)
     }
 
     fn finish(
@@ -190,6 +200,14 @@ impl PendingUsageSynchronization {
         self.inner.request();
     }
 
+    /// Install server-owned Active Mac authority before delivery can run.
+    pub(crate) fn install_authority(
+        &self,
+        activation: ActiveMacActivation,
+    ) -> Result<(), &'static str> {
+        self.inner.environment.state.install_authority(activation)
+    }
+
     /// Close admission and wait a bounded time for the active pass.
     pub(crate) fn pause_for_update(&self) -> Result<SynchronizationPause<'_>, ()> {
         self.inner.pause_for_update()?;
@@ -261,11 +279,10 @@ impl RuntimeInner {
             }
             ActiveMacAuthorityOutcome::Unavailable => return,
         };
-        let batch = match self
-            .environment
-            .state
-            .prepare(authority.active_mac_generation)
-        {
+        let batch = match self.environment.state.prepare(
+            authority.active_mac_generation,
+            authority.active_mac_activated_at,
+        ) {
             Ok(Some(batch)) => batch,
             Ok(None) | Err(_) => return,
         };
@@ -534,6 +551,7 @@ trait ActiveMacAuthoritySource: Send + Sync {
 }
 
 struct ActiveMacAuthority {
+    active_mac_activated_at: u64,
     active_mac_generation: u64,
     installation_credential: Secret,
     session: Secret,
@@ -584,6 +602,7 @@ impl ActiveMacAuthoritySource for ProfileActiveMacAuthority {
 impl From<ActiveSyncCredentials> for ActiveMacAuthority {
     fn from(credentials: ActiveSyncCredentials) -> Self {
         Self {
+            active_mac_activated_at: credentials.active_mac_activated_at,
             active_mac_generation: credentials.active_mac_generation,
             installation_credential: credentials.installation_credential,
             session: credentials.session,
@@ -682,13 +701,15 @@ mod tests {
     use time::format_description::well_known::Rfc3339;
 
     use crate::sanitized::{
-        CONTRACT_VERSION, Clock, CodingProvider, ProviderPresenceStatus, ProviderPresentation,
-        ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshSource, SanitizedDesktopStateV3,
-        SanitizedProfileOutcome, SnapshotRefreshAdapter, SnapshotRefreshOutcome, SyncState,
-        SyncStatus, UsageCoverage, UsageEvidenceBasis, UsagePeriods, UsageScanStatus, UsageTotal,
+        ApiEquivalentCostQuality, CONTRACT_VERSION, Clock, CodingProvider, ProviderPresenceStatus,
+        ProviderPresentation, ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshSource,
+        SanitizedDesktopStateV3, SanitizedProfileOutcome, SnapshotRefreshAdapter,
+        SnapshotRefreshOutcome, SyncState, SyncStatus, UsageCoverage, UsageEvidenceBasis,
+        UsagePeriods, UsageScanStatus, UsageTotal,
     };
     use crate::usage_sync::{
-        ProviderSettingsAcknowledgement, UsageSyncAcknowledgement, UsageSyncAcknowledgements,
+        ProviderSettingsAcknowledgement, SyncCoverage, UsageSyncAcknowledgement,
+        UsageSyncAcknowledgements,
     };
 
     use super::*;
@@ -759,6 +780,7 @@ mod tests {
     impl ActiveMacAuthoritySource for ReadyAuthority {
         fn acquire(&self) -> ActiveMacAuthorityOutcome {
             ActiveMacAuthorityOutcome::Ready(ActiveMacAuthority {
+                active_mac_activated_at: 0,
                 active_mac_generation: 1,
                 installation_credential: Secret::test_only(),
                 session: Secret::test_only(),
@@ -775,6 +797,7 @@ mod tests {
     impl ActiveMacAuthoritySource for RefreshingAuthority {
         fn acquire(&self) -> ActiveMacAuthorityOutcome {
             ActiveMacAuthorityOutcome::Ready(ActiveMacAuthority {
+                active_mac_activated_at: 0,
                 active_mac_generation: 1,
                 installation_credential: Secret::test_only(),
                 session: Secret::test_only(),
@@ -801,6 +824,47 @@ mod tests {
                 .iter()
                 .map(|snapshot| {
                     let _ = self.0.send((snapshot.provider, snapshot.revision));
+                    UsageSyncAcknowledgement {
+                        provider: snapshot.provider,
+                        ranking_day: snapshot.ranking_day.clone(),
+                        revision: snapshot.revision,
+                        outcome: super::super::AcknowledgementOutcome::Committed,
+                    }
+                })
+                .collect();
+            PendingUsageSnapshotDeliveryOutcome::Committed(UsageSyncAcknowledgements {
+                provider_settings: batch.provider_settings().map(|settings| {
+                    ProviderSettingsAcknowledgement {
+                        revision: settings.revision(),
+                        outcome: super::super::AcknowledgementOutcome::Committed,
+                    }
+                }),
+                usage,
+            })
+        }
+    }
+
+    struct SegmentRecordingDelivery(SyncSender<(u64, SyncCoverage, Option<u64>)>);
+
+    impl PendingUsageSnapshotDelivery for SegmentRecordingDelivery {
+        fn deliver(
+            &self,
+            _authority: &ActiveMacAuthority,
+            batch: &PendingUsageBatch,
+            _now: OffsetDateTime,
+        ) -> PendingUsageSnapshotDeliveryOutcome {
+            let usage = batch
+                .snapshots()
+                .iter()
+                .map(|snapshot| {
+                    let _ = self.0.send((
+                        snapshot.observed_tokens,
+                        snapshot.coverage,
+                        snapshot
+                            .api_equivalent_cost
+                            .as_ref()
+                            .map(|cost| cost.micros),
+                    ));
                     UsageSyncAcknowledgement {
                         provider: snapshot.provider,
                         ranking_day: snapshot.ranking_day.clone(),
@@ -906,6 +970,21 @@ mod tests {
     }
 
     fn observed_state(now: OffsetDateTime) -> SanitizedDesktopStateV3 {
+        observed_state_with_tokens(now, 42)
+    }
+
+    fn observed_state_with_tokens(
+        now: OffsetDateTime,
+        observed_tokens: u64,
+    ) -> SanitizedDesktopStateV3 {
+        observed_state_with_usage(now, observed_tokens, None)
+    }
+
+    fn observed_state_with_usage(
+        now: OffsetDateTime,
+        observed_tokens: u64,
+        api_equivalent_cost_usd: Option<f64>,
+    ) -> SanitizedDesktopStateV3 {
         let observed_at = now.format(&Rfc3339).unwrap();
         let unavailable_usage = UsagePeriods {
             scan_status: UsageScanStatus::Unavailable,
@@ -925,12 +1004,14 @@ mod tests {
                 evidence_basis: UsageEvidenceBasis::ProviderReported,
                 coverage: UsageCoverage::Complete,
                 observed_at: observed_at.clone(),
-                observed_tokens: 42,
-                api_equivalent_cost_usd: None,
+                observed_tokens,
+                api_equivalent_cost_usd,
                 trend_percent: None,
                 trend_previous_tokens: None,
-                api_equivalent_cost_basis: None,
-                api_equivalent_cost_quality: None,
+                api_equivalent_cost_basis: api_equivalent_cost_usd
+                    .map(|_| "openai-api-2026-08-09-v3".to_owned()),
+                api_equivalent_cost_quality: api_equivalent_cost_usd
+                    .map(|_| ApiEquivalentCostQuality::Reconciled),
                 api_equivalent_cost_coverage_percent: None,
             },
             seven_days: UsageTotal::Unavailable,
@@ -998,6 +1079,31 @@ mod tests {
 
         fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
             ActiveMacSessionRefreshOutcome::Unavailable
+        }
+    }
+
+    struct DelayedTransferredAuthority {
+        activated_at: u64,
+        acquired: SyncSender<()>,
+        release: Mutex<Option<Receiver<()>>>,
+    }
+
+    impl ActiveMacAuthoritySource for DelayedTransferredAuthority {
+        fn acquire(&self) -> ActiveMacAuthorityOutcome {
+            let _ = self.acquired.send(());
+            if let Some(release) = self.release.lock().ok().and_then(|mut value| value.take()) {
+                let _ = release.recv();
+            }
+            ActiveMacAuthorityOutcome::Ready(ActiveMacAuthority {
+                active_mac_activated_at: self.activated_at,
+                active_mac_generation: 2,
+                installation_credential: Secret::test_only(),
+                session: Secret::test_only(),
+            })
+        }
+
+        fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
+            ActiveMacSessionRefreshOutcome::Refreshed(Secret::test_only())
         }
     }
 
@@ -1102,6 +1208,65 @@ mod tests {
             thread::yield_now();
         }
         assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+
+        runtime.shutdown();
+        core.shutdown();
+    }
+
+    #[test]
+    fn authority_install_captures_before_a_delayed_worker_delivers_the_segment() {
+        let baseline_time = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
+        let activation_time = baseline_time + time::Duration::minutes(1);
+        let observation_time = activation_time + time::Duration::minutes(1);
+        let worker_time = activation_time + time::Duration::minutes(5);
+        let active_mac_activated_at =
+            u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixedSynchronizationClock(worker_time));
+        let observations = Arc::new(OneObservation(Mutex::new(Some(observed_state_with_usage(
+            baseline_time,
+            100,
+            Some(1.0),
+        )))));
+        let core = NativeCore::open_with(&database.0, clock.clone(), observations.clone()).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let (acquired, observed_acquisition) = mpsc::sync_channel(1);
+        let (release, authority_release) = mpsc::sync_channel(1);
+        let (delivered, observed_delivery) = mpsc::sync_channel(2);
+        let runtime = PendingUsageSynchronization::start(SynchronizationEnvironment {
+            state: Arc::new(NativePendingUsageSnapshotState { core: core.clone() }),
+            online_gate: OnlineFeatureGate::default(),
+            authority: Arc::new(DelayedTransferredAuthority {
+                activated_at: active_mac_activated_at,
+                acquired,
+                release: Mutex::new(Some(authority_release)),
+            }),
+            delivery: Arc::new(SegmentRecordingDelivery(delivered)),
+            clock,
+            retry_interval: Duration::from_secs(60),
+        })
+        .unwrap();
+
+        runtime
+            .install_authority(ActiveMacActivation {
+                activated_at: active_mac_activated_at,
+                generation: 2,
+            })
+            .unwrap();
+        *observations.0.lock().unwrap() =
+            Some(observed_state_with_usage(observation_time, 150, Some(1.5)));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        assert_eq!(
+            observed_acquisition.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+
+        release.send(()).unwrap();
+        assert_eq!(
+            observed_delivery.recv_timeout(Duration::from_secs(1)),
+            Ok((50, SyncCoverage::Partial, Some(500_000)))
+        );
 
         runtime.shutdown();
         core.shutdown();

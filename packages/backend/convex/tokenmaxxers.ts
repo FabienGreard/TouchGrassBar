@@ -14,6 +14,7 @@ const publicTokenmaxxer = v.object({
   touchGrassId: v.string(),
 });
 const ensuredTokenmaxxer = publicTokenmaxxer.extend({
+  activeMacActivatedAt: v.number(),
   activeMacGeneration: v.number(),
 });
 
@@ -59,7 +60,14 @@ export const ensureProfile = mutation({
       tokenmaxxer._id,
       args.installationCredential,
     );
+    if (
+      !Number.isSafeInteger(activeDevice.createdAt) ||
+      activeDevice.createdAt < 0
+    ) {
+      return rejectAuthority();
+    }
     return {
+      activeMacActivatedAt: activeDevice.createdAt,
       activeMacGeneration: activeDevice.generation,
       displayName: tokenmaxxer.displayName,
       touchGrassId: tokenmaxxer.publicId,

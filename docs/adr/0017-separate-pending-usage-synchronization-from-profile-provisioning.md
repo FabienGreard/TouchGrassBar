@@ -31,6 +31,11 @@ The external synchronization Interface has two operations:
 - an independent update-pause operation that stops new attempts and waits for
   the active attempt to finish.
 
+The Module also has one internal Profile-facing operation.
+`install_authority` receives the server Generation and activation time. It
+captures the current sanitized baseline before the Profile runtime calls
+`request()`. This operation is not available to app callers.
+
 The app-facing Interface does not expose Active Mac Generation activation,
 Pending Usage Snapshot selection, outbox rows, transport outcomes,
 acknowledgements, retry state, or synchronization-status transitions. A narrow
@@ -92,3 +97,8 @@ The Module implementation must coordinate SQLite, Profile authority, Convex
 delivery, update pause, and Revision Notices. This complexity stays behind the
 Interface. A future day-range change or transport change does not require new
 caller sequencing.
+
+Server transfer can finish before the local Profile runtime installs the new
+authority. A provider observation in this interval cannot supply an exact
+activation baseline. The synchronization Module does not count that
+observation as the baseline. It keeps the later segment partial.
