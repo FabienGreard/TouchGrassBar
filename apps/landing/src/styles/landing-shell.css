@@ -1,6 +1,6 @@
 .direction-d {
   --d-header-height: 52px;
-  --d-site-gutter: max(7vw, calc((100vw - 1240px) / 2));
+  --d-site-gutter: max(7vw, calc((100vw - clamp(1240px, 70vw, 2240px)) / 2));
   --d-section-title-size: clamp(48px, 4.2vw, 60px);
   --d-feature-title-size: clamp(56px, 5.6vw, 82px);
   --d-section-title-line: 0.92;

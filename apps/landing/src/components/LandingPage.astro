@@ -164,6 +164,7 @@ const gardenAssets = {
         let previousAvailableHeight = -1;
         let previousCanvasHeight = -1;
         let previousFrameWidth = -1;
+        let previousMaxScale = -1;
         const updateScale = () => {
           window.cancelAnimationFrame(animationFrame);
           animationFrame = window.requestAnimationFrame(() => {
@@ -172,20 +173,28 @@ const gardenAssets = {
             const availableHeight = window.matchMedia("(min-width: 901px)").matches
               ? Math.max(0, window.innerHeight - 96)
               : Number.POSITIVE_INFINITY;
+            const computedMaxScale = Number.parseFloat(
+              window.getComputedStyle(frame).getPropertyValue("--product-specimen-max-scale"),
+            );
+            const maxScale = Number.isFinite(computedMaxScale) && computedMaxScale > 0
+              ? computedMaxScale
+              : 1;
             if (
               availableHeight === previousAvailableHeight &&
               canvasHeight === previousCanvasHeight &&
-              frameWidth === previousFrameWidth
+              frameWidth === previousFrameWidth &&
+              maxScale === previousMaxScale
             ) return;
 
             previousAvailableHeight = availableHeight;
             previousCanvasHeight = canvasHeight;
             previousFrameWidth = frameWidth;
+            previousMaxScale = maxScale;
             const designWidth = Number.parseFloat(
               window.getComputedStyle(frame).getPropertyValue("--product-specimen-width"),
             );
             const scale = Number.isFinite(designWidth) && designWidth > 0
-              ? Math.min(1, frameWidth / designWidth, availableHeight / canvasHeight)
+              ? Math.min(maxScale, frameWidth / designWidth, availableHeight / canvasHeight)
               : 1;
             frame.style.setProperty("--product-specimen-scale", String(scale));
             frame.style.height = `${canvasHeight * scale}px`;
