@@ -38,11 +38,12 @@ local-state Adapter joins the Module to the Sanitized Desktop State projection.
 This gives app callers high Leverage and keeps delivery rules local to one
 Module.
 
-App launch, a committed Pending Usage Snapshot, new or restored Active Mac
-authority, network recovery, app foreground, operating-system resume, the
-explicit **Refresh now** action, update resume, and the five-minute retry timer
-can call `request()` directly. The Module does not subscribe to every
-Sanitized Desktop State Revision Notice. It does not use a generic event bus.
+App launch and a committed Pending Usage Snapshot can call `request()`
+directly. New or restored Active Mac authority and network recovery can also
+call it. App foreground, operating-system resume, the explicit **Refresh now**
+action, update resume, and the five-minute retry timer can also call it. The
+Module does not subscribe to every Sanitized Desktop State Revision Notice. It
+does not use a generic event bus.
 
 Synchronization is single-flight. A request during an active attempt records
 one rerun. More requests before that rerun do not add more attempts. Update
