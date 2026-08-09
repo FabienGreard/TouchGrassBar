@@ -10,6 +10,7 @@ import {
   resolveApprovedDownload,
 } from "./lib/download-resolver";
 import { gardenTimeForHour } from "./lib/garden-time";
+import { installInviteParallax } from "./lib/invite-parallax";
 import { installWebMcp } from "./lib/webmcp";
 
 function releaseAsset(name: string, tag = "v1.2.3") {
@@ -197,6 +198,82 @@ describe("production landing contract", () => {
     expect(() => gardenTimeForHour(24)).toThrow(
       "The local hour must be an integer from 0 through 23.",
     );
+  });
+
+  test("does not install invite parallax work on mobile", () => {
+    const viewportListeners = new Set<string>();
+    let animationFrameRequested = false;
+    const noticeLayer = {
+      querySelectorAll: () => [],
+    };
+    const section = {
+      querySelector: () => noticeLayer,
+    };
+    const documentObject = {
+      querySelector: () => section,
+    } as unknown as Document;
+    const windowObject = {
+      addEventListener(type: string) {
+        viewportListeners.add(type);
+      },
+      cancelAnimationFrame() {},
+      matchMedia: () => ({
+        addEventListener() {},
+        matches: false,
+        removeEventListener() {},
+      }),
+      removeEventListener(type: string) {
+        viewportListeners.delete(type);
+      },
+      requestAnimationFrame() {
+        animationFrameRequested = true;
+        return 1;
+      },
+    } as unknown as Window;
+
+    installInviteParallax(documentObject, windowObject);
+
+    expect(animationFrameRequested).toBe(false);
+    expect(viewportListeners.has("resize")).toBe(false);
+    expect(viewportListeners.has("scroll")).toBe(false);
+  });
+
+  test("keeps invite parallax work on laptop screens", () => {
+    const viewportListeners = new Set<string>();
+    let animationFrameRequested = false;
+    const documentObject = {
+      querySelector: () => ({
+        querySelector: () => ({ querySelectorAll: () => [] }),
+      }),
+    } as unknown as Document;
+    const windowObject = {
+      addEventListener(type: string) {
+        viewportListeners.add(type);
+      },
+      cancelAnimationFrame() {},
+      matchMedia: (query: string) => ({
+        addEventListener() {},
+        matches: query === "(min-width: 901px)",
+        removeEventListener() {},
+      }),
+      removeEventListener(type: string) {
+        viewportListeners.delete(type);
+      },
+      requestAnimationFrame() {
+        animationFrameRequested = true;
+        return 1;
+      },
+    } as unknown as Window;
+
+    const removeParallax = installInviteParallax(documentObject, windowObject);
+
+    expect(animationFrameRequested).toBe(true);
+    expect(viewportListeners.has("resize")).toBe(true);
+    expect(viewportListeners.has("scroll")).toBe(true);
+
+    removeParallax();
+    expect(viewportListeners.has("resize")).toBe(false);
+    expect(viewportListeners.has("scroll")).toBe(false);
   });
 
   test("accepts only a complete immutable full release", async () => {

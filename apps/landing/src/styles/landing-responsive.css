@@ -591,6 +591,11 @@
 }
 
 @media (max-width: 900px) {
+  .direction-d .d-invite-note-rain span {
+    animation: none;
+    will-change: auto;
+  }
+
   .d-mist-layer {
     display: none;
   }

@@ -1,3 +1,4 @@
+const laptopInviteQuery = "(min-width: 901px)";
 const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
 const stoppedFloatClearance = 24;
 const noticeShadowClearance = 8;
@@ -31,6 +32,7 @@ export function installInviteParallax(
   if (!section || !noticeLayer) return () => undefined;
 
   const header = documentObject.querySelector<HTMLElement>(".d-menubar");
+  const laptopInvite = windowObject.matchMedia(laptopInviteQuery);
   const reducedMotion = windowObject.matchMedia(reducedMotionQuery);
   const notices = Array.from(
     noticeLayer.querySelectorAll<HTMLElement>(":scope > span"),
@@ -39,6 +41,7 @@ export function installInviteParallax(
   let animationFrame = 0;
   let limitsNeedMeasurement = true;
   let disposed = false;
+  let viewportListenersInstalled = false;
 
   const measureNoticeTravel = () => {
     for (const notice of notices) {
@@ -104,16 +107,7 @@ export function installInviteParallax(
 
   const update = () => {
     animationFrame = 0;
-    if (reducedMotion.matches) {
-      for (const notice of notices) {
-        notice.style.setProperty("translate", "0 0");
-        notice.dataset.parallaxStopped = "true";
-      }
-      return;
-    }
-
     if (limitsNeedMeasurement) measureNoticeTravel();
-
     const bounds = section.getBoundingClientRect();
     const sectionCenter = bounds.top + bounds.height / 2;
     const viewportTop = Math.max(
@@ -139,27 +133,58 @@ export function installInviteParallax(
     scheduleUpdate();
   };
 
-  reducedMotion.addEventListener("change", scheduleUpdate);
-  windowObject.addEventListener("resize", handleResize, { passive: true });
-  windowObject.addEventListener("scroll", scheduleUpdate, { passive: true });
-  void documentObject.fonts?.ready.then(() => {
-    if (disposed) return;
-    limitsNeedMeasurement = true;
-    scheduleUpdate();
-  });
-  scheduleUpdate();
-
-  return () => {
-    disposed = true;
-    if (animationFrame) windowObject.cancelAnimationFrame(animationFrame);
-    reducedMotion.removeEventListener("change", scheduleUpdate);
+  const setViewportListeners = (enabled: boolean) => {
+    if (enabled === viewportListenersInstalled) return;
+    viewportListenersInstalled = enabled;
+    if (enabled) {
+      windowObject.addEventListener("resize", handleResize, { passive: true });
+      windowObject.addEventListener("scroll", scheduleUpdate, { passive: true });
+      return;
+    }
     windowObject.removeEventListener("resize", handleResize);
     windowObject.removeEventListener("scroll", scheduleUpdate);
+  };
+
+  const clearNoticeParallax = () => {
+    noticeTravel.clear();
     for (const notice of notices) {
       notice.style.removeProperty("translate");
       notice.style.removeProperty("--d-note-parallax-start");
       notice.style.removeProperty("--d-note-parallax-max");
       delete notice.dataset.parallaxStopped;
     }
+  };
+
+  const syncMotionPreference = () => {
+    const enabled = laptopInvite.matches && !reducedMotion.matches;
+    setViewportListeners(enabled);
+    if (enabled) {
+      limitsNeedMeasurement = true;
+      scheduleUpdate();
+      return;
+    }
+    if (animationFrame) {
+      windowObject.cancelAnimationFrame(animationFrame);
+      animationFrame = 0;
+    }
+    clearNoticeParallax();
+  };
+
+  laptopInvite.addEventListener("change", syncMotionPreference);
+  reducedMotion.addEventListener("change", syncMotionPreference);
+  void documentObject.fonts?.ready.then(() => {
+    if (disposed || !laptopInvite.matches || reducedMotion.matches) return;
+    limitsNeedMeasurement = true;
+    scheduleUpdate();
+  });
+  syncMotionPreference();
+
+  return () => {
+    disposed = true;
+    if (animationFrame) windowObject.cancelAnimationFrame(animationFrame);
+    laptopInvite.removeEventListener("change", syncMotionPreference);
+    reducedMotion.removeEventListener("change", syncMotionPreference);
+    setViewportListeners(false);
+    clearNoticeParallax();
   };
 }

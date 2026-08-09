@@ -145,9 +145,3 @@
   94% { translate: var(--d-note-drift) calc(var(--d-note-floor) + var(--d-note-pile)); opacity: 0.94; }
   98%, 100% { translate: var(--d-note-drift) calc(var(--d-note-floor) + var(--d-note-pile)); opacity: 0.94; }
 }
-
-@keyframes d-invite-note-idle {
-  0%, 100% { translate: 0 0; }
-  38% { translate: 0 var(--d-note-idle-rise, -5px); }
-  66% { translate: 0 var(--d-note-idle-settle, -2px); }
-}
