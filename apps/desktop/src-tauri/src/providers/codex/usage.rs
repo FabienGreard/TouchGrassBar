@@ -17,6 +17,7 @@ use time::{
     Date, Duration, Month, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339,
 };
 
+use super::fast_pricing::{FastTurnEvidence, load_fast_turn_evidence, valid_turn_id};
 use crate::daily_usage_aggregate::{
     DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_usage_periods,
     checked_sum, period_days,
@@ -40,10 +41,10 @@ const PREFIX_ANCHOR_SAMPLE_BYTES: u64 = 1_024;
 const LOCAL_USAGE_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
-const ROLLOUT_PARSER_VERSION: i64 = 8;
+const ROLLOUT_PARSER_VERSION: i64 = 9;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
-pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 3;
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 4;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -261,6 +262,7 @@ struct RawPricePeriod {
     cached_input_usd_per_million: f64,
     cache_write_usd_per_million: Option<f64>,
     output_usd_per_million: f64,
+    fast_multiplier: Option<f64>,
     long_context: RawLongContextRule,
 }
 
@@ -281,11 +283,29 @@ struct PricingManifest {
 
 impl PricingManifest {
     fn canonical_model_name(&self, model_name: &str) -> Option<&str> {
+        self.model(model_name)
+            .and_then(|model| model.names.first())
+            .map(String::as_str)
+    }
+
+    fn model(&self, model_name: &str) -> Option<&PricedModel> {
+        let model_name = model_name.strip_prefix("openai/").unwrap_or(model_name);
         self.models
             .iter()
             .find(|model| model.names.iter().any(|name| name == model_name))
-            .and_then(|model| model.names.first())
-            .map(String::as_str)
+            .or_else(|| {
+                let suffix_start = model_name.len().checked_sub(11)?;
+                let suffix = model_name.get(suffix_start + 1..)?;
+                if model_name.as_bytes().get(suffix_start) != Some(&b'-')
+                    || parse_ranking_day(suffix).is_err()
+                {
+                    return None;
+                }
+                let base = model_name.get(..suffix_start)?;
+                self.models
+                    .iter()
+                    .find(|model| model.names.iter().any(|name| name == base))
+            })
     }
 }
 
@@ -303,6 +323,7 @@ struct PriceCatalogEntry {
     cached_input_usd_per_million: f64,
     cache_write_usd_per_million: Option<f64>,
     output_usd_per_million: f64,
+    fast_multiplier: Option<f64>,
     long_context_input_tokens_above: u64,
     long_context_input_multiplier: f64,
     long_context_output_multiplier: f64,
@@ -349,6 +370,7 @@ fn parse_pricing_manifest(source: &str) -> Result<PricingManifest, ()> {
                         period.input_usd_per_million,
                         period.cached_input_usd_per_million,
                         period.output_usd_per_million,
+                        period.fast_multiplier.unwrap_or(1.0),
                         period.long_context.input_multiplier,
                         period.long_context.output_multiplier,
                     ]
@@ -359,6 +381,7 @@ fn parse_pricing_manifest(source: &str) -> Result<PricingManifest, ()> {
                         .is_some_and(|value| !value.is_finite() || value < 0.0)
                     || period.long_context.input_multiplier <= 0.0
                     || period.long_context.output_multiplier <= 0.0
+                    || period.fast_multiplier.is_some_and(|value| value < 1.0)
                 {
                     return Err(());
                 }
@@ -369,6 +392,7 @@ fn parse_pricing_manifest(source: &str) -> Result<PricingManifest, ()> {
                     cached_input_usd_per_million: period.cached_input_usd_per_million,
                     cache_write_usd_per_million: period.cache_write_usd_per_million,
                     output_usd_per_million: period.output_usd_per_million,
+                    fast_multiplier: period.fast_multiplier,
                     long_context_input_tokens_above: period.long_context.input_tokens_above,
                     long_context_input_multiplier: period.long_context.input_multiplier,
                     long_context_output_multiplier: period.long_context.output_multiplier,
@@ -407,7 +431,7 @@ fn pricing_manifest_fingerprint(basis: &str, models: &[PricedModel]) -> String {
                 .iter()
                 .map(|period| {
                     format!(
-                        "{}|{}|{:016x}|{:016x}|{}|{:016x}|{}|{:016x}|{:016x}",
+                        "{}|{}|{:016x}|{:016x}|{}|{:016x}|{}|{}|{:016x}|{:016x}",
                         period.effective_from,
                         period
                             .effective_until
@@ -419,6 +443,10 @@ fn pricing_manifest_fingerprint(basis: &str, models: &[PricedModel]) -> String {
                             |price| format!("{:016x}", price.to_bits())
                         ),
                         period.output_usd_per_million.to_bits(),
+                        period.fast_multiplier.map_or_else(
+                            || "none".to_owned(),
+                            |multiplier| format!("{:016x}", multiplier.to_bits())
+                        ),
                         period.long_context_input_tokens_above,
                         period.long_context_input_multiplier.to_bits(),
                         period.long_context_output_multiplier.to_bits(),
@@ -463,9 +491,7 @@ fn pricing_catalog_entry(
     day: Date,
 ) -> Result<PriceCatalogEntry, PricingLookupFailure> {
     let model = manifest
-        .models
-        .iter()
-        .find(|entry| entry.names.iter().any(|name| name == model))
+        .model(model)
         .ok_or(PricingLookupFailure::UnknownModel)?;
     model
         .periods
@@ -473,6 +499,13 @@ fn pricing_catalog_entry(
         .copied()
         .find(|entry| entry.applies_to(day))
         .ok_or(PricingLookupFailure::MissingApplicablePrice)
+}
+
+fn supports_fast_pricing(model: &str, day: Date) -> bool {
+    pricing_manifest()
+        .and_then(|manifest| pricing_catalog_entry(manifest, model, day).ok())
+        .and_then(|entry| entry.fast_multiplier)
+        .is_some()
 }
 
 #[cfg(test)]
@@ -509,7 +542,7 @@ fn debug_pricing_lookup_failure(_model: &str, _day: Date, _failure: PricingLooku
 
 #[cfg(test)]
 fn price_usage(model: &str, day: Date, usage: TokenUsage) -> Option<f64> {
-    price_usage_tier(model, day, usage, usage.input)
+    price_usage_tier(model, day, usage, usage.input, PricingMode::Standard)
 }
 
 #[cfg(test)]
@@ -518,8 +551,16 @@ fn price_usage_tier(
     day: Date,
     usage: TokenUsage,
     pricing_input_tokens: u64,
+    pricing_mode: PricingMode,
 ) -> Option<f64> {
-    price_usage_tier_with_manifest(pricing_manifest()?, model, day, usage, pricing_input_tokens)
+    price_usage_tier_with_manifest(
+        pricing_manifest()?,
+        model,
+        day,
+        usage,
+        pricing_input_tokens,
+        pricing_mode,
+    )
 }
 
 fn price_usage_tier_with_manifest(
@@ -528,6 +569,7 @@ fn price_usage_tier_with_manifest(
     day: Date,
     usage: TokenUsage,
     pricing_input_tokens: u64,
+    pricing_mode: PricingMode,
 ) -> Option<f64> {
     let entry = match pricing_catalog_entry(manifest, model, day) {
         Ok(entry) => entry,
@@ -558,11 +600,17 @@ fn price_usage_tier_with_manifest(
         };
         per_million(billable.cache_write_input, rate)
     };
-    let cost = input_multiplier
-        * (per_million(billable.standard_input, entry.input_usd_per_million)
-            + per_million(billable.cached_input, entry.cached_input_usd_per_million)
-            + cache_write)
-        + output_multiplier * per_million(billable.output, entry.output_usd_per_million);
+    let mode_multiplier = match pricing_mode {
+        PricingMode::Standard => 1.0,
+        PricingMode::Fast if !long_context => entry.fast_multiplier.unwrap_or(1.0),
+        PricingMode::Fast => 1.0,
+    };
+    let cost = mode_multiplier
+        * (input_multiplier
+            * (per_million(billable.standard_input, entry.input_usd_per_million)
+                + per_million(billable.cached_input, entry.cached_input_usd_per_million)
+                + cache_write)
+            + output_multiplier * per_million(billable.output, entry.output_usd_per_million));
     cost.is_finite().then_some(cost)
 }
 
@@ -572,6 +620,7 @@ fn pricing_rule_fingerprint(
     day: Date,
     usage: TokenUsage,
     pricing_input_tokens: u64,
+    pricing_mode: PricingMode,
 ) -> String {
     let billable = match usage.billable() {
         Ok(billable) => billable,
@@ -609,31 +658,43 @@ fn pricing_rule_fingerprint(
     } else {
         1.0
     };
+    let mode_multiplier = match pricing_mode {
+        PricingMode::Standard => 1.0,
+        PricingMode::Fast if !long_context => entry.fast_multiplier.unwrap_or(1.0),
+        PricingMode::Fast => 1.0,
+    };
     let applicable_rate = |tokens: u64, rate: f64, multiplier: f64| {
         (tokens > 0).then(|| format!("{:016x}", (rate * multiplier).to_bits()))
     };
     stable_pricing_fingerprint(&format!(
-        "priced:standard={}:cached={}:cache-write={}:output={}",
+        "priced:mode={}:standard={}:cached={}:cache-write={}:output={}",
+        pricing_mode.as_stored(),
         applicable_rate(
             billable.standard_input,
             entry.input_usd_per_million,
-            input_multiplier
+            input_multiplier * mode_multiplier
         )
         .unwrap_or_else(|| "unused".to_owned()),
         applicable_rate(
             billable.cached_input,
             entry.cached_input_usd_per_million,
-            input_multiplier
+            input_multiplier * mode_multiplier
         )
         .unwrap_or_else(|| "unused".to_owned()),
         entry
             .cache_write_usd_per_million
-            .and_then(|rate| applicable_rate(billable.cache_write_input, rate, input_multiplier))
+            .and_then(|rate| {
+                applicable_rate(
+                    billable.cache_write_input,
+                    rate,
+                    input_multiplier * mode_multiplier,
+                )
+            })
             .unwrap_or_else(|| "unused".to_owned()),
         applicable_rate(
             billable.output,
             entry.output_usd_per_million,
-            output_multiplier
+            output_multiplier * mode_multiplier
         )
         .unwrap_or_else(|| "unused".to_owned()),
     ))
@@ -747,8 +808,20 @@ struct RawSessionMetaLine {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "type")]
 enum RawEventPayload {
+    TaskStarted {
+        #[serde(default, alias = "turnId")]
+        turn_id: Option<String>,
+        model_context_window: IgnoredAny,
+        collaboration_mode_kind: IgnoredAny,
+        #[serde(default)]
+        started_at: Option<IgnoredAny>,
+    },
     TokenCount {
         info: RawTokenInfo,
+        #[serde(default, alias = "turnId")]
+        turn_id: Option<String>,
+        #[serde(default)]
+        id: Option<String>,
         #[serde(default)]
         rate_limits: Option<IgnoredAny>,
     },
@@ -762,6 +835,10 @@ struct RawTokenInfo {
     last_token_usage: TokenUsage,
     model_context_window: u64,
     total_token_usage: TokenUsage,
+    #[serde(default, alias = "turnId")]
+    turn_id: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -812,6 +889,7 @@ impl RawThreadSource {
 #[derive(Clone, Debug, Default)]
 struct RolloutScanState {
     active_model: Option<String>,
+    active_turn_id: Option<String>,
     baseline_is_inherited: Option<bool>,
     history_start_ordinal: Option<u64>,
     record_ordinal: u64,
@@ -865,7 +943,7 @@ fn valid_model_name(model: &str) -> bool {
         && model.len() <= 64
         && model
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/'))
 }
 
 fn parse_rollout_timestamp(timestamp: &str) -> Result<OffsetDateTime, ()> {
@@ -1000,9 +1078,16 @@ fn scan_rollout_reader(
                     continue;
                 };
                 let _ = (line.timestamp, line.record_type);
-                let RawEventPayload::TokenCount { info, rate_limits } = line.payload else {
+                let RawEventPayload::TokenCount {
+                    info,
+                    turn_id,
+                    id,
+                    rate_limits,
+                } = line.payload
+                else {
                     continue;
                 };
+                let _ = (turn_id, id, &info.turn_id, &info.id);
                 let _ = (
                     info.last_token_usage,
                     info.model_context_window,
@@ -1176,10 +1261,34 @@ impl FileCompletionState {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum PricingMode {
+    Standard,
+    Fast,
+}
+
+impl PricingMode {
+    fn as_stored(&self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Fast => "fast",
+        }
+    }
+
+    fn from_stored(value: &str) -> Result<Self, ()> {
+        match value {
+            "standard" => Ok(Self::Standard),
+            "fast" => Ok(Self::Fast),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ModelDayKey {
     day: Date,
     model: String,
     pricing_input_tokens: u64,
+    pricing_mode: PricingMode,
 }
 
 #[derive(Clone, Debug)]
@@ -1226,6 +1335,7 @@ fn add_model_day_delta(
     timestamp: OffsetDateTime,
     model: Option<&str>,
     delta: TokenUsage,
+    pricing_mode: PricingMode,
 ) -> Result<(), ()> {
     if delta.total == 0 {
         return Ok(());
@@ -1234,6 +1344,7 @@ fn add_model_day_delta(
         day: utc_ranking_day(timestamp),
         model: model.unwrap_or(UNKNOWN_MODEL).to_owned(),
         pricing_input_tokens: delta.input,
+        pricing_mode,
     };
     let row = rows.entry(key).or_insert(ModelDayDelta {
         usage: TokenUsage::default(),
@@ -1255,6 +1366,7 @@ fn mark_model_day_incomplete(
         day: utc_ranking_day(timestamp),
         model: model.unwrap_or(UNKNOWN_MODEL).to_owned(),
         pricing_input_tokens: 0,
+        pricing_mode: PricingMode::Standard,
     };
     let row = rows.entry(key).or_insert(ModelDayDelta {
         usage: TokenUsage::default(),
@@ -1272,6 +1384,7 @@ fn process_index_line(
     record_ordinal: u64,
     state: &mut RolloutScanState,
     rows: &mut BTreeMap<ModelDayKey, ModelDayDelta>,
+    fast_turns: &BTreeMap<String, Option<String>>,
 ) -> IndexLineOutcome {
     if line.len() > MAX_ROLLOUT_LINE_BYTES {
         debug_parser_failure("line_too_large", None);
@@ -1342,9 +1455,33 @@ fn process_index_line(
                 return IndexLineOutcome::Processed(false);
             };
             let _ = (line.timestamp, line.record_type);
-            let RawEventPayload::TokenCount { info, rate_limits } = line.payload else {
+            if let RawEventPayload::TaskStarted {
+                turn_id,
+                model_context_window,
+                collaboration_mode_kind,
+                started_at,
+            } = line.payload
+            {
+                let _ = (model_context_window, collaboration_mode_kind, started_at);
+                state.active_turn_id = turn_id.filter(|value| valid_turn_id(value));
+                return IndexLineOutcome::Processed(true);
+            }
+            let RawEventPayload::TokenCount {
+                info,
+                turn_id,
+                id,
+                rate_limits,
+            } = line.payload
+            else {
                 return IndexLineOutcome::Processed(true);
             };
+            let pricing_turn_id = turn_id
+                .as_deref()
+                .or(id.as_deref())
+                .or(info.turn_id.as_deref())
+                .or(info.id.as_deref())
+                .filter(|value| valid_turn_id(value))
+                .or(state.active_turn_id.as_deref());
             let _ = (
                 info.last_token_usage,
                 info.model_context_window,
@@ -1386,7 +1523,17 @@ fn process_index_line(
                 return IndexLineOutcome::Processed(true);
             }
             match delta.and_then(|delta| {
-                add_model_day_delta(rows, timestamp, state.active_model.as_deref(), delta)
+                let fast_turn = pricing_turn_id.and_then(|turn_id| fast_turns.get(turn_id));
+                let pricing_mode = if fast_turn.is_some() {
+                    PricingMode::Fast
+                } else {
+                    PricingMode::Standard
+                };
+                let pricing_model = fast_turn
+                    .and_then(|model| model.as_deref())
+                    .filter(|model| supports_fast_pricing(model, day))
+                    .or(state.active_model.as_deref());
+                add_model_day_delta(rows, timestamp, pricing_model, delta, pricing_mode)
             }) {
                 Ok(()) => true,
                 Err(()) => {
@@ -1509,6 +1656,15 @@ fn ensure_index_schema(
     }
 
     let transaction = connection.transaction().map_err(|_| ())?;
+    if source_version > 0 && source_version < 4 {
+        transaction
+            .execute_batch(
+                "DROP TABLE IF EXISTS codex_usage_file_days;
+                 DROP TABLE IF EXISTS codex_usage_file_model_days;
+                 DELETE FROM codex_usage_files;",
+            )
+            .map_err(|_| ())?;
+    }
     transaction
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS touchgrassbar_schema_versions (
@@ -1538,6 +1694,7 @@ fn ensure_index_schema(
                completion_state TEXT NOT NULL,
                deferred_until_day TEXT,
                active_model TEXT,
+               active_turn_id TEXT,
                baseline_is_inherited INTEGER,
                history_start_ordinal INTEGER,
                record_ordinal INTEGER NOT NULL DEFAULT 0,
@@ -1555,6 +1712,7 @@ fn ensure_index_schema(
                day TEXT NOT NULL,
                model TEXT NOT NULL,
                pricing_input_tokens INTEGER NOT NULL,
+               pricing_mode TEXT NOT NULL CHECK(pricing_mode IN ('standard', 'fast')),
                input_tokens INTEGER NOT NULL,
                cached_input_tokens INTEGER NOT NULL,
                cache_write_input_tokens INTEGER NOT NULL,
@@ -1566,7 +1724,7 @@ fn ensure_index_schema(
                pricing_fingerprint TEXT,
                complete INTEGER NOT NULL,
                observed_through TEXT NOT NULL,
-               PRIMARY KEY (path, day, model, pricing_input_tokens),
+               PRIMARY KEY (path, day, model, pricing_input_tokens, pricing_mode),
                FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
              );
              CREATE TABLE IF NOT EXISTS codex_usage_file_days (
@@ -1585,6 +1743,14 @@ fn ensure_index_schema(
         )
         .map_err(|_| ())?;
     let file_columns = table_columns(&transaction, "codex_usage_files")?;
+    if !file_columns.iter().any(|column| column == "active_turn_id") {
+        transaction
+            .execute(
+                "ALTER TABLE codex_usage_files ADD COLUMN active_turn_id TEXT",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
     if !file_columns
         .iter()
         .any(|column| column == "history_start_ordinal")
@@ -1866,7 +2032,7 @@ fn reprice_index_batch_with_manifest(
             "SELECT rowid, path, day, model, pricing_input_tokens,
                     input_tokens, cached_input_tokens,
                     cache_write_input_tokens, output_tokens, reasoning_output_tokens,
-                    observed_tokens, pricing_basis, pricing_fingerprint
+                    observed_tokens, pricing_basis, pricing_fingerprint, pricing_mode
              FROM codex_usage_file_model_days
              WHERE rowid > ?1 AND day >= ?2 AND day <= ?3
              ORDER BY rowid
@@ -1901,6 +2067,8 @@ fn reprice_index_batch_with_manifest(
                     },
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<String>>(12)?,
+                    PricingMode::from_stored(&row.get::<_, String>(13)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 ))
             },
         )
@@ -1912,20 +2080,42 @@ fn reprice_index_batch_with_manifest(
     let next_cursor = rows.last().map_or(cursor, |row| row.0);
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
     let mut affected_file_days = BTreeSet::new();
-    for (_, path, day, model, pricing_input_tokens, usage, stored_basis, stored_rule_fingerprint) in
-        rows
+    for (
+        _,
+        path,
+        day,
+        model,
+        pricing_input_tokens,
+        usage,
+        stored_basis,
+        stored_rule_fingerprint,
+        pricing_mode,
+    ) in rows
     {
         let day = parse_ranking_day(&day)?;
-        let rule_fingerprint =
-            pricing_rule_fingerprint(manifest, &model, day, usage, pricing_input_tokens);
+        let rule_fingerprint = pricing_rule_fingerprint(
+            manifest,
+            &model,
+            day,
+            usage,
+            pricing_input_tokens,
+            pricing_mode.clone(),
+        );
         if stored_rule_fingerprint.as_deref() != Some(rule_fingerprint.as_str()) {
-            let cost =
-                price_usage_tier_with_manifest(manifest, &model, day, usage, pricing_input_tokens);
+            let cost = price_usage_tier_with_manifest(
+                manifest,
+                &model,
+                day,
+                usage,
+                pricing_input_tokens,
+                pricing_mode.clone(),
+            );
             transaction
                 .execute(
                     "UPDATE codex_usage_file_model_days
                      SET cost_usd = ?1, pricing_basis = ?2, pricing_fingerprint = ?3
-                     WHERE path = ?4 AND day = ?5 AND model = ?6 AND pricing_input_tokens = ?7",
+                     WHERE path = ?4 AND day = ?5 AND model = ?6
+                       AND pricing_input_tokens = ?7 AND pricing_mode = ?8",
                     params![
                         cost,
                         manifest.basis.as_str(),
@@ -1933,7 +2123,8 @@ fn reprice_index_batch_with_manifest(
                         path.as_str(),
                         day.to_string(),
                         model.as_str(),
-                        to_i64(pricing_input_tokens)?
+                        to_i64(pricing_input_tokens)?,
+                        pricing_mode.as_stored(),
                     ],
                 )
                 .map_err(|_| ())?;
@@ -1943,13 +2134,15 @@ fn reprice_index_batch_with_manifest(
                 .execute(
                     "UPDATE codex_usage_file_model_days
                      SET pricing_basis = ?1
-                     WHERE path = ?2 AND day = ?3 AND model = ?4 AND pricing_input_tokens = ?5",
+                     WHERE path = ?2 AND day = ?3 AND model = ?4
+                       AND pricing_input_tokens = ?5 AND pricing_mode = ?6",
                     params![
                         manifest.basis.as_str(),
                         path.as_str(),
                         day.to_string(),
                         model.as_str(),
-                        to_i64(pricing_input_tokens)?
+                        to_i64(pricing_input_tokens)?,
+                        pricing_mode.as_stored(),
                     ],
                 )
                 .map_err(|_| ())?;
@@ -2220,7 +2413,7 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                     record_ordinal, usage_excluded, schema_supported, parser_version,
                     previous_input, previous_cached_input, previous_cache_write_input,
                     previous_output, previous_reasoning_output, previous_total,
-                    parsed_prefix_anchor, deferred_until_day
+                    parsed_prefix_anchor, deferred_until_day, active_turn_id
              FROM codex_usage_files WHERE path = ?1",
             [path],
             |row| {
@@ -2261,6 +2454,7 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                     parser_version: row.get(11)?,
                     parser_state: RolloutScanState {
                         active_model: row.get(5)?,
+                        active_turn_id: row.get(20)?,
                         baseline_is_inherited: row.get::<_, Option<bool>>(6)?,
                         history_start_ordinal: row
                             .get::<_, Option<i64>>(7)?
@@ -2303,8 +2497,8 @@ fn commit_file_progress(
                record_ordinal, usage_excluded, schema_supported,
                previous_input, previous_cached_input, previous_cache_write_input,
                previous_output, previous_reasoning_output, previous_total,
-               parsed_prefix_anchor, deferred_until_day
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+               parsed_prefix_anchor, deferred_until_day, active_turn_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT(path) DO UPDATE SET
                file_identity=excluded.file_identity, size_bytes=excluded.size_bytes,
                modified_ns=excluded.modified_ns, parsed_offset=excluded.parsed_offset,
@@ -2321,7 +2515,8 @@ fn commit_file_progress(
                previous_reasoning_output=excluded.previous_reasoning_output,
                previous_total=excluded.previous_total,
                parsed_prefix_anchor=excluded.parsed_prefix_anchor,
-               deferred_until_day=excluded.deferred_until_day",
+               deferred_until_day=excluded.deferred_until_day,
+               active_turn_id=excluded.active_turn_id",
             params![
                 path,
                 cursor.identity,
@@ -2373,6 +2568,7 @@ fn commit_file_progress(
                     .transpose()?,
                 cursor.parsed_prefix_anchor,
                 cursor.deferred_until_day.map(|day| day.to_string()),
+                cursor.parser_state.active_turn_id,
             ],
         )
         .map_err(|_| ())?;
@@ -2385,6 +2581,7 @@ fn commit_file_progress(
                 key.day,
                 delta.usage,
                 key.pricing_input_tokens,
+                key.pricing_mode.clone(),
             )
         });
         let pricing_fingerprint = manifest.map(|manifest| {
@@ -2394,6 +2591,7 @@ fn commit_file_progress(
                 key.day,
                 delta.usage,
                 key.pricing_input_tokens,
+                key.pricing_mode.clone(),
             )
         });
         let file_day = file_days.entry(key.day).or_insert(FileDayDelta {
@@ -2430,12 +2628,13 @@ fn commit_file_progress(
         transaction
             .execute(
                 "INSERT INTO codex_usage_file_model_days(
-                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   path, day, model, pricing_input_tokens, pricing_mode,
+                   input_tokens, cached_input_tokens,
                    cache_write_input_tokens, output_tokens, reasoning_output_tokens,
                    observed_tokens, cost_usd, pricing_basis, pricing_fingerprint,
                    complete, observed_through
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-                 ON CONFLICT(path, day, model, pricing_input_tokens) DO UPDATE SET
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 ON CONFLICT(path, day, model, pricing_input_tokens, pricing_mode) DO UPDATE SET
                    input_tokens=input_tokens + excluded.input_tokens,
                    cached_input_tokens=cached_input_tokens + excluded.cached_input_tokens,
                    cache_write_input_tokens=cache_write_input_tokens + excluded.cache_write_input_tokens,
@@ -2452,6 +2651,7 @@ fn commit_file_progress(
                     key.day.to_string(),
                     key.model,
                     to_i64(key.pricing_input_tokens)?,
+                    key.pricing_mode.as_stored(),
                     to_i64(delta.usage.input)?,
                     to_i64(delta.usage.cached_input)?,
                     to_i64(delta.usage.cache_write_input)?,
@@ -2507,11 +2707,16 @@ fn commit_file_progress(
     transaction.commit().map_err(|_| ())
 }
 
+struct FileIndexContext<'a> {
+    cutoff: Date,
+    today: Date,
+    fast_turns: &'a BTreeMap<String, Option<String>>,
+}
+
 fn index_file(
     connection: &Connection,
     path: &Path,
-    cutoff: Date,
-    today: Date,
+    context: &FileIndexContext<'_>,
     started: Instant,
     max_millis: u128,
     remaining_bytes: &mut u64,
@@ -2521,8 +2726,14 @@ fn index_file(
     let identity = file_identity(&metadata);
     let size = metadata.len();
     let modified_ns = file_modified_ns(&metadata)?;
-    let cutoff_modified_ns =
-        i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).map_err(|_| ())?;
+    let cutoff_modified_ns = i64::try_from(
+        context
+            .cutoff
+            .midnight()
+            .assume_utc()
+            .unix_timestamp_nanos(),
+    )
+    .map_err(|_| ())?;
     if modified_ns < cutoff_modified_ns {
         reset_file(connection, &path_value)?;
         return Ok(true);
@@ -2640,11 +2851,12 @@ fn index_file(
             let record_ordinal = cursor.parser_state.record_ordinal;
             match process_index_line(
                 &line,
-                cutoff,
-                today,
+                context.cutoff,
+                context.today,
                 record_ordinal,
                 &mut cursor.parser_state,
                 &mut rows,
+                context.fast_turns,
             ) {
                 IndexLineOutcome::Processed(processed) => {
                     cursor.parser_state.record_ordinal =
@@ -2858,13 +3070,54 @@ fn index_local_usage_at(
     index_local_usage_with_budget(database_path, home, now, DEFAULT_SCAN_BUDGET)
 }
 
+fn reconcile_fast_turn_evidence(
+    connection: &Connection,
+    evidence: &FastTurnEvidence,
+) -> Result<(), ()> {
+    let current = connection
+        .query_row(
+            "SELECT value FROM codex_usage_index_meta WHERE key = 'fast_turn_fingerprint'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|_| ())?;
+    if current.as_deref() == Some(evidence.fingerprint.as_str()) {
+        return Ok(());
+    }
+    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    transaction
+        .execute("DELETE FROM codex_usage_files", [])
+        .map_err(|_| ())?;
+    transaction
+        .execute(
+            "DELETE FROM codex_usage_index_meta
+             WHERE key IN (
+               'file_day_summary_version',
+               'pricing_complete_fingerprint',
+               'pricing_reprice_cursor',
+               'pricing_reprice_target_fingerprint'
+             )",
+            [],
+        )
+        .map_err(|_| ())?;
+    transaction
+        .execute(
+            "INSERT INTO codex_usage_index_meta(key, value)
+             VALUES('fast_turn_fingerprint', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [evidence.fingerprint.as_str()],
+        )
+        .map_err(|_| ())?;
+    transaction.commit().map_err(|_| ())
+}
+
 fn index_local_usage_with_budget(
     database_path: &Path,
     home: &Path,
     now: OffsetDateTime,
     budget: ScanBudget,
 ) -> Option<LocalUsageObservation> {
-    let started = Instant::now();
     let max_bytes = budget.max_bytes.min(MAX_ROLLOUT_SCAN_BYTES);
     let max_file_bytes = budget.max_file_bytes.min(MAX_ROLLOUT_FILE_SCAN_BYTES);
     let max_millis = budget.max_millis.min(MAX_ROLLOUT_SCAN_MILLIS);
@@ -2875,6 +3128,11 @@ fn index_local_usage_with_budget(
     ensure_index_schema(&mut connection, Some(database_path)).ok()?;
     let today = utc_ranking_day(now);
     let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
+    let fast_turn_evidence = load_fast_turn_evidence(home, cutoff, today)?;
+    reconcile_fast_turn_evidence(&connection, &fast_turn_evidence).ok()?;
+    // Trace evidence and rollout bytes are independent local inputs. A large
+    // read-only trace database must not consume the bounded rollout budget.
+    let started = Instant::now();
     let cutoff_modified_ns =
         i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).ok()?;
     let retention_complete =
@@ -2951,6 +3209,11 @@ fn index_local_usage_with_budget(
         .into_iter()
         .filter(|(needs_work, _, _, _, _)| *needs_work)
         .collect::<Vec<_>>();
+    let index_context = FileIndexContext {
+        cutoff,
+        today,
+        fast_turns: &fast_turn_evidence.turns,
+    };
     let mut remaining_bytes = max_bytes;
     let mut all_complete = traversal_complete;
     let mut failed = false;
@@ -2971,8 +3234,7 @@ fn index_local_usage_with_budget(
         match index_file(
             &connection,
             path,
-            cutoff,
-            today,
+            &index_context,
             started,
             max_millis,
             &mut file_remaining_bytes,
@@ -3560,6 +3822,22 @@ mod tests {
             + "\n"
     }
 
+    fn token_usage(
+        input: u64,
+        cached_input: u64,
+        cache_write_input: u64,
+        output: u64,
+    ) -> TokenUsage {
+        TokenUsage {
+            input,
+            cached_input,
+            cache_write_input,
+            output,
+            reasoning_output: 0,
+            total: input + output,
+        }
+    }
+
     fn changed_pricing_manifest(basis: &str, output_rate: f64) -> PricingManifest {
         let mut value: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
@@ -3721,6 +3999,7 @@ mod tests {
             "usage_excluded",
             "parsed_prefix_anchor",
             "deferred_until_day",
+            "active_turn_id",
         ] {
             assert!(file_columns.iter().any(|column| column == required));
         }
@@ -3730,6 +4009,12 @@ mod tests {
                 .iter()
                 .any(|column| column == "pricing_fingerprint")
         );
+        assert!(
+            table_columns(&connection, "codex_usage_file_model_days")
+                .unwrap()
+                .iter()
+                .any(|column| column == "pricing_mode")
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -3738,7 +4023,7 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            1
+            0
         );
 
         let backup_path = usage_index_backup_path(&fixture.database, 1);
@@ -4448,7 +4733,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let changed = changed_pricing_manifest("openai-standard-2026-08-06-v1", 60.0);
+        let changed = changed_pricing_manifest("openai-api-2026-08-09-v2", 60.0);
         reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
         let after: (i64, i64, f64) = connection
             .query_row(
@@ -4510,18 +4795,26 @@ mod tests {
             day,
             usage,
             pricing_input_tokens,
+            PricingMode::Standard,
         )
         .unwrap();
-        let terra_fingerprint =
-            pricing_rule_fingerprint(manifest, "gpt-5.6-terra", day, usage, pricing_input_tokens);
+        let terra_fingerprint = pricing_rule_fingerprint(
+            manifest,
+            "gpt-5.6-terra",
+            day,
+            usage,
+            pricing_input_tokens,
+            PricingMode::Standard,
+        );
         connection
             .execute(
                 "INSERT INTO codex_usage_file_model_days(
-                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   path, day, model, pricing_input_tokens, pricing_mode,
+                   input_tokens, cached_input_tokens,
                    cache_write_input_tokens, output_tokens, reasoning_output_tokens,
                    observed_tokens, cost_usd, pricing_basis, pricing_fingerprint,
                    complete, observed_through
-                 ) VALUES(?1, ?2, 'gpt-5.6-terra', ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+                 ) VALUES(?1, ?2, 'gpt-5.6-terra', ?3, 'standard', ?4, ?5, ?6, ?7, ?8, ?9,
                           ?10, ?11, ?12, ?13, ?14)",
                 params![
                     path,
@@ -4552,7 +4845,7 @@ mod tests {
             )
             .unwrap();
 
-        let changed = changed_pricing_manifest("openai-standard-2026-08-06-v1", 60.0);
+        let changed = changed_pricing_manifest("openai-api-2026-08-09-v2", 60.0);
         reprice_index_with_manifest(&connection, &changed, day, day).unwrap();
 
         let repriced = connection
@@ -4572,7 +4865,14 @@ mod tests {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            pricing_rule_fingerprint(&changed, "gpt-5.6-terra", day, usage, pricing_input_tokens,)
+            pricing_rule_fingerprint(
+                &changed,
+                "gpt-5.6-terra",
+                day,
+                usage,
+                pricing_input_tokens,
+                PricingMode::Standard,
+            )
         );
     }
 
@@ -4626,11 +4926,12 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO codex_usage_file_model_days(
-                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   path, day, model, pricing_input_tokens, pricing_mode,
+                   input_tokens, cached_input_tokens,
                    cache_write_input_tokens, output_tokens, reasoning_output_tokens,
                    observed_tokens, cost_usd, pricing_basis, pricing_fingerprint,
                    complete, observed_through
-                 ) VALUES (?1, '2026-07-07', 'gpt-5.6-sol', 70, 70, 20, 0, 30, 10,
+                 ) VALUES (?1, '2026-07-07', 'gpt-5.6-sol', 70, 'standard', 70, 20, 0, 30, 10,
                            100, 123.0, 'old-basis', 'old-rule', 1,
                            '2026-07-07T12:00:00Z')",
                 [path.as_str()],
@@ -4685,10 +4986,11 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO codex_usage_file_model_days(
-                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   path, day, model, pricing_input_tokens, pricing_mode,
+                   input_tokens, cached_input_tokens,
                    cache_write_input_tokens, output_tokens, reasoning_output_tokens,
                    observed_tokens, cost_usd, pricing_basis, complete, observed_through
-                 ) VALUES (?1, '2026-01-01', 'gpt-5.6-sol', 7, 7, 0, 0, 3, 0, 10,
+                 ) VALUES (?1, '2026-01-01', 'gpt-5.6-sol', 7, 'standard', 7, 0, 0, 3, 0, 10,
                            0.000125, 'old-basis', 1, '2026-01-01T12:00:00Z')",
                 [path.as_str()],
             )
@@ -4696,10 +4998,11 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO codex_usage_file_model_days(
-                   path, day, model, pricing_input_tokens, input_tokens, cached_input_tokens,
+                   path, day, model, pricing_input_tokens, pricing_mode,
+                   input_tokens, cached_input_tokens,
                    cache_write_input_tokens, output_tokens, reasoning_output_tokens,
                    observed_tokens, cost_usd, pricing_basis, complete, observed_through
-                 ) VALUES (?1, '2026-08-07', 'gpt-5.6-sol', 7, 7, 0, 0, 3, 0, 10,
+                 ) VALUES (?1, '2026-08-07', 'gpt-5.6-sol', 7, 'standard', 7, 0, 0, 3, 0, 10,
                            0.000125, 'future-basis', 1, '2026-08-07T12:00:00Z')",
                 [path.as_str()],
             )
@@ -4771,7 +5074,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-standard-2026-08-06-v1");
+        assert_eq!(manifest.basis, "openai-api-2026-08-09-v2");
         assert!(
             catalog_entry(
                 &manifest,
@@ -4920,8 +5223,287 @@ mod tests {
         };
 
         let cost = price_usage("gpt-5.6-terra", day, usage).unwrap();
-        assert!((cost - 3.3625).abs() < f64::EPSILON);
+        assert!((cost - 2.69).abs() < 1e-12);
         assert!(price_usage("gpt-5.5", day, usage).is_none());
+    }
+
+    #[test]
+    fn gpt_5_6_standard_prices_match_the_published_catalog() {
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let cases = [
+            ("gpt-5.6-sol", 5.0, 0.5, 6.25, 30.0),
+            ("gpt-5.6-terra", 2.0, 0.2, 2.5, 12.0),
+            ("gpt-5.6-luna", 0.2, 0.02, 0.25, 1.2),
+        ];
+
+        for (model, input, cached, cache_write, output) in cases {
+            let short_context = |usage| price_usage(model, day, usage).unwrap() * 10.0;
+            assert!((short_context(token_usage(100_000, 0, 0, 0)) - input).abs() < 1e-12);
+            assert!((short_context(token_usage(100_000, 100_000, 0, 0)) - cached).abs() < 1e-12);
+            assert!(
+                (short_context(token_usage(100_000, 0, 100_000, 0)) - cache_write).abs() < 1e-12
+            );
+            assert!((short_context(token_usage(0, 0, 0, 100_000)) - output).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn codex_model_names_accept_provider_prefixes_and_dated_snapshots() {
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let usage = token_usage(100_000, 90_000, 0, 10_000);
+        let sol = price_usage("gpt-5.6-sol", day, usage);
+
+        assert_eq!(price_usage("gpt-5.6", day, usage), sol);
+        assert_eq!(price_usage("openai/gpt-5.6-sol", day, usage), sol);
+        assert_eq!(price_usage("gpt-5.6-sol-2026-08-09", day, usage), sol);
+        assert!(price_usage("gpt-5.6-unknown", day, usage).is_none());
+    }
+
+    #[test]
+    fn proved_fast_turn_uses_the_published_fast_price() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let rollout = [
+            json!({"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.145.0"}}),
+            json!({"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-08-09T10:00:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-fast","model_context_window":1050000,"collaboration_mode_kind":"default"}}),
+            json!({"timestamp":"2026-08-09T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000},"model_context_window":1050000,"total_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000}},"rate_limits":null}}),
+        ]
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-fast" }"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let cost = local.daily[&day].api_equivalent_cost_usd.unwrap();
+
+        assert!((cost - 0.79).abs() < 1e-12);
+    }
+
+    #[test]
+    fn completed_fast_model_replaces_the_rollout_model_when_it_has_a_fast_price() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let rollout = [
+            json!({"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.145.0"}}),
+            json!({"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-08-09T10:00:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-fast","model_context_window":1050000,"collaboration_mode_kind":"default"}}),
+            json!({"timestamp":"2026-08-09T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000},"model_context_window":1050000,"total_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000}},"rate_limits":null}}),
+        ]
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-fast" }"#,
+                ],
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-terra"}}"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let cost = local.daily[&day].api_equivalent_cost_usd.unwrap();
+
+        assert!((cost - 0.316).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT model FROM codex_usage_file_model_days", [], |row| {
+                    row.get::<_, String>(0)
+                },)
+                .unwrap(),
+            "gpt-5.6-terra"
+        );
+    }
+
+    #[test]
+    fn fast_pricing_uses_each_model_multiplier_and_not_the_long_context_multiplier() {
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let short_usage = token_usage(100_000, 90_000, 0, 10_000);
+        let long_usage = token_usage(300_000, 100_000, 50_000, 100_000);
+
+        let gpt_5_5_standard = price_usage_tier(
+            "gpt-5.5",
+            day,
+            short_usage,
+            short_usage.input,
+            PricingMode::Standard,
+        )
+        .unwrap();
+        let gpt_5_5_fast = price_usage_tier(
+            "gpt-5.5",
+            day,
+            short_usage,
+            short_usage.input,
+            PricingMode::Fast,
+        )
+        .unwrap();
+        assert!((gpt_5_5_fast - gpt_5_5_standard * 2.5).abs() < 1e-12);
+
+        let long_standard = price_usage_tier(
+            "gpt-5.6-sol",
+            day,
+            long_usage,
+            long_usage.input,
+            PricingMode::Standard,
+        )
+        .unwrap();
+        let long_fast = price_usage_tier(
+            "gpt-5.6-sol",
+            day,
+            long_usage,
+            long_usage.input,
+            PricingMode::Fast,
+        )
+        .unwrap();
+        assert_eq!(long_fast, long_standard);
+    }
+
+    #[test]
+    fn token_count_turn_id_precedes_the_active_task_and_supports_nested_ids() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let rollout = [
+            json!({"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.145.0"}}),
+            json!({"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-08-09T10:00:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-fast","model_context_window":1050000,"collaboration_mode_kind":"default"}}),
+            json!({"timestamp":"2026-08-09T10:01:00Z","type":"event_msg","payload":{"type":"token_count","turn_id":"turn-standard","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000},"model_context_window":1050000,"total_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000}},"rate_limits":null}}),
+            json!({"timestamp":"2026-08-09T10:01:01Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-standard","model_context_window":1050000,"collaboration_mode_kind":"default"}}),
+            json!({"timestamp":"2026-08-09T10:02:00Z","type":"event_msg","payload":{"type":"token_count","info":{"turnId":"turn-fast","last_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000},"model_context_window":1050000,"total_token_usage":{"input_tokens":200000,"cached_input_tokens":180000,"output_tokens":20000,"reasoning_output_tokens":0,"total_tokens":220000}},"rate_limits":null}}),
+        ]
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-fast" }"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let detail = &local.daily[&day];
+
+        assert_eq!(detail.observed_tokens, 220_000);
+        assert!((detail.api_equivalent_cost_usd.unwrap() - 1.185).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        let modes = connection
+            .prepare("SELECT pricing_mode FROM codex_usage_file_model_days ORDER BY pricing_mode")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(modes, vec!["fast", "standard"]);
+    }
+
+    #[test]
+    fn changed_fast_evidence_reindexes_an_unchanged_rollout() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let rollout = [
+            json!({"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.145.0"}}),
+            json!({"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}),
+            json!({"timestamp":"2026-08-09T10:00:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-later-fast","model_context_window":1050000,"collaboration_mode_kind":"default"}}),
+            json!({"timestamp":"2026-08-09T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000},"model_context_window":1050000,"total_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":10000,"reasoning_output_tokens":0,"total_tokens":110000}},"rate_limits":null}}),
+        ]
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        fs::write(&fixture.rollout, rollout).unwrap();
+
+        let standard = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert!((standard.daily[&day].api_equivalent_cost_usd.unwrap() - 0.395).abs() < 1e-12);
+
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-later-fast" }"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let fast = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(fast.daily[&day].observed_tokens, 110_000);
+        assert!((fast.daily[&day].api_equivalent_cost_usd.unwrap() - 0.79).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "fast"
+        );
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod fast_pricing;
 mod usage;
 
 pub(crate) use usage::{

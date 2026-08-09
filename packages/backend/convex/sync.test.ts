@@ -151,7 +151,7 @@ function usageSnapshot(
       micros: 1_000,
       pricingBasis:
         provider === "codex"
-          ? "openai-standard-2026-08-06-v1"
+          ? "openai-api-2026-08-09-v2"
           : "anthropic-standard-2026-08-07-v1",
       quality: evidenceBasis === "provider-reported" ? "reconciled" : "local-only",
     },
@@ -1248,7 +1248,7 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
     (provider) => {
       const pricingBasis =
         provider === "codex"
-          ? "openai-standard-2026-08-06-v1"
+          ? "openai-api-2026-08-09-v2"
           : "anthropic-standard-2026-08-07-v1";
       return [
         Array.from({ length: 63 }, () => usageSnapshot({ provider })),

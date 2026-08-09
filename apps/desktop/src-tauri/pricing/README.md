@@ -35,6 +35,26 @@ priced evidence, API-equivalent cost stays unavailable while account Observed
 Tokens remain visible. Updating the manifest and releasing the application are
 manual operations.
 
+The Codex scanner uses Standard prices unless private local trace evidence
+proves that a matching turn used the `priority` or `fast` service tier. It then
+uses the model's dated `fastMultiplier`. A Fast request above the published
+long-context threshold uses Standard long-context pricing because OpenAI does
+not support Fast in that range. Missing, malformed, or unmatched trace evidence
+must stay Standard. The scanner stores only the private turn classification in
+its local index; no turn identifier enters the sanitized state or sync payload.
+
+A stable fingerprint of the retained Fast evidence invalidates old local
+classifications when trace evidence arrives after a rollout was indexed. The
+scanner then rebuilds the private retained usage index. Regional processing
+also stays Standard unless a future reviewed local source reports the exact
+region. Do not infer a regional uplift from the user location or account.
+
+Use these primary sources for an OpenAI update:
+
+- [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
+- [OpenAI model catalog](https://developers.openai.com/api/docs/models)
+- [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+
 ## Anthropic rules
 
 `anthropic-standard.json` contains public Claude API list prices. It does not

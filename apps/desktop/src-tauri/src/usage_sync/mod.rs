@@ -2063,7 +2063,7 @@ fn valid_pricing_basis(value: &str) -> bool {
 fn approved_pricing_basis(provider: CodingProvider, value: &str) -> bool {
     matches!(
         (provider, value),
-        (CodingProvider::Codex, "openai-standard-2026-08-06-v1")
+        (CodingProvider::Codex, "openai-api-2026-08-09-v2")
             | (CodingProvider::Claude, "anthropic-standard-2026-08-07-v1")
     )
 }
@@ -2270,7 +2270,7 @@ mod tests {
                 NOW,
                 Some((
                     1.25,
-                    "openai-standard-2026-08-06-v1",
+                    "openai-api-2026-08-09-v2",
                     ApiEquivalentCostQuality::Reconciled,
                     None,
                 )),
