@@ -9,7 +9,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
-import { globalDoomerboardIndex } from "./model/doomerboardIndex";
+import { doomerboard } from "./model/doomerboard";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
 
@@ -571,7 +571,7 @@ test("the migration repairs the Doomerboard index from public scores", async () 
   );
   if (!publicUsage) throw new Error("Public Usage missing");
   await t.run(async (ctx) => {
-    await globalDoomerboardIndex.delete(ctx, {
+    await doomerboard.delete(ctx, {
       id: publicUsage._id,
       key: publicUsage.tokenScore,
       namespace: publicUsage.boardKey,
@@ -587,11 +587,11 @@ test("the migration repairs the Doomerboard index from public scores", async () 
 
   const args = { cursor: null, dryRun: false, oneBatchOnly: true };
   await t.mutation(
-    internal.internal.migrations.backfillGlobalDoomerboardIndex,
+    internal.internal.migrations.backfillDoomerboard,
     args,
   );
   await t.mutation(
-    internal.internal.migrations.backfillGlobalDoomerboardIndex,
+    internal.internal.migrations.backfillDoomerboard,
     args,
   );
 

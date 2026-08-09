@@ -2,7 +2,7 @@ import { v } from "convex/values";
 
 import { query } from "./_generated/server";
 import { requireAuthUser } from "./auth";
-import { globalDoomerboardIndex } from "./model/doomerboardIndex";
+import { doomerboard } from "./model/doomerboard";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
   apiEquivalentCostValidator,
@@ -54,7 +54,7 @@ export const global = query({
   returns: v.array(doomerboardRow),
   handler: async (ctx, args) => {
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 50), 1), 100);
-    const { page } = await globalDoomerboardIndex.paginate(ctx, {
+    const { page } = await doomerboard.paginate(ctx, {
       namespace: boardKey(args.scope, args.windowDays),
       order: "desc",
       pageSize: limit,

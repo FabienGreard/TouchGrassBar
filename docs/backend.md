@@ -6,7 +6,7 @@ Convex receives authenticated daily usage snapshots from the Rust native core an
 
 The deployed flow is:
 
-`usageBuckets → userDailyUsage → publicUsages → globalDoomerboardIndex`
+`usageBuckets → userDailyUsage → publicUsages → doomerboard`
 
 `deviceProviderSettings → filtered publicUsages recompute`
 
@@ -14,7 +14,7 @@ The deployed flow is:
 revisions, evidence, and correction provenance. `userDailyUsage` is the
 canonical private history for one Tokenmaxxer, provider, and UTC day.
 `publicUsages` materializes each public scope and window. The
-`globalDoomerboardIndex` symbol wraps `@convex-dev/aggregate` only for ordered
+`doomerboard` wraps `@convex-dev/aggregate` only for ordered
 pagination. It does not calculate daily usage or rolling scores.
 
 `packages/contracts` is not the sync contract. It is reserved for the sanitized Rust-to-React Tauri IPC boundary. Convex generates its own TypeScript API and data-model types in `convex/_generated`.
@@ -44,21 +44,21 @@ Automated fixtures must cover Quota Lane freshness and reset transitions; provid
 
 ## Score materialization
 
-Every accepted change writes `userDailyUsage` and recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates `publicUsages` and `globalDoomerboardIndex`. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
+Every accepted change writes `userDailyUsage` and recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates `publicUsages` and `doomerboard`. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
 
 The `@convex-dev/aggregate` component has one installation named `doomerboard`.
-The local `globalDoomerboardIndex` symbol partitions score document IDs by keys
+The local `doomerboard` symbol partitions score document IDs by keys
 such as:
 
 - `tokens-v1:codex:30d`
 - `tokens-v1:claude:7d`
 - `tokens-v1:combined:1d`
 
-Global Doomerboards page this index in descending order. `publicUsages` and
-`globalDoomerboardIndex` have one write path: every insert, replacement, or
+Doomerboards page this index in descending order. `publicUsages` and
+`doomerboard` have one write path: every insert, replacement, or
 deletion changes both within the same mutation. A read-only invariant check
 proves a one-to-one match of document ID, Board Key, and Token Score. The
-`backfillGlobalDoomerboardIndex` migration can repair index divergence without
+`backfillDoomerboard` migration can repair index divergence without
 recomputing usage or scores. Production dashboard edits to either side are
 prohibited.
 
@@ -69,7 +69,7 @@ My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most
 A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer whose rolling score can change has been processed, so expired Ranking Days leave all windows. The drain is idempotent, retries safely, alerts if progress stalls, and has no correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain within the approved backend performance budget.
 
 The migrations component owns bounded repair work. The
-`backfillGlobalDoomerboardIndex` migration is forward-only, resumable, and
+`backfillDoomerboard` migration is forward-only, resumable, and
 idempotent. It rebuilds only missing index entries from `publicUsages`.
 
 This feature requires the credential-based Active Mac and current usage schemas directly. It has no compatibility migration. Reset a local development deployment if it contains data from an earlier feature shape. This branch does not change a cloud deployment.

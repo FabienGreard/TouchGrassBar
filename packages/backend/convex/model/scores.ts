@@ -1,7 +1,7 @@
 import type { GenericId } from "convex/values";
 
 import type { MutationCtx } from "../_generated/server";
-import { globalDoomerboardIndex } from "./doomerboardIndex";
+import { doomerboard } from "./doomerboard";
 import {
   SCOPES,
   WINDOWS,
@@ -143,7 +143,7 @@ async function upsertPublicUsage(
       ...values,
       apiEquivalentCost: score.apiEquivalentCost,
     });
-    await globalDoomerboardIndex.replace(
+    await doomerboard.replace(
       ctx,
       {
         id: existing._id,
@@ -160,7 +160,7 @@ async function upsertPublicUsage(
     apiEquivalentCost: score.apiEquivalentCost,
     tokenmaxxerId: tokenmaxxer._id,
   });
-  await globalDoomerboardIndex.insert(ctx, {
+  await doomerboard.insert(ctx, {
     id: publicUsageId,
     key: score.tokenScore,
     namespace,

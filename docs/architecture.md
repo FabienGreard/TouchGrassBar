@@ -64,7 +64,7 @@ An Astro and Tailwind CSS static marketing and distribution site. It has no auth
 
 Convex owns public Tokenmaxxer Profiles, Active Mac authority, revisioned Usage Buckets, server-derived daily usage, materialized scores, My Tokenmaxxers, and Doomerboard projections. Better Auth owns generated-credential hashing and sessions.
 
-The backend rejects raw provider material and accepts only validated cumulative daily snapshots from the current Active Mac. Convex calculates all daily totals, combined scores, ranks, and public projections. Global Doomerboards use one namespaced Aggregate component; My Tokenmaxxers uses bounded indexed reads and in-memory sorting. A rate limiter protects synchronization, migrations own repairs, and a daily UTC cron expires rolling windows.
+The backend rejects raw provider material and accepts only validated cumulative daily snapshots from the current Active Mac. Convex calculates all daily totals, combined scores, ranks, and public projections. The Doomerboard uses one namespaced Aggregate component; My Tokenmaxxers uses bounded indexed reads and in-memory sorting. A rate limiter protects synchronization, migrations own repairs, and a daily UTC cron expires rolling windows.
 
 #### Development deployment isolation
 

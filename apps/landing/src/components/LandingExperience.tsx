@@ -200,9 +200,9 @@ function DoomerboardSurface() {
 
 function DoomerboardScoreboard() {
   return (
-    <section className="d-scoreboard-showcase" aria-label="Global leaderboard highlights">
+    <section className="d-scoreboard-showcase" aria-label="Doomerboard highlights">
       <header>
-        <strong><span aria-hidden="true" />Global Leaderboard</strong>
+        <strong><span aria-hidden="true" />Doomerboard</strong>
         <small>Today · Combined</small>
       </header>
       <ol>
