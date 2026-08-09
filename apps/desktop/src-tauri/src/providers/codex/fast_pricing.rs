@@ -5,8 +5,9 @@ use serde::Deserialize;
 use time::{Date, Duration};
 
 const MAX_TRACE_BODY_BYTES: usize = 1024 * 1024;
-const MAX_FAST_TURNS: usize = 16_384;
-const REQUEST_MARKER: &str = "websocket request:";
+const MAX_TRACE_ROWS: usize = 16_384;
+const MAX_EVENT_RECORDS_PER_BODY: usize = 4_096;
+const MAX_COMPLETED_RESPONSES: usize = 16_384;
 const COMPLETED_MARKER: &str = "websocket event:";
 
 pub(super) struct FastTurnEvidence {
@@ -15,26 +16,61 @@ pub(super) struct FastTurnEvidence {
 }
 
 #[derive(Deserialize)]
-struct FastRequest<'a> {
-    #[serde(rename = "type")]
-    request_type: &'a str,
-    service_tier: &'a str,
-    #[serde(default)]
-    turn_id: Option<&'a str>,
-    #[serde(default)]
-    model: Option<&'a str>,
-}
-
-#[derive(Deserialize)]
 struct CompletedEvent<'a> {
     #[serde(rename = "type")]
     event_type: &'a str,
-    response: CompletedResponse<'a>,
+    #[serde(default)]
+    response: Option<CompletedResponse<'a>>,
 }
 
 #[derive(Deserialize)]
 struct CompletedResponse<'a> {
-    model: &'a str,
+    #[serde(default)]
+    model: Option<&'a str>,
+    #[serde(default)]
+    service_tier: Option<&'a str>,
+}
+
+struct CompletedResponseEvidence<'a> {
+    turn_id: &'a str,
+    model: Option<&'a str>,
+    service_tier: Option<&'a str>,
+}
+
+struct TurnCompletionState {
+    all_fast: bool,
+    model: Option<String>,
+    model_is_consistent: bool,
+}
+
+impl TurnCompletionState {
+    fn from_evidence(evidence: &CompletedResponseEvidence<'_>) -> Self {
+        let model = evidence.model.filter(|model| valid_model_name(model));
+        Self {
+            all_fast: evidence.service_tier.is_some_and(is_fast_tier),
+            model: model.map(str::to_owned),
+            model_is_consistent: model.is_some(),
+        }
+    }
+
+    fn observe(&mut self, evidence: &CompletedResponseEvidence<'_>) {
+        self.all_fast &= evidence.service_tier.is_some_and(is_fast_tier);
+        let Some(model) = evidence.model.filter(|model| valid_model_name(model)) else {
+            self.model_is_consistent = false;
+            return;
+        };
+        if self.model.as_deref().is_some_and(|known| known != model) {
+            self.model_is_consistent = false;
+        } else if self.model.is_none() {
+            self.model = Some(model.to_owned());
+        }
+    }
+
+    fn fast_model(self) -> Option<String> {
+        (self.all_fast && self.model_is_consistent)
+            .then_some(self.model)
+            .flatten()
+    }
 }
 
 pub(super) fn load_fast_turn_evidence(
@@ -42,8 +78,8 @@ pub(super) fn load_fast_turn_evidence(
     cutoff: Date,
     today: Date,
 ) -> Option<FastTurnEvidence> {
-    let turns =
-        load_fast_turns_from_database(&codex_home.join("logs_2.sqlite"), cutoff, today).ok()?;
+    let turns = load_fast_turns_from_database(&codex_home.join("logs_2.sqlite"), cutoff, today)
+        .unwrap_or_default();
     let fingerprint = fast_turn_fingerprint(&turns);
     Some(FastTurnEvidence { fingerprint, turns })
 }
@@ -74,48 +110,30 @@ fn load_fast_turns_from_database(
             "SELECT feedback_log_body
              FROM logs
              WHERE ts >= ?1 AND ts < ?2
-               AND (feedback_log_body LIKE '%websocket request:%'
-                    OR feedback_log_body LIKE '%response.completed%'
-                    OR feedback_log_body LIKE '%service_tier: Some(Some(\"priority\"))%'
-                    OR feedback_log_body LIKE '%service_tier: Some(Some(\"fast\"))%')
+               AND feedback_log_body LIKE '%response.completed%'
              ORDER BY rowid
              LIMIT ?3",
         )
         .map_err(|_| ())?;
-    let limit = i64::try_from(MAX_FAST_TURNS + 1).map_err(|_| ())?;
+    let limit = i64::try_from(MAX_TRACE_ROWS + 1).map_err(|_| ())?;
     let rows = statement
         .query_map(params![start, end, limit], |row| row.get::<_, String>(0))
         .map_err(|_| ())?;
-    let mut turns = BTreeMap::new();
-    let mut completed_models = BTreeMap::new();
-    let mut visited = 0_usize;
+    let mut completed_turns = BTreeMap::new();
+    let mut visited_rows = 0_usize;
+    let mut completed_responses = 0_usize;
     for body in rows {
-        visited = visited.checked_add(1).ok_or(())?;
-        if visited > MAX_FAST_TURNS {
+        visited_rows = visited_rows.checked_add(1).ok_or(())?;
+        if visited_rows > MAX_TRACE_ROWS {
             return Err(());
         }
         let body = body.map_err(|_| ())?;
         if body.len() > MAX_TRACE_BODY_BYTES {
-            continue;
+            return Err(());
         }
-        if let Some((turn_id, model)) = parse_completed_model(&body) {
-            completed_models.insert(turn_id.to_owned(), model.to_owned());
-            if let Some(fast_model) = turns.get_mut(turn_id) {
-                *fast_model = Some(model.to_owned());
-            }
-            continue;
-        }
-        if let Some((turn_id, request_model)) = parse_fast_turn(&body) {
-            let model = completed_models
-                .get(turn_id)
-                .map(String::as_str)
-                .or(request_model)
-                .filter(|model| valid_model_name(model))
-                .map(str::to_owned);
-            turns.insert(turn_id.to_owned(), model);
-        }
+        collect_completed_responses(&mut completed_turns, &body, &mut completed_responses)?;
     }
-    Ok(turns)
+    Ok(classified_fast_turns(completed_turns))
 }
 
 fn fast_turn_fingerprint(turns: &BTreeMap<String, Option<String>>) -> String {
@@ -132,43 +150,76 @@ fn fast_turn_fingerprint(turns: &BTreeMap<String, Option<String>>) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
-fn parse_fast_turn(body: &str) -> Option<(&str, Option<&str>)> {
-    if let Some(marker) = body.find(REQUEST_MARKER) {
-        let prefix = &body[..marker];
-        let request: FastRequest<'_> =
-            serde_json::from_str(body[marker + REQUEST_MARKER.len()..].trim()).ok()?;
-        if request.request_type != "response.create" || !is_fast_tier(request.service_tier) {
-            return None;
+fn parse_completed_responses(body: &str) -> Result<Vec<CompletedResponseEvidence<'_>>, ()> {
+    let mut responses = Vec::new();
+    let mut active_turn_id = None;
+    let mut event_records = 0_usize;
+    for line in body.lines() {
+        let Some(marker) = line.find(COMPLETED_MARKER) else {
+            if line.contains("response.completed") {
+                return Err(());
+            }
+            continue;
+        };
+        event_records = event_records.checked_add(1).ok_or(())?;
+        if event_records > MAX_EVENT_RECORDS_PER_BODY
+            || line[marker + COMPLETED_MARKER.len()..].contains(COMPLETED_MARKER)
+        {
+            return Err(());
         }
-        let turn_id = value_after(prefix, "turn.id=")
-            .or_else(|| value_after(prefix, "turn_id="))
-            .or(request.turn_id)
-            .filter(|value| valid_turn_id(value))?;
-        return Some((turn_id, request.model));
+        let prefix = &line[..marker];
+        let line_turn_id =
+            match value_after(prefix, "turn.id=").or_else(|| value_after(prefix, "turn_id=")) {
+                Some(value) if valid_turn_id(value) => Some(value),
+                Some(_) => return Err(()),
+                None => None,
+            };
+        if line_turn_id.is_some() {
+            active_turn_id = line_turn_id;
+        }
+        let event: CompletedEvent<'_> =
+            serde_json::from_str(line[marker + COMPLETED_MARKER.len()..].trim()).map_err(|_| ())?;
+        if event.event_type != "response.completed" {
+            continue;
+        }
+        let turn_id = line_turn_id.or(active_turn_id).ok_or(())?;
+        responses.push(CompletedResponseEvidence {
+            turn_id,
+            model: event.response.as_ref().and_then(|response| response.model),
+            service_tier: event
+                .response
+                .as_ref()
+                .and_then(|response| response.service_tier),
+        });
     }
-
-    let is_fast_submission = body.contains("service_tier: Some(Some(\"priority\"))")
-        || body.contains("service_tier: Some(Some(\"fast\"))");
-    if !is_fast_submission {
-        return None;
-    }
-    let submission = body.split_once("Submission sub=Submission {")?.1;
-    let turn_id = quoted_value_after(submission, "id: \"").filter(|value| valid_turn_id(value))?;
-    Some((turn_id, None))
+    Ok(responses)
 }
 
-fn parse_completed_model(body: &str) -> Option<(&str, &str)> {
-    let marker = body.find(COMPLETED_MARKER)?;
-    let prefix = &body[..marker];
-    let event: CompletedEvent<'_> =
-        serde_json::from_str(body[marker + COMPLETED_MARKER.len()..].trim()).ok()?;
-    if event.event_type != "response.completed" || !valid_model_name(event.response.model) {
-        return None;
+fn collect_completed_responses(
+    completed_turns: &mut BTreeMap<String, TurnCompletionState>,
+    body: &str,
+    completed_responses: &mut usize,
+) -> Result<(), ()> {
+    for evidence in parse_completed_responses(body)? {
+        *completed_responses = completed_responses.checked_add(1).ok_or(())?;
+        if *completed_responses > MAX_COMPLETED_RESPONSES {
+            return Err(());
+        }
+        completed_turns
+            .entry(evidence.turn_id.to_owned())
+            .and_modify(|state| state.observe(&evidence))
+            .or_insert_with(|| TurnCompletionState::from_evidence(&evidence));
     }
-    let turn_id = value_after(prefix, "turn.id=")
-        .or_else(|| value_after(prefix, "turn_id="))
-        .filter(|value| valid_turn_id(value))?;
-    Some((turn_id, event.response.model))
+    Ok(())
+}
+
+fn classified_fast_turns(
+    completed_turns: BTreeMap<String, TurnCompletionState>,
+) -> BTreeMap<String, Option<String>> {
+    completed_turns
+        .into_iter()
+        .filter_map(|(turn_id, state)| state.fast_model().map(|model| (turn_id, Some(model))))
+        .collect()
 }
 
 fn is_fast_tier(value: &str) -> bool {
@@ -182,12 +233,6 @@ fn value_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
             character.is_whitespace() || matches!(character, ',' | ']' | ')' | '}' | ':')
         })
         .next()?;
-    (!value.is_empty()).then_some(value)
-}
-
-fn quoted_value_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
-    let tail = text.split_once(marker)?.1;
-    let value = tail.split_once('"')?.0;
     (!value.is_empty()).then_some(value)
 }
 
@@ -211,38 +256,61 @@ fn valid_model_name(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn classify(bodies: &[&str]) -> Result<BTreeMap<String, Option<String>>, ()> {
+        let mut completed_turns = BTreeMap::new();
+        let mut completed_responses = 0;
+        for body in bodies {
+            collect_completed_responses(&mut completed_turns, body, &mut completed_responses)?;
+        }
+        Ok(classified_fast_turns(completed_turns))
+    }
+
     #[test]
-    fn exact_fast_trace_shapes_return_only_bounded_pricing_metadata() {
-        let websocket = r#"thread_id=ignored turn.id=turn-safe websocket request: {"type":"response.create","service_tier":"fast","turn_id":"fallback","model":"gpt-5.6-sol"}"#;
-        let priority = r#"thread_id=ignored turn_id=turn-priority websocket request: {"type":"response.create","service_tier":"priority"}"#;
-        let standard = r#"turn.id=standard websocket request: {"type":"response.create","service_tier":"default"}"#;
-        let submission = r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-submission", private: "ignored" }"#;
+    fn production_shaped_event_bundle_returns_only_bounded_pricing_metadata() {
+        let priority = concat!(
+            "private=ignored turn.id=turn-safe websocket event: {\"type\":\"response.created\",\"response\":{\"private\":\"ignored\"}}\n",
+            "private=ignored websocket event: {\"type\":\"response.output_item.done\",\"item\":{\"private\":\"ignored\"}}\n",
+            "private=ignored websocket event: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-terra\",\"service_tier\":\"priority\",\"private\":\"ignored\"}}\n",
+            "private=ignored websocket event: {\"type\":\"response.done\",\"private\":\"ignored\"}\n",
+        );
+        let fast = r#"private=ignored turn_id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"fast"}}"#;
 
         assert_eq!(
-            parse_fast_turn(websocket),
-            Some(("turn-safe", Some("gpt-5.6-sol")))
+            classify(&[priority, fast]).unwrap(),
+            BTreeMap::from([
+                ("turn-fast".to_owned(), Some("gpt-5.6-sol".to_owned())),
+                ("turn-safe".to_owned(), Some("gpt-5.6-terra".to_owned())),
+            ])
         );
-        assert_eq!(parse_fast_turn(priority), Some(("turn-priority", None)));
-        assert_eq!(parse_fast_turn(standard), None);
-        assert_eq!(parse_fast_turn(submission), Some(("turn-submission", None)));
-        assert_eq!(
-            parse_fast_turn(&format!(
-                "turn.id={} websocket request: {{\"type\":\"response.create\",\"service_tier\":\"fast\"}}",
+        assert!(
+            parse_completed_responses(&format!(
+                "turn.id={} websocket event: {{\"type\":\"response.completed\",\"response\":{{\"model\":\"gpt-5.6-sol\",\"service_tier\":\"priority\"}}}}",
                 "x".repeat(129)
-            )),
-            None
+            ))
+            .is_err()
         );
     }
 
     #[test]
-    fn completed_event_returns_only_a_bounded_model_for_a_bounded_turn() {
-        let completed = r#"turn.id=turn-safe websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-terra","private":"ignored"}}"#;
-        let unrelated = r#"turn.id=turn-safe websocket event: {"type":"response.output_text.done","response":{"model":"gpt-5.6-terra"}}"#;
+    fn request_or_unproved_completion_does_not_prove_fast_mode() {
+        let request = r#"turn.id=turn-safe websocket request: {"type":"response.create","service_tier":"fast","model":"gpt-5.6-terra"}"#;
+        let downgraded = r#"turn.id=turn-safe websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-terra","service_tier":"default"}}"#;
+        let missing_tier = r#"turn.id=turn-safe websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-terra"}}"#;
+        let unrelated = r#"turn.id=turn-safe websocket event: {"type":"response.output_text.done","response":{"model":"gpt-5.6-terra","service_tier":"priority"}}"#;
 
-        assert_eq!(
-            parse_completed_model(completed),
-            Some(("turn-safe", "gpt-5.6-terra"))
-        );
-        assert_eq!(parse_completed_model(unrelated), None);
+        assert!(classify(&[request]).unwrap().is_empty());
+        assert!(classify(&[downgraded]).unwrap().is_empty());
+        assert!(classify(&[missing_tier]).unwrap().is_empty());
+        assert!(classify(&[unrelated]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mixed_completed_tiers_or_models_do_not_prove_fast_mode() {
+        let priority = r#"turn.id=turn-safe websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"priority"}}"#;
+        let standard = r#"turn.id=turn-safe websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"default"}}"#;
+        let conflicting_model = r#"turn.id=turn-safe websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-terra","service_tier":"priority"}}"#;
+
+        assert!(classify(&[priority, standard]).unwrap().is_empty());
+        assert!(classify(&[priority, conflicting_model]).unwrap().is_empty());
     }
 }

@@ -8,7 +8,7 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
-use crate::profile::Secret;
+use crate::profile::{Secret, is_exact_authority_rejection};
 
 use super::{
     AcknowledgementOutcome, PendingUsageBatch, ProviderSettingsAcknowledgement,
@@ -347,17 +347,6 @@ fn classify_provider_settings_result(
             ParsedMutation::Deferred
         }
     }
-}
-
-fn is_exact_authority_rejection(data: &Value) -> bool {
-    let Value::Object(fields) = data else {
-        return false;
-    };
-    fields.len() == 1
-        && matches!(
-            fields.get("code"),
-            Some(Value::String(code)) if code == "authority-rejected"
-        )
 }
 
 fn parse_success_value<T>(

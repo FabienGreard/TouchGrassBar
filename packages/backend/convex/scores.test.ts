@@ -9,7 +9,7 @@ describe("cost and ranking independence", () => {
       apiEquivalentCost: {
         coveragePercent: null,
         micros: 100_000,
-        pricingBasis: "openai-api-2026-08-09-v2",
+        pricingBasis: "openai-api-2026-08-09-v3",
         quality: "local-only" as const,
       },
       observedTokens: 100,
@@ -76,7 +76,7 @@ describe("cost and ranking independence", () => {
           apiEquivalentCost: {
             coveragePercent: null,
             micros: 1_000_000,
-            pricingBasis: "openai-api-2026-08-09-v2",
+            pricingBasis: "openai-api-2026-08-09-v3",
             quality: "reconciled" as const,
           },
           observedTokens: 100,
@@ -111,7 +111,7 @@ describe("cost and ranking independence", () => {
         coveragePercent: 50,
         micros: 3_000_000,
         pricingBasis:
-          "anthropic-standard-2026-08-07-v1 + openai-api-2026-08-09-v2",
+          "anthropic-standard-2026-08-07-v1 + openai-api-2026-08-09-v3",
         quality: "modeled",
       },
       tokenScore: 500,

@@ -12,6 +12,8 @@ import {
   type ScoreWindow,
 } from "./values";
 
+const MAX_DAYS_PER_PROVIDER = 30;
+
 type CalculatedScore = {
   apiEquivalentCost: ApiEquivalentCost | null;
   tokenScore: number;
@@ -194,14 +196,27 @@ export async function recomputeScores(
         ]
       : ["codex", "claude"],
   );
+  const fromDay = subtractRankingDays(asOfDay, MAX_DAYS_PER_PROVIDER - 1);
   const dailyRows = (
-    await ctx.db
-      .query("userDailyUsage")
-      .withIndex("by_tokenmaxxer_id", (q) =>
-        q.eq("tokenmaxxerId", tokenmaxxerId),
-      )
-      .take(1_000)
-  ).filter((row) => enabledProviders.has(row.provider));
+    await Promise.all(
+      (["codex", "claude"] as const)
+        .filter((provider) => enabledProviders.has(provider))
+        .map((provider) =>
+          ctx.db
+            .query("userDailyUsage")
+            .withIndex(
+              "by_tokenmaxxer_id_and_provider_and_ranking_day",
+              (q) =>
+                q
+                  .eq("tokenmaxxerId", tokenmaxxerId)
+                  .eq("provider", provider)
+                  .gte("rankingDay", fromDay)
+                  .lte("rankingDay", asOfDay),
+            )
+            .take(MAX_DAYS_PER_PROVIDER),
+        ),
+    )
+  ).flat();
   const overview = [];
   for (const scope of SCOPES) {
     for (const windowDays of WINDOWS) {

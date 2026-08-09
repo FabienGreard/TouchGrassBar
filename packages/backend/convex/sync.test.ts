@@ -10,6 +10,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
 import { doomerboard } from "./model/doomerboard";
+import { installationCredentialDigest } from "./model/profile";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
 
@@ -141,6 +142,33 @@ async function createProfile(
   return profile;
 }
 
+async function transferActiveDevice(
+  t: ReturnType<typeof testBackend>,
+  touchGrassId: string,
+  credential: string,
+  generation: number,
+) {
+  const credentialDigest = await installationCredentialDigest(credential);
+  await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", touchGrassId))
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) {
+      throw new Error("Active Mac missing");
+    }
+    await ctx.db.patch(tokenmaxxer.activeDeviceId, { revokedAt: Date.now() });
+    const deviceId = await ctx.db.insert("devices", {
+      createdAt: Date.now(),
+      generation,
+      installationCredentialDigest: credentialDigest,
+      lastSeenAt: Date.now(),
+      tokenmaxxerId: tokenmaxxer._id,
+    });
+    await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: deviceId });
+  });
+}
+
 function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
   const evidenceBasis = overrides.evidenceBasis ?? "locally-derived";
   const provider = overrides.provider ?? "codex";
@@ -150,7 +178,7 @@ function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
       micros: 1_000,
       pricingBasis:
         provider === "codex"
-          ? "openai-api-2026-08-09-v2"
+          ? "openai-api-2026-08-09-v3"
           : "anthropic-standard-2026-08-07-v1",
       quality:
         evidenceBasis === "provider-reported" ? "reconciled" : "local-only",
@@ -658,6 +686,208 @@ test("Active Mac authority is isolated by Profile, credential, generation, and r
   expect(
     await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
   ).toEqual([]);
+});
+
+test("same-day Active Mac transfer freezes and adds both provider segments", async () => {
+  const t = testBackend();
+  const oldCredential = installationCredential("A");
+  const newCredential = installationCredential("B");
+  const profile = await createProfile(t, oldCredential, "Fabien");
+
+  await profile.authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: oldCredential,
+    snapshots: [
+      usageSnapshot({ observedTokens: 100 }),
+      usageSnapshot({
+        apiEquivalentCost: {
+          coveragePercent: null,
+          micros: 2_000,
+          pricingBasis: "anthropic-standard-2026-08-07-v1",
+          quality: "reconciled",
+        },
+        evidenceBasis: "provider-reported",
+        observedTokens: 200,
+        provider: "claude",
+      }),
+    ],
+  });
+  await transferActiveDevice(t, profile.touchGrassId, newCredential, 2);
+
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: oldCredential,
+      snapshots: [usageSnapshot({ observedTokens: 150, revision: 2 })],
+    }),
+  ).rejects.toThrow("authority-rejected");
+
+  await profile.authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 2,
+    installationCredential: newCredential,
+    snapshots: [
+      usageSnapshot({
+        apiEquivalentCost: {
+          coveragePercent: 50,
+          micros: 500,
+          pricingBasis: "openai-api-2026-08-09-v3",
+          quality: "modeled",
+        },
+        observedTokens: 50,
+      }),
+      usageSnapshot({
+        apiEquivalentCost: null,
+        observedTokens: 75,
+        provider: "claude",
+      }),
+    ],
+  });
+
+  const stored = await t.run(async (ctx) => ({
+    publicUsages: await ctx.db.query("publicUsages").collect(),
+    usageBuckets: await ctx.db.query("usageBuckets").collect(),
+    userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
+  }));
+  expect(stored.usageBuckets).toHaveLength(4);
+  expect(
+    stored.usageBuckets
+      .filter((row) => row.provider === "codex")
+      .map((row) => row.observedTokens)
+      .sort((left, right) => left - right),
+  ).toEqual([50, 100]);
+  expect(
+    stored.usageBuckets
+      .filter((row) => row.provider === "claude")
+      .map((row) => row.observedTokens)
+      .sort((left, right) => left - right),
+  ).toEqual([75, 200]);
+  expect(stored.userDailyUsage).toHaveLength(2);
+
+  const codexDaily = stored.userDailyUsage.find(
+    (row) => row.provider === "codex",
+  );
+  const claudeDaily = stored.userDailyUsage.find(
+    (row) => row.provider === "claude",
+  );
+  expect(codexDaily).toMatchObject({
+    apiEquivalentCost: {
+      micros: 1_500,
+      pricingBasis: "openai-api-2026-08-09-v3",
+      quality: "modeled",
+    },
+    observedTokens: 150,
+  });
+  expect(codexDaily?.apiEquivalentCost?.coveragePercent).toBeCloseTo(
+    83.333_333,
+  );
+  expect(claudeDaily).toMatchObject({
+    apiEquivalentCost: {
+      micros: 2_000,
+      pricingBasis: "anthropic-standard-2026-08-07-v1",
+      quality: "modeled",
+    },
+    observedTokens: 275,
+  });
+  expect(claudeDaily?.apiEquivalentCost?.coveragePercent).toBeCloseTo(
+    72.727_273,
+  );
+
+  const combinedUsage = stored.publicUsages.find(
+    (row) => row.scope === "combined" && row.windowDays === 1,
+  );
+  expect(combinedUsage).toMatchObject({
+    apiEquivalentCost: {
+      micros: 3_500,
+      pricingBasis:
+        "anthropic-standard-2026-08-07-v1 + openai-api-2026-08-09-v3",
+      quality: "modeled",
+    },
+    tokenScore: 425,
+  });
+  expect(combinedUsage?.apiEquivalentCost?.coveragePercent).toBeCloseTo(
+    76.470_588,
+  );
+});
+
+test("score recomputation ignores more than 1000 old rows", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const profile = await createProfile(t, credential, "Fabien");
+  const tokenmaxxerId = await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", profile.touchGrassId))
+      .unique();
+    if (!tokenmaxxer) throw new Error("Tokenmaxxer missing");
+    return tokenmaxxer._id;
+  });
+  const oldRows = Array.from({ length: 501 }, (_, dayOffset) =>
+    (["codex", "claude"] as const).map((provider) => ({
+      apiEquivalentCost: null,
+      observedTokens: 10_000 + dayOffset,
+      provider,
+      rankingDay: new Date(Date.UTC(2020, 0, dayOffset + 1))
+        .toISOString()
+        .slice(0, 10),
+      tokenmaxxerId,
+      updatedAt: NOW.getTime(),
+    })),
+  ).flat();
+  for (let offset = 0; offset < oldRows.length; offset += 200) {
+    const rows = oldRows.slice(offset, offset + 200);
+    await t.run(async (ctx) => {
+      for (const row of rows) {
+        await ctx.db.insert("userDailyUsage", row);
+      }
+    });
+  }
+  await t.run(async (ctx) => {
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCost: null,
+      observedTokens: 101,
+      provider: "codex",
+      rankingDay: TODAY,
+      tokenmaxxerId,
+      updatedAt: NOW.getTime(),
+    });
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCost: null,
+      observedTokens: 202,
+      provider: "claude",
+      rankingDay: TODAY,
+      tokenmaxxerId,
+      updatedAt: NOW.getTime(),
+    });
+  });
+
+  await t.mutation(internal.internal.recompute.one, { tokenmaxxerId });
+
+  const scores = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicUsages")
+      .withIndex("by_tokenmaxxer_id", (q) =>
+        q.eq("tokenmaxxerId", tokenmaxxerId),
+      )
+      .take(9),
+  );
+  expect(scores).toHaveLength(9);
+  for (const windowDays of [1, 7, 30] as const) {
+    expect(
+      scores.find(
+        (row) => row.scope === "codex" && row.windowDays === windowDays,
+      ),
+    ).toMatchObject({ tokenScore: 101 });
+    expect(
+      scores.find(
+        (row) => row.scope === "claude" && row.windowDays === windowDays,
+      ),
+    ).toMatchObject({ tokenScore: 202 });
+    expect(
+      scores.find(
+        (row) => row.scope === "combined" && row.windowDays === windowDays,
+      ),
+    ).toMatchObject({ tokenScore: 303 });
+  }
 });
 
 test("a mismatched live session cannot create or change Active Mac authority", async () => {
@@ -1311,7 +1541,7 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
     (provider) => {
       const pricingBasis =
         provider === "codex"
-          ? "openai-api-2026-08-09-v2"
+          ? "openai-api-2026-08-09-v3"
           : "anthropic-standard-2026-08-07-v1";
       return [
         Array.from({ length: 63 }, () => usageSnapshot({ provider })),

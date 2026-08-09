@@ -266,7 +266,7 @@ function populatedFixture(
       214.96,
       14,
       {
-        apiEquivalentCostBasis: "openai-api-2026-08-09-v2",
+        apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
         apiEquivalentCostQuality: "reconciled",
         coverage: "complete",
         evidenceBasis: "provider-reported",
@@ -280,7 +280,7 @@ function populatedFixture(
       856.73,
       22,
       {
-        apiEquivalentCostBasis: "openai-api-2026-08-09-v2",
+        apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
         apiEquivalentCostQuality: "reconciled",
         coverage: "complete",
         evidenceBasis: "provider-reported",
@@ -293,7 +293,7 @@ function populatedFixture(
       38.61,
       -8,
       {
-        apiEquivalentCostBasis: "openai-api-2026-08-09-v2",
+        apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
         apiEquivalentCostQuality: "reconciled",
         coverage: "complete",
         evidenceBasis: "provider-reported",

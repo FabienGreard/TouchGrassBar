@@ -4,7 +4,7 @@ import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { rateLimiter } from "./rateLimits";
 import { requireActiveDevice, type AuthUserReference } from "./profile";
-import { recomputeScores } from "./scores";
+import { calculateScore, recomputeScores } from "./scores";
 import {
   assertUsageSnapshot,
   rankingDayAt,
@@ -36,11 +36,32 @@ type CorrectionLineage = {
   revision: number;
 };
 
+// One initial generation plus the transfer policy limit of three per hour.
+const MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY = 73;
+
 async function upsertDailyUsage(
   ctx: MutationCtx,
   tokenmaxxerId: GenericId<"tokenmaxxers">,
   snapshot: UsageSnapshot,
 ) {
+  const segments = await ctx.db
+    .query("usageBuckets")
+    .withIndex("by_tokenmaxxer_id_and_provider_and_ranking_day", (q) =>
+      q
+        .eq("tokenmaxxerId", tokenmaxxerId)
+        .eq("provider", snapshot.provider)
+        .eq("rankingDay", snapshot.rankingDay),
+    )
+    .take(MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY + 1);
+  if (segments.length > MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY) {
+    throw new Error("Daily Usage has too many Active Mac segments");
+  }
+  const dailyUsage = calculateScore(
+    segments,
+    snapshot.provider,
+    1,
+    snapshot.rankingDay,
+  );
   const existing = await ctx.db
     .query("userDailyUsage")
     .withIndex("by_tokenmaxxer_id_and_provider_and_ranking_day", (q) =>
@@ -51,8 +72,8 @@ async function upsertDailyUsage(
     )
     .unique();
   const values = {
-    apiEquivalentCost: snapshot.apiEquivalentCost,
-    observedTokens: snapshot.observedTokens,
+    apiEquivalentCost: dailyUsage.apiEquivalentCost,
+    observedTokens: dailyUsage.tokenScore,
     updatedAt: Date.now(),
   };
 

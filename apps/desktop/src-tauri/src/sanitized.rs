@@ -31,16 +31,19 @@ use crate::providers::{
 };
 use crate::quota_headroom::{RevisionedOverallQuotaHeadroom, overall_quota_headroom};
 use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update_state_schema};
+#[cfg(test)]
+use crate::usage_sync::{
+    DailyUsageAggregate, ProviderSettingsAcknowledgement, SyncCoverage, SyncEvidenceBasis,
+    UsageSyncAcknowledgement, queue_daily_aggregate,
+};
 use crate::usage_sync::{
     PendingUsageBatch, QueueState, QueueUpdate, UsageSyncAcknowledgements, UsageSyncAttemptResult,
     UsageSyncCorrections, activate_generation, apply_provider_settings_acknowledgement,
-    apply_usage_acknowledgements, install_usage_sync_schema, load_active_usage_sync_generation,
-    load_current_pending_usage_batch, load_usage_sync_generation_state,
-    mark_generation_authority_rejected, queue_current_utc_day,
+    apply_usage_acknowledgements, has_current_terminal_usage_conflict, install_usage_sync_schema,
+    load_active_usage_sync_generation, load_current_pending_usage_batch,
+    load_usage_sync_generation_state, mark_generation_authority_rejected, queue_current_utc_day,
     queue_current_utc_day_with_corrections, queue_provider_settings, stage_usage_sync_corrections,
 };
-#[cfg(test)]
-use crate::usage_sync::{ProviderSettingsAcknowledgement, UsageSyncAcknowledgement};
 
 pub const CONTRACT_VERSION: u8 = 4;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
@@ -1121,12 +1124,24 @@ impl SqliteReadModelStore {
                 let has_stale = acknowledgements.usage.iter().any(|acknowledgement| {
                     acknowledgement.outcome == crate::usage_sync::AcknowledgementOutcome::Stale
                 });
-                let has_conflict = acknowledgements.usage.iter().any(|acknowledgement| {
-                    acknowledgement.outcome == crate::usage_sync::AcknowledgementOutcome::Conflict
-                });
+                let has_terminal_conflict = has_current_terminal_usage_conflict(
+                    &transaction,
+                    batch.active_mac_generation(),
+                    now,
+                    enabled_providers,
+                )
+                .map_err(|_| "native state persistence unavailable")?;
                 pending_usage_changed |= has_stale;
                 if acknowledgements.usage.is_empty() {
-                    state.sync.status = sync_status_from_last_successful_day(state, now);
+                    state.sync.status = if has_terminal_conflict {
+                        if state.sync.last_successful_at.is_some() {
+                            SyncStatus::Stale
+                        } else {
+                            SyncStatus::Unavailable
+                        }
+                    } else {
+                        sync_status_from_last_successful_day(state, now)
+                    };
                 } else {
                     if acknowledgements.usage.iter().any(|acknowledgement| {
                         acknowledgement.outcome
@@ -1135,7 +1150,8 @@ impl SqliteReadModelStore {
                         state.sync.last_successful_at = Some(format_time(now));
                     }
                     state.sync.status =
-                        if !batch.is_for_current_utc_day(now) || has_stale || has_conflict {
+                        if !batch.is_for_current_utc_day(now) || has_stale || has_terminal_conflict
+                        {
                             if state.sync.last_successful_at.is_some() {
                                 SyncStatus::Stale
                             } else {
@@ -5146,6 +5162,53 @@ mod tests {
             core.panel_state().unwrap().sync.status,
             SyncStatus::Unavailable
         );
+
+        drop(core);
+        let connection = Connection::open(&database.0).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_terminal_conflicts",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+
+        let relaunched = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        assert!(relaunched.pending_usage_sync_batch(7).unwrap().is_none());
+        assert_eq!(
+            relaunched.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
+
+        relaunched
+            .provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        let settings_only = relaunched.pending_usage_sync_batch(7).unwrap().unwrap();
+        assert!(settings_only.snapshots().is_empty());
+        relaunched
+            .acknowledge_usage_sync(&settings_only, &[])
+            .unwrap();
+        assert_eq!(
+            relaunched.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
     }
 
     #[test]
@@ -6083,20 +6146,71 @@ mod tests {
         let Some(database_path) = env::var_os("TOUCHGRASS_CRASH_DB_PATH") else {
             return;
         };
-        let connection = Connection::open(database_path).unwrap();
+        let mut connection = Connection::open(database_path).unwrap();
         connection
-            .execute_batch(
-                "BEGIN IMMEDIATE;
-                 UPDATE sanitized_desktop_state
-                 SET revision = '999'
-                 WHERE singleton = 1;",
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        let mut state = SqliteReadModelStore::read_from(&connection).unwrap();
+        let now = test_time();
+        state.revision = state
+            .revision
+            .parse::<u64>()
+            .unwrap()
+            .checked_add(1)
+            .unwrap()
+            .to_string();
+        state.generated_at = format_time(now);
+        state.sync.status = SyncStatus::Pending;
+
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 7).unwrap();
+        let ranking_day = now.to_offset(time::UtcOffset::UTC).date().to_string();
+        let observed_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            queue_daily_aggregate(
+                &transaction,
+                7,
+                DailyUsageAggregate {
+                    provider,
+                    ranking_day: ranking_day.clone(),
+                    evidence_basis: match provider {
+                        CodingProvider::Codex => SyncEvidenceBasis::ProviderReported,
+                        CodingProvider::Claude => SyncEvidenceBasis::LocallyDerived,
+                    },
+                    coverage: SyncCoverage::Complete,
+                    observed_at,
+                    observed_tokens: 42,
+                    api_equivalent_cost: None,
+                    correction_reason: None,
+                },
+                now,
             )
             .unwrap();
+        }
+        persist_snapshot(&transaction, &state).unwrap();
+        assert_eq!(
+            transaction
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_daily_aggregates",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            transaction
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            2
+        );
         process::exit(97);
     }
 
     #[test]
-    fn restores_cached_snapshot_after_interrupted_transaction_without_panel_io() {
+    fn process_exit_keeps_snapshot_and_both_provider_sync_writes_atomic() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
         let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
@@ -6135,10 +6249,24 @@ mod tests {
             Arc::new(ScriptedRefreshSource::new([])),
         )
         .unwrap();
-        fs::remove_file(&database.0).unwrap();
         let cached = relaunched.panel_state().unwrap();
 
+        let connection = Connection::open(&database.0).unwrap();
+        let aggregate_count = connection
+            .query_row(
+                "SELECT count(*) FROM usage_sync_daily_aggregates",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let outbox_count = connection
+            .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
         assert_eq!(cached.revision, "2");
+        assert_eq!((aggregate_count, outbox_count), (0, 0));
+        assert_eq!(relaunched.active_usage_sync_generation().unwrap(), None);
         assert_eq!(
             relaunched.menu_bar_headroom().unwrap(),
             crate::quota_headroom::RevisionedOverallQuotaHeadroom {

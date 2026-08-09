@@ -264,6 +264,7 @@ struct RawPricePeriod {
     output_usd_per_million: f64,
     fast_multiplier: Option<f64>,
     long_context: RawLongContextRule,
+    fast_long_context: Option<RawFastLongContextPrice>,
 }
 
 #[derive(Deserialize)]
@@ -272,6 +273,17 @@ struct RawLongContextRule {
     input_tokens_above: u64,
     input_multiplier: f64,
     output_multiplier: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RawFastLongContextPrice {
+    effective_from: String,
+    effective_until: Option<String>,
+    input_usd_per_million: f64,
+    cached_input_usd_per_million: f64,
+    cache_write_usd_per_million: Option<f64>,
+    output_usd_per_million: f64,
 }
 
 #[derive(Clone)]
@@ -327,6 +339,28 @@ struct PriceCatalogEntry {
     long_context_input_tokens_above: u64,
     long_context_input_multiplier: f64,
     long_context_output_multiplier: f64,
+    fast_long_context: Option<DatedTokenRates>,
+}
+
+#[derive(Clone, Copy)]
+struct DatedTokenRates {
+    effective_from: Date,
+    effective_until: Option<Date>,
+    rates: TokenRates,
+}
+
+impl DatedTokenRates {
+    fn applies_to(self, day: Date) -> bool {
+        day >= self.effective_from && self.effective_until.is_none_or(|until| day < until)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TokenRates {
+    input_usd_per_million: f64,
+    cached_input_usd_per_million: f64,
+    cache_write_usd_per_million: Option<f64>,
+    output_usd_per_million: f64,
 }
 
 impl PriceCatalogEntry {
@@ -364,6 +398,47 @@ fn parse_pricing_manifest(source: &str) -> Result<PricingManifest, ()> {
                     .as_deref()
                     .map(parse_ranking_day)
                     .transpose()?;
+                let fast_long_context = period
+                    .fast_long_context
+                    .map(|fast| {
+                        let fast_effective_from = parse_ranking_day(&fast.effective_from)?;
+                        let fast_effective_until = fast
+                            .effective_until
+                            .as_deref()
+                            .map(parse_ranking_day)
+                            .transpose()?;
+                        if fast_effective_until.is_some_and(|until| until <= fast_effective_from)
+                            || fast_effective_from < effective_from
+                            || effective_until.is_some_and(|until| {
+                                fast_effective_from >= until
+                                    || fast_effective_until
+                                        .is_none_or(|fast_until| fast_until > until)
+                            })
+                            || ![
+                                fast.input_usd_per_million,
+                                fast.cached_input_usd_per_million,
+                                fast.output_usd_per_million,
+                            ]
+                            .into_iter()
+                            .all(|value| value.is_finite() && value >= 0.0)
+                            || fast
+                                .cache_write_usd_per_million
+                                .is_some_and(|value| !value.is_finite() || value < 0.0)
+                        {
+                            return Err(());
+                        }
+                        Ok(DatedTokenRates {
+                            effective_from: fast_effective_from,
+                            effective_until: fast_effective_until,
+                            rates: TokenRates {
+                                input_usd_per_million: fast.input_usd_per_million,
+                                cached_input_usd_per_million: fast.cached_input_usd_per_million,
+                                cache_write_usd_per_million: fast.cache_write_usd_per_million,
+                                output_usd_per_million: fast.output_usd_per_million,
+                            },
+                        })
+                    })
+                    .transpose()?;
                 if effective_until.is_some_and(|until| until <= effective_from)
                     || period.long_context.input_tokens_above == 0
                     || ![
@@ -396,6 +471,7 @@ fn parse_pricing_manifest(source: &str) -> Result<PricingManifest, ()> {
                     long_context_input_tokens_above: period.long_context.input_tokens_above,
                     long_context_input_multiplier: period.long_context.input_multiplier,
                     long_context_output_multiplier: period.long_context.output_multiplier,
+                    fast_long_context,
                 })
             })
             .collect::<Result<Vec<_>, ()>>()?;
@@ -430,8 +506,26 @@ fn pricing_manifest_fingerprint(basis: &str, models: &[PricedModel]) -> String {
                 .periods
                 .iter()
                 .map(|period| {
+                    let fast_long_context = period.fast_long_context.map_or_else(
+                        || "none".to_owned(),
+                        |fast| {
+                            format!(
+                                "{}~{}~{:016x}~{:016x}~{}~{:016x}",
+                                fast.effective_from,
+                                fast.effective_until
+                                    .map_or_else(|| "open".to_owned(), |until| until.to_string()),
+                                fast.rates.input_usd_per_million.to_bits(),
+                                fast.rates.cached_input_usd_per_million.to_bits(),
+                                fast.rates.cache_write_usd_per_million.map_or_else(
+                                    || "none".to_owned(),
+                                    |price| format!("{:016x}", price.to_bits())
+                                ),
+                                fast.rates.output_usd_per_million.to_bits(),
+                            )
+                        },
+                    );
                     format!(
-                        "{}|{}|{:016x}|{:016x}|{}|{:016x}|{}|{}|{:016x}|{:016x}",
+                        "{}|{}|{:016x}|{:016x}|{}|{:016x}|{}|{}|{:016x}|{:016x}|{}",
                         period.effective_from,
                         period
                             .effective_until
@@ -450,6 +544,7 @@ fn pricing_manifest_fingerprint(basis: &str, models: &[PricedModel]) -> String {
                         period.long_context_input_tokens_above,
                         period.long_context_input_multiplier.to_bits(),
                         period.long_context_output_multiplier.to_bits(),
+                        fast_long_context,
                     )
                 })
                 .collect::<Vec<_>>()
@@ -482,7 +577,21 @@ fn pricing_manifest() -> Option<&'static PricingManifest> {
 enum PricingLookupFailure {
     MissingApplicablePrice,
     MissingCacheWritePrice,
+    MissingFastLongContextPrice,
+    MissingFastPrice,
     UnknownModel,
+}
+
+impl PricingLookupFailure {
+    fn as_reason(self) -> &'static str {
+        match self {
+            Self::MissingApplicablePrice => "missing_applicable_price",
+            Self::MissingCacheWritePrice => "missing_cache_write_price",
+            Self::MissingFastLongContextPrice => "missing_fast_long_context_price",
+            Self::MissingFastPrice => "missing_fast_price",
+            Self::UnknownModel => "unknown_model",
+        }
+    }
 }
 
 fn pricing_catalog_entry(
@@ -512,11 +621,7 @@ fn debug_pricing_lookup_failure(model: &str, day: Date, failure: PricingLookupFa
     let reason = if model == UNKNOWN_MODEL {
         "model_not_observed"
     } else {
-        match failure {
-            PricingLookupFailure::MissingApplicablePrice => "missing_applicable_price",
-            PricingLookupFailure::MissingCacheWritePrice => "missing_cache_write_price",
-            PricingLookupFailure::UnknownModel => "unknown_model",
-        }
+        failure.as_reason()
     };
     let key = format!("{reason}:{model}");
     let mut reported = REPORTED
@@ -573,38 +678,76 @@ fn price_usage_tier_with_manifest(
     };
     let billable = usage.billable().ok()?;
     let long_context = pricing_input_tokens > entry.long_context_input_tokens_above;
-    let input_multiplier = if long_context {
-        entry.long_context_input_multiplier
-    } else {
-        1.0
-    };
-    let output_multiplier = if long_context {
-        entry.long_context_output_multiplier
-    } else {
-        1.0
+    let rates = match pricing_rates(entry, day, long_context, &pricing_mode) {
+        Ok(rates) => rates,
+        Err(failure) => {
+            debug_pricing_lookup_failure(model, day, failure);
+            return None;
+        }
     };
     let per_million = |tokens: u64, rate: f64| (tokens as f64 / 1_000_000.0) * rate;
     let cache_write = if billable.cache_write_input == 0 {
         0.0
     } else {
-        let Some(rate) = entry.cache_write_usd_per_million else {
+        let Some(rate) = rates.cache_write_usd_per_million else {
             debug_pricing_lookup_failure(model, day, PricingLookupFailure::MissingCacheWritePrice);
             return None;
         };
         per_million(billable.cache_write_input, rate)
     };
-    let mode_multiplier = match pricing_mode {
-        PricingMode::Standard => 1.0,
-        PricingMode::Fast if !long_context => entry.fast_multiplier.unwrap_or(1.0),
-        PricingMode::Fast => 1.0,
-    };
-    let cost = mode_multiplier
-        * (input_multiplier
-            * (per_million(billable.standard_input, entry.input_usd_per_million)
-                + per_million(billable.cached_input, entry.cached_input_usd_per_million)
-                + cache_write)
-            + output_multiplier * per_million(billable.output, entry.output_usd_per_million));
+    let cost = per_million(billable.standard_input, rates.input_usd_per_million)
+        + per_million(billable.cached_input, rates.cached_input_usd_per_million)
+        + cache_write
+        + per_million(billable.output, rates.output_usd_per_million);
     cost.is_finite().then_some(cost)
+}
+
+fn pricing_rates(
+    entry: PriceCatalogEntry,
+    day: Date,
+    long_context: bool,
+    pricing_mode: &PricingMode,
+) -> Result<TokenRates, PricingLookupFailure> {
+    match pricing_mode {
+        PricingMode::Standard => {
+            let input_multiplier = if long_context {
+                entry.long_context_input_multiplier
+            } else {
+                1.0
+            };
+            let output_multiplier = if long_context {
+                entry.long_context_output_multiplier
+            } else {
+                1.0
+            };
+            Ok(TokenRates {
+                input_usd_per_million: entry.input_usd_per_million * input_multiplier,
+                cached_input_usd_per_million: entry.cached_input_usd_per_million * input_multiplier,
+                cache_write_usd_per_million: entry
+                    .cache_write_usd_per_million
+                    .map(|rate| rate * input_multiplier),
+                output_usd_per_million: entry.output_usd_per_million * output_multiplier,
+            })
+        }
+        PricingMode::Fast if long_context => entry
+            .fast_long_context
+            .filter(|price| price.applies_to(day))
+            .map(|price| price.rates)
+            .ok_or(PricingLookupFailure::MissingFastLongContextPrice),
+        PricingMode::Fast => {
+            let multiplier = entry
+                .fast_multiplier
+                .ok_or(PricingLookupFailure::MissingFastPrice)?;
+            Ok(TokenRates {
+                input_usd_per_million: entry.input_usd_per_million * multiplier,
+                cached_input_usd_per_million: entry.cached_input_usd_per_million * multiplier,
+                cache_write_usd_per_million: entry
+                    .cache_write_usd_per_million
+                    .map(|rate| rate * multiplier),
+                output_usd_per_million: entry.output_usd_per_million * multiplier,
+            })
+        }
+    }
 }
 
 fn pricing_rule_fingerprint(
@@ -621,75 +764,43 @@ fn pricing_rule_fingerprint(
     };
     let entry = match pricing_catalog_entry(manifest, model, day) {
         Ok(entry) => entry,
-        Err(PricingLookupFailure::UnknownModel) => {
-            return stable_pricing_fingerprint(&format!("unavailable:unknown-model:{model}"));
-        }
-        Err(PricingLookupFailure::MissingApplicablePrice) => {
+        Err(failure) => {
             return stable_pricing_fingerprint(&format!(
-                "unavailable:missing-applicable-price:{model}:{day}"
-            ));
-        }
-        Err(PricingLookupFailure::MissingCacheWritePrice) => {
-            return stable_pricing_fingerprint(&format!(
-                "unavailable:missing-cache-write-price:{model}:{day}"
+                "unavailable:{}:{model}:{day}",
+                failure.as_reason()
             ));
         }
     };
-    if billable.cache_write_input > 0 && entry.cache_write_usd_per_million.is_none() {
+    let long_context = pricing_input_tokens > entry.long_context_input_tokens_above;
+    let rates = match pricing_rates(entry, day, long_context, &pricing_mode) {
+        Ok(rates) => rates,
+        Err(failure) => {
+            return stable_pricing_fingerprint(&format!(
+                "unavailable:{}:{model}:{day}",
+                failure.as_reason()
+            ));
+        }
+    };
+    if billable.cache_write_input > 0 && rates.cache_write_usd_per_million.is_none() {
         return stable_pricing_fingerprint(&format!(
             "unavailable:missing-cache-write-price:{model}:{day}"
         ));
     }
-    let long_context = pricing_input_tokens > entry.long_context_input_tokens_above;
-    let input_multiplier = if long_context {
-        entry.long_context_input_multiplier
-    } else {
-        1.0
-    };
-    let output_multiplier = if long_context {
-        entry.long_context_output_multiplier
-    } else {
-        1.0
-    };
-    let mode_multiplier = match pricing_mode {
-        PricingMode::Standard => 1.0,
-        PricingMode::Fast if !long_context => entry.fast_multiplier.unwrap_or(1.0),
-        PricingMode::Fast => 1.0,
-    };
-    let applicable_rate = |tokens: u64, rate: f64, multiplier: f64| {
-        (tokens > 0).then(|| format!("{:016x}", (rate * multiplier).to_bits()))
-    };
+    let applicable_rate =
+        |tokens: u64, rate: f64| (tokens > 0).then(|| format!("{:016x}", rate.to_bits()));
     stable_pricing_fingerprint(&format!(
         "priced:mode={}:standard={}:cached={}:cache-write={}:output={}",
         pricing_mode.as_stored(),
-        applicable_rate(
-            billable.standard_input,
-            entry.input_usd_per_million,
-            input_multiplier * mode_multiplier
-        )
-        .unwrap_or_else(|| "unused".to_owned()),
-        applicable_rate(
-            billable.cached_input,
-            entry.cached_input_usd_per_million,
-            input_multiplier * mode_multiplier
-        )
-        .unwrap_or_else(|| "unused".to_owned()),
-        entry
-            .cache_write_usd_per_million
-            .and_then(|rate| {
-                applicable_rate(
-                    billable.cache_write_input,
-                    rate,
-                    input_multiplier * mode_multiplier,
-                )
-            })
+        applicable_rate(billable.standard_input, rates.input_usd_per_million)
             .unwrap_or_else(|| "unused".to_owned()),
-        applicable_rate(
-            billable.output,
-            entry.output_usd_per_million,
-            output_multiplier * mode_multiplier
-        )
-        .unwrap_or_else(|| "unused".to_owned()),
+        applicable_rate(billable.cached_input, rates.cached_input_usd_per_million)
+            .unwrap_or_else(|| "unused".to_owned()),
+        rates
+            .cache_write_usd_per_million
+            .and_then(|rate| applicable_rate(billable.cache_write_input, rate))
+            .unwrap_or_else(|| "unused".to_owned()),
+        applicable_rate(billable.output, rates.output_usd_per_million)
+            .unwrap_or_else(|| "unused".to_owned()),
     ))
 }
 
@@ -3203,11 +3314,9 @@ fn index_local_usage_with_budget(
     ensure_index_schema(&mut connection, Some(database_path)).ok()?;
     let today = utc_ranking_day(now);
     let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
-    let fast_turns = load_fast_turn_evidence(home, cutoff, today)
-        .filter(|evidence| reconcile_fast_turn_evidence(&connection, evidence).is_ok())
-        .map(|evidence| evidence.turns)
-        .or_else(|| load_stored_fast_turns(&connection).ok())
-        .unwrap_or_default();
+    let fast_turn_evidence = load_fast_turn_evidence(home, cutoff, today)?;
+    reconcile_fast_turn_evidence(&connection, &fast_turn_evidence).ok()?;
+    let fast_turns = fast_turn_evidence.turns;
     // Trace evidence and rollout bytes are independent local inputs. A large
     // read-only trace database must not consume the bounded rollout budget.
     let started = Instant::now();
@@ -3518,6 +3627,10 @@ fn debug_catalog_description(
         Err(PricingLookupFailure::MissingCacheWritePrice) => {
             "status=missing-cache-write-price".to_owned()
         }
+        Err(PricingLookupFailure::MissingFastLongContextPrice) => {
+            "status=missing-fast-long-context-price".to_owned()
+        }
+        Err(PricingLookupFailure::MissingFastPrice) => "status=missing-fast-price".to_owned(),
         Ok(entry) if has_cache_write && entry.cache_write_usd_per_million.is_none() => {
             "status=missing-cache-write-price".to_owned()
         }
@@ -4836,7 +4949,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let changed = changed_pricing_manifest("openai-api-2026-08-09-v2", 60.0);
+        let changed = changed_pricing_manifest("openai-api-2026-08-09-v4", 60.0);
         reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
         let after: (i64, i64, f64) = connection
             .query_row(
@@ -4948,7 +5061,7 @@ mod tests {
             )
             .unwrap();
 
-        let changed = changed_pricing_manifest("openai-api-2026-08-09-v2", 60.0);
+        let changed = changed_pricing_manifest("openai-api-2026-08-09-v4", 60.0);
         reprice_index_with_manifest(&connection, &changed, day, day).unwrap();
 
         let repriced = connection
@@ -5177,7 +5290,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-api-2026-08-09-v2");
+        assert_eq!(manifest.basis, "openai-api-2026-08-09-v3");
         assert!(
             catalog_entry(
                 &manifest,
@@ -5220,6 +5333,18 @@ mod tests {
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
         multiplier["models"][0]["periods"][0]["longContext"]["inputMultiplier"] = json!(0.0);
         assert!(parse_pricing_manifest(&multiplier.to_string()).is_err());
+
+        let mut invalid_fast_date: serde_json::Value =
+            serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
+        invalid_fast_date["models"][1]["periods"][0]["fastLongContext"]["effectiveFrom"] =
+            json!("2026-06-25");
+        assert!(parse_pricing_manifest(&invalid_fast_date.to_string()).is_err());
+
+        let mut invalid_fast_price: serde_json::Value =
+            serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
+        invalid_fast_price["models"][1]["periods"][0]["fastLongContext"]["outputUsdPerMillion"] =
+            json!(-1.0);
+        assert!(parse_pricing_manifest(&invalid_fast_price.to_string()).is_err());
     }
 
     #[test]
@@ -5390,7 +5515,12 @@ mod tests {
                 "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
                 params![
                     now.unix_timestamp(),
-                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-fast" }"#,
+                    concat!(
+                        "private=ignored turn.id=turn-fast websocket event: {\"type\":\"response.created\",\"response\":{\"private\":\"ignored\"}}\n",
+                        "private=ignored turn.id=turn-fast websocket event: {\"type\":\"response.output_item.done\",\"private\":\"ignored\"}\n",
+                        "private=ignored turn.id=turn-fast websocket event: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"service_tier\":\"priority\",\"private\":\"ignored\"}}\n",
+                        "private=ignored turn.id=turn-fast websocket event: {\"type\":\"response.done\",\"private\":\"ignored\"}\n",
+                    ),
                 ],
             )
             .unwrap();
@@ -5400,6 +5530,141 @@ mod tests {
         let cost = local.daily[&day].api_equivalent_cost_usd.unwrap();
 
         assert!((cost - 0.79).abs() < 1e-12);
+    }
+
+    #[test]
+    fn requested_fast_without_completed_response_uses_standard_price() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"turn.id=turn-fast websocket request: {"type":"response.create","model":"gpt-5.6-sol","service_tier":"fast"}"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert!((local.daily[&day].api_equivalent_cost_usd.unwrap() - 0.395).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "standard"
+        );
+    }
+
+    #[test]
+    fn mixed_fast_and_downgraded_completions_use_standard_price() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    concat!(
+                        "turn.id=turn-fast websocket event: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"service_tier\":\"priority\"}}\n",
+                        "turn.id=turn-fast websocket event: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"service_tier\":\"default\"}}\n",
+                    ),
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert!((local.daily[&day].api_equivalent_cost_usd.unwrap() - 0.395).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "standard"
+        );
+    }
+
+    #[test]
+    fn conflicting_completed_fast_models_use_the_standard_rollout_model() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    concat!(
+                        "turn.id=turn-fast websocket event: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"service_tier\":\"priority\"}}\n",
+                        "turn.id=turn-fast websocket event: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-terra\",\"service_tier\":\"priority\"}}\n",
+                    ),
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert!((local.daily[&day].api_equivalent_cost_usd.unwrap() - 0.395).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT model || ':' || pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "gpt-5.6-sol:standard"
+        );
     }
 
     #[test]
@@ -5430,16 +5695,7 @@ mod tests {
                 "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
                 params![
                     now.unix_timestamp(),
-                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-fast" }"#,
-                ],
-            )
-            .unwrap();
-        trace
-            .execute(
-                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
-                params![
-                    now.unix_timestamp(),
-                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-terra"}}"#,
+                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-terra","service_tier":"priority"}}"#,
                 ],
             )
             .unwrap();
@@ -5461,10 +5717,9 @@ mod tests {
     }
 
     #[test]
-    fn fast_pricing_uses_each_model_multiplier_and_not_the_long_context_multiplier() {
+    fn fast_pricing_uses_published_context_rates_at_the_272k_boundary() {
         let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
         let short_usage = token_usage(100_000, 90_000, 0, 10_000);
-        let long_usage = token_usage(300_000, 100_000, 50_000, 100_000);
 
         let gpt_5_5_standard = price_usage_tier(
             "gpt-5.5",
@@ -5484,23 +5739,100 @@ mod tests {
         .unwrap();
         assert!((gpt_5_5_fast - gpt_5_5_standard * 2.5).abs() < 1e-12);
 
-        let long_standard = price_usage_tier(
-            "gpt-5.6-sol",
-            day,
-            long_usage,
-            long_usage.input,
-            PricingMode::Standard,
-        )
-        .unwrap();
-        let long_fast = price_usage_tier(
-            "gpt-5.6-sol",
-            day,
-            long_usage,
-            long_usage.input,
-            PricingMode::Fast,
-        )
-        .unwrap();
-        assert_eq!(long_fast, long_standard);
+        let usage = token_usage(400_000, 100_000, 100_000, 100_000);
+        let cases = [
+            ("gpt-5.6-sol", 9.35, 15.7),
+            ("gpt-5.6-terra", 3.74, 628.0 / 100.0),
+            ("gpt-5.6-luna", 0.374, 0.628),
+        ];
+        for (model, expected_short, expected_long) in cases {
+            let short = price_usage_tier(model, day, usage, 272_000, PricingMode::Fast).unwrap();
+            let long = price_usage_tier(model, day, usage, 272_001, PricingMode::Fast).unwrap();
+
+            assert!((short - expected_short).abs() < 1e-12, "{model} short");
+            assert!((long - expected_long).abs() < 1e-12, "{model} long");
+            assert_ne!(
+                pricing_rule_fingerprint(
+                    pricing_manifest().unwrap(),
+                    model,
+                    day,
+                    usage,
+                    272_000,
+                    PricingMode::Fast,
+                ),
+                pricing_rule_fingerprint(
+                    pricing_manifest().unwrap(),
+                    model,
+                    day,
+                    usage,
+                    272_001,
+                    PricingMode::Fast,
+                ),
+                "{model} pricing fingerprint"
+            );
+        }
+
+        assert!(price_usage_tier("gpt-5.5", day, usage, 272_001, PricingMode::Fast).is_none());
+        let before_fast_long_context = Date::from_calendar_date(2026, Month::July, 29).unwrap();
+        assert!(
+            price_usage_tier(
+                "gpt-5.6-sol",
+                before_fast_long_context,
+                usage,
+                272_001,
+                PricingMode::Fast,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn fast_long_context_rates_participate_in_pricing_fingerprints() {
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let usage = token_usage(300_000, 0, 0, 100_000);
+        let original = pricing_manifest().unwrap();
+        let mut changed: serde_json::Value =
+            serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
+        changed["models"][1]["periods"][0]["fastLongContext"]["outputUsdPerMillion"] = json!(91.0);
+        let changed = parse_pricing_manifest(&changed.to_string()).unwrap();
+
+        assert_ne!(original.fingerprint, changed.fingerprint);
+        assert_eq!(
+            pricing_rule_fingerprint(
+                original,
+                "gpt-5.6-sol",
+                day,
+                usage,
+                272_000,
+                PricingMode::Fast,
+            ),
+            pricing_rule_fingerprint(
+                &changed,
+                "gpt-5.6-sol",
+                day,
+                usage,
+                272_000,
+                PricingMode::Fast,
+            )
+        );
+        assert_ne!(
+            pricing_rule_fingerprint(
+                original,
+                "gpt-5.6-sol",
+                day,
+                usage,
+                272_001,
+                PricingMode::Fast,
+            ),
+            pricing_rule_fingerprint(
+                &changed,
+                "gpt-5.6-sol",
+                day,
+                usage,
+                272_001,
+                PricingMode::Fast,
+            )
+        );
     }
 
     #[test]
@@ -5533,7 +5865,7 @@ mod tests {
                 "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
                 params![
                     now.unix_timestamp(),
-                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-fast" }"#,
+                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"priority"}}"#,
                 ],
             )
             .unwrap();
@@ -5587,7 +5919,7 @@ mod tests {
                 "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
                 params![
                     now.unix_timestamp(),
-                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-later-fast" }"#,
+                    r#"turn.id=turn-later-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"priority"}}"#,
                 ],
             )
             .unwrap();
@@ -5597,6 +5929,73 @@ mod tests {
         assert_eq!(fast.daily[&day].observed_tokens, 110_000);
         assert!((fast.daily[&day].api_equivalent_cost_usd.unwrap() - 0.79).abs() < 1e-12);
         let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "fast"
+        );
+    }
+
+    #[test]
+    fn failed_fast_evidence_invalidation_does_not_reuse_stored_fast_turns() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"priority"}}"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let fast = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert!((fast.daily[&day].api_equivalent_cost_usd.unwrap() - 0.79).abs() < 1e-12);
+
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace.execute("DELETE FROM logs", []).unwrap();
+        drop(trace);
+        let connection = Connection::open(&fixture.database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_fast_evidence_invalidation
+                 BEFORE DELETE ON codex_usage_fast_turns
+                 BEGIN
+                   SELECT RAISE(ABORT, 'blocked by test');
+                 END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(index_local_usage_at(&fixture.database, &fixture.root, now).is_none());
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM codex_usage_fast_turns", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
         assert_eq!(
             connection
                 .query_row(
@@ -5637,7 +6036,7 @@ mod tests {
                 "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
                 params![
                     now.unix_timestamp(),
-                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-later-fast" }"#,
+                    r#"turn.id=turn-later-fast websocket event: {"type":"response.completed","response":{"model":"gpt-5.6-sol","service_tier":"priority"}}"#,
                 ],
             )
             .unwrap();
@@ -5660,7 +6059,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_evidence_failure_keeps_observed_tokens() {
+    fn fast_evidence_failure_fails_closed_to_standard_and_keeps_observed_tokens() {
         let fixture = TempUsage::new();
         let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
         let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
@@ -5675,7 +6074,18 @@ mod tests {
             .expect("optional Fast evidence must not hide observed usage");
 
         assert_eq!(local.daily[&day].observed_tokens, 110_000);
-        assert!(local.daily[&day].api_equivalent_cost_usd.is_some());
+        assert!((local.daily[&day].api_equivalent_cost_usd.unwrap() - 0.395).abs() < 1e-12);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT pricing_mode FROM codex_usage_file_model_days",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "standard"
+        );
     }
 
     #[test]
@@ -5699,7 +6109,7 @@ mod tests {
                 "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
                 params![
                     now.unix_timestamp(),
-                    r#"turn.id=turn-fast websocket request: {"type":"response.create","service_tier":"fast","model":"gpt-future-private"}"#,
+                    r#"turn.id=turn-fast websocket event: {"type":"response.completed","response":{"model":"gpt-future-private","service_tier":"priority"}}"#,
                 ],
             )
             .unwrap();

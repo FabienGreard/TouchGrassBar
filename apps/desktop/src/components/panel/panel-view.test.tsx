@@ -563,7 +563,7 @@ describe("panel states", () => {
     expect(markup).toContain("partial period coverage");
     expect(markup).toContain("cost estimated from local pricing evidence");
     expect(markup).toContain(
-      "pricing basis openai-api-2026-08-09-v2 + anthropic-standard-2026-08-07-v1",
+      "pricing basis openai-api-2026-08-09-v3 + anthropic-standard-2026-08-07-v1",
     );
     expect(markup).toContain("width:5%");
     expect(markup).toContain("width:26%");

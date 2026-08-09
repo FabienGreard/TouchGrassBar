@@ -596,6 +596,17 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
          CREATE INDEX IF NOT EXISTS usage_sync_latest_outbox_pending
              ON usage_sync_latest_outbox(active_generation, queue_state, ranking_day, provider);
 
+         CREATE TABLE IF NOT EXISTS usage_sync_terminal_conflicts (
+             active_generation INTEGER NOT NULL,
+             provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+             ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+             revision INTEGER NOT NULL
+                 CHECK(revision >= 1 AND revision <= 9007199254740991),
+             PRIMARY KEY(active_generation, provider, ranking_day, revision),
+             FOREIGN KEY(active_generation)
+                 REFERENCES usage_sync_generations(active_generation)
+         ) STRICT;
+
          CREATE TABLE IF NOT EXISTS usage_sync_provider_settings_outbox (
              active_generation INTEGER PRIMARY KEY,
              revision INTEGER NOT NULL
@@ -1043,8 +1054,13 @@ fn prune_expired_usage_sync_rows(
         "DELETE FROM usage_sync_latest_outbox WHERE ranking_day < ?1",
         [&first_retained_day],
     )?;
+    let terminal_conflicts = transaction.execute(
+        "DELETE FROM usage_sync_terminal_conflicts WHERE ranking_day < ?1",
+        [&first_retained_day],
+    )?;
     aggregates
         .checked_add(outbox)
+        .and_then(|rows| rows.checked_add(terminal_conflicts))
         .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
@@ -1200,6 +1216,45 @@ pub(crate) fn load_current_pending_usage_batch(
     )
 }
 
+/// Report only whether an enabled provider has a terminal current-day conflict.
+pub(crate) fn has_current_terminal_usage_conflict(
+    connection: &Connection,
+    active_mac_generation: u64,
+    now: OffsetDateTime,
+    enabled_providers: &BTreeSet<CodingProvider>,
+) -> Result<bool, UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
+    validate_ranking_day(&ranking_day)?;
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM usage_sync_terminal_conflicts AS terminal_conflict
+                 JOIN usage_sync_latest_outbox AS outbox
+                   ON outbox.active_generation = terminal_conflict.active_generation
+                  AND outbox.provider = terminal_conflict.provider
+                  AND outbox.ranking_day = terminal_conflict.ranking_day
+                  AND outbox.revision = terminal_conflict.revision
+                 WHERE terminal_conflict.active_generation = ?1
+                   AND terminal_conflict.ranking_day = ?2
+                   AND outbox.queue_state = 'active'
+                   AND (
+                       (terminal_conflict.provider = 'codex' AND ?3 = 1)
+                       OR (terminal_conflict.provider = 'claude' AND ?4 = 1)
+                   )
+             )",
+            params![
+                to_database_integer(active_mac_generation)?,
+                ranking_day,
+                i64::from(enabled_providers.contains(&CodingProvider::Codex)),
+                i64::from(enabled_providers.contains(&CodingProvider::Claude))
+            ],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(UsageSyncError::from)
+}
+
 fn load_pending_usage_batch_for_day(
     connection: &Connection,
     active_mac_generation: u64,
@@ -1215,6 +1270,15 @@ fn load_pending_usage_batch_for_day(
          WHERE active_generation = ?1
            AND queue_state = 'active'
            AND (?2 IS NULL OR ranking_day = ?2)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM usage_sync_terminal_conflicts AS terminal_conflict
+               WHERE terminal_conflict.active_generation =
+                         usage_sync_latest_outbox.active_generation
+                 AND terminal_conflict.provider = usage_sync_latest_outbox.provider
+                 AND terminal_conflict.ranking_day = usage_sync_latest_outbox.ranking_day
+                 AND terminal_conflict.revision = usage_sync_latest_outbox.revision
+           )
          ORDER BY ranking_day, provider
          LIMIT 62",
     )?;
@@ -1326,10 +1390,10 @@ pub(crate) fn parse_provider_settings_acknowledgement(
 /// Apply one complete success value to the exact submitted batch.
 ///
 /// A committed, conflict, or idempotent acknowledgement must name the
-/// submitted revision. A conflict stops an unproved lower value or a backward
-/// observation time. A stale acknowledgement names the same or a newer server
-/// revision. The delete always uses the submitted revision. Therefore, a late
-/// response cannot remove a newer local revision.
+/// submitted revision. A conflict stores a terminal marker and keeps the
+/// uncommitted payload. A stale acknowledgement names the same or a newer
+/// server revision. Each write uses the submitted revision. Therefore, a late
+/// response cannot remove or stop a newer local revision.
 pub(crate) fn apply_usage_acknowledgements(
     transaction: &Transaction<'_>,
     batch: &PendingUsageBatch,
@@ -1375,7 +1439,7 @@ pub(crate) fn apply_usage_acknowledgements(
     }
 
     let generation = to_database_integer(batch.active_mac_generation)?;
-    let mut removed = 0;
+    let mut applied = 0;
     for snapshot in &batch.snapshots {
         let acknowledgement = acknowledgements
             .iter()
@@ -1384,30 +1448,52 @@ pub(crate) fn apply_usage_acknowledgements(
                     && acknowledgement.ranking_day == snapshot.ranking_day
             })
             .ok_or(UsageSyncError::INVALID_RESPONSE)?;
-        removed += transaction.execute(
-            "DELETE FROM usage_sync_latest_outbox
-             WHERE active_generation = ?1
-               AND provider = ?2
-               AND ranking_day = ?3
-               AND revision = ?4
-               AND queue_state = 'active'",
-            params![
-                generation,
-                provider_database_value(snapshot.provider),
-                snapshot.ranking_day,
-                to_database_integer(snapshot.revision)?
-            ],
-        )?;
-        if acknowledgement.outcome == AcknowledgementOutcome::Stale {
-            advance_local_revision_floor(
-                transaction,
-                batch.active_mac_generation,
-                snapshot,
-                acknowledgement.revision,
-            )?;
+        let provider = provider_database_value(snapshot.provider);
+        let revision = to_database_integer(snapshot.revision)?;
+        match acknowledgement.outcome {
+            AcknowledgementOutcome::Conflict => {
+                applied += transaction.execute(
+                    "INSERT INTO usage_sync_terminal_conflicts(
+                         active_generation, provider, ranking_day, revision
+                     )
+                     SELECT ?1, ?2, ?3, ?4
+                     WHERE EXISTS (
+                         SELECT 1 FROM usage_sync_latest_outbox
+                         WHERE active_generation = ?1
+                           AND provider = ?2
+                           AND ranking_day = ?3
+                           AND revision = ?4
+                           AND queue_state = 'active'
+                     )
+                     ON CONFLICT(active_generation, provider, ranking_day, revision)
+                     DO NOTHING",
+                    params![generation, provider, snapshot.ranking_day, revision],
+                )?;
+            }
+            AcknowledgementOutcome::Committed
+            | AcknowledgementOutcome::Idempotent
+            | AcknowledgementOutcome::Stale => {
+                applied += transaction.execute(
+                    "DELETE FROM usage_sync_latest_outbox
+                     WHERE active_generation = ?1
+                       AND provider = ?2
+                       AND ranking_day = ?3
+                       AND revision = ?4
+                       AND queue_state = 'active'",
+                    params![generation, provider, snapshot.ranking_day, revision],
+                )?;
+                if acknowledgement.outcome == AcknowledgementOutcome::Stale {
+                    advance_local_revision_floor(
+                        transaction,
+                        batch.active_mac_generation,
+                        snapshot,
+                        acknowledgement.revision,
+                    )?;
+                }
+            }
         }
     }
-    Ok(removed)
+    Ok(applied)
 }
 
 pub(crate) fn apply_provider_settings_acknowledgement(
@@ -2063,7 +2149,7 @@ fn valid_pricing_basis(value: &str) -> bool {
 fn approved_pricing_basis(provider: CodingProvider, value: &str) -> bool {
     matches!(
         (provider, value),
-        (CodingProvider::Codex, "openai-api-2026-08-09-v2")
+        (CodingProvider::Codex, "openai-api-2026-08-09-v3")
             | (CodingProvider::Claude, "anthropic-standard-2026-08-07-v1")
     )
 }
@@ -2270,7 +2356,7 @@ mod tests {
                 NOW,
                 Some((
                     1.25,
-                    "openai-api-2026-08-09-v2",
+                    "openai-api-2026-08-09-v3",
                     ApiEquivalentCostQuality::Reconciled,
                     None,
                 )),
@@ -3063,7 +3149,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_revision_lower_conflict_stops_both_unproved_decreases() {
+    fn conflict_keeps_both_payloads_terminal_until_a_new_revision_exists() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
         for provider in [CodingProvider::Codex, CodingProvider::Claude] {
@@ -3084,6 +3170,27 @@ mod tests {
         );
         transaction.commit().unwrap();
         assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_terminal_conflicts",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+
+        install_usage_sync_schema(&connection).unwrap();
+        assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
 
         let transaction = connection.transaction().unwrap();
         for provider in [CodingProvider::Codex, CodingProvider::Claude] {
@@ -3097,6 +3204,27 @@ mod tests {
         }
         transaction.commit().unwrap();
         assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
+
+        let transaction = connection.transaction().unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            assert_eq!(
+                queue_daily_aggregate(&transaction, 1, aggregate(provider, 20, 2000)).unwrap(),
+                QueueUpdate::Stored {
+                    provider,
+                    revision: 2,
+                    state: QueueState::Pending,
+                }
+            );
+        }
+        transaction.commit().unwrap();
+        let pending = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 2);
+        assert!(
+            pending
+                .snapshots()
+                .iter()
+                .all(|snapshot| snapshot.revision == 2)
+        );
     }
 
     #[test]

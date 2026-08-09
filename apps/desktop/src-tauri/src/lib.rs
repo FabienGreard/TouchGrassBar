@@ -120,9 +120,8 @@ pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static s
 
 pub(crate) fn install_tls_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
-        rustls::crypto::ring::default_provider()
-            .install_default()
-            .expect("install the native TLS cryptography provider");
+        // Another test or native worker can win this process-wide race.
+        let _ = rustls::crypto::ring::default_provider().install_default();
     }
 }
 

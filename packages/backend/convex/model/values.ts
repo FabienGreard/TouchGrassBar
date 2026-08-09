@@ -51,7 +51,7 @@ export type UsageSnapshot = Infer<typeof usageSnapshotValidator>;
 
 const PRICING_BASIS_BY_PROVIDER: Record<Provider, string> = {
   claude: "anthropic-standard-2026-08-07-v1",
-  codex: "openai-api-2026-08-09-v2",
+  codex: "openai-api-2026-08-09-v3",
 };
 
 export const WINDOWS: readonly ScoreWindow[] = [1, 7, 30];

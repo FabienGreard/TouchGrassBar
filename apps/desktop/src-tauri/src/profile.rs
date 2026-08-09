@@ -140,22 +140,41 @@ fn recovery_key_suffix(key: &Secret) -> String {
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProfileErrorKind {
+    AuthorityRejected,
+    Other,
+}
+
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ProfileError(&'static str);
+pub(crate) struct ProfileError {
+    kind: ProfileErrorKind,
+    message: &'static str,
+}
 
 impl ProfileError {
+    const fn message(message: &'static str) -> Self {
+        Self {
+            kind: ProfileErrorKind::Other,
+            message,
+        }
+    }
+
     fn authority_rejected() -> Self {
-        Self(AUTHORITY_REJECTED_MESSAGE)
+        Self {
+            kind: ProfileErrorKind::AuthorityRejected,
+            message: AUTHORITY_REJECTED_MESSAGE,
+        }
     }
 
     pub(crate) fn is_authority_rejected(self) -> bool {
-        self.0 == AUTHORITY_REJECTED_MESSAGE
+        self.kind == ProfileErrorKind::AuthorityRejected
     }
 }
 
 impl fmt::Display for ProfileError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
+        formatter.write_str(self.message)
     }
 }
 
@@ -176,7 +195,9 @@ impl MacKeychain {
         use security_framework::passwords::PasswordOptions;
 
         if kind == SecretKind::ConvexJwt {
-            return Err(ProfileError("memory-only credential cannot be stored"));
+            return Err(ProfileError::message(
+                "memory-only credential cannot be stored",
+            ));
         }
         let configuration = build_keychain_configuration();
         let policy = keychain_policy(kind);
@@ -208,7 +229,7 @@ impl MacKeychain {
             Some(protection),
             AccessControlOptions::empty().bits(),
         )
-        .map_err(|_| ProfileError("secure custody unavailable"))?;
+        .map_err(|_| ProfileError::message("secure custody unavailable"))?;
         let mut options = Self::options(kind)?;
         options.set_access_control(access_control);
         Ok(options)
@@ -224,7 +245,7 @@ impl SecretCustody for MacKeychain {
         match delete_generic_password_options(Self::options(kind)?) {
             Ok(()) => Ok(()),
             Err(error) if error.code() == errSecItemNotFound => Ok(()),
-            Err(_) => Err(ProfileError("secure custody unavailable")),
+            Err(_) => Err(ProfileError::message("secure custody unavailable")),
         }
     }
 
@@ -236,9 +257,9 @@ impl SecretCustody for MacKeychain {
             Ok(value) => String::from_utf8(value)
                 .map(Secret::new)
                 .map(Some)
-                .map_err(|_| ProfileError("secure custody unavailable")),
+                .map_err(|_| ProfileError::message("secure custody unavailable")),
             Err(error) if error.code() == errSecItemNotFound => Ok(None),
-            Err(_) => Err(ProfileError("secure custody unavailable")),
+            Err(_) => Err(ProfileError::message("secure custody unavailable")),
         }
     }
 
@@ -247,7 +268,7 @@ impl SecretCustody for MacKeychain {
             value.expose().as_bytes(),
             Self::write_options(kind)?,
         )
-        .map_err(|_| ProfileError("secure custody unavailable"))
+        .map_err(|_| ProfileError::message("secure custody unavailable"))
     }
 }
 
@@ -288,13 +309,13 @@ impl PreparedProfile {
         let (Some(touch_grass_id), Some(expires_at), Some(signup_proof)) =
             (fields.next(), fields.next(), fields.next())
         else {
-            return Err(ProfileError("profile preparation unavailable"));
+            return Err(ProfileError::message("profile preparation unavailable"));
         };
         let expires_at_ms = expires_at
             .parse::<u64>()
-            .map_err(|_| ProfileError("profile preparation unavailable"))?;
+            .map_err(|_| ProfileError::message("profile preparation unavailable"))?;
         if !valid_touch_grass_id(touch_grass_id) || signup_proof.is_empty() {
-            return Err(ProfileError("profile preparation unavailable"));
+            return Err(ProfileError::message("profile preparation unavailable"));
         }
         Ok(Self {
             expires_at_ms,
@@ -434,7 +455,7 @@ impl ProfileCoordinator {
             None => {
                 let prepared = self.transport.prepare()?;
                 if !valid_touch_grass_id(&prepared.touch_grass_id) {
-                    return Err(ProfileError("profile preparation unavailable"));
+                    return Err(ProfileError::message("profile preparation unavailable"));
                 }
                 self.custody
                     .write(SecretKind::SignupPreparation, &prepared.encode())?;
@@ -461,7 +482,7 @@ impl ProfileCoordinator {
                 {
                     SignInOutcome::Authenticated(session) => session,
                     SignInOutcome::NoAccount => {
-                        return Err(ProfileError("Profile creation pending"));
+                        return Err(ProfileError::message("Profile creation pending"));
                     }
                 }
             }
@@ -484,10 +505,11 @@ impl ProfileCoordinator {
         *self
             .active_mac_generation
             .lock()
-            .map_err(|_| ProfileError("Active Mac authority unavailable"))? = Some(generation);
+            .map_err(|_| ProfileError::message("Active Mac authority unavailable"))? =
+            Some(generation);
         self.lifecycle
             .mark_profile_ready(&prepared.touch_grass_id)
-            .map_err(ProfileError)?;
+            .map_err(ProfileError::message)?;
         let _ = self.custody.delete(SecretKind::SignupPreparation);
         let profile = SanitizedProfileOutcome::Ready {
             display_name: request.display_name,
@@ -509,7 +531,7 @@ impl ProfileCoordinator {
         let installation_credential = self
             .custody
             .read(SecretKind::InstallationCredential)?
-            .ok_or(ProfileError("Active Mac authority unavailable"))?;
+            .ok_or(ProfileError::message("Active Mac authority unavailable"))?;
         let mut session = match self.custody.read(SecretKind::BetterAuthSession)? {
             Some(session) => session,
             None => self.refresh_session_for(&touch_grass_id)?,
@@ -517,7 +539,7 @@ impl ProfileCoordinator {
         let cached_generation = *self
             .active_mac_generation
             .lock()
-            .map_err(|_| ProfileError("Active Mac authority unavailable"))?;
+            .map_err(|_| ProfileError::message("Active Mac authority unavailable"))?;
         let active_mac_generation = if let Some(generation) = cached_generation {
             generation
         } else {
@@ -553,7 +575,8 @@ impl ProfileCoordinator {
             *self
                 .active_mac_generation
                 .lock()
-                .map_err(|_| ProfileError("Active Mac authority unavailable"))? = Some(generation);
+                .map_err(|_| ProfileError::message("Active Mac authority unavailable"))? =
+                Some(generation);
             generation
         };
 
@@ -578,7 +601,7 @@ impl ProfileCoordinator {
         let recovery_key = self
             .custody
             .read(SecretKind::RecoveryKey)?
-            .ok_or(ProfileError("Active Mac authority unavailable"))?;
+            .ok_or(ProfileError::message("Active Mac authority unavailable"))?;
         let SignInOutcome::Authenticated(session) =
             self.transport.sign_in(touch_grass_id, &recovery_key)?
         else {
@@ -594,14 +617,14 @@ impl ProfileCoordinator {
         authorization: SettingsProfileAuthorization,
     ) -> Result<Secret, ProfileError> {
         if !self.lifecycle.is_current_profile_settings(authorization) {
-            return Err(ProfileError("Recovery Key unavailable"));
+            return Err(ProfileError::message("Recovery Key unavailable"));
         }
         self.lifecycle
             .ready_touch_grass_id()
-            .ok_or(ProfileError("Recovery Key unavailable"))?;
+            .ok_or(ProfileError::message("Recovery Key unavailable"))?;
         self.custody
             .read(SecretKind::RecoveryKey)?
-            .ok_or(ProfileError("Recovery Key unavailable"))
+            .ok_or(ProfileError::message("Recovery Key unavailable"))
     }
 
     pub(crate) fn update_display_name(
@@ -610,31 +633,31 @@ impl ProfileCoordinator {
         display_name: &str,
     ) -> Result<SanitizedProfileOutcome, ProfileError> {
         if !self.lifecycle.is_current_profile_settings(authorization) {
-            return Err(ProfileError("Display Name update unavailable"));
+            return Err(ProfileError::message("Display Name update unavailable"));
         }
         let display_name = display_name.trim();
         if display_name.is_empty() || display_name.chars().count() > 40 {
-            return Err(ProfileError("Display Name invalid"));
+            return Err(ProfileError::message("Display Name invalid"));
         }
         let touch_grass_id = self
             .lifecycle
             .ready_touch_grass_id()
-            .ok_or(ProfileError("Display Name update unavailable"))?;
+            .ok_or(ProfileError::message("Display Name update unavailable"))?;
         let recovery_key = self
             .custody
             .read(SecretKind::RecoveryKey)?
-            .ok_or(ProfileError("Display Name update unavailable"))?;
+            .ok_or(ProfileError::message("Display Name update unavailable"))?;
         let SignInOutcome::Authenticated(session) =
             self.transport.sign_in(&touch_grass_id, &recovery_key)?
         else {
-            return Err(ProfileError("Display Name update unavailable"));
+            return Err(ProfileError::message("Display Name update unavailable"));
         };
         self.custody
             .write(SecretKind::BetterAuthSession, &session)?;
         self.transport.update_display_name(&session, display_name)?;
         self.lifecycle
             .update_display_name(display_name)
-            .map_err(ProfileError)?;
+            .map_err(ProfileError::message)?;
         Ok(SanitizedProfileOutcome::Ready {
             display_name: display_name.to_owned(),
             touch_grass_id,
@@ -662,7 +685,7 @@ pub(crate) fn production_coordinator(lifecycle: DesktopLifecycle) -> ProfileCoor
 
 fn generate_secret(length: usize) -> Result<String, ProfileError> {
     let mut random = vec![0_u8; length];
-    getrandom::fill(&mut random).map_err(|_| ProfileError("secure random unavailable"))?;
+    getrandom::fill(&mut random).map_err(|_| ProfileError::message("secure random unavailable"))?;
     Ok(random
         .into_iter()
         .map(|byte| SECRET_ALPHABET[usize::from(byte) % SECRET_ALPHABET.len()] as char)
@@ -673,7 +696,7 @@ fn unix_time_ms() -> Result<u64, ProfileError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
-        .map_err(|_| ProfileError("system clock unavailable"))
+        .map_err(|_| ProfileError::message("system clock unavailable"))
 }
 
 fn valid_touch_grass_id(value: &str) -> bool {
@@ -705,7 +728,7 @@ impl HttpProfileTransport {
     fn endpoint(&self, path: &str) -> Result<String, ProfileError> {
         let base = self
             .auth_site_url
-            .ok_or(ProfileError("profile service unavailable"))?;
+            .ok_or(ProfileError::message("profile service unavailable"))?;
         Ok(format!("{}{path}", base.trim_end_matches('/')))
     }
 
@@ -719,25 +742,25 @@ impl HttpProfileTransport {
             .get(self.endpoint(CONVEX_TOKEN_PATH)?)
             .bearer_auth(session.expose())
             .send()
-            .map_err(|_| ProfileError(failure))?;
+            .map_err(|_| ProfileError::message(failure))?;
         if matches!(response.status().as_u16(), 401 | 403) {
             return Err(ProfileError::authority_rejected());
         }
         let response = response
             .error_for_status()
-            .map_err(|_| ProfileError(failure))?;
+            .map_err(|_| ProfileError::message(failure))?;
         let mut body = Zeroizing::new(Vec::with_capacity(MAX_PROFILE_TOKEN_RESPONSE_BYTES));
         response
             .take((MAX_PROFILE_TOKEN_RESPONSE_BYTES + 1) as u64)
             .read_to_end(&mut body)
-            .map_err(|_| ProfileError(failure))?;
+            .map_err(|_| ProfileError::message(failure))?;
         if body.len() > MAX_PROFILE_TOKEN_RESPONSE_BYTES {
-            return Err(ProfileError(failure));
+            return Err(ProfileError::message(failure));
         }
         let response: ConvexTokenResponse =
-            serde_json::from_slice(body.as_slice()).map_err(|_| ProfileError(failure))?;
+            serde_json::from_slice(body.as_slice()).map_err(|_| ProfileError::message(failure))?;
         if response.token.is_empty() || response.token.len() > MAX_PROFILE_JWT_BYTES {
-            return Err(ProfileError(failure));
+            return Err(ProfileError::message(failure));
         }
         Ok(Zeroizing::new(response.token))
     }
@@ -751,20 +774,20 @@ impl HttpProfileTransport {
     ) -> Result<Value, ProfileError> {
         let convex_url = self
             .convex_url
-            .ok_or(ProfileError("profile service unavailable"))?
+            .ok_or(ProfileError::message("profile service unavailable"))?
             .to_owned();
         let jwt = self.fetch_convex_token(session, failure)?;
         let attempt = tokio::runtime::Runtime::new()
-            .map_err(|_| ProfileError(failure))?
+            .map_err(|_| ProfileError::message(failure))?
             .block_on(async move {
                 tokio::time::timeout(PROFILE_MUTATION_TIMEOUT, async move {
                     let mut client = ConvexClient::new(&convex_url)
                         .await
-                        .map_err(|_| ProfileError(failure))?;
+                        .map_err(|_| ProfileError::message(failure))?;
                     client.set_auth(Some(jwt.as_str().to_owned())).await;
                     let result = client.mutation(mutation, payload).await;
                     client.set_auth(None).await;
-                    match result.map_err(|_| ProfileError(failure))? {
+                    match result.map_err(|_| ProfileError::message(failure))? {
                         FunctionResult::Value(value) => Ok(value),
                         FunctionResult::ConvexError(error)
                             if is_exact_authority_rejection(&error.data) =>
@@ -772,7 +795,7 @@ impl HttpProfileTransport {
                             Err(ProfileError::authority_rejected())
                         }
                         FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-                            Err(ProfileError(failure))
+                            Err(ProfileError::message(failure))
                         }
                     }
                 })
@@ -780,12 +803,12 @@ impl HttpProfileTransport {
             });
         match attempt {
             Ok(result) => result,
-            Err(_) => Err(ProfileError(failure)),
+            Err(_) => Err(ProfileError::message(failure)),
         }
     }
 }
 
-fn is_exact_authority_rejection(data: &Value) -> bool {
+pub(crate) fn is_exact_authority_rejection(data: &Value) -> bool {
     let Value::Object(fields) = data else {
         return false;
     };
@@ -822,9 +845,9 @@ impl ProfileTransport for HttpProfileTransport {
             .json(&serde_json::json!({}))
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|_| ProfileError("Profile creation pending"))?
+            .map_err(|_| ProfileError::message("Profile creation pending"))?
             .json::<PrepareResponse>()
-            .map_err(|_| ProfileError("Profile creation pending"))?;
+            .map_err(|_| ProfileError::message("Profile creation pending"))?;
         Ok(PreparedProfile {
             expires_at_ms: response.expires_at,
             touch_grass_id: response.touch_grass_id,
@@ -853,7 +876,7 @@ impl ProfileTransport for HttpProfileTransport {
             }))
             .send()
             .and_then(reqwest::blocking::Response::error_for_status)
-            .map_err(|_| ProfileError("Profile creation pending"))?;
+            .map_err(|_| ProfileError::message("Profile creation pending"))?;
         Ok(())
     }
 
@@ -870,15 +893,15 @@ impl ProfileTransport for HttpProfileTransport {
                 "username": touch_grass_id,
             }))
             .send()
-            .map_err(|_| ProfileError("Profile creation pending"))?;
+            .map_err(|_| ProfileError::message("Profile creation pending"))?;
         if matches!(response.status().as_u16(), 400 | 401 | 403 | 404) {
             return Ok(SignInOutcome::NoAccount);
         }
         let response = response
             .error_for_status()
-            .map_err(|_| ProfileError("Profile creation pending"))?
+            .map_err(|_| ProfileError::message("Profile creation pending"))?
             .json::<SignInResponse>()
-            .map_err(|_| ProfileError("Profile creation pending"))?;
+            .map_err(|_| ProfileError::message("Profile creation pending"))?;
         Ok(SignInOutcome::Authenticated(Secret::new(response.token)))
     }
 
@@ -899,7 +922,7 @@ impl ProfileTransport for HttpProfileTransport {
             ),
             "Profile creation pending",
         )?;
-        ensured_profile_authority(&result).ok_or(ProfileError("Profile creation pending"))
+        ensured_profile_authority(&result).ok_or(ProfileError::message("Profile creation pending"))
     }
 
     fn update_display_name(
@@ -972,7 +995,9 @@ mod tests {
 
         fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), ProfileError> {
             if kind == SecretKind::ConvexJwt {
-                return Err(ProfileError("memory-only credential cannot be stored"));
+                return Err(ProfileError::message(
+                    "memory-only credential cannot be stored",
+                ));
             }
             self.0.lock().unwrap().insert(kind, value.clone());
             Ok(())
@@ -1061,7 +1086,7 @@ mod tests {
     impl ProfileTransport for FakeTransport {
         fn prepare(&self) -> Result<PreparedProfile, ProfileError> {
             if self.fail_next.swap(false, Ordering::SeqCst) {
-                return Err(ProfileError("Profile creation pending"));
+                return Err(ProfileError::message("Profile creation pending"));
             }
             Ok(PreparedProfile {
                 expires_at_ms: u64::MAX,
@@ -1101,7 +1126,7 @@ mod tests {
             installation_credential: &Secret,
         ) -> Result<EnsuredProfileAuthority, ProfileError> {
             if installation_credential.expose().len() != 52 {
-                return Err(ProfileError("Active Mac authority unavailable"));
+                return Err(ProfileError::message("Active Mac authority unavailable"));
             }
             self.exchange_count.fetch_add(1, Ordering::SeqCst);
             let jwt = Secret::new(generate_secret(44)?);
@@ -1206,9 +1231,9 @@ mod tests {
                     "Fabien".to_owned(),
                 )))
                 .to_string(),
-                crate::profile_attempt_metric(&Result::<(), ProfileError>::Err(ProfileError(
-                    "cookie credential private path raw response",
-                )))
+                crate::profile_attempt_metric(&Result::<(), ProfileError>::Err(
+                    ProfileError::message("cookie credential private path raw response"),
+                ))
                 .to_owned(),
             ]
         }
@@ -1367,6 +1392,7 @@ mod tests {
         assert!(!is_exact_authority_rejection(&Value::String(
             "authority-rejected".to_owned()
         )));
+        assert!(!ProfileError::message(AUTHORITY_REJECTED_MESSAGE).is_authority_rejected());
     }
 
     #[test]

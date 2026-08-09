@@ -35,13 +35,17 @@ priced evidence, API-equivalent cost stays unavailable while account Observed
 Tokens remain visible. Updating the manifest and releasing the application are
 manual operations.
 
-The Codex scanner uses Standard prices unless private local trace evidence
-proves that a matching turn used the `priority` or `fast` service tier. It then
-uses the model's dated `fastMultiplier`. A Fast request above the published
-long-context threshold uses Standard long-context pricing because OpenAI does
-not support Fast in that range. Missing, malformed, or unmatched trace evidence
-must stay Standard. The scanner stores only the private turn classification in
-its local index; no turn identifier enters the sanitized state or sync payload.
+The Codex scanner uses Standard prices unless a completed response proves that
+a matching turn used the `priority` or `fast` service tier. A Fast request is
+not proof. OpenAI can process that request as Standard and return `default`.
+A missing, malformed, unmatched, or `default` completed response must stay
+Standard. GPT-5.6 returns `priority` when it completes a `priority` or `fast`
+request in Fast mode. For short context, the scanner uses the dated
+`fastMultiplier`. For long context, it uses only the `fastLongContext` rates
+and their own effective dates. An unsupported Fast and long-context
+combination stays unpriced. The scanner stores only the private turn
+classification in its local index. No turn identifier enters the sanitized
+state or sync payload.
 
 A stable fingerprint of the retained Fast evidence invalidates old local
 classifications when trace evidence arrives after a rollout was indexed. The

@@ -72,6 +72,11 @@ export default defineSchema({
       "deviceId",
       "provider",
       "rankingDay",
+    ])
+    .index("by_tokenmaxxer_id_and_provider_and_ranking_day", [
+      "tokenmaxxerId",
+      "provider",
+      "rankingDay",
     ]),
 
   usageCorrectionAudits: defineTable({
