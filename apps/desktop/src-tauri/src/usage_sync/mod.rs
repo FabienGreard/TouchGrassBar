@@ -906,7 +906,22 @@ pub(crate) fn capture_generation_baselines(
             continue;
         }
         aggregate.correction_reason = None;
-        if aggregate.observed_at < requested_activated_at {
+        let abandoned_transfer_usage = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM usage_sync_latest_outbox
+                 WHERE active_generation < ?1
+                   AND provider = ?2
+                   AND ranking_day = ?3
+                   AND queue_state = 'abandoned'
+             )",
+            params![
+                generation,
+                provider_database_value(aggregate.provider),
+                ranking_day
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if aggregate.observed_at < requested_activated_at || abandoned_transfer_usage {
             aggregate.coverage = SyncCoverage::Partial;
         }
         let provider = provider_database_value(aggregate.provider);

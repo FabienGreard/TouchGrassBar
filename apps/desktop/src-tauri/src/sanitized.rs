@@ -5145,6 +5145,41 @@ mod tests {
     }
 
     #[test]
+    fn transferred_generation_keeps_abandoned_same_day_usage_partial() {
+        let now = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(now, 100))),
+            Ok(Some(observed_state(now + TimeDuration::seconds(1), 150))),
+        ]));
+        let core =
+            NativeCore::open_without_launch(&database.0, Arc::new(FixtureClock::new(now)), source)
+                .unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let abandoned = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(abandoned.snapshots()[0].observed_tokens, 100);
+        assert_eq!(abandoned.snapshots()[0].coverage, SyncCoverage::Complete);
+
+        core.activate_usage_sync_generation(2).unwrap();
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        assert!(
+            core.pending_usage_sync_batch(2)
+                .unwrap()
+                .unwrap()
+                .snapshots()
+                .is_empty()
+        );
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots()[0].observed_tokens, 50);
+        assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+    }
+
+    #[test]
     fn transferred_generation_queues_full_totals_after_the_activation_day() {
         let now = test_time();
         let next_day = now + TimeDuration::days(1);
