@@ -829,6 +829,325 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
   );
 });
 
+test("a rollover accepts a zero transfer carryover after activation", async () => {
+  const t = testBackend();
+  const oldCredential = installationCredential("A");
+  const newCredential = installationCredential("B");
+  const profile = await createProfile(t, oldCredential, "Fabien");
+
+  const transferTime = new Date(`${TODAY}T23:59:00.000Z`);
+  vi.setSystemTime(transferTime);
+  await profile.authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: oldCredential,
+    snapshots: [
+      usageSnapshot({
+        observedAt: transferTime.getTime() - 60_000,
+        observedTokens: 100,
+      }),
+    ],
+  });
+  const activeMacActivatedAt = await transferActiveDevice(
+    t,
+    profile.touchGrassId,
+    newCredential,
+    2,
+  );
+
+  vi.setSystemTime(new Date("2026-08-09T00:01:00.000Z"));
+  const marker = usageSnapshot({
+    apiEquivalentCost: null,
+    coverage: "partial",
+    observedAt: activeMacActivatedAt + 30_000,
+    observedTokens: 0,
+    rankingDay: TODAY,
+  });
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: oldCredential,
+      snapshots: [marker],
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 2,
+      installationCredential: newCredential,
+      snapshots: [marker],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 1,
+    },
+  ]);
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 2,
+      installationCredential: newCredential,
+      snapshots: [marker],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "idempotent",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 1,
+    },
+  ]);
+
+  const stored = await t.run(async (ctx) => ({
+    publicUsages: await ctx.db.query("publicUsages").collect(),
+    usageBuckets: await ctx.db.query("usageBuckets").collect(),
+    userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
+  }));
+  expect(stored.usageBuckets).toHaveLength(2);
+  expect(stored.usageBuckets).toContainEqual(
+    expect.objectContaining({
+      apiEquivalentCost: expect.objectContaining({ micros: 1_000 }),
+      observedTokens: 100,
+      provider: "codex",
+      rankingDay: TODAY,
+    }),
+  );
+  expect(stored.usageBuckets).toContainEqual(
+    expect.objectContaining({
+      apiEquivalentCost: null,
+      coverage: "partial",
+      observedAt: activeMacActivatedAt + 30_000,
+      observedTokens: 0,
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 1,
+    }),
+  );
+  expect(stored.userDailyUsage).toContainEqual(
+    expect.objectContaining({
+      apiEquivalentCost: null,
+      observedTokens: 100,
+      provider: "codex",
+      rankingDay: TODAY,
+    }),
+  );
+  const affectedPublicUsages = stored.publicUsages.filter(
+    (usage) => usage.tokenScore === 100,
+  );
+  expect(affectedPublicUsages).toHaveLength(4);
+  expect(
+    affectedPublicUsages.every((usage) => usage.apiEquivalentCost === null),
+  ).toBe(true);
+
+  const currentDay = "2026-08-09";
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 2,
+      installationCredential: newCredential,
+      snapshots: [
+        usageSnapshot({
+          observedAt: Date.now(),
+          observedTokens: 25,
+          rankingDay: currentDay,
+        }),
+      ],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "codex",
+      rankingDay: currentDay,
+      revision: 1,
+    },
+  ]);
+});
+
+test("a rollover commits and retries a partial transfer-day segment", async () => {
+  const t = testBackend();
+  const oldCredential = installationCredential("A");
+  const newCredential = installationCredential("B");
+  const profile = await createProfile(t, oldCredential, "Fabien");
+
+  const acceptedTime = new Date(`${TODAY}T23:57:00.000Z`);
+  vi.setSystemTime(acceptedTime);
+  await profile.authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: oldCredential,
+    snapshots: [
+      usageSnapshot({
+        observedAt: acceptedTime.getTime(),
+        observedTokens: 100,
+      }),
+    ],
+  });
+  const transferTime = new Date(`${TODAY}T23:58:00.000Z`);
+  vi.setSystemTime(transferTime);
+  const activeMacActivatedAt = await transferActiveDevice(
+    t,
+    profile.touchGrassId,
+    newCredential,
+    2,
+  );
+  const segment = usageSnapshot({
+    coverage: "partial",
+    observedAt: activeMacActivatedAt + 60_000,
+    observedTokens: 50,
+    rankingDay: TODAY,
+    revision: 3,
+  });
+
+  vi.setSystemTime(new Date("2026-08-09T00:01:00.000Z"));
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 2,
+      installationCredential: newCredential,
+      snapshots: [segment],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 3,
+    },
+  ]);
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 2,
+      installationCredential: newCredential,
+      snapshots: [segment],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "idempotent",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 3,
+    },
+  ]);
+
+  const stored = await t.run(async (ctx) => ({
+    publicUsages: await ctx.db.query("publicUsages").collect(),
+    usageBuckets: await ctx.db.query("usageBuckets").collect(),
+    userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
+  }));
+  expect(stored.usageBuckets).toContainEqual(
+    expect.objectContaining({
+      apiEquivalentCost: expect.objectContaining({ micros: 1_000 }),
+      coverage: "partial",
+      observedAt: activeMacActivatedAt + 60_000,
+      observedTokens: 50,
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 3,
+    }),
+  );
+  expect(stored.userDailyUsage).toContainEqual(
+    expect.objectContaining({
+      apiEquivalentCost: null,
+      observedTokens: 150,
+      provider: "codex",
+      rankingDay: TODAY,
+    }),
+  );
+  const affectedPublicUsages = stored.publicUsages.filter(
+    (usage) => usage.tokenScore === 150,
+  );
+  expect(affectedPublicUsages).toHaveLength(4);
+  expect(
+    affectedPublicUsages.every((usage) => usage.apiEquivalentCost === null),
+  ).toBe(true);
+});
+
+test("the first Active Mac cannot submit a historical transfer carryover", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const profile = await createProfile(t, credential, "Fabien");
+  vi.setSystemTime(new Date("2026-08-09T00:01:00.000Z"));
+
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({
+          apiEquivalentCost: null,
+          coverage: "partial",
+          observedAt: NOW.getTime(),
+          observedTokens: 0,
+        }),
+      ],
+    }),
+  ).rejects.toThrow("transfer carryover");
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual([]);
+});
+
+test("historical usage rejects every value outside a transfer carryover", async () => {
+  const t = testBackend();
+  const oldCredential = installationCredential("A");
+  const newCredential = installationCredential("B");
+  const profile = await createProfile(t, oldCredential, "Fabien");
+  const transferTime = new Date(`${TODAY}T23:59:00.000Z`);
+  vi.setSystemTime(transferTime);
+  const activeMacActivatedAt = await transferActiveDevice(
+    t,
+    profile.touchGrassId,
+    newCredential,
+    2,
+  );
+  vi.setSystemTime(new Date("2026-08-09T00:01:00.000Z"));
+
+  const validMarker = usageSnapshot({
+    apiEquivalentCost: null,
+    coverage: "partial",
+    observedAt: activeMacActivatedAt,
+    observedTokens: 0,
+    rankingDay: TODAY,
+  });
+  const validSegment = usageSnapshot({
+    coverage: "partial",
+    observedAt: activeMacActivatedAt + 1,
+    observedTokens: 1,
+    rankingDay: TODAY,
+    revision: 2,
+  });
+  const hostileSnapshots: UsageSnapshot[] = [
+    { ...validSegment, rankingDay: "2026-08-07" },
+    { ...validSegment, observedAt: activeMacActivatedAt - 1 },
+    { ...validSegment, coverage: "complete" },
+    {
+      ...validMarker,
+      apiEquivalentCost: {
+        coveragePercent: null,
+        micros: 1,
+        pricingBasis: "openai-api-2026-08-09-v3",
+        quality: "local-only",
+      },
+    },
+    {
+      ...validMarker,
+      correctionReason: "parser-correction",
+      correctionRevision: 1,
+    },
+    { ...validMarker, revision: 2 },
+  ];
+
+  for (const snapshot of hostileSnapshots) {
+    await expect(
+      profile.authenticated.mutation(api.sync.dailyUsage, {
+        activeMacGeneration: 2,
+        installationCredential: newCredential,
+        snapshots: [snapshot],
+      }),
+    ).rejects.toThrow("transfer");
+  }
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual([]);
+});
+
 test("score recomputation ignores more than 1000 old rows", async () => {
   const t = testBackend();
   const credential = installationCredential("A");

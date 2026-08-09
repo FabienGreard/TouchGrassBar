@@ -64,9 +64,19 @@ SQLite transaction. Acknowledgements and safe status changes also update the
 outbox and Sanitized Desktop State atomically. Rust publishes a Revision Notice
 only after the transaction commits.
 
-For issue #26, the implementation selects Pending Usage Snapshots only for the
-current UTC Ranking Day. Day eligibility is an internal policy. Issue #27 can
-expand that policy to the approved current day and previous twenty-nine UTC
+For issue #26, the implementation selects Pending Usage Snapshots for the
+current UTC Ranking Day. It has one bounded exception. If authority activation
+is before UTC midnight and local authority installation is after midnight, an
+abandoned transfer-day snapshot creates one zero-token partial marker for each
+affected Coding Provider. The marker uses the exact server activation time and
+has no cost or correction. If local installation finished before midnight but
+an activation-day partial snapshot is still pending at rollover, the Module
+sends that exact snapshot. It does not change its tokens, cost, correction, or
+revision. A stale zero-token carryover is complete because the server has a
+newer historical revision. The Module removes it. A stale non-zero segment
+rebases and keeps its carryover tag. The Module sends no other historical row.
+It sends the transfer-day carryover before current-day usage. Issue #27 can
+expand the day policy to the approved current day and previous twenty-nine UTC
 days at Profile creation without a change to the external Interface.
 
 ## Dependency seams
@@ -102,4 +112,7 @@ caller sequencing.
 Server transfer can finish before the local Profile runtime installs the new
 authority. A provider observation in this interval cannot supply an exact
 activation baseline. The synchronization Module does not count that
-observation as the baseline. It keeps the later segment partial.
+observation as the baseline. It keeps the later segment partial. If local
+installation crosses UTC midnight, the zero-token transfer marker keeps the
+closed Ranking Day partial without adding unknown usage. If a partial segment
+was already pending, the same persisted row crosses the UTC boundary instead.

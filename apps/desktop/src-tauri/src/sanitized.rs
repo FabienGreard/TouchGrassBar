@@ -5146,15 +5146,38 @@ mod tests {
 
     #[test]
     fn transferred_generation_keeps_abandoned_same_day_usage_partial() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
         let now = test_time();
+        let next_day = now + TimeDuration::days(1);
         let database = TestDatabase::new();
+        let priced_state = |observed_at, observed_tokens, cost| {
+            let mut state = observed_state(observed_at, observed_tokens);
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                ..
+            } = &mut state
+                .provider_mut(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today
+            else {
+                panic!("Codex fixture usage must be current");
+            };
+            *api_equivalent_cost_usd = Some(cost);
+            *api_equivalent_cost_basis = Some("openai-api-2026-08-09-v3".to_owned());
+            *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::Reconciled);
+            state.refresh_combined_usage();
+            state
+        };
         let source = Arc::new(ScriptedRefreshSource::new([
-            Ok(Some(observed_state(now, 100))),
-            Ok(Some(observed_state(now + TimeDuration::seconds(1), 150))),
+            Ok(Some(priced_state(now, 100, 1.0))),
+            Ok(Some(priced_state(now + TimeDuration::seconds(1), 150, 1.5))),
         ]));
-        let core =
-            NativeCore::open_without_launch(&database.0, Arc::new(FixtureClock::new(now)), source)
-                .unwrap();
+        let clock = Arc::new(FixtureClock::new(now));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
         core.activate_usage_sync_generation(1).unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
@@ -5177,6 +5200,102 @@ mod tests {
         let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
         assert_eq!(pending.snapshots()[0].observed_tokens, 50);
         assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(
+            pending.snapshots()[0]
+                .api_equivalent_cost
+                .as_ref()
+                .unwrap()
+                .micros,
+            500_000
+        );
+        let expected_carryover = pending.snapshots()[0].clone();
+
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+        let active_mac_activated_at =
+            u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+        let carryover_count = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(carryover_count, 1);
+        core.shutdown();
+        drop(core);
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            clock,
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                next_day, 25,
+            )))])),
+        )
+        .unwrap();
+        let carryover = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(
+            carryover.snapshots(),
+            std::slice::from_ref(&expected_carryover)
+        );
+        assert!(
+            carryover
+                .mutation_args(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    next_day,
+                )
+                .is_ok()
+        );
+
+        restored.request_refresh(RefreshSource::Manual).unwrap();
+        restored.wait_for_refresh_completion().unwrap();
+        assert_eq!(
+            restored
+                .pending_usage_sync_batch(2)
+                .unwrap()
+                .unwrap()
+                .snapshots(),
+            std::slice::from_ref(&expected_carryover)
+        );
+        restored
+            .acknowledge_usage_sync(
+                &carryover,
+                &[UsageSyncAcknowledgement {
+                    provider: expected_carryover.provider,
+                    ranking_day: expected_carryover.ranking_day.clone(),
+                    revision: expected_carryover.revision,
+                    outcome: AcknowledgementOutcome::Committed,
+                }],
+            )
+            .unwrap();
+
+        restored
+            .install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+        let stored_carryovers = match &*restored.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_carryovers, 0);
+        let current = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(current.snapshots().len(), 1);
+        assert_eq!(
+            current.snapshots()[0].ranking_day,
+            next_day.date().to_string()
+        );
+        assert_eq!(current.snapshots()[0].observed_tokens, 25);
     }
 
     #[test]
@@ -5274,6 +5393,103 @@ mod tests {
             .unwrap();
         assert_eq!(claude.ranking_day, worker_time.date().to_string());
         assert_eq!(claude.observed_tokens, 40);
+    }
+
+    #[test]
+    fn delayed_install_after_rollover_sends_the_transfer_day_partial_marker_first() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let ranking_day_start = test_time();
+        let first_observation =
+            ranking_day_start + TimeDuration::hours(23) + TimeDuration::minutes(58);
+        let activation_time = first_observation + TimeDuration::minutes(1);
+        let install_time = activation_time + TimeDuration::minutes(2);
+        let active_mac_activated_at =
+            u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(first_observation));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(first_observation, 100))),
+            Ok(Some(observed_state(install_time, 25))),
+        ]));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let abandoned = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(abandoned.snapshots()[0].observed_tokens, 100);
+        assert_eq!(abandoned.snapshots()[0].coverage, SyncCoverage::Complete);
+
+        clock.advance(Duration::from_secs(3 * 60));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        let carryover = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(carryover.snapshots().len(), 1);
+        let marker = &carryover.snapshots()[0];
+        assert_eq!(marker.ranking_day, activation_time.date().to_string());
+        assert_eq!(marker.observed_at, active_mac_activated_at);
+        assert_eq!(marker.observed_tokens, 0);
+        assert_eq!(marker.coverage, SyncCoverage::Partial);
+        assert_eq!(marker.api_equivalent_cost, None);
+        assert_eq!(marker.correction_reason, None);
+        assert_eq!(marker.correction_revision, None);
+        let stored_carryovers = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_carryovers, 1);
+        assert!(
+            carryover
+                .mutation_args(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    install_time,
+                )
+                .is_ok()
+        );
+
+        core.acknowledge_usage_sync(
+            &carryover,
+            &[UsageSyncAcknowledgement {
+                provider: marker.provider,
+                ranking_day: marker.ranking_day.clone(),
+                revision: marker.revision,
+                outcome: AcknowledgementOutcome::Committed,
+            }],
+        )
+        .unwrap();
+
+        let stored_carryovers = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_carryovers, 0);
+
+        let current = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(current.snapshots().len(), 1);
+        assert_eq!(
+            current.snapshots()[0].ranking_day,
+            install_time.date().to_string()
+        );
+        assert_eq!(current.snapshots()[0].observed_tokens, 25);
+        assert_eq!(current.snapshots()[0].coverage, SyncCoverage::Complete);
     }
 
     #[test]
@@ -5406,6 +5622,86 @@ mod tests {
         assert_eq!(pending.snapshots()[0].observed_tokens, 30);
         assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
         assert_eq!(pending.snapshots()[0].api_equivalent_cost, None);
+    }
+
+    #[test]
+    fn post_activation_zero_baseline_carries_over_after_rollover() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let activation_time = test_time();
+        let next_day = activation_time + TimeDuration::days(1);
+        let active_mac_activated_at =
+            u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(activation_time));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(1),
+                150,
+            ))),
+            Ok(Some(observed_state(next_day, 25))),
+        ]));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        core.acknowledge_usage_sync(&activation, &[]).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let expected = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(expected.snapshots().len(), 1);
+        assert_eq!(expected.snapshots()[0].revision, 1);
+        assert_eq!(expected.snapshots()[0].observed_tokens, 0);
+        assert_eq!(expected.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(expected.snapshots()[0].api_equivalent_cost, None);
+        assert!(expected.snapshots()[0].observed_at > active_mac_activated_at);
+
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+        let carryover_kind = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT carryover_kind FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(carryover_kind, "pending-segment");
+        let carryover = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(carryover.snapshots(), expected.snapshots());
+        assert!(
+            carryover
+                .mutation_args(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    next_day,
+                )
+                .is_ok()
+        );
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let snapshot = &carryover.snapshots()[0];
+        core.acknowledge_usage_sync(
+            &carryover,
+            &[UsageSyncAcknowledgement {
+                provider: snapshot.provider,
+                ranking_day: snapshot.ranking_day.clone(),
+                revision: snapshot.revision,
+                outcome: AcknowledgementOutcome::Committed,
+            }],
+        )
+        .unwrap();
+        let current = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(current.snapshots().len(), 1);
+        assert_eq!(
+            current.snapshots()[0].ranking_day,
+            next_day.date().to_string()
+        );
+        assert_eq!(current.snapshots()[0].observed_tokens, 25);
     }
 
     #[test]

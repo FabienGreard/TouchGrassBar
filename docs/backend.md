@@ -36,12 +36,37 @@ restores their valid 1-day, 7-day, and 30-day contribution without a new scan.
 A stale provider-setting acknowledgement advances the local revision floor;
 therefore, a late disable or re-enable request cannot restore an older setting.
 
-On same-day Active Mac transfer, the old generation's accepted contribution is frozen and the new generation contributes only its post-transfer segment. Later writes from the old generation fail, earlier Ranking Days are not rewritten, and a known unsynchronized old segment makes the transferred day partial.
+On Active Mac transfer, the old generation's accepted contribution is frozen
+and the new generation contributes only its post-transfer segment. Later writes
+from the old generation fail. Ranking Days before the transfer day are not
+rewritten. A known unsynchronized old segment makes the transfer day partial.
 
 Native records the server-owned activation time. It captures a sanitized
 baseline at installation only when the observation matches that time. Native
 ignores earlier totals. The first later observation becomes a partial baseline.
 Native subtracts compatible tokens and cost for the transfer day.
+
+If authority installation occurs after a UTC rollover, Native does not relabel
+current usage as transfer-day usage. It first sends one tagged transfer-day
+carryover for each affected provider, with a maximum of two carryovers. A
+carryover is either a zero-token partial record or an unacknowledged non-zero
+partial segment that was observed after activation on that UTC day.
+
+The backend accepts this historical exception only from the Active Mac
+generation after the first generation. Its Ranking Day must equal the
+server-owned device activation day and precede the current day. Its coverage
+must be partial, and its observation time must be at or after activation and
+remain within that day. A non-zero segment uses the normal token, cost,
+correction, and revision rules. The zero-token marker must use the exact
+activation time when Native creates it during delayed installation. A first
+post-activation partial baseline can also leave a later zero-token carryover.
+Both zero-token forms must use revision one and no cost or correction. The same
+mutation records the carryover, rebuilds `userDailyUsage` for the transfer day
+with unavailable API-Equivalent Cost, and recomputes the rolling scores.
+A stale zero-token carryover is complete because the server has a newer
+historical revision. Native removes it. A stale non-zero carryover rebases and
+keeps its carryover tag.
+Normal Usage Snapshots remain limited to the current UTC Ranking Day.
 
 ## Usage-contract verification
 

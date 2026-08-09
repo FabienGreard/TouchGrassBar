@@ -26,6 +26,7 @@ use crate::sanitized::{
 };
 
 pub(crate) const MAX_USAGE_SYNC_BATCH: usize = 62;
+const MAX_TRANSFER_DAY_CARRYOVER_MARKERS: usize = 2;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const MAX_LOCAL_VALUE_BYTES: usize = 4_096;
@@ -401,6 +402,37 @@ pub(crate) struct PendingUsageBatch {
     active_mac_generation: u64,
     provider_settings: Option<ProviderSettingsSnapshot>,
     snapshots: Vec<UsageSyncSnapshot>,
+    transfer_day_carryover: Option<TransferDayCarryover>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TransferDayCarryover {
+    ranking_day: String,
+    activated_at: u64,
+    kind: TransferDayCarryoverKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransferDayCarryoverKind {
+    DelayedInstallationMarker,
+    PendingSegment,
+}
+
+impl TransferDayCarryoverKind {
+    fn as_database_value(self) -> &'static str {
+        match self {
+            Self::DelayedInstallationMarker => "delayed-installation-marker",
+            Self::PendingSegment => "pending-segment",
+        }
+    }
+
+    fn from_database_value(value: &str) -> Result<Self, UsageSyncError> {
+        match value {
+            "delayed-installation-marker" => Ok(Self::DelayedInstallationMarker),
+            "pending-segment" => Ok(Self::PendingSegment),
+            _ => Err(UsageSyncError::STORAGE_UNAVAILABLE),
+        }
+    }
 }
 
 impl PendingUsageBatch {
@@ -441,7 +473,11 @@ impl PendingUsageBatch {
             return Err(UsageSyncError::INVALID_VALUE);
         }
         validate_generation(self.active_mac_generation)?;
-        validate_current_day_batch(&self.snapshots, now)?;
+        if let Some(carryover) = self.transfer_day_carryover.as_ref() {
+            validate_transfer_day_carryover_batch(&self.snapshots, carryover, now)?;
+        } else {
+            validate_current_day_batch(&self.snapshots, now)?;
+        }
         Ok(UsageSyncMutationArgs {
             installation_credential,
             active_mac_generation: self.active_mac_generation,
@@ -614,6 +650,20 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
 
          CREATE INDEX IF NOT EXISTS usage_sync_latest_outbox_pending
              ON usage_sync_latest_outbox(active_generation, queue_state, ranking_day, provider);
+
+         CREATE TABLE IF NOT EXISTS usage_sync_transfer_day_carryovers (
+             active_generation INTEGER NOT NULL,
+             provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+             ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+             carryover_kind TEXT NOT NULL CHECK(carryover_kind IN (
+                 'delayed-installation-marker', 'pending-segment'
+             )),
+             PRIMARY KEY(active_generation, provider, ranking_day),
+             FOREIGN KEY(active_generation, provider, ranking_day)
+                 REFERENCES usage_sync_latest_outbox(
+                     active_generation, provider, ranking_day
+                 ) ON DELETE CASCADE
+         ) STRICT;
 
          CREATE TABLE IF NOT EXISTS usage_sync_terminal_conflicts (
              active_generation INTEGER NOT NULL,
@@ -849,10 +899,226 @@ fn current_utc_daily_aggregates_with_corrections(
     Ok(aggregates)
 }
 
+fn abandoned_transfer_day_aggregates(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    ranking_day: &str,
+) -> Result<Vec<DailyUsageAggregate>, UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    validate_ranking_day(ranking_day)?;
+    let generation = to_database_integer(active_mac_generation)?;
+    let mut statement = transaction.prepare(
+        "SELECT aggregates.provider, aggregates.aggregate_json
+         FROM usage_sync_daily_aggregates AS aggregates
+         JOIN usage_sync_latest_outbox AS outbox
+           ON outbox.active_generation = aggregates.active_generation
+          AND outbox.provider = aggregates.provider
+          AND outbox.ranking_day = aggregates.ranking_day
+         WHERE outbox.active_generation < ?1
+           AND outbox.ranking_day = ?2
+           AND outbox.queue_state = 'abandoned'
+           AND outbox.active_generation = (
+               SELECT max(candidate.active_generation)
+               FROM usage_sync_latest_outbox AS candidate
+               WHERE candidate.active_generation < ?1
+                 AND candidate.provider = outbox.provider
+                 AND candidate.ranking_day = ?2
+                 AND candidate.queue_state = 'abandoned'
+           )
+         ORDER BY aggregates.provider
+         LIMIT 2",
+    )?;
+    let rows = statement.query_map(params![generation, ranking_day], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut aggregates = Vec::with_capacity(MAX_TRANSFER_DAY_CARRYOVER_MARKERS);
+    for row in rows {
+        let (provider, aggregate_json) = row?;
+        if aggregate_json.len() > MAX_LOCAL_VALUE_BYTES {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+        let expected_provider = provider_from_database_value(&provider)?;
+        let aggregate: DailyUsageAggregate = serde_json::from_str(&aggregate_json)
+            .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        aggregate
+            .validate()
+            .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        if aggregate.provider != expected_provider || aggregate.ranking_day != ranking_day {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+        aggregates.push(aggregate);
+    }
+    Ok(aggregates)
+}
+
+fn queue_transfer_day_carryover_markers(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    ranking_day: &str,
+    activated_at: u64,
+) -> Result<(), UsageSyncError> {
+    for abandoned in
+        abandoned_transfer_day_aggregates(transaction, active_mac_generation, ranking_day)?
+    {
+        let marker = DailyUsageAggregate {
+            provider: abandoned.provider,
+            ranking_day: ranking_day.to_owned(),
+            evidence_basis: abandoned.evidence_basis,
+            coverage: SyncCoverage::Partial,
+            observed_at: activated_at,
+            observed_tokens: 0,
+            api_equivalent_cost: None,
+            correction_reason: None,
+        };
+        validate_transfer_day_carryover_marker(&marker, ranking_day, activated_at)?;
+        let update = queue_validated_daily_aggregate(transaction, active_mac_generation, marker)?;
+        if !matches!(
+            update,
+            QueueUpdate::Stored {
+                revision: 1,
+                state: QueueState::Pending,
+                ..
+            }
+        ) {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+        let stored = load_outbox_snapshot(
+            transaction,
+            active_mac_generation,
+            abandoned.provider,
+            ranking_day,
+        )?
+        .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)?;
+        validate_delayed_installation_marker_snapshot(&stored, ranking_day, activated_at)
+            .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO usage_sync_transfer_day_carryovers(
+                 active_generation, provider, ranking_day, carryover_kind
+             )
+             SELECT ?1, ?2, ?3, 'delayed-installation-marker'
+             WHERE EXISTS (
+                 SELECT 1 FROM usage_sync_latest_outbox
+                 WHERE active_generation = ?1
+                   AND provider = ?2
+                   AND ranking_day = ?3
+                   AND revision = 1
+                   AND queue_state = 'active'
+             )",
+            params![
+                to_database_integer(active_mac_generation)?,
+                provider_database_value(abandoned.provider),
+                ranking_day
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn link_pending_transfer_day_segments(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    ranking_day: &str,
+    activated_at: u64,
+) -> Result<(), UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    validate_ranking_day(ranking_day)?;
+    validate_safe_integer(activated_at)?;
+    let generation = to_database_integer(active_mac_generation)?;
+    let mut statement = transaction.prepare(
+        "SELECT outbox.provider, outbox.revision, outbox.snapshot_json,
+                outbox.correction_reason, outbox.correction_revision
+         FROM usage_sync_latest_outbox AS outbox
+         WHERE outbox.active_generation = ?1
+           AND outbox.ranking_day = ?2
+           AND outbox.queue_state = 'active'
+           AND NOT EXISTS (
+               SELECT 1
+               FROM usage_sync_terminal_conflicts AS terminal_conflict
+               WHERE terminal_conflict.active_generation = outbox.active_generation
+                 AND terminal_conflict.provider = outbox.provider
+                 AND terminal_conflict.ranking_day = outbox.ranking_day
+                 AND terminal_conflict.revision = outbox.revision
+           )
+         ORDER BY outbox.provider
+         LIMIT 2",
+    )?;
+    let rows = statement.query_map(params![generation, ranking_day], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+        ))
+    })?;
+    for row in rows {
+        let (provider, revision, snapshot_json, correction_reason, correction_revision) = row?;
+        if snapshot_json.len() > MAX_LOCAL_VALUE_BYTES {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+        let expected_provider = provider_from_database_value(&provider)?;
+        let revision = u64::try_from(revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        let snapshot: UsageSyncSnapshot = serde_json::from_str(&snapshot_json)
+            .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        snapshot
+            .validate()
+            .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        if snapshot.provider != expected_provider
+            || snapshot.ranking_day != ranking_day
+            || snapshot.revision != revision
+            || snapshot
+                .correction_reason
+                .map(correction_reason_database_value)
+                != correction_reason.as_deref()
+            || snapshot
+                .correction_revision
+                .map(to_database_integer)
+                .transpose()?
+                != correction_revision
+        {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+        if validate_transfer_day_pending_segment(&snapshot, ranking_day, activated_at).is_err() {
+            continue;
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO usage_sync_transfer_day_carryovers(
+                 active_generation, provider, ranking_day, carryover_kind
+             )
+             SELECT ?1, ?2, ?3, 'pending-segment'
+             WHERE EXISTS (
+                 SELECT 1 FROM usage_sync_latest_outbox AS outbox
+                 WHERE outbox.active_generation = ?1
+                   AND outbox.provider = ?2
+                   AND outbox.ranking_day = ?3
+                   AND outbox.revision = ?4
+                   AND outbox.queue_state = 'active'
+                   AND NOT EXISTS (
+                       SELECT 1
+                       FROM usage_sync_terminal_conflicts AS terminal_conflict
+                       WHERE terminal_conflict.active_generation = outbox.active_generation
+                         AND terminal_conflict.provider = outbox.provider
+                         AND terminal_conflict.ranking_day = outbox.ranking_day
+                         AND terminal_conflict.revision = outbox.revision
+                   )
+             )",
+            params![
+                generation,
+                provider,
+                ranking_day,
+                to_database_integer(revision)?
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 /// Store cumulative provider totals observed at the exact transfer boundary.
 /// A stale pre-transfer total cannot become a baseline. The first later
-/// observation becomes a partial baseline instead. Generation one has no
-/// earlier Active Mac contribution.
+/// observation becomes a partial baseline instead. A delayed installation
+/// after UTC midnight stores a zero-token partial marker for abandoned
+/// transfer-day usage. A partial row that was already pending stays eligible
+/// after rollover. Generation one has no earlier Active Mac contribution.
 pub(crate) fn capture_generation_baselines(
     transaction: &Transaction<'_>,
     active_mac_generation: u64,
@@ -866,13 +1132,13 @@ pub(crate) fn capture_generation_baselines(
     let generation = to_database_integer(active_mac_generation)?;
     let requested_activated_at = offset_date_time_millis(activated_at)?;
     let database_activated_at = to_database_integer(requested_activated_at)?;
-    transaction.execute(
+    let activation_inserted = transaction.execute(
         "INSERT INTO usage_sync_generation_activations(
              active_generation, ranking_day, activated_at
          ) VALUES(?1, ?2, ?3)
          ON CONFLICT(active_generation) DO NOTHING",
         params![generation, ranking_day, database_activated_at],
-    )?;
+    )? == 1;
     let (activation_day, stored_activated_at) = transaction.query_row(
         "SELECT ranking_day, activated_at FROM usage_sync_generation_activations
          WHERE active_generation = ?1",
@@ -890,6 +1156,21 @@ pub(crate) fn capture_generation_baselines(
         return Ok(());
     }
     if activated_at.to_offset(UtcOffset::UTC).date() != now.to_offset(UtcOffset::UTC).date() {
+        if activation_inserted {
+            queue_transfer_day_carryover_markers(
+                transaction,
+                active_mac_generation,
+                &ranking_day,
+                requested_activated_at,
+            )?;
+        } else {
+            link_pending_transfer_day_segments(
+                transaction,
+                active_mac_generation,
+                &ranking_day,
+                requested_activated_at,
+            )?;
+        }
         return Ok(());
     }
     let providers = state
@@ -1169,12 +1450,20 @@ pub(crate) fn queue_current_utc_day_with_corrections(
 pub(crate) fn queue_daily_aggregate(
     transaction: &Transaction<'_>,
     active_mac_generation: u64,
-    mut aggregate: DailyUsageAggregate,
+    aggregate: DailyUsageAggregate,
     now: OffsetDateTime,
+) -> Result<QueueUpdate, UsageSyncError> {
+    validate_current_day_aggregate(&aggregate, now)?;
+    queue_validated_daily_aggregate(transaction, active_mac_generation, aggregate)
+}
+
+fn queue_validated_daily_aggregate(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    mut aggregate: DailyUsageAggregate,
 ) -> Result<QueueUpdate, UsageSyncError> {
     validate_generation(active_mac_generation)?;
     aggregate.validate()?;
-    validate_current_day_aggregate(&aggregate, now)?;
     let queue_state = ensure_generation(transaction, active_mac_generation)?;
     if queue_state == QueueState::Abandoned {
         return Err(UsageSyncError::ABANDONED_GENERATION);
@@ -1328,6 +1617,10 @@ fn prune_expired_usage_sync_rows(
         "DELETE FROM usage_sync_daily_aggregates WHERE ranking_day < ?1",
         [&first_retained_day],
     )?;
+    let transfer_day_carryovers = transaction.execute(
+        "DELETE FROM usage_sync_transfer_day_carryovers WHERE ranking_day < ?1",
+        [&first_retained_day],
+    )?;
     let outbox = transaction.execute(
         "DELETE FROM usage_sync_latest_outbox WHERE ranking_day < ?1",
         [&first_retained_day],
@@ -1422,7 +1715,8 @@ fn prune_expired_usage_sync_rows(
         [],
     )?;
     aggregates
-        .checked_add(outbox)
+        .checked_add(transfer_day_carryovers)
+        .and_then(|rows| rows.checked_add(outbox))
         .and_then(|rows| rows.checked_add(terminal_conflicts))
         .and_then(|rows| rows.checked_add(baselines))
         .and_then(|rows| rows.checked_add(correction_lineage))
@@ -1564,10 +1858,61 @@ pub(crate) fn load_pending_usage_batch(
     connection: &Connection,
     active_mac_generation: u64,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
-    load_pending_usage_batch_for_day(connection, active_mac_generation, None, None)
+    load_pending_usage_batch_for_day(connection, active_mac_generation, None, None, None)
 }
 
-/// Load only the current UTC Ranking Day for issue #26 transport.
+fn load_transfer_day_carryover_kind(
+    connection: &Connection,
+    active_mac_generation: u64,
+    ranking_day: &str,
+    enabled_providers: &BTreeSet<CodingProvider>,
+) -> Result<Option<TransferDayCarryoverKind>, UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    validate_ranking_day(ranking_day)?;
+    let mut statement = connection.prepare(
+        "SELECT carryover.carryover_kind
+         FROM usage_sync_transfer_day_carryovers AS carryover
+         JOIN usage_sync_latest_outbox AS outbox
+           ON outbox.active_generation = carryover.active_generation
+          AND outbox.provider = carryover.provider
+          AND outbox.ranking_day = carryover.ranking_day
+         WHERE carryover.active_generation = ?1
+           AND carryover.ranking_day = ?2
+           AND outbox.queue_state = 'active'
+           AND (
+               (outbox.provider = 'codex' AND ?3 = 1)
+               OR (outbox.provider = 'claude' AND ?4 = 1)
+           )
+           AND NOT EXISTS (
+               SELECT 1
+               FROM usage_sync_terminal_conflicts AS terminal_conflict
+               WHERE terminal_conflict.active_generation = outbox.active_generation
+                 AND terminal_conflict.provider = outbox.provider
+                 AND terminal_conflict.ranking_day = outbox.ranking_day
+                 AND terminal_conflict.revision = outbox.revision
+           )
+         GROUP BY carryover.carryover_kind
+         ORDER BY carryover.carryover_kind
+         LIMIT 2",
+    )?;
+    let mut rows = statement.query(params![
+        to_database_integer(active_mac_generation)?,
+        ranking_day,
+        i64::from(enabled_providers.contains(&CodingProvider::Codex)),
+        i64::from(enabled_providers.contains(&CodingProvider::Claude))
+    ])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let kind = TransferDayCarryoverKind::from_database_value(&row.get::<_, String>(0)?)?;
+    if rows.next()?.is_some() {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    Ok(Some(kind))
+}
+
+/// Load one activation-day carryover before the current UTC Ranking Day.
+/// All other historical rows remain outside the issue #26 transport contract.
 pub(crate) fn load_current_pending_usage_batch(
     connection: &Connection,
     active_mac_generation: u64,
@@ -1576,11 +1921,60 @@ pub(crate) fn load_current_pending_usage_batch(
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
     let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
     validate_ranking_day(&ranking_day)?;
+    let activation = connection
+        .query_row(
+            "SELECT ranking_day, activated_at
+             FROM usage_sync_generation_activations
+             WHERE active_generation = ?1",
+            [to_database_integer(active_mac_generation)?],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    if let Some((activation_day, activated_at)) = activation {
+        validate_ranking_day(&activation_day).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        let activated_at =
+            u64::try_from(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        validate_safe_integer(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        if activation_day < ranking_day
+            && let Some(kind) = load_transfer_day_carryover_kind(
+                connection,
+                active_mac_generation,
+                &activation_day,
+                enabled_providers,
+            )?
+        {
+            let carryover = TransferDayCarryover {
+                ranking_day: activation_day.clone(),
+                activated_at,
+                kind,
+            };
+            let pending = load_pending_usage_batch_for_day(
+                connection,
+                active_mac_generation,
+                Some(&activation_day),
+                Some(enabled_providers),
+                Some(carryover),
+            )?;
+            if let Some(batch) = pending.filter(PendingUsageBatch::has_usage_snapshots) {
+                validate_transfer_day_carryover_batch(
+                    &batch.snapshots,
+                    batch
+                        .transfer_day_carryover
+                        .as_ref()
+                        .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)?,
+                    now,
+                )
+                .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+                return Ok(Some(batch));
+            }
+        }
+    }
     load_pending_usage_batch_for_day(
         connection,
         active_mac_generation,
         Some(&ranking_day),
         Some(enabled_providers),
+        None,
     )
 }
 
@@ -1628,9 +2022,13 @@ fn load_pending_usage_batch_for_day(
     active_mac_generation: u64,
     ranking_day: Option<&str>,
     enabled_providers: Option<&BTreeSet<CodingProvider>>,
+    transfer_day_carryover: Option<TransferDayCarryover>,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
     validate_generation(active_mac_generation)?;
     let provider_settings = load_pending_provider_settings(connection, active_mac_generation)?;
+    let carryover_kind = transfer_day_carryover
+        .as_ref()
+        .map(|carryover| carryover.kind.as_database_value());
     let mut statement = connection.prepare(
         "SELECT provider, ranking_day, revision, snapshot_json,
                 correction_reason, correction_revision
@@ -1638,6 +2036,18 @@ fn load_pending_usage_batch_for_day(
          WHERE active_generation = ?1
            AND queue_state = 'active'
            AND (?2 IS NULL OR ranking_day = ?2)
+           AND (
+               ?3 = 0
+               OR EXISTS (
+                   SELECT 1
+                   FROM usage_sync_transfer_day_carryovers AS carryover
+                   WHERE carryover.active_generation =
+                             usage_sync_latest_outbox.active_generation
+                     AND carryover.provider = usage_sync_latest_outbox.provider
+                     AND carryover.ranking_day = usage_sync_latest_outbox.ranking_day
+                     AND carryover.carryover_kind = ?4
+               )
+           )
            AND NOT EXISTS (
                SELECT 1
                FROM usage_sync_terminal_conflicts AS terminal_conflict
@@ -1651,7 +2061,12 @@ fn load_pending_usage_batch_for_day(
          LIMIT 62",
     )?;
     let rows = statement.query_map(
-        params![to_database_integer(active_mac_generation)?, ranking_day],
+        params![
+            to_database_integer(active_mac_generation)?,
+            ranking_day,
+            i64::from(transfer_day_carryover.is_some()),
+            carryover_kind
+        ],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1715,6 +2130,7 @@ fn load_pending_usage_batch_for_day(
         active_mac_generation,
         provider_settings,
         snapshots,
+        transfer_day_carryover,
     }))
 }
 
@@ -1841,6 +2257,40 @@ pub(crate) fn apply_usage_acknowledgements(
             AcknowledgementOutcome::Committed
             | AcknowledgementOutcome::Idempotent
             | AcknowledgementOutcome::Stale => {
+                let carryover_kind = if acknowledgement.outcome == AcknowledgementOutcome::Stale {
+                    load_submitted_transfer_day_carryover_kind(
+                        transaction,
+                        batch.active_mac_generation,
+                        snapshot,
+                    )?
+                } else {
+                    None
+                };
+                let resolves_zero_carryover = match carryover_kind {
+                    Some(TransferDayCarryoverKind::DelayedInstallationMarker) => {
+                        if snapshot.observed_tokens != 0 {
+                            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+                        }
+                        true
+                    }
+                    Some(TransferDayCarryoverKind::PendingSegment) => snapshot.observed_tokens == 0,
+                    None => false,
+                };
+                transaction.execute(
+                    "DELETE FROM usage_sync_transfer_day_carryovers
+                     WHERE active_generation = ?1
+                       AND provider = ?2
+                       AND ranking_day = ?3
+                       AND EXISTS (
+                           SELECT 1 FROM usage_sync_latest_outbox
+                           WHERE active_generation = ?1
+                             AND provider = ?2
+                             AND ranking_day = ?3
+                             AND revision = ?4
+                             AND queue_state = 'active'
+                       )",
+                    params![generation, provider, snapshot.ranking_day, revision],
+                )?;
                 applied += transaction.execute(
                     "DELETE FROM usage_sync_latest_outbox
                      WHERE active_generation = ?1
@@ -1850,18 +2300,54 @@ pub(crate) fn apply_usage_acknowledgements(
                        AND queue_state = 'active'",
                     params![generation, provider, snapshot.ranking_day, revision],
                 )?;
-                if acknowledgement.outcome == AcknowledgementOutcome::Stale {
+                if acknowledgement.outcome == AcknowledgementOutcome::Stale
+                    && !resolves_zero_carryover
+                {
                     advance_local_revision_floor(
                         transaction,
                         batch.active_mac_generation,
                         snapshot,
                         acknowledgement.revision,
+                        carryover_kind,
                     )?;
                 }
             }
         }
     }
     Ok(applied)
+}
+
+fn load_submitted_transfer_day_carryover_kind(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    snapshot: &UsageSyncSnapshot,
+) -> Result<Option<TransferDayCarryoverKind>, UsageSyncError> {
+    let carryover_kind = transaction
+        .query_row(
+            "SELECT carryover.carryover_kind
+             FROM usage_sync_transfer_day_carryovers AS carryover
+             JOIN usage_sync_latest_outbox AS outbox
+               ON outbox.active_generation = carryover.active_generation
+              AND outbox.provider = carryover.provider
+              AND outbox.ranking_day = carryover.ranking_day
+             WHERE carryover.active_generation = ?1
+               AND carryover.provider = ?2
+               AND carryover.ranking_day = ?3
+               AND outbox.revision = ?4
+               AND outbox.queue_state = 'active'",
+            params![
+                to_database_integer(active_mac_generation)?,
+                provider_database_value(snapshot.provider),
+                snapshot.ranking_day,
+                to_database_integer(snapshot.revision)?
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    carryover_kind
+        .as_deref()
+        .map(TransferDayCarryoverKind::from_database_value)
+        .transpose()
 }
 
 pub(crate) fn apply_provider_settings_acknowledgement(
@@ -1926,12 +2412,16 @@ fn advance_local_revision_floor(
     active_mac_generation: u64,
     submitted_snapshot: &UsageSyncSnapshot,
     server_revision: u64,
+    carryover_kind: Option<TransferDayCarryoverKind>,
 ) -> Result<(), UsageSyncError> {
     let provider = submitted_snapshot.provider;
     let ranking_day = &submitted_snapshot.ranking_day;
     let stored = load_aggregate(transaction, active_mac_generation, provider, ranking_day)?
         .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)?;
     if stored.revision > server_revision {
+        if carryover_kind.is_some() {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
         return Ok(());
     }
     let current_outbox =
@@ -2021,6 +2511,34 @@ fn advance_local_revision_floor(
             queue_state.as_database_value()
         ],
     )?;
+    if let Some(carryover_kind) = carryover_kind {
+        let restored = transaction.execute(
+            "INSERT INTO usage_sync_transfer_day_carryovers(
+                 active_generation, provider, ranking_day, carryover_kind
+             )
+             SELECT ?1, ?2, ?3, ?4
+             WHERE EXISTS (
+                 SELECT 1 FROM usage_sync_latest_outbox
+                 WHERE active_generation = ?1
+                   AND provider = ?2
+                   AND ranking_day = ?3
+                   AND revision = ?5
+                   AND queue_state = 'active'
+             )
+             ON CONFLICT(active_generation, provider, ranking_day) DO UPDATE SET
+                 carryover_kind=excluded.carryover_kind",
+            params![
+                generation,
+                provider_value,
+                ranking_day,
+                carryover_kind.as_database_value(),
+                revision_value
+            ],
+        )?;
+        if restored != 1 {
+            return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+        }
+    }
     Ok(())
 }
 
@@ -2411,6 +2929,124 @@ fn validate_current_day_batch(
     Ok(())
 }
 
+fn validate_transfer_day_carryover_batch(
+    snapshots: &[UsageSyncSnapshot],
+    carryover: &TransferDayCarryover,
+    now: OffsetDateTime,
+) -> Result<(), UsageSyncError> {
+    validate_batch(snapshots)?;
+    if snapshots.len() > MAX_TRANSFER_DAY_CARRYOVER_MARKERS {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    validate_ranking_day(&carryover.ranking_day)?;
+    validate_safe_integer(carryover.activated_at)?;
+    let current_day = now.to_offset(UtcOffset::UTC).date().to_string();
+    if carryover.ranking_day >= current_day {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    for snapshot in snapshots {
+        match carryover.kind {
+            TransferDayCarryoverKind::DelayedInstallationMarker => {
+                validate_delayed_installation_marker_snapshot(
+                    snapshot,
+                    &carryover.ranking_day,
+                    carryover.activated_at,
+                )?;
+            }
+            TransferDayCarryoverKind::PendingSegment => {
+                validate_transfer_day_pending_segment(
+                    snapshot,
+                    &carryover.ranking_day,
+                    carryover.activated_at,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_transfer_day_pending_segment(
+    snapshot: &UsageSyncSnapshot,
+    ranking_day: &str,
+    activated_at: u64,
+) -> Result<(), UsageSyncError> {
+    snapshot.validate()?;
+    if snapshot.observed_tokens == 0 {
+        validate_transfer_day_aggregate(&snapshot.as_aggregate(), ranking_day, activated_at)?;
+        if snapshot.revision != 1
+            || snapshot.api_equivalent_cost.is_some()
+            || snapshot.correction_reason.is_some()
+            || snapshot.correction_revision.is_some()
+        {
+            return Err(UsageSyncError::INVALID_VALUE);
+        }
+        return Ok(());
+    }
+    validate_transfer_day_aggregate(&snapshot.as_aggregate(), ranking_day, activated_at)
+}
+
+fn validate_delayed_installation_marker_snapshot(
+    snapshot: &UsageSyncSnapshot,
+    ranking_day: &str,
+    activated_at: u64,
+) -> Result<(), UsageSyncError> {
+    snapshot.validate()?;
+    validate_transfer_day_carryover_marker(&snapshot.as_aggregate(), ranking_day, activated_at)?;
+    if snapshot.revision != 1 || snapshot.correction_revision.is_some() {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    Ok(())
+}
+
+fn validate_transfer_day_aggregate(
+    aggregate: &DailyUsageAggregate,
+    ranking_day: &str,
+    activated_at: u64,
+) -> Result<(), UsageSyncError> {
+    aggregate.validate()?;
+    validate_ranking_day(ranking_day)?;
+    validate_safe_integer(activated_at)?;
+    let activated_at_time =
+        OffsetDateTime::from_unix_timestamp_nanos(i128::from(activated_at) * 1_000_000)
+            .map_err(|_| UsageSyncError::INVALID_VALUE)?;
+    let observed_at_time =
+        OffsetDateTime::from_unix_timestamp_nanos(i128::from(aggregate.observed_at) * 1_000_000)
+            .map_err(|_| UsageSyncError::INVALID_VALUE)?;
+    if activated_at_time
+        .to_offset(UtcOffset::UTC)
+        .date()
+        .to_string()
+        != ranking_day
+        || observed_at_time
+            .to_offset(UtcOffset::UTC)
+            .date()
+            .to_string()
+            != ranking_day
+        || aggregate.ranking_day != ranking_day
+        || aggregate.coverage != SyncCoverage::Partial
+        || aggregate.observed_at < activated_at
+    {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    Ok(())
+}
+
+fn validate_transfer_day_carryover_marker(
+    aggregate: &DailyUsageAggregate,
+    ranking_day: &str,
+    activated_at: u64,
+) -> Result<(), UsageSyncError> {
+    validate_transfer_day_aggregate(aggregate, ranking_day, activated_at)?;
+    if aggregate.observed_at != activated_at
+        || aggregate.observed_tokens != 0
+        || aggregate.api_equivalent_cost.is_some()
+        || aggregate.correction_reason.is_some()
+    {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    Ok(())
+}
+
 fn validate_current_day_aggregate(
     aggregate: &DailyUsageAggregate,
     now: OffsetDateTime,
@@ -2560,6 +3196,13 @@ fn provider_from_database_value(value: &str) -> Result<CodingProvider, UsageSync
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env, fs,
+        path::PathBuf,
+        process,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use rusqlite::Connection;
     use serde_json::{Value, json};
     use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
@@ -2672,6 +3315,43 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         install_usage_sync_schema(&connection).unwrap();
         connection
+    }
+
+    struct PersistentTestDatabase(PathBuf);
+
+    impl PersistentTestDatabase {
+        fn new(label: &str) -> Self {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            Self(env::temp_dir().join(format!(
+                "touchgrassbar-usage-sync-{label}-{}-{timestamp}.sqlite3",
+                process::id()
+            )))
+        }
+
+        fn connect(&self) -> Connection {
+            let connection = Connection::open(&self.0).unwrap();
+            connection
+                .execute_batch("PRAGMA foreign_keys = ON;")
+                .unwrap();
+            install_usage_sync_schema(&connection).unwrap();
+            connection
+        }
+    }
+
+    impl Drop for PersistentTestDatabase {
+        fn drop(&mut self) {
+            for path in [
+                self.0.clone(),
+                self.0.with_extension("sqlite3-journal"),
+                self.0.with_extension("sqlite3-shm"),
+                self.0.with_extension("sqlite3-wal"),
+            ] {
+                let _ = fs::remove_file(path);
+            }
+        }
     }
 
     fn aggregate(
@@ -3789,6 +4469,319 @@ mod tests {
     }
 
     #[test]
+    fn terminal_or_complete_transfer_day_rows_are_not_linked_as_carryovers() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        let mut partial = aggregate(CodingProvider::Codex, 50, 1_000);
+        partial.coverage = SyncCoverage::Partial;
+        super::queue_daily_aggregate(&transaction, 2, partial, now()).unwrap();
+        super::queue_daily_aggregate(
+            &transaction,
+            2,
+            aggregate(CodingProvider::Claude, 75, 2_000),
+            now(),
+        )
+        .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO usage_sync_terminal_conflicts(
+                     active_generation, provider, ranking_day, revision
+                 ) VALUES(2, 'codex', '2026-08-08', 1)",
+                [],
+            )
+            .unwrap();
+
+        link_pending_transfer_day_segments(&transaction, 2, "2026-08-08", DAY_START_MILLIS)
+            .unwrap();
+        assert_eq!(
+            transaction
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn delayed_installation_does_not_retag_an_existing_non_marker_row() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        super::queue_daily_aggregate(
+            &transaction,
+            1,
+            aggregate(CodingProvider::Codex, 100, 1_000),
+            now(),
+        )
+        .unwrap();
+        activate_generation(&transaction, 2).unwrap();
+        let mut existing = aggregate(CodingProvider::Codex, 50, 2_000);
+        existing.coverage = SyncCoverage::Partial;
+        super::queue_daily_aggregate(&transaction, 2, existing, now()).unwrap();
+
+        assert_eq!(
+            queue_transfer_day_carryover_markers(&transaction, 2, "2026-08-08", DAY_START_MILLIS,),
+            Err(UsageSyncError::STORAGE_UNAVAILABLE)
+        );
+        assert_eq!(
+            transaction
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            load_outbox_snapshot(&transaction, 2, CodingProvider::Codex, "2026-08-08",)
+                .unwrap()
+                .unwrap()
+                .observed_tokens,
+            50
+        );
+    }
+
+    #[test]
+    fn stale_delayed_installation_marker_is_resolved_without_a_higher_revision() {
+        let database = PersistentTestDatabase::new("stale-delayed-marker");
+        let mut connection = database.connect();
+        let next_day = now() + Duration::days(1);
+        let enabled = BTreeSet::from([CodingProvider::Codex]);
+        let transaction = connection.transaction().unwrap();
+        queue_daily_aggregate(
+            &transaction,
+            1,
+            aggregate(CodingProvider::Codex, 100, 1_000),
+        )
+        .unwrap();
+        activate_generation(&transaction, 2).unwrap();
+        capture_generation_baselines(
+            &transaction,
+            2,
+            &state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable),
+            now(),
+            next_day,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let sent = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent.snapshots().len(), 1);
+        assert_eq!(sent.snapshots()[0].revision, 1);
+        assert_eq!(sent.snapshots()[0].observed_tokens, 0);
+        assert_eq!(
+            sent.transfer_day_carryover.as_ref().unwrap().kind,
+            TransferDayCarryoverKind::DelayedInstallationMarker
+        );
+        let stale = acknowledgement(&sent.snapshots()[0], AcknowledgementOutcome::Stale, 3);
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &sent, &[stale]).unwrap(),
+            1
+        );
+        transaction.commit().unwrap();
+        drop(connection);
+
+        let connection = database.connect();
+        assert!(
+            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn stale_zero_pending_segment_is_resolved_without_a_higher_revision() {
+        let database = PersistentTestDatabase::new("stale-zero-pending-segment");
+        let mut connection = database.connect();
+        let next_day = now() + Duration::days(1);
+        let enabled = BTreeSet::from([CodingProvider::Codex]);
+        let transaction = connection.transaction().unwrap();
+        let mut marker = aggregate(CodingProvider::Codex, 0, 2_000);
+        marker.coverage = SyncCoverage::Partial;
+        queue_validated_daily_aggregate(&transaction, 2, marker).unwrap();
+        transaction
+            .execute(
+                "INSERT INTO usage_sync_generation_activations(
+                     active_generation, ranking_day, activated_at
+                 ) VALUES(2, '2026-08-08', ?1)",
+                [to_database_integer(DAY_START_MILLIS + 1_000).unwrap()],
+            )
+            .unwrap();
+        link_pending_transfer_day_segments(&transaction, 2, "2026-08-08", DAY_START_MILLIS + 1_000)
+            .unwrap();
+        transaction.commit().unwrap();
+
+        let sent = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent.snapshots().len(), 1);
+        assert_eq!(sent.snapshots()[0].revision, 1);
+        assert_eq!(sent.snapshots()[0].observed_tokens, 0);
+        assert_eq!(
+            sent.transfer_day_carryover.as_ref().unwrap().kind,
+            TransferDayCarryoverKind::PendingSegment
+        );
+        let stale = acknowledgement(&sent.snapshots()[0], AcknowledgementOutcome::Stale, 3);
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &sent, &[stale]).unwrap(),
+            1
+        );
+        transaction.commit().unwrap();
+        drop(connection);
+
+        let connection = database.connect();
+        assert!(
+            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn stale_nonzero_pending_segments_keep_their_tag_and_retry_after_restart() {
+        let database = PersistentTestDatabase::new("stale-nonzero-pending-segments");
+        let mut connection = database.connect();
+        let next_day = now() + Duration::days(1);
+        let enabled = enabled_providers();
+        let transaction = connection.transaction().unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            let mut segment = aggregate(provider, 50, 2_000);
+            segment.coverage = SyncCoverage::Partial;
+            queue_validated_daily_aggregate(&transaction, 2, segment).unwrap();
+        }
+        transaction
+            .execute(
+                "INSERT INTO usage_sync_generation_activations(
+                     active_generation, ranking_day, activated_at
+                 ) VALUES(2, '2026-08-08', ?1)",
+                [to_database_integer(DAY_START_MILLIS + 1_000).unwrap()],
+            )
+            .unwrap();
+        link_pending_transfer_day_segments(&transaction, 2, "2026-08-08", DAY_START_MILLIS + 1_000)
+            .unwrap();
+        transaction.commit().unwrap();
+
+        let sent = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sent.snapshots().len(), 2);
+        assert_eq!(
+            sent.transfer_day_carryover.as_ref().unwrap().kind,
+            TransferDayCarryoverKind::PendingSegment
+        );
+        let stale = sent
+            .snapshots()
+            .iter()
+            .map(|snapshot| acknowledgement(snapshot, AcknowledgementOutcome::Stale, 3))
+            .collect::<Vec<_>>();
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &sent, &stale).unwrap(),
+            2
+        );
+        transaction.commit().unwrap();
+        drop(connection);
+
+        let mut connection = database.connect();
+        let retry = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.snapshots().len(), 2);
+        assert!(
+            retry
+                .snapshots()
+                .iter()
+                .all(|snapshot| snapshot.revision == 4 && snapshot.observed_tokens == 50)
+        );
+        assert_eq!(
+            retry.transfer_day_carryover.as_ref().unwrap().kind,
+            TransferDayCarryoverKind::PendingSegment
+        );
+        retry
+            .mutation_args(INSTALLATION_CREDENTIAL, next_day)
+            .unwrap();
+
+        let terminal = retry
+            .snapshots()
+            .iter()
+            .map(|snapshot| {
+                acknowledgement(
+                    snapshot,
+                    match snapshot.provider {
+                        CodingProvider::Codex => AcknowledgementOutcome::Committed,
+                        CodingProvider::Claude => AcknowledgementOutcome::Idempotent,
+                    },
+                    4,
+                )
+            })
+            .collect::<Vec<_>>();
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &retry, &terminal).unwrap(),
+            2
+        );
+        transaction.commit().unwrap();
+        assert!(
+            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn empty_current_day_queue_prunes_rows_older_than_sixty_utc_days() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
@@ -3824,6 +4817,14 @@ mod tests {
                 )
                 .unwrap();
         }
+        transaction
+            .execute(
+                "INSERT INTO usage_sync_transfer_day_carryovers(
+                     active_generation, provider, ranking_day, carryover_kind
+                 ) VALUES(1, 'codex', ?1, 'pending-segment')",
+                [expired_at.date().to_string()],
+            )
+            .unwrap();
         transaction.commit().unwrap();
 
         let transaction = connection.transaction().unwrap();
@@ -3852,6 +4853,16 @@ mod tests {
             assert_eq!(first_day, first_retained_day);
             assert_eq!(last_day, "2026-08-08");
         }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
         let activations = connection
             .prepare(
                 "SELECT active_generation FROM usage_sync_generation_activations
@@ -4047,6 +5058,7 @@ mod tests {
                 1,
                 None,
             )],
+            transfer_day_carryover: None,
         };
         assert!(batch.mutation_args(INSTALLATION_CREDENTIAL, now()).is_ok());
         assert!(matches!(

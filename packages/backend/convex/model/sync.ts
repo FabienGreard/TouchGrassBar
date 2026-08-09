@@ -38,11 +38,13 @@ type CorrectionLineage = {
 
 // One initial generation plus the transfer policy limit of three per hour.
 const MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY = 73;
+const MAX_TRANSFER_DAY_CARRYOVERS = 2;
 
 async function upsertDailyUsage(
   ctx: MutationCtx,
   tokenmaxxerId: GenericId<"tokenmaxxers">,
   snapshot: UsageSnapshot,
+  costUnavailable: boolean,
 ) {
   const segments = await ctx.db
     .query("usageBuckets")
@@ -72,7 +74,7 @@ async function upsertDailyUsage(
     )
     .unique();
   const values = {
-    apiEquivalentCost: dailyUsage.apiEquivalentCost,
+    apiEquivalentCost: costUnavailable ? null : dailyUsage.apiEquivalentCost,
     observedTokens: dailyUsage.tokenScore,
     updatedAt: Date.now(),
   };
@@ -115,10 +117,57 @@ function assertProviderSettingsRevision(revision: number) {
   }
 }
 
-function validateBatch(snapshots: UsageSnapshot[], today: string, now: number) {
+function assertTransferDayCarryover(
+  snapshot: UsageSnapshot,
+  device: Doc<"devices">,
+  today: string,
+  now: number,
+) {
+  if (
+    !Number.isSafeInteger(device.createdAt) ||
+    device.createdAt < 0 ||
+    device.generation <= 1 ||
+    snapshot.rankingDay !== rankingDayAt(device.createdAt) ||
+    snapshot.rankingDay >= today ||
+    snapshot.coverage !== "partial" ||
+    snapshot.observedAt < device.createdAt
+  ) {
+    throw new Error(
+      "a historical snapshot must be an Active Mac transfer carryover",
+    );
+  }
+  assertUsageSnapshot(snapshot, snapshot.rankingDay, now);
+  if (
+    snapshot.observedTokens === 0 &&
+    (snapshot.apiEquivalentCost !== null ||
+      snapshot.correctionReason !== null ||
+      snapshot.correctionRevision !== null ||
+      snapshot.revision !== 1)
+  ) {
+    throw new Error(
+      "a zero-token transfer carryover must use revision one and have no cost or correction",
+    );
+  }
+}
+
+function validateBatch(
+  snapshots: UsageSnapshot[],
+  device: Doc<"devices">,
+  today: string,
+  now: number,
+) {
   const keys = new Set<string>();
+  let transferDayCarryovers = 0;
   for (const snapshot of snapshots) {
-    assertUsageSnapshot(snapshot, today, now);
+    if (snapshot.rankingDay === today) {
+      assertUsageSnapshot(snapshot, today, now);
+    } else {
+      assertTransferDayCarryover(snapshot, device, today, now);
+      transferDayCarryovers += 1;
+      if (transferDayCarryovers > MAX_TRANSFER_DAY_CARRYOVERS) {
+        throw new Error("sync contains too many Active Mac transfer carryovers");
+      }
+    }
     const key = `${snapshot.provider}:${snapshot.rankingDay}`;
     if (keys.has(key)) {
       throw new Error("sync must contain at most one snapshot per provider and Ranking Day");
@@ -351,6 +400,7 @@ async function commitSnapshot(
   tokenmaxxerId: GenericId<"tokenmaxxers">,
   deviceId: GenericId<"devices">,
   plan: SnapshotPlan,
+  costUnavailable: boolean,
 ) {
   const { correctionAudit, existing, snapshot } = plan;
   const lineage = snapshotCorrectionLineage(snapshot);
@@ -396,7 +446,7 @@ async function commitSnapshot(
       tokenmaxxerId,
     });
   }
-  await upsertDailyUsage(ctx, tokenmaxxerId, snapshot);
+  await upsertDailyUsage(ctx, tokenmaxxerId, snapshot, costUnavailable);
 }
 
 export async function applyUsageSnapshots(
@@ -420,13 +470,19 @@ export async function applyUsageSnapshots(
     key: `${tokenmaxxer._id}:${device._id}:${activeMacGeneration}`,
     throws: true,
   });
-  validateBatch(snapshots, today, now);
+  validateBatch(snapshots, device, today, now);
   const plans = await planSnapshots(ctx, device._id, snapshots);
   const committed = plans.filter(
     ({ acknowledgement }) => acknowledgement.outcome === "committed",
   );
   for (const plan of committed) {
-    await commitSnapshot(ctx, tokenmaxxer._id, device._id, plan);
+    await commitSnapshot(
+      ctx,
+      tokenmaxxer._id,
+      device._id,
+      plan,
+      plan.snapshot.rankingDay !== today,
+    );
   }
   if (committed.length > 0) {
     const syncedAt = Date.now();
