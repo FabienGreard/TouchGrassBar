@@ -34,3 +34,14 @@ tag is available.
 
 Do not edit or delete an official fixture. Add a fixture for the next release
 instead.
+
+For a feature that changes persisted SQLite state, follow the module ownership
+and schema change checklist in
+[`docs/adr/0017-coordinate-forward-sqlite-compatibility.md`](../../../../../../docs/adr/0017-coordinate-forward-sqlite-compatibility.md).
+The release procedure is in [`docs/release.md`](../../../../../../docs/release.md).
+
+The release workflow and its evidence use the exact Rust test prefix
+`database::tests::release_compatibility::`. If the test module moves, update
+the prefix in `.github/workflows/release.yml` and `scripts/release-contract.ts`
+together. Confirm the new prefix with `cargo test --manifest-path
+apps/desktop/src-tauri/Cargo.toml --lib -- --list`.

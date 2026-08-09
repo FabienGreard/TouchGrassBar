@@ -113,7 +113,9 @@ bun scripts/generate-database-fixtures.ts --check
 
 The check validates every database and manifest hash. It also compares each
 official `sourceCommit` with its local Git tag when that tag is available. CI
-runs the same check.
+runs the same check. The complete fixture lifecycle and the schema change
+checklist are linked from
+[`apps/desktop/src-tauri/tests/fixtures/releases/README.md`](../apps/desktop/src-tauri/tests/fixtures/releases/README.md).
 
 After the automated preview passes and the mandatory administrator-bypass
 check is complete, use the execution command printed by the script. The script

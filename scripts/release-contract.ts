@@ -315,7 +315,7 @@ function createDatabaseCompatibilityEvidence({
     })),
     verification: {
       result: "PASS" as const,
-      test: "database::release_compatibility::" as const,
+      test: "database::tests::release_compatibility::" as const,
     },
     redaction: {
       private_paths: "ABSENT" as const,
