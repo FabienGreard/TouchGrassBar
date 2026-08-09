@@ -63,7 +63,7 @@ describe("production landing contract", () => {
       "Most used",
       "GPT 5.6 Sol",
       "Leaderboard",
-      "Global Doomerboard",
+      "Global Leaderboard",
       "Prompts and provider data stay on your Mac",
       "See who burned the most tokens and who still remembers daylight.",
       "PROMPT ENJOYER",
@@ -73,6 +73,9 @@ describe("production landing contract", () => {
       "Vibe code alone.",
       "Tokenmaxx together.",
       "Add your friends.",
+      "Compare token usage.",
+      "Public Token Usage",
+      "Lives in your menu bar. See your limits and compare your usage on the leaderboard.",
       "Download for macOS",
       "Drag to install",
       "Applications",
@@ -82,6 +85,7 @@ describe("production landing contract", () => {
     expect(markup).not.toContain("Step 1 of 3");
     expect(markup).not.toContain("Privacy boundary");
     expect(markup).not.toContain("No browser account.");
+    expect(markup).not.toContain("Token Score");
   });
 
   test("marks conversion and outbound links for analytics", () => {
@@ -116,6 +120,12 @@ describe("production landing contract", () => {
     );
 
     expect(landingSource).toContain('rel="canonical"');
+    expect(landingSource).toContain(
+      'const title = "TouchGrassBar — Codex & Claude Usage in Your Menu Bar"',
+    );
+    expect(landingSource).toContain(
+      "See your Codex and Claude usage limits in your Mac menu bar. Compare your usage on the leaderboard",
+    );
     expect(landingSource).toContain('property="og:image"');
     expect(landingSource).toContain('new URL("/og.jpg", siteUrl)');
     expect(landingSource).toContain('content="image/jpeg"');
@@ -125,6 +135,7 @@ describe("production landing contract", () => {
     expect(llmsText).toContain("\n> TouchGrassBar is an open-source macOS menu bar app");
     expect(llmsText.match(/^## /gm)).toEqual(["## "]);
     expect(llmsText).toContain("## Primary links");
+    expect(llmsText).not.toContain("Token Score");
     expect(robotsText).toContain("Sitemap: https://touchgrassbar.com/sitemap.xml");
     expect(sitemapText).toContain("<loc>https://touchgrassbar.com/</loc>");
   });

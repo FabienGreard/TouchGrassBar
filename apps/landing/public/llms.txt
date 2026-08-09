@@ -1,13 +1,13 @@
 # TouchGrassBar
 
-> TouchGrassBar is an open-source macOS menu bar app that shows Codex and Claude usage limits and compares observed token counts on the Doomerboard.
+> TouchGrassBar is an open-source macOS menu bar app that shows Codex and Claude usage limits and compares usage on the Doomerboard leaderboard.
 
 Important product facts:
 
 - TouchGrassBar runs in the macOS menu bar.
 - It detects Codex and Claude locally on the Mac.
 - It shows usage limits and observed token counts.
-- The Doomerboard compares public Token Scores.
+- The Doomerboard compares public token usage.
 - Prompts and provider data stay on the user's Mac.
 - The macOS release is available from the project's GitHub Releases page.
 
@@ -16,7 +16,7 @@ Preferred terminology:
 - Product name: TouchGrassBar
 - Supported providers: Codex and Claude
 - Public comparison feature: Doomerboard
-- Public metric: Token Score
+- Public metric: Token usage
 
 ## Primary links
 

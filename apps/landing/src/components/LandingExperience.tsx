@@ -47,9 +47,9 @@ type ProductSpecimenStyle = CSSProperties & {
 
 const GLOBAL_ROWS: DoomerboardRow[] = [
   { displayName: "laura", note: "ABSOLUTELY FINE", rank: 1, tokenScore: "18.2M", touchGrassId: "#TG-4COLD7" },
-  { displayName: "Fabien", note: "PROMPT ENJOYER", rank: 2, tokenScore: "12.8M", touchGrassId: "#TG-7K4P9D" },
+  { displayName: "nora", note: "PROMPT ENJOYER", rank: 2, tokenScore: "12.8M", touchGrassId: "#TG-NULL77" },
   { displayName: "max", note: "STILL ONLINE", rank: 3, tokenScore: "9.1M", touchGrassId: "#TG-BURN42" },
-  { displayName: "nora", rank: 4, tokenScore: "7.8M", touchGrassId: "#TG-NULL77" },
+  { displayName: "jules", rank: 4, tokenScore: "7.8M", touchGrassId: "#TG-BRANCH4" },
   { displayName: "eli", rank: 5, tokenScore: "6.4M", touchGrassId: "#TG-LOOP55" },
   { displayName: "mia", rank: 6, tokenScore: "4.9M", touchGrassId: "#TG-DIM420" },
   { displayName: "theo", rank: 7, tokenScore: "3.8M", touchGrassId: "#TG-GRASS7" },
@@ -180,8 +180,8 @@ function DoomerboardSurface() {
       <DoomerboardToolbar
         audience="global"
         currentProfile={{
-          displayName: "Fabien",
-          touchGrassId: "#TG-7K4P9D",
+          displayName: "nora",
+          touchGrassId: "#TG-NULL77",
         }}
         onAudienceChange={noOp}
         onCopyCurrentProfile={noOp}
@@ -200,9 +200,9 @@ function DoomerboardSurface() {
 
 function DoomerboardScoreboard() {
   return (
-    <section className="d-scoreboard-showcase" aria-label="Global Doomerboard highlights">
+    <section className="d-scoreboard-showcase" aria-label="Global leaderboard highlights">
       <header>
-        <strong><span aria-hidden="true" />Global Doomerboard</strong>
+        <strong><span aria-hidden="true" />Global Leaderboard</strong>
         <small>Today · Combined</small>
       </header>
       <ol>
@@ -219,7 +219,7 @@ function DoomerboardScoreboard() {
         ))}
       </ol>
       <footer>
-        <span>Public Token Scores</span>
+        <span>Public Token Usage</span>
         <span>Prompts and provider data stay on your Mac</span>
       </footer>
     </section>
@@ -300,7 +300,7 @@ function InviteVariantD() {
         <span>“The hallucination compiles.”</span>
         <span>“No AI was harmed writing this.”</span>
       </div>
-      <header><h2>Vibe code alone.<br /><em>Tokenmaxx together.</em></h2><p>Add your friends. Compare Token Scores. Keep every prompt private.</p><a className="d-macos-download" data-analytics-event="download clicked" data-analytics-placement="invite" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a></header>
+      <header><h2>Vibe code alone.<br /><em>Tokenmaxx together.</em></h2><p>Add your friends. Compare token usage. Keep every prompt private.</p><a className="d-macos-download" data-analytics-event="download clicked" data-analytics-placement="invite" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a></header>
     </div>
   );
 }
@@ -339,7 +339,7 @@ function DownloadSection() {
       <div className="d-release-copy">
         <span>Ready when your Mac is</span>
         <h2><span>A tiny monument</span><span>to your token problem.</span></h2>
-        <p>See how your Codex and Claude Token Scores rank with other Tokenmaxxers.</p>
+        <p>See how your Codex and Claude token usage compares with other Tokenmaxxers.</p>
         <a className="d-macos-download compact" data-analytics-event="download clicked" data-analytics-placement="release" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
       </div>
       <div className="d-release-install" aria-label="Install TouchGrassBar in Applications">
@@ -377,7 +377,7 @@ export default function LandingExperience({ initialGardenTime }: LandingExperien
           <div className="d-hero-copy">
             <span>Built for Codex & Claude</span>
             <h1><span data-garden-copy-line="0" suppressHydrationWarning>{heroCopy[0]}</span><br /><span data-garden-copy-line="1" suppressHydrationWarning>{heroCopy[1]}</span><br /><em data-garden-copy-line="2" suppressHydrationWarning>{heroCopy[2]}</em></h1>
-            <p>Lives in your menu bar. See your limits and compare Observed Tokens on the Doomerboard.</p>
+            <p>Lives in your menu bar. See your limits and compare your usage on the leaderboard.</p>
             <a className="d-macos-download" data-analytics-event="download clicked" data-analytics-placement="hero" data-download-link href={downloadFallbackUrl}><img alt="" src={appleLogo} />Download for macOS</a>
           </div>
           <ProductPanel />
@@ -396,7 +396,7 @@ export default function LandingExperience({ initialGardenTime }: LandingExperien
       <DownloadSection />
 
       <footer className="d-footer">
-        <div className="d-footer-brand"><SiteBrand loading="lazy" reversed /><span>Open Source. Public score. Private work.</span></div>
+        <div className="d-footer-brand"><SiteBrand loading="lazy" reversed /><span>Open Source. Public usage. Private work.</span></div>
         <nav aria-label="Project links"><a data-analytics-event="outbound link clicked" data-analytics-placement="github" href="https://github.com/FabienGreard/TouchGrassBar" rel="noreferrer" target="_blank"><img alt="" src={githubLogo} /><span>Star on GitHub</span></a><a data-analytics-event="outbound link clicked" data-analytics-placement="x" href="https://x.com/FabienGreard" rel="noreferrer" target="_blank"><img alt="" src={xLogo} /><span>@FabienGreard</span></a></nav>
       </footer>
     </main>

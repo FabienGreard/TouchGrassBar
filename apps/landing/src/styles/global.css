@@ -32,6 +32,26 @@ body {
   overflow-x: hidden;
 }
 
+.direction-d :is(
+  .d-brand,
+  .d-header-download,
+  .d-macos-download,
+  .product-panel-preview,
+  .d-scoreboard-showcase,
+  .d-invite-note-rain,
+  .d-setup-ledger,
+  .d-release-install,
+  img,
+  svg
+) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.direction-d img {
+  -webkit-user-drag: none;
+}
+
 @layer base {
   body,
   button,
@@ -92,10 +112,6 @@ body {
   width: var(--product-specimen-width);
   transform: scale(var(--product-specimen-scale));
   transform-origin: top left;
-}
-
-html.garden-time-pending .d-garden-hero {
-  visibility: hidden;
 }
 
 .product-panel-preview {
