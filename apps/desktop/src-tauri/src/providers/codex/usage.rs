@@ -44,7 +44,7 @@ const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const ROLLOUT_PARSER_VERSION: i64 = 9;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
-pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 4;
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 5;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -499,13 +499,6 @@ fn pricing_catalog_entry(
         .copied()
         .find(|entry| entry.applies_to(day))
         .ok_or(PricingLookupFailure::MissingApplicablePrice)
-}
-
-fn supports_fast_pricing(model: &str, day: Date) -> bool {
-    pricing_manifest()
-        .and_then(|manifest| pricing_catalog_entry(manifest, model, day).ok())
-        .and_then(|entry| entry.fast_multiplier)
-        .is_some()
 }
 
 #[cfg(test)]
@@ -1377,6 +1370,11 @@ fn mark_model_day_incomplete(
     row.observed_through = row.observed_through.max(timestamp);
 }
 
+struct FastTurnIndex<'a> {
+    referenced_turn_ids: &'a mut BTreeSet<String>,
+    turns: &'a BTreeMap<String, Option<String>>,
+}
+
 fn process_index_line(
     line: &[u8],
     cutoff: Date,
@@ -1384,7 +1382,7 @@ fn process_index_line(
     record_ordinal: u64,
     state: &mut RolloutScanState,
     rows: &mut BTreeMap<ModelDayKey, ModelDayDelta>,
-    fast_turns: &BTreeMap<String, Option<String>>,
+    fast_turn_index: &mut FastTurnIndex<'_>,
 ) -> IndexLineOutcome {
     if line.len() > MAX_ROLLOUT_LINE_BYTES {
         debug_parser_failure("line_too_large", None);
@@ -1522,8 +1520,14 @@ fn process_index_line(
             {
                 return IndexLineOutcome::Processed(true);
             }
+            if let Some(turn_id) = pricing_turn_id {
+                fast_turn_index
+                    .referenced_turn_ids
+                    .insert(turn_id.to_owned());
+            }
             match delta.and_then(|delta| {
-                let fast_turn = pricing_turn_id.and_then(|turn_id| fast_turns.get(turn_id));
+                let fast_turn =
+                    pricing_turn_id.and_then(|turn_id| fast_turn_index.turns.get(turn_id));
                 let pricing_mode = if fast_turn.is_some() {
                     PricingMode::Fast
                 } else {
@@ -1531,7 +1535,6 @@ fn process_index_line(
                 };
                 let pricing_model = fast_turn
                     .and_then(|model| model.as_deref())
-                    .filter(|model| supports_fast_pricing(model, day))
                     .or(state.active_model.as_deref());
                 add_model_day_delta(rows, timestamp, pricing_model, delta, pricing_mode)
             }) {
@@ -1739,9 +1742,28 @@ fn ensure_index_schema(
                pricing_fingerprint TEXT,
                PRIMARY KEY (path, day),
                FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS codex_usage_file_turns (
+               path TEXT NOT NULL,
+               turn_id TEXT NOT NULL,
+               PRIMARY KEY (path, turn_id),
+               FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+             );
+             CREATE TABLE IF NOT EXISTS codex_usage_fast_turns (
+               turn_id TEXT PRIMARY KEY NOT NULL,
+               model TEXT
              );",
         )
         .map_err(|_| ())?;
+    if source_version > 0 && source_version < 5 {
+        transaction
+            .execute_batch(
+                "DELETE FROM codex_usage_files;
+                 DELETE FROM codex_usage_fast_turns;
+                 DELETE FROM codex_usage_index_meta WHERE key = 'fast_turn_fingerprint';",
+            )
+            .map_err(|_| ())?;
+    }
     let file_columns = table_columns(&transaction, "codex_usage_files")?;
     if !file_columns.iter().any(|column| column == "active_turn_id") {
         transaction
@@ -1836,6 +1858,13 @@ fn ensure_index_schema(
             "CREATE INDEX IF NOT EXISTS codex_usage_unpriced_model_days
              ON codex_usage_file_model_days(day, model, cache_write_input_tokens)
              WHERE cost_usd IS NULL",
+            [],
+        )
+        .map_err(|_| ())?;
+    transaction
+        .execute(
+            "CREATE INDEX IF NOT EXISTS codex_usage_file_turns_by_turn_id
+             ON codex_usage_file_turns(turn_id)",
             [],
         )
         .map_err(|_| ())?;
@@ -2485,6 +2514,7 @@ fn commit_file_progress(
     connection: &Connection,
     path: &str,
     cursor: &FileCursor,
+    turn_ids: BTreeSet<String>,
     rows: BTreeMap<ModelDayKey, ModelDayDelta>,
 ) -> Result<(), ()> {
     let manifest = pricing_manifest();
@@ -2572,6 +2602,15 @@ fn commit_file_progress(
             ],
         )
         .map_err(|_| ())?;
+    for turn_id in turn_ids {
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO codex_usage_file_turns(path, turn_id)
+                 VALUES(?1, ?2)",
+                params![path, turn_id],
+            )
+            .map_err(|_| ())?;
+    }
     let mut file_days = BTreeMap::<Date, FileDayDelta>::new();
     for (key, delta) in rows {
         let cost = manifest.and_then(|manifest| {
@@ -2791,6 +2830,7 @@ fn index_file(
         .map_err(|_| ())?;
     let mut reader = BufReader::new(file);
     let mut rows = BTreeMap::new();
+    let mut turn_ids = BTreeSet::new();
     let mut parser_complete = !cursor.completion_state.has_parser_error()
         && cursor.completion_state != FileCompletionState::DiscardingOverlongLine;
     let mut discarding_overlong_line =
@@ -2849,6 +2889,10 @@ fn index_file(
             cursor.parsed_offset = cursor.parsed_offset.checked_add(bytes).ok_or(())?;
         } else {
             let record_ordinal = cursor.parser_state.record_ordinal;
+            let mut fast_turn_index = FastTurnIndex {
+                referenced_turn_ids: &mut turn_ids,
+                turns: context.fast_turns,
+            };
             match process_index_line(
                 &line,
                 context.cutoff,
@@ -2856,7 +2900,7 @@ fn index_file(
                 record_ordinal,
                 &mut cursor.parser_state,
                 &mut rows,
-                context.fast_turns,
+                &mut fast_turn_index,
             ) {
                 IndexLineOutcome::Processed(processed) => {
                     cursor.parser_state.record_ordinal =
@@ -2893,7 +2937,7 @@ fn index_file(
     };
     cursor.deferred_until_day = deferred_until_day;
     cursor.parsed_prefix_anchor = parsed_prefix_anchor(path, cursor.parsed_offset)?;
-    commit_file_progress(connection, &path_value, &cursor, rows)?;
+    commit_file_progress(connection, &path_value, &cursor, turn_ids, rows)?;
     Ok(cursor.parsed_offset == size || is_deferred)
 }
 
@@ -3070,6 +3114,18 @@ fn index_local_usage_at(
     index_local_usage_with_budget(database_path, home, now, DEFAULT_SCAN_BUDGET)
 }
 
+fn load_stored_fast_turns(connection: &Connection) -> Result<BTreeMap<String, Option<String>>, ()> {
+    connection
+        .prepare("SELECT turn_id, model FROM codex_usage_fast_turns ORDER BY turn_id")
+        .map_err(|_| ())?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|_| ())?
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(|_| ())
+}
+
 fn reconcile_fast_turn_evidence(
     connection: &Connection,
     evidence: &FastTurnEvidence,
@@ -3085,22 +3141,41 @@ fn reconcile_fast_turn_evidence(
     if current.as_deref() == Some(evidence.fingerprint.as_str()) {
         return Ok(());
     }
+    let stored = load_stored_fast_turns(connection)?;
+    let changed_turn_ids = stored
+        .keys()
+        .chain(evidence.turns.keys())
+        .filter(|turn_id| stored.get(*turn_id) != evidence.turns.get(*turn_id))
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
-    transaction
-        .execute("DELETE FROM codex_usage_files", [])
-        .map_err(|_| ())?;
-    transaction
-        .execute(
-            "DELETE FROM codex_usage_index_meta
-             WHERE key IN (
-               'file_day_summary_version',
-               'pricing_complete_fingerprint',
-               'pricing_reprice_cursor',
-               'pricing_reprice_target_fingerprint'
-             )",
-            [],
-        )
-        .map_err(|_| ())?;
+    for turn_id in changed_turn_ids {
+        transaction
+            .execute(
+                "DELETE FROM codex_usage_files
+                 WHERE path IN (
+                   SELECT path FROM codex_usage_file_turns WHERE turn_id = ?1
+                 )",
+                [turn_id.as_str()],
+            )
+            .map_err(|_| ())?;
+        if let Some(model) = evidence.turns.get(&turn_id) {
+            transaction
+                .execute(
+                    "INSERT INTO codex_usage_fast_turns(turn_id, model) VALUES(?1, ?2)
+                     ON CONFLICT(turn_id) DO UPDATE SET model = excluded.model",
+                    params![turn_id, model],
+                )
+                .map_err(|_| ())?;
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM codex_usage_fast_turns WHERE turn_id = ?1",
+                    [turn_id.as_str()],
+                )
+                .map_err(|_| ())?;
+        }
+    }
     transaction
         .execute(
             "INSERT INTO codex_usage_index_meta(key, value)
@@ -3128,8 +3203,11 @@ fn index_local_usage_with_budget(
     ensure_index_schema(&mut connection, Some(database_path)).ok()?;
     let today = utc_ranking_day(now);
     let cutoff = today - Duration::days(LOCAL_USAGE_RETENTION_DAYS - 1);
-    let fast_turn_evidence = load_fast_turn_evidence(home, cutoff, today)?;
-    reconcile_fast_turn_evidence(&connection, &fast_turn_evidence).ok()?;
+    let fast_turns = load_fast_turn_evidence(home, cutoff, today)
+        .filter(|evidence| reconcile_fast_turn_evidence(&connection, evidence).is_ok())
+        .map(|evidence| evidence.turns)
+        .or_else(|| load_stored_fast_turns(&connection).ok())
+        .unwrap_or_default();
     // Trace evidence and rollout bytes are independent local inputs. A large
     // read-only trace database must not consume the bounded rollout budget.
     let started = Instant::now();
@@ -3212,7 +3290,7 @@ fn index_local_usage_with_budget(
     let index_context = FileIndexContext {
         cutoff,
         today,
-        fast_turns: &fast_turn_evidence.turns,
+        fast_turns: &fast_turns,
     };
     let mut remaining_bytes = max_bytes;
     let mut all_complete = traversal_complete;
@@ -3815,6 +3893,23 @@ mod tests {
             + "\n"
     }
 
+    fn turn_rollout(turn_id: &str, model: &str, total: u64) -> String {
+        let input = total * 10 / 11;
+        let cached = input * 9 / 10;
+        let output = total - input;
+        [
+            json!({"timestamp":"2026-08-09T10:00:00Z","type":"session_meta","payload":{"cli_version":"0.145.0"}}),
+            json!({"timestamp":"2026-08-09T10:00:01Z","type":"turn_context","payload":{"model":model}}),
+            json!({"timestamp":"2026-08-09T10:00:02Z","type":"event_msg","payload":{"type":"task_started","turn_id":turn_id,"model_context_window":1050000,"collaboration_mode_kind":"default"}}),
+            json!({"timestamp":"2026-08-09T10:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":input,"cached_input_tokens":cached,"output_tokens":output,"reasoning_output_tokens":0,"total_tokens":total},"model_context_window":1050000,"total_token_usage":{"input_tokens":input,"cached_input_tokens":cached,"output_tokens":output,"reasoning_output_tokens":0,"total_tokens":total}},"rate_limits":null}}),
+        ]
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n"
+    }
+
     fn appended_total(total: u64) -> String {
         let input = total * 7 / 10;
         let output = total - input;
@@ -4014,6 +4109,14 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|column| column == "pricing_mode")
+        );
+        assert_eq!(
+            table_columns(&connection, "codex_usage_file_turns").unwrap(),
+            ["path", "turn_id"]
+        );
+        assert_eq!(
+            table_columns(&connection, "codex_usage_fast_turns").unwrap(),
+            ["turn_id", "model"]
         );
         assert_eq!(
             connection
@@ -5503,6 +5606,117 @@ mod tests {
                 )
                 .unwrap(),
             "fast"
+        );
+    }
+
+    #[test]
+    fn fast_evidence_invalidates_only_the_referencing_rollout() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let unaffected = fixture.root.join("sessions/unaffected.jsonl");
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-later-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        fs::write(
+            &unaffected,
+            turn_rollout("turn-standard", "gpt-5.6-terra", 220_000),
+        )
+        .unwrap();
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"service_tier: Some(Some("priority")) Submission sub=Submission { id: "turn-later-fast" }"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let cutoff = Date::from_calendar_date(2026, Month::July, 11).unwrap();
+        let today = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        let evidence = load_fast_turn_evidence(&fixture.root, cutoff, today).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        reconcile_fast_turn_evidence(&connection, &evidence).unwrap();
+
+        let retained = connection
+            .prepare("SELECT path FROM codex_usage_files ORDER BY path")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(retained, vec![unaffected.to_string_lossy()]);
+    }
+
+    #[test]
+    fn fast_evidence_failure_keeps_observed_tokens() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-standard", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        fs::write(fixture.root.join("logs_2.sqlite"), b"not a SQLite database").unwrap();
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("optional Fast evidence must not hide observed usage");
+
+        assert_eq!(local.daily[&day].observed_tokens, 110_000);
+        assert!(local.daily[&day].api_equivalent_cost_usd.is_some());
+    }
+
+    #[test]
+    fn fast_evidence_unknown_model_stays_unpriced() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let day = Date::from_calendar_date(2026, Month::August, 9).unwrap();
+        fs::write(
+            &fixture.rollout,
+            turn_rollout("turn-fast", "gpt-5.6-sol", 110_000),
+        )
+        .unwrap();
+        let trace = Connection::open(fixture.root.join("logs_2.sqlite")).unwrap();
+        trace
+            .execute_batch(
+                "CREATE TABLE logs(ts INTEGER NOT NULL, feedback_log_body TEXT NOT NULL);",
+            )
+            .unwrap();
+        trace
+            .execute(
+                "INSERT INTO logs(ts, feedback_log_body) VALUES(?1, ?2)",
+                params![
+                    now.unix_timestamp(),
+                    r#"turn.id=turn-fast websocket request: {"type":"response.create","service_tier":"fast","model":"gpt-future-private"}"#,
+                ],
+            )
+            .unwrap();
+        drop(trace);
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(local.daily[&day].observed_tokens, 110_000);
+        assert_eq!(local.daily[&day].api_equivalent_cost_usd, None);
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT model FROM codex_usage_file_model_days", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            "gpt-future-private"
         );
     }
 
