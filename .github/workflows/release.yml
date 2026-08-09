@@ -71,14 +71,14 @@ jobs:
         run: |
           set -euo pipefail
           tests="$(cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib -- --list)"
-          if ! grep -q '^database::release_compatibility::' <<< "$tests"; then
+          if ! grep -q '^database::tests::release_compatibility::' <<< "$tests"; then
             echo 'The database compatibility release test is absent.' >&2
             exit 1
           fi
           cargo test \
             --manifest-path apps/desktop/src-tauri/Cargo.toml \
             --lib \
-            'database::release_compatibility::'
+            'database::tests::release_compatibility::'
       - name: Record database compatibility evidence
         run: bun scripts/release-contract.ts database-evidence
       - name: Record presence-only release configuration
