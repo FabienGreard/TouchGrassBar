@@ -113,6 +113,18 @@ impl OnlineFeatureGate {
     }
 }
 
+fn configure_initial_online_feature_gate(
+    gate: &OnlineFeatureGate,
+    available: bool,
+    persistence_available: bool,
+    minimum_required: bool,
+) -> bool {
+    if available {
+        gate.set_paused(!persistence_available || minimum_required);
+    }
+    gate.is_paused()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CheckKind {
     Automatic,
@@ -577,9 +589,12 @@ impl UpdateRuntime {
         let minimum_required = persisted
             .as_ref()
             .is_some_and(|persisted| persisted_minimum_required(persisted, &current_version));
-        if available {
-            gate.set_paused(persistence.is_none() || minimum_required);
-        }
+        let online_features_paused = configure_initial_online_feature_gate(
+            &gate,
+            available,
+            persistence.is_some(),
+            minimum_required,
+        );
         let initial_update = if !available || persistence.is_none() || persisted.is_none() {
             UpdateStatus::Unavailable
         } else if let Some(version) = persisted
@@ -595,7 +610,7 @@ impl UpdateRuntime {
         state.automatic_checks_enabled = persisted
             .as_ref()
             .is_none_or(|persisted| persisted.automatic_checks_enabled);
-        state.online_features_paused = minimum_required;
+        state.online_features_paused = online_features_paused;
         Self {
             app,
             current_version: current_version.clone(),
@@ -1196,6 +1211,31 @@ mod tests {
                 let _ = fs::remove_file(backup_partial_path(&self.0, version));
             }
         }
+    }
+
+    #[test]
+    fn initial_state_reports_the_effective_online_feature_gate() {
+        let missing_persistence = OnlineFeatureGate::paused();
+        assert!(configure_initial_online_feature_gate(
+            &missing_persistence,
+            true,
+            false,
+            false,
+        ));
+        assert!(missing_persistence.is_paused());
+
+        let ready = OnlineFeatureGate::default();
+        assert!(!configure_initial_online_feature_gate(
+            &ready, true, true, false,
+        ));
+
+        let minimum_required = OnlineFeatureGate::default();
+        assert!(configure_initial_online_feature_gate(
+            &minimum_required,
+            true,
+            true,
+            true,
+        ));
     }
 
     #[test]

@@ -69,6 +69,258 @@ const INDEXES: &[&str] = &[
 
 const VIEWS: &[&str] = &["touchgrassbar_update_state"];
 
+// This catalog contains every distinct object definition emitted by releases
+// v0.0.3 through v0.0.9. Case and whitespace do not affect a definition. Any
+// other SQL is a new database shape and needs an explicit migration contract.
+const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
+    "createindexclaude_usage_frames_by_dayonclaude_usage_frames(day)",
+    "createindexclaude_usage_messages_by_dayonclaude_usage_messages(day)",
+    "createindexclaude_usage_messages_by_messageonclaude_usage_messages(message_key)",
+    concat!(
+        "createindexclaude_usage_messages_by_superseded_frame",
+        "onclaude_usage_messages(supersedes_frame_key)"
+    ),
+    concat!(
+        "createindexclaude_usage_supersedes_by_superseded_frame",
+        "onclaude_usage_message_supersedes(superseded_frame_key,parser_version)"
+    ),
+    "createindexcodex_usage_model_days_by_dayoncodex_usage_file_model_days(day)",
+    concat!(
+        "createindexcodex_usage_unpriced_model_days",
+        "oncodex_usage_file_model_days(day,model,cache_write_input_tokens)",
+        "wherecost_usdisnull"
+    ),
+    concat!(
+        "createtableclaude_usage_daily(",
+        "daytextprimarykeynotnull,",
+        "observed_tokensintegernotnull,",
+        "coveragetextnotnullcheck(coveragein('complete','partial')),",
+        "observed_throughtextnotnull,",
+        "revisionintegernotnullcheck(revision>=1),",
+        "priced_tokensintegernotnulldefault0,",
+        "cost_usdreal,pricing_basistext,pricing_fingerprinttext)"
+    ),
+    concat!(
+        "createtableclaude_usage_files(",
+        "pathtextprimarykeynotnull,file_identitytextnotnull,",
+        "size_bytesintegernotnull,modified_nsintegernotnull,",
+        "parsed_offsetintegernotnull,resume_anchortext,",
+        "parser_versionintegernotnull,completion_statetextnotnull)"
+    ),
+    concat!(
+        "createtableclaude_usage_frames(",
+        "frame_keytextprimarykeynotnull,daytextnotnull,",
+        "observed_attextnotnull,parser_versionintegernotnull)"
+    ),
+    concat!(
+        "createtableclaude_usage_index_meta(",
+        "keytextprimarykeynotnull,valuetextnotnull)"
+    ),
+    concat!(
+        "createtableclaude_usage_message_supersedes(",
+        "replacement_frame_keytextnotnull,superseded_frame_keytextnotnull,",
+        "parser_versionintegernotnull,",
+        "primarykey(replacement_frame_key,superseded_frame_key),",
+        "foreignkey(replacement_frame_key)",
+        "referencesclaude_usage_frames(frame_key)ondeletecascade)"
+    ),
+    concat!(
+        "createtable\"claude_usage_message_supersedes\"(",
+        "replacement_frame_keytextnotnull,superseded_frame_keytextnotnull,",
+        "parser_versionintegernotnull,",
+        "primarykey(replacement_frame_key,superseded_frame_key),",
+        "foreignkey(replacement_frame_key)",
+        "referencesclaude_usage_frames(frame_key)ondeletecascade)"
+    ),
+    concat!(
+        "createtableclaude_usage_messages(",
+        "frame_keytextprimarykeynotnull,supersedes_frame_keytext,",
+        "message_keytextnotnull,daytextnotnull,observed_attextnotnull,",
+        "modeltextnotnull,input_tokensintegernotnull,",
+        "cache_creation_input_tokensintegernotnull,",
+        "cache_read_input_tokensintegernotnull,output_tokensintegernotnull,",
+        "cache_creation_5m_input_tokensinteger,",
+        "cache_creation_1h_input_tokensinteger,service_tiertext,",
+        "inference_geotext,speedtext,web_search_requestsinteger,",
+        "web_fetch_requestsinteger,code_execution_requestsinteger,",
+        "has_unknown_paid_server_toolintegernotnull,",
+        "observed_tokensintegernotnull,completeintegernotnull,",
+        "parser_versionintegernotnull)"
+    ),
+    concat!(
+        "createtablecodex_account_usage_days(",
+        "daytextprimarykeynotnull,tokensintegernotnull)"
+    ),
+    concat!(
+        "createtablecodex_account_usage_meta(",
+        "singletonintegerprimarykeynotnullcheck(singleton=1),",
+        "observed_attextnotnull)"
+    ),
+    concat!(
+        "createtablecodex_usage_file_days(",
+        "pathtextnotnull,daytextnotnull,observed_tokensintegernotnull,",
+        "priced_tokensintegernotnull,cost_usdrealnotnull,",
+        "completeintegernotnull,observed_throughtextnotnull,",
+        "priced_observed_throughtext,pricing_fingerprinttext,",
+        "primarykey(path,day),",
+        "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
+    ),
+    concat!(
+        "createtablecodex_usage_file_model_days(",
+        "pathtextnotnull,daytextnotnull,modeltextnotnull,",
+        "pricing_input_tokensintegernotnull,input_tokensintegernotnull,",
+        "cached_input_tokensintegernotnull,",
+        "cache_write_input_tokensintegernotnull,",
+        "output_tokensintegernotnull,reasoning_output_tokensintegernotnull,",
+        "observed_tokensintegernotnull,cost_usdreal,pricing_basistext,",
+        "pricing_fingerprinttext,completeintegernotnull,",
+        "observed_throughtextnotnull,",
+        "primarykey(path,day,model,pricing_input_tokens),",
+        "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
+    ),
+    concat!(
+        "createtablecodex_usage_files(",
+        "pathtextprimarykeynotnull,file_identitytextnotnull,",
+        "size_bytesintegernotnull,modified_nsintegernotnull,",
+        "parsed_offsetintegernotnull,parsed_prefix_anchortext,",
+        "parser_versionintegernotnull,completion_statetextnotnull,",
+        "deferred_until_daytext,active_modeltext,",
+        "baseline_is_inheritedinteger,history_start_ordinalinteger,",
+        "record_ordinalintegernotnulldefault0,",
+        "usage_excludedintegernotnulldefault0,",
+        "schema_supportedintegernotnull,previous_inputinteger,",
+        "previous_cached_inputinteger,previous_cache_write_inputinteger,",
+        "previous_outputinteger,previous_reasoning_outputinteger,",
+        "previous_totalinteger)"
+    ),
+    concat!(
+        "createtablecodex_usage_index_meta(",
+        "keytextprimarykeynotnull,valuetextnotnull)"
+    ),
+    concat!(
+        "createtablelifecycle_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "bootstrap_completedintegernotnullcheck(bootstrap_completedin(0,1)),",
+        "profile_provisioningtextnotnullcheck(",
+        "profile_provisioningin('not-authorized','profile-pending','ready')),",
+        "public_participation_authorizedintegernotnullcheck(",
+        "public_participation_authorizedin(0,1)),",
+        "profile_retry_pendingintegernotnullcheck(",
+        "profile_retry_pendingin(0,1)),",
+        "backfill_window_daysintegercheck(backfill_window_days=30),",
+        "display_nametextcheck(",
+        "display_nameisnullor(length(trim(display_name))between1and40)),",
+        "touch_grass_idtext,",
+        "recovery_disclosure_pendingintegernotnulldefault0check(",
+        "recovery_disclosure_pendingin(0,1)))"
+    ),
+    concat!(
+        "createtableprovider_settings(",
+        "providertextprimarykeycheck(providerin('codex','claude')),",
+        "enabledintegernotnullcheck(enabledin(0,1)))"
+    ),
+    concat!(
+        "createtablesanitized_desktop_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "schema_versionintegernotnullcheck(schema_version=4),",
+        "contract_versionintegernotnullcheck(contract_version=3),",
+        "revisiontextnotnullcheck(",
+        "length(revision)>0andrevisionnotglob'*[^0-9]*'),",
+        "snapshot_jsontextnotnull)"
+    ),
+    concat!(
+        "createtablesanitized_desktop_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "schema_versionintegernotnullcheck(schema_version=5),",
+        "contract_versionintegernotnullcheck(contract_version=3),",
+        "revisiontextnotnullcheck(",
+        "length(revision)>0andrevisionnotglob'*[^0-9]*'),",
+        "snapshot_jsontextnotnull)"
+    ),
+    concat!(
+        "createtabletouchgrassbar_schema_versions(",
+        "moduletextprimarykey,versionintegernotnullcheck(version>=1))"
+    ),
+    concat!(
+        "createtabletouchgrassbar_update_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "last_automatic_check_atinteger,deferred_versiontext)"
+    ),
+    concat!(
+        "createtabletouchgrassbar_update_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "last_automatic_check_atinteger,",
+        "offered_versiontextcheck(",
+        "offered_versionisnullorlength(offered_version)between1and64),",
+        "minimum_required_versiontextcheck(",
+        "minimum_required_versionisnullor",
+        "length(minimum_required_version)between1and64))"
+    ),
+    concat!(
+        "createtabletouchgrassbar_update_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "automatic_checks_enabledintegernotnulldefault1check(",
+        "automatic_checks_enabledin(0,1)),last_automatic_check_atinteger,",
+        "offered_versiontextcheck(",
+        "offered_versionisnullorlength(offered_version)between1and64),",
+        "minimum_required_versiontextcheck(",
+        "minimum_required_versionisnullor",
+        "length(minimum_required_version)between1and64))"
+    ),
+    concat!(
+        "createtabletouchgrassbar_update_state_v3(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "automatic_checks_enabledintegernotnulldefault1check(",
+        "automatic_checks_enabledin(0,1)),last_automatic_check_atinteger,",
+        "offered_versiontextcheck(",
+        "offered_versionisnullorlength(offered_version)between1and64),",
+        "minimum_required_versiontextcheck(",
+        "minimum_required_versionisnullor",
+        "length(minimum_required_version)between1and64))"
+    ),
+    concat!(
+        "createtable\"touchgrassbar_update_state_v3\"(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "automatic_checks_enabledintegernotnulldefault1check(",
+        "automatic_checks_enabledin(0,1)),last_automatic_check_atinteger,",
+        "offered_versiontextcheck(",
+        "offered_versionisnullorlength(offered_version)between1and64),",
+        "minimum_required_versiontextcheck(",
+        "minimum_required_versionisnullor",
+        "length(minimum_required_version)between1and64))"
+    ),
+    concat!(
+        "createtabletouchgrassbar_update_state_v3(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "last_automatic_check_atinteger,",
+        "offered_versiontextcheck(",
+        "offered_versionisnullorlength(offered_version)between1and64),",
+        "minimum_required_versiontextcheck(",
+        "minimum_required_versionisnullor",
+        "length(minimum_required_version)between1and64),",
+        "automatic_checks_enabledintegernotnulldefault1check(",
+        "automatic_checks_enabledin(0,1)))"
+    ),
+    concat!(
+        "createtable\"touchgrassbar_update_state_v3\"(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "last_automatic_check_atinteger,",
+        "offered_versiontextcheck(",
+        "offered_versionisnullorlength(offered_version)between1and64),",
+        "minimum_required_versiontextcheck(",
+        "minimum_required_versionisnullor",
+        "length(minimum_required_version)between1and64),",
+        "automatic_checks_enabledintegernotnulldefault1check(",
+        "automatic_checks_enabledin(0,1)))"
+    ),
+    concat!(
+        "createviewtouchgrassbar_update_stateasselect",
+        "singleton,automatic_checks_enabled,last_automatic_check_at,",
+        "offered_version,minimum_required_version",
+        "fromtouchgrassbar_update_state_v3"
+    ),
+];
+
 const PRIMARY_KEYS: &[(&str, &[&str])] = &[
     ("claude_usage_daily", &["day"]),
     ("claude_usage_files", &["path"]),
@@ -512,6 +764,16 @@ struct SourceInspection {
     needs_migration: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct InspectedModuleVersions {
+    lifecycle: i64,
+    read_model: i64,
+    codex: i64,
+    claude: i64,
+    update: i64,
+    has_legacy_update_table: bool,
+}
+
 pub(crate) fn prepare(path: &Path) -> Result<PreparedDatabase, DatabaseOpenError> {
     prepare_with_fault(path, PrepareFault::None)
 }
@@ -840,6 +1102,17 @@ fn inspect_registered_modules(connection: &Connection) -> Result<(), DatabaseOpe
         });
     }
     inspect_known_table_columns(connection)?;
+    inspect_known_object_definitions(
+        connection,
+        InspectedModuleVersions {
+            lifecycle: lifecycle_version,
+            read_model: read_model_version,
+            codex: codex_version,
+            claude: claude_version,
+            update: update_version,
+            has_legacy_update_table: has_update_table,
+        },
+    )?;
     Ok(())
 }
 
@@ -976,6 +1249,129 @@ fn reject_unknown_objects(connection: &Connection) -> Result<(), DatabaseOpenErr
     {
         return Err(DatabaseOpenError::UnsupportedFuture {
             module: "unregistered-object",
+        });
+    }
+    Ok(())
+}
+
+fn inspect_known_object_definitions(
+    connection: &Connection,
+    versions: InspectedModuleVersions,
+) -> Result<(), DatabaseOpenError> {
+    let mut expected_objects = Vec::new();
+    if table_exists(connection, "touchgrassbar_schema_versions")? {
+        expected_objects.push(("table", "touchgrassbar_schema_versions"));
+    }
+    if versions.lifecycle >= 4 {
+        expected_objects.push(("table", "lifecycle_state"));
+    }
+    if versions.lifecycle >= 5 {
+        expected_objects.push(("table", "provider_settings"));
+    }
+    if versions.read_model > 0 {
+        expected_objects.push(("table", "sanitized_desktop_state"));
+    }
+    if versions.codex > 0 {
+        expected_objects.extend([
+            ("table", "codex_usage_index_meta"),
+            ("table", "codex_account_usage_meta"),
+            ("table", "codex_account_usage_days"),
+            ("table", "codex_usage_files"),
+            ("table", "codex_usage_file_model_days"),
+            ("table", "codex_usage_file_days"),
+            ("index", "codex_usage_model_days_by_day"),
+            ("index", "codex_usage_unpriced_model_days"),
+        ]);
+    }
+    if versions.claude > 0 {
+        expected_objects.extend([
+            ("table", "claude_usage_index_meta"),
+            ("table", "claude_usage_files"),
+            ("table", "claude_usage_messages"),
+            ("table", "claude_usage_frames"),
+            ("table", "claude_usage_message_supersedes"),
+            ("table", "claude_usage_daily"),
+            ("index", "claude_usage_messages_by_day"),
+            ("index", "claude_usage_messages_by_message"),
+            ("index", "claude_usage_messages_by_superseded_frame"),
+            ("index", "claude_usage_frames_by_day"),
+            ("index", "claude_usage_supersedes_by_superseded_frame"),
+        ]);
+    }
+    match versions.update {
+        0 if versions.has_legacy_update_table => {
+            expected_objects.push(("table", "touchgrassbar_update_state"));
+        }
+        1 | 2 => {
+            expected_objects.push(("table", "touchgrassbar_update_state"));
+        }
+        3 => {
+            expected_objects.extend([
+                ("table", "touchgrassbar_update_state_v3"),
+                ("view", "touchgrassbar_update_state"),
+            ]);
+        }
+        _ => {}
+    }
+    expected_objects.sort_unstable();
+
+    let mut statement = connection
+        .prepare(
+            "SELECT type, name, sql FROM sqlite_schema
+             WHERE type IN ('table', 'index', 'trigger', 'view')
+               AND name NOT LIKE 'sqlite_%'
+             ORDER BY type, name",
+        )
+        .map_err(|_| DatabaseOpenError::MigrationFailed {
+            stage: "inspect-object-definitions",
+        })?;
+    let objects = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|_| DatabaseOpenError::MigrationFailed {
+            stage: "inspect-object-definitions",
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| DatabaseOpenError::MigrationFailed {
+            stage: "inspect-object-definitions",
+        })?;
+    let stored_objects = objects
+        .iter()
+        .map(|(object_type, name, _)| (object_type.as_str(), name.as_str()))
+        .collect::<Vec<_>>();
+    let definitions_are_known = objects.iter().all(|(object_type, name, definition)| {
+        let definition = normalize_sql(definition);
+        let definition_is_known = KNOWN_OBJECT_DEFINITIONS.contains(&definition.as_str());
+        let definition_matches_version = match (object_type.as_str(), name.as_str()) {
+            ("table", "sanitized_desktop_state") => match versions.read_model {
+                4 => definition.contains("check(schema_version=4)"),
+                5 => definition.contains("check(schema_version=5)"),
+                _ => false,
+            },
+            ("table", "touchgrassbar_update_state") => match versions.update {
+                0 => definition.contains("deferred_versiontext"),
+                1 => {
+                    definition.contains("offered_versiontext")
+                        && !definition.contains("automatic_checks_enabled")
+                }
+                2 => definition.contains("automatic_checks_enabled"),
+                _ => false,
+            },
+            ("table", "touchgrassbar_update_state_v3") | ("view", "touchgrassbar_update_state") => {
+                versions.update == 3
+            }
+            _ => true,
+        };
+        definition_is_known && definition_matches_version
+    });
+    if stored_objects != expected_objects || !definitions_are_known {
+        return Err(DatabaseOpenError::MigrationFailed {
+            stage: "inspect-object-definitions",
         });
     }
     Ok(())
@@ -1577,11 +1973,55 @@ fn schema_sql(
 }
 
 fn normalize_sql(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_ascii_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
+    #[derive(Clone, Copy)]
+    enum Quote {
+        None,
+        Literal,
+        DoubleQuoted,
+    }
+
+    let mut normalized = String::with_capacity(value.len());
+    let mut characters = value.chars().peekable();
+    let mut quote = Quote::None;
+    while let Some(character) = characters.next() {
+        match quote {
+            Quote::None => match character {
+                '\'' => {
+                    normalized.push(character);
+                    quote = Quote::Literal;
+                }
+                '"' => {
+                    normalized.push(character);
+                    quote = Quote::DoubleQuoted;
+                }
+                character if character.is_ascii_whitespace() => {}
+                character => normalized.push(character.to_ascii_lowercase()),
+            },
+            Quote::Literal => {
+                normalized.push(character);
+                if character == '\'' {
+                    if characters.peek() == Some(&'\'') {
+                        characters.next();
+                        normalized.push('\'');
+                    } else {
+                        quote = Quote::None;
+                    }
+                }
+            }
+            Quote::DoubleQuoted => {
+                normalized.push(character);
+                if character == '"' {
+                    if characters.peek() == Some(&'"') {
+                        characters.next();
+                        normalized.push('"');
+                    } else {
+                        quote = Quote::None;
+                    }
+                }
+            }
+        }
+    }
+    normalized
 }
 
 fn verify_lifecycle(
@@ -2208,6 +2648,160 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_legacy_definitions_before_backup_or_write() {
+        let mutations = [
+            (
+                "index",
+                "DROP INDEX codex_usage_model_days_by_day;
+                 CREATE INDEX codex_usage_model_days_by_day
+                 ON codex_usage_file_model_days(model);",
+            ),
+            (
+                "missing required index",
+                "DROP INDEX codex_usage_model_days_by_day;",
+            ),
+            (
+                "primary key",
+                "ALTER TABLE codex_account_usage_days
+                   RENAME TO codex_account_usage_days_old;
+                 CREATE TABLE codex_account_usage_days (
+                   day TEXT NOT NULL,
+                   tokens INTEGER PRIMARY KEY NOT NULL
+                 );
+                 INSERT INTO codex_account_usage_days(day, tokens)
+                   SELECT day, tokens FROM codex_account_usage_days_old;
+                 DROP TABLE codex_account_usage_days_old;",
+            ),
+            (
+                "check constraint",
+                "ALTER TABLE provider_settings RENAME TO provider_settings_old;
+                 CREATE TABLE provider_settings (
+                   provider TEXT PRIMARY KEY CHECK (
+                     provider IN ('codex', 'claude', 'future')
+                   ),
+                   enabled INTEGER NOT NULL CHECK (enabled IN (0, 1))
+                 );
+                 INSERT INTO provider_settings(provider, enabled)
+                   SELECT provider, enabled FROM provider_settings_old;
+                 DROP TABLE provider_settings_old;",
+            ),
+            (
+                "single-quoted literal case",
+                "PRAGMA writable_schema = ON;
+                 UPDATE sqlite_schema
+                 SET sql = replace(
+                   sql,
+                   '''codex'', ''claude''',
+                   '''CODEX'', ''CLAUDE'''
+                 )
+                 WHERE type = 'table' AND name = 'provider_settings';
+                 PRAGMA writable_schema = OFF;",
+            ),
+            (
+                "single-quoted literal whitespace",
+                "PRAGMA writable_schema = ON;
+                 UPDATE sqlite_schema
+                 SET sql = replace(
+                   sql,
+                   '''codex'', ''claude''',
+                   '''cod ex'', ''claude'''
+                 )
+                 WHERE type = 'table' AND name = 'provider_settings';
+                 PRAGMA writable_schema = OFF;",
+            ),
+            (
+                "default",
+                "ALTER TABLE provider_settings RENAME TO provider_settings_old;
+                 CREATE TABLE provider_settings (
+                   provider TEXT PRIMARY KEY CHECK (provider IN ('codex', 'claude')),
+                   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1))
+                 );
+                 INSERT INTO provider_settings(provider, enabled)
+                   SELECT provider, enabled FROM provider_settings_old;
+                 DROP TABLE provider_settings_old;",
+            ),
+            (
+                "foreign key",
+                "ALTER TABLE codex_usage_file_days
+                   RENAME TO codex_usage_file_days_old;
+                 CREATE TABLE codex_usage_file_days (
+                   path TEXT NOT NULL,
+                   day TEXT NOT NULL,
+                   observed_tokens INTEGER NOT NULL,
+                   priced_tokens INTEGER NOT NULL,
+                   cost_usd REAL NOT NULL,
+                   complete INTEGER NOT NULL,
+                   observed_through TEXT NOT NULL,
+                   priced_observed_through TEXT,
+                   pricing_fingerprint TEXT,
+                   PRIMARY KEY (path, day)
+                 );
+                 INSERT INTO codex_usage_file_days
+                   SELECT * FROM codex_usage_file_days_old;
+                 DROP TABLE codex_usage_file_days_old;",
+            ),
+            (
+                "definition from the wrong module version",
+                "ALTER TABLE sanitized_desktop_state
+                   RENAME TO sanitized_desktop_state_old;
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 4),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 3),
+                   revision TEXT NOT NULL CHECK (
+                     length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
+                   ),
+                   snapshot_json TEXT NOT NULL
+                 );
+                 INSERT INTO sanitized_desktop_state
+                   SELECT singleton, 4, contract_version, revision, snapshot_json
+                   FROM sanitized_desktop_state_old;
+                 DROP TABLE sanitized_desktop_state_old;",
+            ),
+            (
+                "view",
+                "DROP VIEW touchgrassbar_update_state;
+                 CREATE VIEW touchgrassbar_update_state AS
+                 SELECT singleton, automatic_checks_enabled, last_automatic_check_at,
+                        offered_version, minimum_required_version
+                 FROM touchgrassbar_update_state_v3
+                 WHERE singleton = 1;",
+            ),
+            (
+                "trigger",
+                "CREATE TRIGGER lifecycle_state_future_trigger
+                 AFTER UPDATE ON lifecycle_state
+                 BEGIN
+                   SELECT 1;
+                 END;",
+            ),
+        ];
+
+        for (definition, mutation) in mutations {
+            let database = TestDatabase::new();
+            database.make_ready_source_look_legacy();
+            Connection::open(&database.0)
+                .expect("open legacy database")
+                .execute_batch(mutation)
+                .unwrap_or_else(|error| panic!("mutate {definition} definition: {error}"));
+            let before = fs::read(&database.0).expect("read changed legacy database");
+
+            assert!(
+                prepare(&database.0).is_err(),
+                "accepts unknown legacy {definition} definition"
+            );
+            assert!(
+                fs::read(&database.0).expect("reread changed legacy database") == before,
+                "writes before rejecting unknown legacy {definition} definition"
+            );
+            assert!(
+                !coordinator_backup_path(&database.0).exists(),
+                "creates a backup before rejecting unknown legacy {definition} definition"
+            );
+        }
+    }
+
+    #[test]
     fn a_ready_reopen_is_byte_and_backup_idempotent() {
         let database = TestDatabase::new();
         prepare(&database.0).expect("first prepare");
@@ -2507,9 +3101,81 @@ mod tests {
 
         assert_eq!(
             prepare(&database.0).expect_err("reject changed index definition"),
-            DatabaseOpenError::InvariantFailed {
-                invariant: "index-definitions"
+            DatabaseOpenError::MigrationFailed {
+                stage: "inspect-object-definitions"
             }
+        );
+    }
+
+    #[test]
+    fn rejects_a_double_quoted_constraint_literal_before_backup_or_write() {
+        let database = TestDatabase::new();
+        database.make_ready_source_look_legacy();
+        let connection = Connection::open(&database.0).expect("open legacy database");
+        connection
+            .execute_batch(
+                r#"PRAGMA writable_schema = ON;
+                   UPDATE sqlite_schema
+                   SET sql = replace(
+                     sql,
+                     'BETWEEN 1 AND 64',
+                     'BETWEEN "1" AND 64'
+                   )
+                   WHERE type = 'table'
+                     AND name = 'touchgrassbar_update_state_v3';
+                   PRAGMA writable_schema = OFF;"#,
+            )
+            .expect("change constraint literal");
+        let changed_definition = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema
+                 WHERE type = 'table' AND name = 'touchgrassbar_update_state_v3'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("read changed definition");
+        assert!(changed_definition.contains(r#"BETWEEN "1" AND 64"#));
+        drop(connection);
+        let before = fs::read(&database.0).expect("read changed legacy database");
+
+        assert_eq!(
+            prepare(&database.0).expect_err("reject double-quoted constraint literal"),
+            DatabaseOpenError::MigrationFailed {
+                stage: "inspect-object-definitions"
+            }
+        );
+        assert!(
+            fs::read(&database.0).expect("reread changed legacy database") == before,
+            "writes before rejecting a double-quoted constraint literal"
+        );
+        assert!(!coordinator_backup_path(&database.0).exists());
+    }
+
+    #[test]
+    fn normalizes_sql_syntax_without_changing_quoted_bytes() {
+        assert_eq!(
+            normalize_sql(
+                r#"CREATE TABLE "Touch""Grass" (
+                     value TEXT CHECK (value IN ('CODE X', 'it''s'))
+                   )"#,
+            ),
+            r#"createtable"Touch""Grass"(valuetextcheck(valuein('CODE X','it''s')))"#
+        );
+        assert_ne!(
+            normalize_sql(r#"CREATE TABLE "touchgrassbar_update_state_v3" (singleton INTEGER)"#),
+            normalize_sql("CREATE TABLE touchgrassbar_update_state_v3(singleton INTEGER)")
+        );
+        assert_eq!(
+            normalize_sql(r#"CHECK (value BETWEEN "1" AND 64)"#),
+            r#"check(valuebetween"1"and64)"#
+        );
+        assert_ne!(
+            normalize_sql("CHECK (provider IN ('CODEX', 'CLAUDE'))"),
+            normalize_sql("CHECK (provider IN ('codex', 'claude'))")
+        );
+        assert_ne!(
+            normalize_sql("CHECK (provider IN ('cod ex', 'claude'))"),
+            normalize_sql("CHECK (provider IN ('codex', 'claude'))")
         );
     }
 
