@@ -107,7 +107,7 @@ export function calculateScore(
   };
 }
 
-async function upsertPublicScore(
+async function upsertPublicUsage(
   ctx: MutationCtx,
   tokenmaxxer: {
     _id: GenericId<"tokenmaxxers">;
@@ -118,13 +118,13 @@ async function upsertPublicScore(
   windowDays: ScoreWindow,
   score: CalculatedScore,
 ) {
-  const publicRows = await ctx.db
-    .query("publicScores")
+  const publicUsages = await ctx.db
+    .query("publicUsages")
     .withIndex("by_tokenmaxxer_id", (q) =>
       q.eq("tokenmaxxerId", tokenmaxxer._id),
     )
     .take(20);
-  const existing = publicRows.find(
+  const existing = publicUsages.find(
     (row) => row.scope === scope && row.windowDays === windowDays,
   );
   const namespace = boardKey(scope, windowDays);
@@ -155,13 +155,13 @@ async function upsertPublicScore(
     return;
   }
 
-  const publicScoreId = await ctx.db.insert("publicScores", {
+  const publicUsageId = await ctx.db.insert("publicUsages", {
     ...values,
     apiEquivalentCost: score.apiEquivalentCost,
     tokenmaxxerId: tokenmaxxer._id,
   });
   await globalDoomerboardIndex.insert(ctx, {
-    id: publicScoreId,
+    id: publicUsageId,
     key: score.tokenScore,
     namespace,
   });
@@ -206,7 +206,7 @@ export async function recomputeScores(
   for (const scope of SCOPES) {
     for (const windowDays of WINDOWS) {
       const score = calculateScore(dailyRows, scope, windowDays, asOfDay);
-      await upsertPublicScore(ctx, tokenmaxxer, scope, windowDays, score);
+      await upsertPublicUsage(ctx, tokenmaxxer, scope, windowDays, score);
       overview.push({
         apiEquivalentCost: score.apiEquivalentCost,
         scope,

@@ -7,12 +7,12 @@ import schema from "../schema";
 export const migrations = new Migrations(components.migrations, { schema });
 
 export const backfillGlobalDoomerboardIndex = migrations.define({
-  table: "publicScores",
-  migrateOne: async (ctx, publicScore) => {
+  table: "publicUsages",
+  migrateOne: async (ctx, publicUsage) => {
     await globalDoomerboardIndex.insertIfDoesNotExist(ctx, {
-      id: publicScore._id,
-      key: publicScore.tokenScore,
-      namespace: publicScore.boardKey,
+      id: publicUsage._id,
+      key: publicUsage.tokenScore,
+      namespace: publicUsage.boardKey,
     });
   },
 });

@@ -110,7 +110,7 @@ export default defineSchema({
       "rankingDay",
     ]),
 
-  publicScores: defineTable({
+  publicUsages: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
     boardKey: v.string(),
     scope: scoreScope,

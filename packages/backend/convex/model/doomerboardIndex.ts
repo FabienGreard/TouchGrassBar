@@ -4,7 +4,7 @@ import type { GenericId } from "convex/values";
 import { components } from "../_generated/api";
 
 export const globalDoomerboardIndex = new DirectAggregate<{
-  Id: GenericId<"publicScores">;
+  Id: GenericId<"publicUsages">;
   Key: number;
   Namespace: string;
 }>(components.doomerboard);

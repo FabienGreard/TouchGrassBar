@@ -6,14 +6,14 @@ Convex receives authenticated daily usage snapshots from the Rust native core an
 
 The deployed flow is:
 
-`usageBuckets → userDailyUsage → publicScores → globalDoomerboardIndex`
+`usageBuckets → userDailyUsage → publicUsages → globalDoomerboardIndex`
 
-`deviceProviderSettings → filtered publicScores recompute`
+`deviceProviderSettings → filtered publicUsages recompute`
 
 `usageBuckets` is the synchronization ledger. It owns Active Mac authority,
 revisions, evidence, and correction provenance. `userDailyUsage` is the
 canonical private history for one Tokenmaxxer, provider, and UTC day.
-`publicScores` materializes each public scope and window. The
+`publicUsages` materializes each public scope and window. The
 `globalDoomerboardIndex` symbol wraps `@convex-dev/aggregate` only for ordered
 pagination. It does not calculate daily usage or rolling scores.
 
@@ -44,7 +44,7 @@ Automated fixtures must cover Quota Lane freshness and reset transitions; provid
 
 ## Score materialization
 
-Every accepted change writes `userDailyUsage` and recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates `publicScores` and `globalDoomerboardIndex`. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
+Every accepted change writes `userDailyUsage` and recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates `publicUsages` and `globalDoomerboardIndex`. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
 
 The `@convex-dev/aggregate` component has one installation named `doomerboard`.
 The local `globalDoomerboardIndex` symbol partitions score document IDs by keys
@@ -54,7 +54,7 @@ such as:
 - `tokens-v1:claude:7d`
 - `tokens-v1:combined:1d`
 
-Global Doomerboards page this index in descending order. `publicScores` and
+Global Doomerboards page this index in descending order. `publicUsages` and
 `globalDoomerboardIndex` have one write path: every insert, replacement, or
 deletion changes both within the same mutation. A read-only invariant check
 proves a one-to-one match of document ID, Board Key, and Token Score. The
@@ -70,7 +70,7 @@ A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer 
 
 The migrations component owns bounded repair work. The
 `backfillGlobalDoomerboardIndex` migration is forward-only, resumable, and
-idempotent. It rebuilds only missing index entries from `publicScores`.
+idempotent. It rebuilds only missing index entries from `publicUsages`.
 
 This feature requires the credential-based Active Mac and current usage schemas directly. It has no compatibility migration. Reset a local development deployment if it contains data from an earlier feature shape. This branch does not change a cloud deployment.
 
@@ -100,10 +100,10 @@ The automated evidence set contains:
 - authorization tests for absent, expired, revoked, and mismatched sessions; wrong installations; stale Active Mac generations; and transfer/sync races;
 - atomic synchronization tests for retries, duplicate and concurrent delivery, valid corrections, rollback, same-day transfer segmentation, and abandoned old-generation work;
 - fake-clock UTC rollover tests across month, year, leap-day, and daylight-saving boundaries, plus a complete paginated-drain test;
-- an independent reference oracle that applies randomized synchronization, correction, transfer, and rollover sequences and compares User Daily Usage, Public Scores, and Doomerboard index ranks;
+- an independent reference oracle that applies randomized synchronization, correction, transfer, and rollover sequences and compares User Daily Usage, Public Usage projections, and Doomerboard index ranks;
 - bounded-query and rate-limit boundary tests, hostile-input tests, and an interrupted migration rehearsal;
 - a disposable authenticated canary against the exact production deployment before public visibility. It proves generated credentials, session/JWT exchange, Active Mac claim, synchronization and identical retry, public and private reads, transfer, old-Mac rejection, new-Mac synchronization, and complete internal cleanup without logging secrets; and
-- a production health check for the exact deployment, presence-only required environment variables, installed schema and components, the canary's sanitized correlation window, zero unhandled backend errors, and the Public Score/Doomerboard index invariant.
+- a production health check for the exact deployment, presence-only required environment variables, installed schema and components, the canary's sanitized correlation window, zero unhandled backend errors, and the Public Usage/Doomerboard index invariant.
 
 The resulting Backend Readiness Evidence is one machine-readable CI artifact containing the exact Git commit, dependency-lock hash, schema and Board Key versions, policy version, deployment identity, suite results, migration rehearsal, production-canary result, and production-health result. Relevant code, configuration, schema, dependency, or policy changes make it stale. Before real traffic exists, production evidence is explicitly labeled `canary-only`; post-launch monitoring is a separate operational gate.
 

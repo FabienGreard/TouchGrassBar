@@ -223,7 +223,7 @@ test("both providers commit atomically and retries report exact revision outcome
   );
   expect(beforeRetry).toHaveLength(2);
   expect(
-    await t.run(async (ctx) => ctx.db.query("publicScores").collect()),
+    await t.run(async (ctx) => ctx.db.query("publicUsages").collect()),
   ).toHaveLength(9);
 
   await expect(
@@ -400,7 +400,7 @@ test("provider settings exclude accepted usage and restore retained history", as
 
   const disabled = await t.run(async (ctx) => ({
     daily: await ctx.db.query("userDailyUsage").collect(),
-    scores: await ctx.db.query("publicScores").collect(),
+    scores: await ctx.db.query("publicUsages").collect(),
     settings: await ctx.db.query("deviceProviderSettings").collect(),
   }));
   expect(disabled.daily).toHaveLength(2);
@@ -436,7 +436,7 @@ test("provider settings exclude accepted usage and restore retained history", as
   ).resolves.toEqual({ outcome: "stale", revision: 2 });
 
   let combined = await t.run(async (ctx) =>
-    (await ctx.db.query("publicScores").collect()).find(
+    (await ctx.db.query("publicUsages").collect()).find(
       (row) => row.scope === "combined" && row.windowDays === 1,
     ),
   );
@@ -449,7 +449,7 @@ test("provider settings exclude accepted usage and restore retained history", as
     revision: 3,
   });
   combined = await t.run(async (ctx) =>
-    (await ctx.db.query("publicScores").collect()).find(
+    (await ctx.db.query("publicUsages").collect()).find(
       (row) => row.scope === "combined" && row.windowDays === 1,
     ),
   );
@@ -462,7 +462,7 @@ test("provider settings exclude accepted usage and restore retained history", as
     revision: 4,
   });
   combined = await t.run(async (ctx) =>
-    (await ctx.db.query("publicScores").collect()).find(
+    (await ctx.db.query("publicUsages").collect()).find(
       (row) => row.scope === "combined" && row.windowDays === 1,
     ),
   );
@@ -521,7 +521,7 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   });
 
   const stored = await t.run(async (ctx) => ({
-    publicScores: await ctx.db.query("publicScores").collect(),
+    publicUsages: await ctx.db.query("publicUsages").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
   }));
   expect(stored.userDailyUsage).toHaveLength(1);
@@ -529,7 +529,7 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
     apiEquivalentCost,
   });
   expect(
-    stored.publicScores.find(
+    stored.publicUsages.find(
       (row) => row.scope === "claude" && row.windowDays === 1,
     ),
   ).toMatchObject({
@@ -563,18 +563,18 @@ test("the migration repairs the Doomerboard index from public scores", async () 
     snapshots: [usageSnapshot()],
   });
 
-  const publicScore = await t.run(async (ctx) =>
+  const publicUsage = await t.run(async (ctx) =>
     ctx.db
-      .query("publicScores")
+      .query("publicUsages")
       .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:codex:1d"))
       .unique(),
   );
-  if (!publicScore) throw new Error("Public Score missing");
+  if (!publicUsage) throw new Error("Public Usage missing");
   await t.run(async (ctx) => {
     await globalDoomerboardIndex.delete(ctx, {
-      id: publicScore._id,
-      key: publicScore.tokenScore,
-      namespace: publicScore.boardKey,
+      id: publicUsage._id,
+      key: publicUsage.tokenScore,
+      namespace: publicUsage.boardKey,
     });
   });
   await expect(
@@ -720,7 +720,7 @@ test("two Profiles commit both providers without crossing usage or score ownersh
   });
 
   const stored = await t.run(async (ctx) => ({
-    publicScores: await ctx.db.query("publicScores").collect(),
+    publicUsages: await ctx.db.query("publicUsages").collect(),
     tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
@@ -747,7 +747,7 @@ test("two Profiles commit both providers without crossing usage or score ownersh
       .sort((left, right) => left - right),
   ).toEqual([201, 202]);
   expect(stored.userDailyUsage).toHaveLength(4);
-  expect(stored.publicScores).toHaveLength(18);
+  expect(stored.publicUsages).toHaveLength(18);
   const serialized = JSON.stringify(stored);
   expect(serialized).not.toContain(aliceCredential);
   expect(serialized).not.toContain(bobCredential);
@@ -782,7 +782,7 @@ test("an unproved decrease rolls back the whole batch and an explicit correction
     snapshots: [usageSnapshot()],
   });
   const beforeRollback = await t.run(async (ctx) => ({
-    publicScores: await ctx.db.query("publicScores").collect(),
+    publicUsages: await ctx.db.query("publicUsages").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
   }));
@@ -798,7 +798,7 @@ test("an unproved decrease rolls back the whole batch and an explicit correction
     }),
   ).rejects.toThrow("correction provenance");
   const afterRollback = await t.run(async (ctx) => ({
-    publicScores: await ctx.db.query("publicScores").collect(),
+    publicUsages: await ctx.db.query("publicUsages").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
   }));
@@ -1448,12 +1448,12 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
   });
   expect(
     await t.run(async (ctx) => ({
-      publicScores: await ctx.db.query("publicScores").collect(),
+      publicUsages: await ctx.db.query("publicUsages").collect(),
       usageBuckets: await ctx.db.query("usageBuckets").collect(),
       userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
     })),
   ).toEqual({
-    publicScores: [],
+    publicUsages: [],
     usageBuckets: [],
     userDailyUsage: [],
   });
@@ -1480,7 +1480,7 @@ test("the app database stores only the installation digest and approved usage fi
 
   const stored = await t.run(async (ctx) => ({
     devices: await ctx.db.query("devices").collect(),
-    publicScores: await ctx.db.query("publicScores").collect(),
+    publicUsages: await ctx.db.query("publicUsages").collect(),
     tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
     usageCorrectionAudits: await ctx.db
       .query("usageCorrectionAudits")

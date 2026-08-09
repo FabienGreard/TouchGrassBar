@@ -82,7 +82,7 @@ export const myTokenmaxxers = query({
       .take(500);
     const includedIds = new Set(added.map((edge) => edge.addedId));
     const candidates = await ctx.db
-      .query("publicScores")
+      .query("publicUsages")
       .withIndex("by_board_key", (q) =>
         q.eq("boardKey", boardKey(args.scope, args.windowDays)),
       )
