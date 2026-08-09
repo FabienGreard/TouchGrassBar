@@ -1,3 +1,10 @@
+//! SQLite readiness coordinator.
+//!
+//! `prepare` and `PreparedDatabase` are the external interface. Keep schema
+//! catalog, read-only inspection, migration and recovery, and final invariant
+//! checks behind this interface. The ownership rules and schema change
+//! checklist are in `docs/adr/0017-coordinate-forward-sqlite-compatibility.md`.
+
 mod catalog;
 mod inspection;
 mod invariants;
