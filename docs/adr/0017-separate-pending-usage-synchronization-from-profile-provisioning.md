@@ -12,11 +12,11 @@ material that protected delivery needs. Provider observation supplies each
 new Usage Snapshot. These concerns have different retry, pause, and failure
 rules.
 
-One shared worker would require callers to know when to provision a Profile, select
-an Active Mac Generation, read the outbox, send a batch, apply an
-acknowledgement, and publish a safe synchronization status. A generic event
-bus would hide these rules and would let unrelated Sanitized Desktop State
-Revision Notices start synchronization.
+One shared worker would make callers coordinate Profile provisioning, Active
+Mac Generation selection, outbox reads, and batch delivery. Callers would also
+apply acknowledgements and publish a safe synchronization status. A generic
+event bus would hide these rules and would let unrelated Sanitized Desktop
+State Revision Notices start synchronization.
 
 ## Decision
 
