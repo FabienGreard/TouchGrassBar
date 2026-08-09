@@ -759,7 +759,7 @@ mod tests {
     impl ActiveMacAuthoritySource for ReadyAuthority {
         fn acquire(&self) -> ActiveMacAuthorityOutcome {
             ActiveMacAuthorityOutcome::Ready(ActiveMacAuthority {
-                active_mac_generation: 7,
+                active_mac_generation: 1,
                 installation_credential: Secret::test_only(),
                 session: Secret::test_only(),
             })
@@ -775,7 +775,7 @@ mod tests {
     impl ActiveMacAuthoritySource for RefreshingAuthority {
         fn acquire(&self) -> ActiveMacAuthorityOutcome {
             ActiveMacAuthorityOutcome::Ready(ActiveMacAuthority {
-                active_mac_generation: 7,
+                active_mac_generation: 1,
                 installation_credential: Secret::test_only(),
                 session: Secret::test_only(),
             })
@@ -1101,7 +1101,7 @@ mod tests {
             assert!(Instant::now() < deadline, "synchronization did not commit");
             thread::yield_now();
         }
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
 
         runtime.shutdown();
         core.shutdown();
@@ -1136,7 +1136,7 @@ mod tests {
             Ok(vec![CodingProvider::Codex, CodingProvider::Claude])
         );
         let deadline = Instant::now() + Duration::from_secs(1);
-        while core.pending_usage_sync_batch(7).unwrap().is_some() {
+        while core.pending_usage_sync_batch(1).unwrap().is_some() {
             assert!(
                 Instant::now() < deadline,
                 "initial synchronization did not commit"
@@ -1151,7 +1151,7 @@ mod tests {
             Ok(vec![CodingProvider::Codex])
         );
         let deadline = Instant::now() + Duration::from_secs(1);
-        while core.pending_usage_sync_batch(7).unwrap().is_some() {
+        while core.pending_usage_sync_batch(1).unwrap().is_some() {
             assert!(Instant::now() < deadline, "provider setting did not commit");
             thread::yield_now();
         }
@@ -1182,7 +1182,7 @@ mod tests {
 
         runtime.request();
         let deadline = Instant::now() + Duration::from_secs(1);
-        while core.active_usage_sync_generation().unwrap() != Some(7) {
+        while core.active_usage_sync_generation().unwrap() != Some(1) {
             assert!(Instant::now() < deadline, "authority did not activate");
             thread::yield_now();
         }
@@ -1249,7 +1249,7 @@ mod tests {
             assert!(Instant::now() < deadline, "synchronization did not commit");
             thread::yield_now();
         }
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
 
         runtime.shutdown();
         core.shutdown();

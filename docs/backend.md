@@ -38,6 +38,8 @@ therefore, a late disable or re-enable request cannot restore an older setting.
 
 On same-day Active Mac transfer, the old generation's accepted contribution is frozen and the new generation contributes only its post-transfer segment. Later writes from the old generation fail, earlier Ranking Days are not rewritten, and a known unsynchronized old segment makes the transferred day partial.
 
+Native stores a sanitized activation baseline for the transfer day. It subtracts tokens and compatible cost. A late baseline makes the segment partial.
+
 ## Usage-contract verification
 
 Automated fixtures must cover Quota Lane freshness and reset transitions; provider/day source precedence; Codex and Claude token-category counting without overlap; complete, partial, stale, unavailable, and missing-not-zero behavior; revision idempotency and authorized downward corrections; effective-dated pricing and catalog-triggered cost recomputation; unknown-price omission; and the sanitized synchronization payload. Native-boundary gates additionally cover generated-contract drift and unknown-version rejection; sentinel secret, path, identifier, and raw-content exclusion from IPC and sync payloads; SQLite migration and atomic-outbox crash recovery; refresh timing with a fake clock; Active Mac revocation; and release CSP/capability restrictions. These fixtures define the acceptance contract but do not replace final release QA.

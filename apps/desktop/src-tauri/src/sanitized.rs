@@ -39,7 +39,8 @@ use crate::usage_sync::{
 use crate::usage_sync::{
     PendingUsageBatch, QueueState, QueueUpdate, UsageSyncAcknowledgements, UsageSyncAttemptResult,
     UsageSyncCorrections, activate_generation, apply_provider_settings_acknowledgement,
-    apply_usage_acknowledgements, has_current_terminal_usage_conflict, install_usage_sync_schema,
+    apply_usage_acknowledgements, capture_generation_baselines,
+    has_current_terminal_usage_conflict, install_usage_sync_schema,
     load_active_usage_sync_generation, load_current_pending_usage_batch,
     load_usage_sync_generation_state, mark_generation_authority_rejected, queue_current_utc_day,
     queue_current_utc_day_with_corrections, queue_provider_settings, stage_usage_sync_corrections,
@@ -1076,6 +1077,8 @@ impl SqliteReadModelStore {
             }
             UsageSyncCommit::Activate(generation) => {
                 activate_generation(&transaction, generation)
+                    .map_err(|_| "native state persistence unavailable")?;
+                capture_generation_baselines(&transaction, generation, state, now)
                     .map_err(|_| "native state persistence unavailable")?;
                 self.active_mac_generation = Some(generation);
                 pending_usage_changed |=
@@ -4124,6 +4127,75 @@ mod tests {
         state
     }
 
+    fn claude_provider_reported_state(
+        observed_at: OffsetDateTime,
+        observed_tokens: u64,
+    ) -> SanitizedDesktopStateV3 {
+        let mut state = claude_observed_state(observed_at, observed_tokens);
+        let UsageTotal::Current { evidence_basis, .. } = &mut state
+            .provider_mut(CodingProvider::Claude)
+            .expect("Claude fixture")
+            .usage
+            .today
+        else {
+            panic!("Claude fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::ProviderReported;
+        state.refresh_combined_usage();
+        state
+    }
+
+    fn both_provider_observed_state(
+        observed_at: OffsetDateTime,
+        codex_tokens: u64,
+        codex_cost_usd: f64,
+        claude_tokens: u64,
+        claude_cost_usd: f64,
+    ) -> SanitizedDesktopStateV3 {
+        let mut state = observed_state(observed_at, codex_tokens);
+        let codex_usage = &mut state
+            .provider_mut(CodingProvider::Codex)
+            .expect("Codex fixture")
+            .usage;
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            api_equivalent_cost_quality,
+            ..
+        } = &mut codex_usage.today
+        else {
+            panic!("Codex fixture usage must be current");
+        };
+        *api_equivalent_cost_usd = Some(codex_cost_usd);
+        *api_equivalent_cost_basis = Some("openai-api-2026-08-09-v3".to_owned());
+        *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::Reconciled);
+
+        let mut claude_usage = codex_usage.clone();
+        let UsageTotal::Current {
+            evidence_basis,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            api_equivalent_cost_quality,
+            ..
+        } = &mut claude_usage.today
+        else {
+            panic!("Claude fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::LocallyDerived;
+        *observed_tokens = claude_tokens;
+        *api_equivalent_cost_usd = Some(claude_cost_usd);
+        *api_equivalent_cost_basis = Some("anthropic-standard-2026-08-07-v1".to_owned());
+        *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::LocalOnly);
+        let claude = state
+            .provider_mut(CodingProvider::Claude)
+            .expect("Claude fixture");
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.usage = claude_usage;
+        state.refresh_combined_usage();
+        state
+    }
+
     struct CorrectionRefreshSource {
         responses: Mutex<VecDeque<SnapshotRefreshOutcome>>,
     }
@@ -4867,14 +4939,14 @@ mod tests {
 
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let first = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let first = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(first.snapshots()[0].revision, 1);
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Pending);
 
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        let newer = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let newer = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(newer.snapshots()[0].revision, 2);
 
         let late_acknowledgement = UsageSyncAcknowledgement {
@@ -4885,7 +4957,7 @@ mod tests {
         };
         core.acknowledge_usage_sync(&first, &[late_acknowledgement])
             .unwrap();
-        let after_late_ack = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let after_late_ack = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(after_late_ack.snapshots()[0].revision, 2);
         let panel = core.panel_state().unwrap();
         assert_eq!(panel.sync.status, SyncStatus::Pending);
@@ -4893,14 +4965,364 @@ mod tests {
 
         core.mark_usage_sync_offline().unwrap();
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Offline);
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_some());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_some());
 
-        core.mark_usage_sync_authority_rejected(7).unwrap();
+        core.mark_usage_sync_authority_rejected(1).unwrap();
         assert_eq!(
             core.panel_state().unwrap().sync.status,
             SyncStatus::AuthorityRejected
         );
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn transferred_generation_sends_only_both_provider_post_activation_segments() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let initial = both_provider_observed_state(now, 100, 1.0, 200, 2.0);
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now)),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(initial))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        core.activate_usage_sync_generation(2).unwrap();
+
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert!(activation.snapshots().is_empty());
+        core.shutdown();
+        drop(core);
+
+        let later =
+            both_provider_observed_state(now + TimeDuration::seconds(1), 150, 1.5, 275, 2.75);
+        let latest =
+            both_provider_observed_state(now + TimeDuration::seconds(2), 160, 1.6, 290, 2.9);
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now + TimeDuration::seconds(2))),
+            Arc::new(ScriptedRefreshSource::new([
+                Ok(Some(later)),
+                Ok(Some(latest)),
+            ])),
+        )
+        .unwrap();
+        restored.request_refresh(RefreshSource::Manual).unwrap();
+        restored.wait_for_refresh_completion().unwrap();
+
+        let pending = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 2);
+        let codex = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.observed_tokens, 50);
+        assert_eq!(codex.api_equivalent_cost.as_ref().unwrap().micros, 500_000);
+        let claude = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.observed_tokens, 75);
+        assert_eq!(claude.api_equivalent_cost.as_ref().unwrap().micros, 750_000);
+
+        let acknowledgements = pending
+            .snapshots()
+            .iter()
+            .map(|snapshot| UsageSyncAcknowledgement {
+                provider: snapshot.provider,
+                ranking_day: snapshot.ranking_day.clone(),
+                revision: snapshot.revision,
+                outcome: AcknowledgementOutcome::Committed,
+            })
+            .collect::<Vec<_>>();
+        restored
+            .acknowledge_usage_sync(&pending, &acknowledgements)
+            .unwrap();
+        assert!(restored.pending_usage_sync_batch(2).unwrap().is_none());
+
+        restored.request_refresh(RefreshSource::Manual).unwrap();
+        restored.wait_for_refresh_completion().unwrap();
+        let cumulative = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        let codex = cumulative
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.revision, 2);
+        assert_eq!(codex.observed_tokens, 60);
+        assert_eq!(codex.api_equivalent_cost.as_ref().unwrap().micros, 600_000);
+        let claude = cumulative
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.revision, 2);
+        assert_eq!(claude.observed_tokens, 90);
+        assert_eq!(claude.api_equivalent_cost.as_ref().unwrap().micros, 900_000);
+    }
+
+    #[test]
+    fn transferred_generation_queues_full_totals_after_the_activation_day() {
+        let now = test_time();
+        let next_day = now + TimeDuration::days(1);
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(now));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(both_provider_observed_state(now, 100, 1.0, 200, 2.0))),
+            Ok(Some(both_provider_observed_state(
+                next_day, 25, 0.25, 40, 0.4,
+            ))),
+        ]));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        assert!(
+            core.pending_usage_sync_batch(2)
+                .unwrap()
+                .unwrap()
+                .snapshots()
+                .is_empty()
+        );
+
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 2);
+        let codex = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.observed_tokens, 25);
+        assert_eq!(codex.api_equivalent_cost.as_ref().unwrap().micros, 250_000);
+        let claude = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.observed_tokens, 40);
+        assert_eq!(claude.api_equivalent_cost.as_ref().unwrap().micros, 400_000);
+    }
+
+    #[test]
+    fn transferred_generation_records_a_late_baseline_as_partial() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let now = test_time();
+        let activation_time = now + TimeDuration::minutes(1);
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(now, 100))),
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(1),
+                150,
+            ))),
+        ]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(activation_time)),
+            source,
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let stored_counts = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => (
+                store
+                    .connection
+                    .query_row(
+                        "SELECT count(*) FROM usage_sync_generation_baselines",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                store
+                    .connection
+                    .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            ),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_counts, (0, 1));
+        let marker = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(marker.snapshots().len(), 1);
+        assert_eq!(marker.snapshots()[0].observed_tokens, 0);
+        assert_eq!(marker.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(marker.snapshots()[0].api_equivalent_cost, None);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Codex,
+            ranking_day: marker.snapshots()[0].ranking_day.clone(),
+            revision: marker.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&marker, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].revision, 2);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 0);
+        assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(pending.snapshots()[0].api_equivalent_cost, None);
+    }
+
+    #[test]
+    fn transferred_generation_keeps_its_baseline_after_a_parser_correction() {
+        use crate::usage_sync::{
+            AcknowledgementOutcome, CorrectionReason, UsageSyncAcknowledgement,
+        };
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(CorrectionRefreshSource {
+            responses: Mutex::new(VecDeque::from([
+                SnapshotRefreshOutcome::from(Some(claude_observed_state(now, 100))),
+                SnapshotRefreshOutcome::from(Some(claude_observed_state(
+                    now + TimeDuration::seconds(1),
+                    150,
+                ))),
+                SnapshotRefreshOutcome {
+                    snapshot: Some(claude_observed_state(now + TimeDuration::seconds(2), 90)),
+                    completed_providers: BTreeSet::new(),
+                    corrections: BTreeMap::from([(
+                        CodingProvider::Claude,
+                        ProviderCorrection::ParserCorrection { source_revision: 2 },
+                    )]),
+                },
+                SnapshotRefreshOutcome::from(Some(claude_observed_state(
+                    now + TimeDuration::seconds(3),
+                    110,
+                ))),
+            ])),
+        });
+        let core =
+            NativeCore::open_without_launch(&database.0, Arc::new(FixtureClock::new(now)), source)
+                .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let first = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(first.snapshots()[0].observed_tokens, 50);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: first.snapshots()[0].ranking_day.clone(),
+            revision: 1,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&first, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let corrected = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(corrected.snapshots()[0].revision, 2);
+        assert_eq!(corrected.snapshots()[0].observed_tokens, 0);
+        assert_eq!(
+            corrected.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ParserCorrection)
+        );
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: corrected.snapshots()[0].ranking_day.clone(),
+            revision: 2,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&corrected, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let later = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(later.snapshots()[0].revision, 3);
+        assert_eq!(later.snapshots()[0].observed_tokens, 10);
+        assert_eq!(later.snapshots()[0].correction_reason, None);
+    }
+
+    #[test]
+    fn transferred_generation_keeps_its_baseline_after_a_provider_replacement() {
+        use crate::usage_sync::{
+            AcknowledgementOutcome, CorrectionReason, UsageSyncAcknowledgement,
+        };
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(claude_observed_state(now, 100))),
+            Ok(Some(claude_observed_state(
+                now + TimeDuration::seconds(1),
+                150,
+            ))),
+            Ok(Some(claude_provider_reported_state(
+                now + TimeDuration::seconds(2),
+                90,
+            ))),
+            Ok(Some(claude_provider_reported_state(
+                now + TimeDuration::seconds(3),
+                110,
+            ))),
+        ]));
+        let core =
+            NativeCore::open_without_launch(&database.0, Arc::new(FixtureClock::new(now)), source)
+                .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let first = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(first.snapshots()[0].observed_tokens, 50);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: first.snapshots()[0].ranking_day.clone(),
+            revision: 1,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&first, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let corrected = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(corrected.snapshots()[0].revision, 2);
+        assert_eq!(corrected.snapshots()[0].observed_tokens, 0);
+        assert_eq!(
+            corrected.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ProviderReplacement)
+        );
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: corrected.snapshots()[0].ranking_day.clone(),
+            revision: 2,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&corrected, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let later = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(later.snapshots()[0].revision, 3);
+        assert_eq!(later.snapshots()[0].observed_tokens, 10);
+        assert_eq!(later.snapshots()[0].correction_reason, None);
     }
 
     #[test]
@@ -4937,9 +5359,9 @@ mod tests {
         policy.enabled.store(false, Ordering::Release);
         core.provider_enablement_changed(CodingProvider::Claude, false)
             .unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
 
-        let before_activation = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let before_activation = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(
             before_activation
                 .provider_settings()
@@ -4970,7 +5392,7 @@ mod tests {
         policy.enabled.store(true, Ordering::Release);
         core.provider_enablement_changed(CodingProvider::Claude, true)
             .unwrap();
-        let enabled = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let enabled = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(enabled.snapshots().len(), 2);
         assert_eq!(enabled.provider_settings().unwrap().revision(), 2);
         assert_eq!(
@@ -4981,7 +5403,7 @@ mod tests {
         policy.enabled.store(false, Ordering::Release);
         core.provider_enablement_changed(CodingProvider::Claude, false)
             .unwrap();
-        let before_delivery = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let before_delivery = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(before_delivery.provider_settings().unwrap().revision(), 3);
         assert_eq!(
             before_delivery
@@ -5014,8 +5436,8 @@ mod tests {
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
         let requests = Arc::new(AtomicUsize::new(0));
         let observed_requests = Arc::clone(&requests);
         core.install_usage_sync_request(Arc::new(move || {
@@ -5035,7 +5457,7 @@ mod tests {
         )
         .unwrap();
 
-        let pending = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(pending.provider_settings().unwrap().revision(), 4);
         assert_eq!(
             pending.snapshots()[0].revision,
@@ -5072,9 +5494,9 @@ mod tests {
         assert_eq!(core.panel_state().unwrap().revision, rejected_revision);
         assert!(notices.try_recv().is_err());
 
-        core.activate_usage_sync_generation(7).unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
 
-        let pending = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert!(pending.snapshots().is_empty());
         assert_eq!(
             pending.provider_settings().unwrap().enabled_providers(),
@@ -5099,8 +5521,8 @@ mod tests {
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
         let requests = Arc::new(AtomicUsize::new(0));
         let observed_requests = Arc::clone(&requests);
         core.install_usage_sync_request(Arc::new(move || {
@@ -5117,7 +5539,7 @@ mod tests {
         core.acknowledge_usage_sync(&sent, &[acknowledgement])
             .unwrap();
 
-        let pending = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(pending.snapshots()[0].revision, 4);
         assert_eq!(requests.load(Ordering::Acquire), 1);
     }
@@ -5138,8 +5560,8 @@ mod tests {
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
         let requests = Arc::new(AtomicUsize::new(0));
         let observed_requests = Arc::clone(&requests);
         core.install_usage_sync_request(Arc::new(move || {
@@ -5156,7 +5578,7 @@ mod tests {
         core.acknowledge_usage_sync(&sent, &[acknowledgement])
             .unwrap();
 
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
         assert_eq!(requests.load(Ordering::Acquire), 0);
         assert_eq!(
             core.panel_state().unwrap().sync.status,
@@ -5191,7 +5613,7 @@ mod tests {
             Arc::new(ScriptedRefreshSource::new([])),
         )
         .unwrap();
-        assert!(relaunched.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(relaunched.pending_usage_sync_batch(1).unwrap().is_none());
         assert_eq!(
             relaunched.panel_state().unwrap().sync.status,
             SyncStatus::Unavailable
@@ -5200,7 +5622,7 @@ mod tests {
         relaunched
             .provider_enablement_changed(CodingProvider::Claude, false)
             .unwrap();
-        let settings_only = relaunched.pending_usage_sync_batch(7).unwrap().unwrap();
+        let settings_only = relaunched.pending_usage_sync_batch(1).unwrap().unwrap();
         assert!(settings_only.snapshots().is_empty());
         relaunched
             .acknowledge_usage_sync(&settings_only, &[])
@@ -5232,8 +5654,8 @@ mod tests {
 
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Pending);
@@ -5247,7 +5669,7 @@ mod tests {
         core.acknowledge_usage_sync(&sent, &[acknowledgement])
             .unwrap();
 
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
     }
 
@@ -5279,11 +5701,11 @@ mod tests {
 
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
 
-        let pending = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(pending.snapshots().len(), 1);
         assert_eq!(pending.snapshots()[0].revision, 2);
         assert_eq!(pending.snapshots()[0].observed_tokens, 80);
@@ -5337,9 +5759,9 @@ mod tests {
             Arc::new(CachedProjectionRefreshAdapter),
         )
         .unwrap();
-        restored.activate_usage_sync_generation(7).unwrap();
+        restored.activate_usage_sync_generation(1).unwrap();
 
-        let pending = restored.pending_usage_sync_batch(7).unwrap().unwrap();
+        let pending = restored.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(pending.snapshots()[0].observed_tokens, 50);
         assert_eq!(
             pending.snapshots()[0].correction_reason,
@@ -5361,9 +5783,9 @@ mod tests {
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(9).unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
         assert_eq!(
-            core.pending_usage_sync_batch(9)
+            core.pending_usage_sync_batch(1)
                 .unwrap()
                 .unwrap()
                 .snapshots()[0]
@@ -5379,16 +5801,16 @@ mod tests {
             Arc::new(CachedProjectionRefreshAdapter),
         )
         .unwrap();
-        assert_eq!(restored.active_usage_sync_generation().unwrap(), Some(9));
-        restored.activate_usage_sync_generation(9).unwrap();
-        let pending = restored.pending_usage_sync_batch(9).unwrap().unwrap();
+        assert_eq!(restored.active_usage_sync_generation().unwrap(), Some(1));
+        restored.activate_usage_sync_generation(1).unwrap();
+        let pending = restored.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(pending.snapshots()[0].revision, 1);
         assert_eq!(
             restored.panel_state().unwrap().sync.status,
             SyncStatus::Pending
         );
         let notices = restored.revision_notices().unwrap();
-        restored.mark_usage_sync_authority_rejected(9).unwrap();
+        restored.mark_usage_sync_authority_rejected(1).unwrap();
         notices
             .recv_timeout(Duration::from_secs(1))
             .expect("authority transition notice");
@@ -5396,9 +5818,9 @@ mod tests {
             restored.panel_state().unwrap().sync.status,
             SyncStatus::AuthorityRejected
         );
-        assert!(restored.pending_usage_sync_batch(9).unwrap().is_none());
+        assert!(restored.pending_usage_sync_batch(1).unwrap().is_none());
         let rejected_revision = restored.panel_state().unwrap().revision;
-        restored.mark_usage_sync_authority_rejected(9).unwrap();
+        restored.mark_usage_sync_authority_rejected(1).unwrap();
         assert_eq!(restored.panel_state().unwrap().revision, rejected_revision);
         assert!(notices.try_recv().is_err());
     }
@@ -5420,8 +5842,8 @@ mod tests {
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
         let acknowledgement = UsageSyncAcknowledgement {
             provider: sent.snapshots()[0].provider,
             ranking_day: sent.snapshots()[0].ranking_day.clone(),
@@ -5433,16 +5855,16 @@ mod tests {
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Synced);
 
         clock.advance(Duration::from_secs(24 * 60 * 60));
-        core.activate_usage_sync_generation(8).unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
 
         assert!(matches!(
             &*core.inner.store.lock().unwrap(),
             ReadModelStore::Persistent(_)
         ));
-        let settings = core.pending_usage_sync_batch(8).unwrap().unwrap();
+        let settings = core.pending_usage_sync_batch(2).unwrap().unwrap();
         assert!(settings.snapshots().is_empty());
         core.acknowledge_usage_sync(&settings, &[]).unwrap();
-        assert!(core.pending_usage_sync_batch(8).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(2).unwrap().is_none());
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
     }
 
@@ -5464,8 +5886,8 @@ mod tests {
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let sent = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
         let acknowledgement = UsageSyncAcknowledgement {
             provider: sent.snapshots()[0].provider,
             ranking_day: sent.snapshots()[0].ranking_day.clone(),
@@ -5478,7 +5900,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
         assert!(matches!(
             &*core.inner.store.lock().unwrap(),
             ReadModelStore::Persistent(_)
@@ -5503,8 +5925,8 @@ mod tests {
         .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        core.activate_usage_sync_generation(7).unwrap();
-        let initial = core.pending_usage_sync_batch(7).unwrap().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let initial = core.pending_usage_sync_batch(1).unwrap().unwrap();
         let acknowledgement = UsageSyncAcknowledgement {
             provider: initial.snapshots()[0].provider,
             ranking_day: initial.snapshots()[0].ranking_day.clone(),
@@ -5515,12 +5937,12 @@ mod tests {
             .unwrap();
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_some());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_some());
 
         clock.advance(Duration::from_secs(2));
         core.mark_usage_sync_pending().unwrap();
 
-        assert!(core.pending_usage_sync_batch(7).unwrap().is_none());
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
         assert_eq!(
             core.panel_state().unwrap().sync.status,
             SyncStatus::Unavailable

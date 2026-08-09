@@ -564,6 +564,25 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
                  REFERENCES usage_sync_generations(active_generation)
          ) STRICT;
 
+         CREATE TABLE IF NOT EXISTS usage_sync_generation_baselines (
+             active_generation INTEGER NOT NULL,
+             provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+             ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+             aggregate_json TEXT NOT NULL CHECK(length(aggregate_json) <= 4096),
+             PRIMARY KEY(active_generation, provider, ranking_day),
+             FOREIGN KEY(active_generation)
+                 REFERENCES usage_sync_generations(active_generation)
+         ) STRICT;
+
+         CREATE TABLE IF NOT EXISTS usage_sync_generation_activations (
+             active_generation INTEGER PRIMARY KEY,
+             ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+             activated_at INTEGER NOT NULL
+                 CHECK(activated_at >= 0 AND activated_at <= 9007199254740991),
+             FOREIGN KEY(active_generation)
+                 REFERENCES usage_sync_generations(active_generation)
+         ) STRICT;
+
          CREATE TABLE IF NOT EXISTS usage_sync_latest_outbox (
              active_generation INTEGER NOT NULL,
              provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
@@ -830,6 +849,231 @@ fn current_utc_daily_aggregates_with_corrections(
     Ok(aggregates)
 }
 
+/// Store the cumulative provider totals that exist when a transferred Mac
+/// generation becomes active. Later queue writes use only the difference from
+/// these totals. Generation one has no earlier Active Mac contribution.
+pub(crate) fn capture_generation_baselines(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    state: &SanitizedDesktopStateV3,
+    now: OffsetDateTime,
+) -> Result<(), UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    if active_mac_generation == 1 {
+        return Ok(());
+    }
+    let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
+    validate_ranking_day(&ranking_day)?;
+    let generation = to_database_integer(active_mac_generation)?;
+    let activated_at = to_database_integer(offset_date_time_millis(now)?)?;
+    transaction.execute(
+        "INSERT INTO usage_sync_generation_activations(
+             active_generation, ranking_day, activated_at
+         ) VALUES(?1, ?2, ?3)
+         ON CONFLICT(active_generation) DO NOTHING",
+        params![generation, ranking_day, activated_at],
+    )?;
+    let (activation_day, activated_at) = transaction.query_row(
+        "SELECT ranking_day, activated_at FROM usage_sync_generation_activations
+         WHERE active_generation = ?1",
+        [generation],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+    validate_ranking_day(&activation_day).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    let activated_at =
+        u64::try_from(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    validate_safe_integer(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    if activation_day != ranking_day {
+        return Ok(());
+    }
+    let providers = state
+        .providers
+        .iter()
+        .map(|presentation| presentation.provider)
+        .collect();
+    for mut aggregate in current_utc_daily_aggregates_with_corrections(
+        state,
+        now,
+        &UsageSyncCorrections::default(),
+        &providers,
+    )? {
+        if aggregate.observed_at < activated_at {
+            continue;
+        }
+        aggregate.correction_reason = None;
+        let provider = provider_database_value(aggregate.provider);
+        let aggregate_json = encode_local_value(&aggregate)?;
+        transaction.execute(
+            "INSERT INTO usage_sync_generation_baselines(
+                 active_generation, provider, ranking_day, aggregate_json
+             ) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(active_generation, provider, ranking_day) DO NOTHING",
+            params![
+                to_database_integer(active_mac_generation)?,
+                provider,
+                aggregate.ranking_day,
+                aggregate_json
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+enum GenerationSegment {
+    BaselineOnly,
+    Queue(DailyUsageAggregate),
+}
+
+fn generation_segment(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    mut aggregate: DailyUsageAggregate,
+) -> Result<GenerationSegment, UsageSyncError> {
+    if active_mac_generation == 1 {
+        return Ok(GenerationSegment::Queue(aggregate));
+    }
+    let provider = provider_database_value(aggregate.provider);
+    let generation = to_database_integer(active_mac_generation)?;
+    let activation = transaction
+        .query_row(
+            "SELECT ranking_day, activated_at FROM usage_sync_generation_activations
+             WHERE active_generation = ?1",
+            [generation],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((activation_day, activated_at)) = activation else {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    };
+    validate_ranking_day(&activation_day).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    let activated_at =
+        u64::try_from(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    validate_safe_integer(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    if aggregate.ranking_day != activation_day {
+        return Ok(GenerationSegment::Queue(aggregate));
+    }
+    let baseline_json = transaction
+        .query_row(
+            "SELECT aggregate_json
+             FROM usage_sync_generation_baselines
+             WHERE active_generation = ?1 AND provider = ?2 AND ranking_day = ?3",
+            params![generation, provider, aggregate.ranking_day],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(baseline_json) = baseline_json else {
+        if aggregate.observed_at < activated_at {
+            aggregate.correction_reason = None;
+            aggregate.coverage = SyncCoverage::Partial;
+            aggregate.observed_tokens = 0;
+            aggregate.api_equivalent_cost = None;
+            aggregate.validate()?;
+            return Ok(GenerationSegment::Queue(aggregate));
+        }
+        let mut baseline = aggregate.clone();
+        baseline.correction_reason = None;
+        baseline.coverage = SyncCoverage::Partial;
+        let aggregate_json = encode_local_value(&baseline)?;
+        transaction.execute(
+            "INSERT INTO usage_sync_generation_baselines(
+                 active_generation, provider, ranking_day, aggregate_json
+             ) VALUES(?1, ?2, ?3, ?4)",
+            params![generation, provider, baseline.ranking_day, aggregate_json],
+        )?;
+        aggregate.correction_reason = None;
+        aggregate.coverage = SyncCoverage::Partial;
+        aggregate.observed_tokens = 0;
+        aggregate.api_equivalent_cost = None;
+        aggregate.validate()?;
+        return Ok(GenerationSegment::Queue(aggregate));
+    };
+    if baseline_json.len() > MAX_LOCAL_VALUE_BYTES {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    let baseline: DailyUsageAggregate =
+        serde_json::from_str(&baseline_json).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    baseline
+        .validate()
+        .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    if baseline.provider != aggregate.provider || baseline.ranking_day != aggregate.ranking_day {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    if aggregate.observed_at < baseline.observed_at {
+        return Ok(GenerationSegment::BaselineOnly);
+    }
+    if aggregate.correction_reason.is_none()
+        && baseline.evidence_basis == SyncEvidenceBasis::LocallyDerived
+        && aggregate.evidence_basis == SyncEvidenceBasis::ProviderReported
+        && aggregate.observed_tokens < baseline.observed_tokens
+    {
+        aggregate.correction_reason = Some(CorrectionReason::ProviderReplacement);
+    }
+    let observed_tokens = aggregate
+        .observed_tokens
+        .saturating_sub(baseline.observed_tokens);
+    let existing = load_aggregate(
+        transaction,
+        active_mac_generation,
+        aggregate.provider,
+        &aggregate.ranking_day,
+    )?;
+    if observed_tokens == 0 && existing.is_none() {
+        return Ok(GenerationSegment::BaselineOnly);
+    }
+    aggregate.coverage = if aggregate.coverage == SyncCoverage::Complete
+        && baseline.coverage == SyncCoverage::Complete
+    {
+        SyncCoverage::Complete
+    } else {
+        SyncCoverage::Partial
+    };
+    aggregate.api_equivalent_cost = segment_cost(&baseline, &aggregate, observed_tokens);
+    aggregate.observed_tokens = observed_tokens;
+    aggregate.validate()?;
+    Ok(GenerationSegment::Queue(aggregate))
+}
+
+fn segment_cost(
+    baseline: &DailyUsageAggregate,
+    candidate: &DailyUsageAggregate,
+    segment_tokens: u64,
+) -> Option<SyncApiEquivalentCost> {
+    if segment_tokens == 0 {
+        return None;
+    }
+    let baseline_cost = baseline.api_equivalent_cost.as_ref()?;
+    let candidate_cost = candidate.api_equivalent_cost.as_ref()?;
+    if baseline_cost.pricing_basis != candidate_cost.pricing_basis
+        || baseline_cost.quality != candidate_cost.quality
+    {
+        return None;
+    }
+    let micros = candidate_cost.micros.checked_sub(baseline_cost.micros)?;
+    let coverage_percent = match candidate_cost.quality {
+        SyncCostQuality::Reconciled | SyncCostQuality::LocalOnly => None,
+        SyncCostQuality::Modeled => {
+            let baseline_coverage = baseline_cost.coverage_percent?;
+            let candidate_coverage = candidate_cost.coverage_percent?;
+            let baseline_covered = baseline.observed_tokens as f64 * baseline_coverage / 100.0;
+            let candidate_covered = candidate.observed_tokens as f64 * candidate_coverage / 100.0;
+            let segment_covered = candidate_covered - baseline_covered;
+            if !segment_covered.is_finite()
+                || segment_covered < 0.0
+                || segment_covered > segment_tokens as f64
+            {
+                return None;
+            }
+            Some(segment_covered * 100.0 / segment_tokens as f64)
+        }
+    };
+    Some(SyncApiEquivalentCost {
+        micros,
+        pricing_basis: candidate_cost.pricing_basis.clone(),
+        quality: candidate_cost.quality,
+        coverage_percent,
+    })
+}
+
 /// Store all current-day candidates in one caller-owned transaction.
 pub(crate) fn queue_current_utc_day(
     transaction: &Transaction<'_>,
@@ -867,6 +1111,21 @@ pub(crate) fn queue_current_utc_day_with_corrections(
     for aggregate in aggregates {
         let provider = aggregate.provider;
         let ranking_day = aggregate.ranking_day.clone();
+        let aggregate = match generation_segment(transaction, active_mac_generation, aggregate)? {
+            GenerationSegment::BaselineOnly => {
+                if let Some(correction) = staged.0.get(&provider).copied() {
+                    consume_staged_usage_sync_correction(
+                        transaction,
+                        provider,
+                        &ranking_day,
+                        correction,
+                        active_mac_generation,
+                    )?;
+                }
+                continue;
+            }
+            GenerationSegment::Queue(aggregate) => aggregate,
+        };
         let update = queue_daily_aggregate(transaction, active_mac_generation, aggregate, now)?;
         if matches!(update, QueueUpdate::Stored { .. })
             && let Some(correction) = staged.0.get(&provider).copied()
@@ -1058,9 +1317,14 @@ fn prune_expired_usage_sync_rows(
         "DELETE FROM usage_sync_terminal_conflicts WHERE ranking_day < ?1",
         [&first_retained_day],
     )?;
+    let baselines = transaction.execute(
+        "DELETE FROM usage_sync_generation_baselines WHERE ranking_day < ?1",
+        [&first_retained_day],
+    )?;
     aggregates
         .checked_add(outbox)
         .and_then(|rows| rows.checked_add(terminal_conflicts))
+        .and_then(|rows| rows.checked_add(baselines))
         .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
