@@ -1,5 +1,6 @@
 .direction-d {
-  --d-site-gutter: max(7vw, calc((100vw - 1240px) / 2));
+  --d-header-height: 52px;
+  --d-site-gutter: max(7vw, calc((100vw - clamp(1240px, 70vw, 2240px)) / 2));
   --d-section-title-size: clamp(48px, 4.2vw, 60px);
   --d-feature-title-size: clamp(56px, 5.6vw, 82px);
   --d-section-title-line: 0.92;
@@ -7,6 +8,10 @@
   background: #0a0e0b;
   color: #f3f6f2;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+}
+
+.direction-d > section:not(.d-garden-hero) {
+  scroll-margin-top: var(--d-header-height);
 }
 
 .direction-d .specimen {
@@ -44,7 +49,7 @@
   left: 0;
   z-index: 55;
   grid-template-columns: 1fr auto;
-  height: 52px;
+  height: var(--d-header-height);
   padding: 0 var(--d-site-gutter);
   border: 0;
   border-bottom: 1px solid transparent;
