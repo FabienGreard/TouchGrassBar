@@ -592,8 +592,7 @@
 
 @media (max-width: 900px) {
   .direction-d .d-invite-note-rain span {
-    animation: none;
-    will-change: auto;
+    will-change: transform;
   }
 
   .d-mist-layer {
