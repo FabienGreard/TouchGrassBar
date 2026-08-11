@@ -65,11 +65,12 @@ outbox and Sanitized Desktop State atomically. Rust publishes a Revision Notice
 only after the transaction commits.
 
 For issue #26, the implementation selects Pending Usage Snapshots for the
-current UTC Ranking Day. It has one bounded exception. If authority activation
-is before UTC midnight and local authority installation is after midnight, an
-abandoned transfer-day snapshot creates one zero-token partial marker for each
-affected Coding Provider. The marker uses the exact server activation time and
-has no cost or correction. If local installation finished before midnight but
+current UTC Ranking Day. It has one bounded exception. Authority activation
+can occur before UTC midnight, while local installation finishes after midnight.
+In that case, an abandoned transfer-day snapshot creates one zero-token partial
+marker for each affected Coding Provider. The marker uses the exact server
+activation time and has no cost or correction. If local installation finished
+before midnight but
 an activation-day partial snapshot is still pending at rollover, the Module
 sends that exact snapshot. It does not change its tokens, cost, correction, or
 revision. A stale zero-token carryover is complete because the server has a
