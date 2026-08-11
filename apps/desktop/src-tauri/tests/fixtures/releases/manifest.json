@@ -415,15 +415,15 @@
     {
       "tag": "v0.0.9",
       "database": "v0.0.9/touchgrassbar.sqlite3",
-      "sha256": "ece6272f1e16fbbb5e06d504c59552a06f4245f12dbb325f619a5268f4fbb9ba",
+      "sha256": "594c96706780318caeeeb86ecc507c7af80055622063f6dda6214989fb02f1ca",
       "sourceCommit": "candidate",
       "releaseStatus": "candidate",
       "sourceSchema": {
-        "databaseFormat": 6,
+        "databaseFormat": 7,
         "lifecycle": 5,
-        "sanitizedDesktopState": 5,
-        "codexUsageIndex": 3,
-        "claudeUsageIndex": 4,
+        "sanitizedDesktopState": 6,
+        "codexUsageIndex": 6,
+        "claudeUsageIndex": 7,
         "updateState": 3,
         "databaseCoordinator": 1
       },

@@ -160,9 +160,10 @@ Requests during an attempt produce one rerun.
 Each Coding Provider can request delivery as soon as its own commit completes.
 It does not wait for another provider. Outbox changes, safe synchronization
 status, and the Sanitized Desktop State revision commit atomically. For issue
-#26, only the current UTC Ranking Day is eligible. Issue #27 can expand the
-internal day policy without an external Interface change. This decision is
-recorded in [ADR 0017](adr/0017-separate-pending-usage-synchronization-from-profile-provisioning.md).
+#26, the current UTC Ranking Day is normally eligible. One bounded transfer-day
+carryover can preserve partial coverage after an Active Mac change. Issue #27
+can expand the internal day policy without an external Interface change. This
+decision is recorded in [ADR 0018](adr/0018-separate-pending-usage-synchronization-from-profile-provisioning.md).
 
 ## Refresh and backend transport
 

@@ -1500,6 +1500,58 @@ mod tests {
     }
 
     #[test]
+    fn provider_reported_today_remains_authoritative_after_local_scan_completes() {
+        let now = now();
+        let provider_tokens = 467_600;
+        let local_tokens = 1_100_000_000;
+        let local_cost = 675.78;
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(BTreeMap::from([(now.date(), provider_tokens)])),
+            provider_observed_at: Some(now),
+            local_usage_evidence: BTreeMap::from([(
+                now.date(),
+                usage_detail(now, local_tokens, UsageCoverage::Complete),
+            )]),
+            local_cost_evidence: BTreeMap::from([(
+                now.date(),
+                priced_detail(now, local_tokens, local_cost),
+            )]),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: Some("fixture-v1".to_owned()),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Indexing,
+            thirty_day_scan_status: UsageScanStatus::Indexing,
+        };
+
+        let periods = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current {
+            evidence_basis,
+            coverage,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = periods.today
+        else {
+            panic!("provider-reported Today usage must be available");
+        };
+
+        assert_eq!(evidence_basis, UsageEvidenceBasis::ProviderReported);
+        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(observed_tokens, provider_tokens);
+        let expected_cost = local_cost * provider_tokens as f64 / local_tokens as f64;
+        assert!((api_equivalent_cost_usd.unwrap() - expected_cost).abs() < 1e-12);
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
+    }
+
+    #[test]
     fn combined_usage_keeps_known_tokens_when_one_provider_is_unavailable() {
         let now = now().format(&Rfc3339).unwrap();
         let codex = UsagePeriods {

@@ -152,7 +152,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         }
     })?;
     let has_read_model = table_exists(connection, "sanitized_desktop_state")?;
-    if !matches!(read_model_version, 0 | 4 | 5)
+    if !matches!(read_model_version, 0 | 4 | 5 | 6)
         || (read_model_version == 0 && has_read_model)
         || (read_model_version > 0 && !has_read_model)
     {
@@ -175,7 +175,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         "codex_usage_file_days",
     ];
     let codex_table_count = count_tables(connection, &codex_tables)?;
-    if !matches!(codex_version, 0 | 2 | 3)
+    if !matches!(codex_version, 0 | 2 | 3 | 6)
         || (codex_version == 0 && codex_table_count != 0)
         || (codex_version >= 2 && codex_table_count != codex_tables.len())
     {
@@ -198,7 +198,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         "claude_usage_daily",
     ];
     let claude_table_count = count_tables(connection, &claude_tables)?;
-    if !matches!(claude_version, 0 | 3 | 4)
+    if !matches!(claude_version, 0 | 3 | 4 | 7)
         || (claude_version == 0 && claude_table_count != 0)
         || (claude_version >= 3 && claude_table_count != claude_tables.len())
     {
@@ -251,22 +251,79 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
             stage: "inspect-update-state",
         });
     }
-    inspect_known_table_columns(connection)?;
-    inspect_known_object_definitions(
-        connection,
-        InspectedModuleVersions {
-            lifecycle: lifecycle_version,
-            read_model: read_model_version,
-            codex: codex_version,
-            claude: claude_version,
-            update: update_version,
-            has_legacy_update_table: has_update_table,
-        },
-    )?;
+    let versions = InspectedModuleVersions {
+        lifecycle: lifecycle_version,
+        read_model: read_model_version,
+        codex: codex_version,
+        claude: claude_version,
+        update: update_version,
+        has_legacy_update_table: has_update_table,
+    };
+    inspect_known_table_columns(connection, versions)?;
+    inspect_known_object_definitions(connection, versions)?;
     Ok(())
 }
 
-fn inspect_known_table_columns(connection: &Connection) -> Result<(), DatabaseOpenError> {
+fn inspect_known_table_columns(
+    connection: &Connection,
+    versions: InspectedModuleVersions,
+) -> Result<(), DatabaseOpenError> {
+    const LEGACY_CODEX_MODEL_DAY_COLUMNS: &[&str] = &[
+        "path",
+        "day",
+        "model",
+        "pricing_input_tokens",
+        "input_tokens",
+        "cached_input_tokens",
+        "cache_write_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "observed_tokens",
+        "cost_usd",
+        "pricing_basis",
+        "pricing_fingerprint",
+        "complete",
+        "observed_through",
+    ];
+    const LEGACY_CODEX_FILE_COLUMNS: &[&str] = &[
+        "path",
+        "file_identity",
+        "size_bytes",
+        "modified_ns",
+        "parsed_offset",
+        "parsed_prefix_anchor",
+        "parser_version",
+        "completion_state",
+        "deferred_until_day",
+        "active_model",
+        "baseline_is_inherited",
+        "history_start_ordinal",
+        "record_ordinal",
+        "usage_excluded",
+        "schema_supported",
+        "previous_input",
+        "previous_cached_input",
+        "previous_cache_write_input",
+        "previous_output",
+        "previous_reasoning_output",
+        "previous_total",
+    ];
+    const LEGACY_CLAUDE_DAILY_COLUMNS: &[&str] = &[
+        "day",
+        "observed_tokens",
+        "coverage",
+        "observed_through",
+        "revision",
+        "priced_tokens",
+        "cost_usd",
+        "pricing_basis",
+        "pricing_fingerprint",
+    ];
+    const LEGACY_CLAUDE_SUPERSEDES_COLUMNS: &[&str] = &[
+        "replacement_frame_key",
+        "superseded_frame_key",
+        "parser_version",
+    ];
     for (table, expected) in TABLE_COLUMNS {
         if matches!(
             *table,
@@ -274,6 +331,13 @@ fn inspect_known_table_columns(connection: &Connection) -> Result<(), DatabaseOp
         ) {
             continue;
         }
+        let expected = match (*table, versions.codex, versions.claude) {
+            ("codex_usage_file_model_days", 2 | 3, _) => LEGACY_CODEX_MODEL_DAY_COLUMNS,
+            ("codex_usage_files", 2 | 3, _) => LEGACY_CODEX_FILE_COLUMNS,
+            ("claude_usage_daily", _, 3 | 4) => LEGACY_CLAUDE_DAILY_COLUMNS,
+            ("claude_usage_message_supersedes", _, 3 | 4) => LEGACY_CLAUDE_SUPERSEDES_COLUMNS,
+            _ => expected,
+        };
         if table_exists(connection, table)? && !object_has_columns(connection, table, expected)? {
             return Err(DatabaseOpenError::MigrationFailed {
                 stage: "inspect-table-columns",
@@ -426,6 +490,20 @@ fn inspect_known_object_definitions(
     if versions.read_model > 0 {
         expected_objects.push(("table", "sanitized_desktop_state"));
     }
+    if versions.read_model >= 6 {
+        expected_objects.extend([
+            ("table", "usage_sync_correction_lineage"),
+            ("table", "usage_sync_daily_aggregates"),
+            ("table", "usage_sync_generation_activations"),
+            ("table", "usage_sync_generation_baselines"),
+            ("table", "usage_sync_generations"),
+            ("table", "usage_sync_latest_outbox"),
+            ("table", "usage_sync_provider_settings_outbox"),
+            ("table", "usage_sync_terminal_conflicts"),
+            ("table", "usage_sync_transfer_day_carryovers"),
+            ("index", "usage_sync_latest_outbox_pending"),
+        ]);
+    }
     if versions.codex > 0 {
         expected_objects.extend([
             ("table", "codex_usage_index_meta"),
@@ -436,6 +514,16 @@ fn inspect_known_object_definitions(
             ("table", "codex_usage_file_days"),
             ("index", "codex_usage_model_days_by_day"),
             ("index", "codex_usage_unpriced_model_days"),
+        ]);
+    }
+    if versions.codex >= 6 {
+        expected_objects.extend([
+            ("table", "codex_usage_fast_turns"),
+            ("table", "codex_usage_file_turns"),
+            ("table", "codex_usage_token_snapshots"),
+            ("index", "codex_usage_file_turns_by_turn_id"),
+            ("index", "codex_usage_files_by_leaf_session"),
+            ("index", "codex_usage_snapshots_by_path_timestamp"),
         ]);
     }
     if versions.claude > 0 {
@@ -506,6 +594,10 @@ fn inspect_known_object_definitions(
             ("table", "sanitized_desktop_state") => match versions.read_model {
                 4 => definition.contains("check(schema_version=4)"),
                 5 => definition.contains("check(schema_version=5)"),
+                6 => {
+                    definition.contains("check(schema_version=6)")
+                        && definition.contains("check(contract_version=4)")
+                }
                 _ => false,
             },
             ("table", "touchgrassbar_update_state") => match versions.update {

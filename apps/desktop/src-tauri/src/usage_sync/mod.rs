@@ -1317,7 +1317,9 @@ fn generation_segment(
         aggregate.provider,
         &aggregate.ranking_day,
     )?;
-    if observed_tokens == 0 && existing.is_none() {
+    // A partial transfer baseline still needs a zero marker. The marker keeps
+    // the new generation in the transfer-day history after UTC rollover.
+    if observed_tokens == 0 && existing.is_none() && baseline.coverage == SyncCoverage::Complete {
         return Ok(GenerationSegment::BaselineOnly);
     }
     aggregate.coverage = if aggregate.coverage == SyncCoverage::Complete
@@ -4541,6 +4543,143 @@ mod tests {
                 .unwrap()
                 .observed_tokens,
             50
+        );
+    }
+
+    #[test]
+    fn partial_activation_baseline_without_growth_retries_zero_after_restart() {
+        let database = PersistentTestDatabase::new("partial-baseline-zero-rollover");
+        let mut connection = database.connect();
+        let next_day = now() + Duration::days(1);
+        let enabled = BTreeSet::from([CodingProvider::Codex]);
+        let state = state_with_totals(
+            total(UsageEvidenceBasis::ProviderReported, 100, NOW, None),
+            UsageTotal::Unavailable,
+        );
+        let transaction = connection.transaction().unwrap();
+        queue_daily_aggregate(
+            &transaction,
+            1,
+            aggregate(CodingProvider::Codex, 100, 1_000),
+        )
+        .unwrap();
+        activate_generation(&transaction, 2).unwrap();
+        capture_generation_baselines(&transaction, 2, &state, now(), now()).unwrap();
+        let updates = queue_current_utc_day(&transaction, 2, &state, now(), &enabled).unwrap();
+        assert_eq!(
+            updates,
+            vec![QueueUpdate::Stored {
+                provider: CodingProvider::Codex,
+                revision: 1,
+                state: QueueState::Pending,
+            }]
+        );
+        let marker = load_outbox_snapshot(&transaction, 2, CodingProvider::Codex, "2026-08-08")
+            .unwrap()
+            .unwrap();
+        assert_eq!(marker.observed_tokens, 0);
+        assert_eq!(marker.coverage, SyncCoverage::Partial);
+        capture_generation_baselines(&transaction, 2, &state, now(), next_day).unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+
+        let mut connection = database.connect();
+        let pending = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].revision, 1);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 0);
+        assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(
+            pending.transfer_day_carryover.as_ref().unwrap().kind,
+            TransferDayCarryoverKind::PendingSegment
+        );
+        pending
+            .mutation_args(INSTALLATION_CREDENTIAL, next_day)
+            .unwrap();
+
+        let committed = acknowledgement(
+            &pending.snapshots()[0],
+            AcknowledgementOutcome::Committed,
+            1,
+        );
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &pending, &[committed]).unwrap(),
+            1
+        );
+        transaction.commit().unwrap();
+        assert!(
+            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_latest_outbox
+                     WHERE active_generation = 2",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn complete_activation_baseline_without_growth_does_not_queue_a_marker() {
+        let mut connection = connection();
+        let next_day = now() + Duration::days(1);
+        let enabled = BTreeSet::from([CodingProvider::Codex]);
+        let state = state_with_totals(
+            total(UsageEvidenceBasis::ProviderReported, 100, NOW, None),
+            UsageTotal::Unavailable,
+        );
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 2).unwrap();
+        capture_generation_baselines(&transaction, 2, &state, now(), now()).unwrap();
+        assert!(
+            queue_current_utc_day(&transaction, 2, &state, now(), &enabled)
+                .unwrap()
+                .is_empty()
+        );
+        capture_generation_baselines(&transaction, 2, &state, now(), next_day).unwrap();
+        transaction.commit().unwrap();
+
+        assert!(
+            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
         );
     }
 

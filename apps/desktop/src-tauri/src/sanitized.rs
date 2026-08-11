@@ -57,7 +57,7 @@ const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const REFRESH_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 const REFRESH_ATTEMPT_TIMEOUT: Duration = REFRESH_INTERVAL;
 const NETWORK_RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
-const LOCAL_USAGE_CATCH_UP_DEFAULT_ACTIVE: Duration = Duration::from_secs(2);
+const LOCAL_USAGE_CATCH_UP_SUCCESS_DELAY: Duration = Duration::from_millis(250);
 const LOCAL_USAGE_CATCH_UP_ERROR_DELAY: Duration = Duration::from_secs(60);
 
 #[cfg(debug_assertions)]
@@ -842,6 +842,18 @@ impl SqliteReadModelStore {
             return Err("native state persistence unavailable");
         }
         if version == READ_MODEL_SCHEMA_VERSION {
+            let stored_versions = connection
+                .query_row(
+                    "SELECT schema_version, contract_version
+                     FROM sanitized_desktop_state
+                     WHERE singleton = 1",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+            if stored_versions != (READ_MODEL_SCHEMA_VERSION, i64::from(CONTRACT_VERSION)) {
+                return Err("native state persistence unavailable");
+            }
             install_usage_sync_schema(connection)
                 .map_err(|_| "native state persistence unavailable")?;
             return Ok(());
@@ -2380,13 +2392,7 @@ impl CoordinatorWorker {
     }
 
     fn record_local_usage_catch_up_result(&mut self, failed: bool, active_duration: Duration) {
-        let delay = if failed {
-            LOCAL_USAGE_CATCH_UP_ERROR_DELAY
-        } else {
-            active_duration
-                .max(LOCAL_USAGE_CATCH_UP_DEFAULT_ACTIVE)
-                .saturating_mul(4)
-        };
+        let delay = local_usage_catch_up_delay(failed);
         self.next_local_usage_catch_up_at = Instant::now() + delay;
         debug_local_usage_event(&format!(
             "catch_up_scheduled delay_ms={} active_ms={} failed={failed}",
@@ -2548,6 +2554,14 @@ impl CoordinatorWorker {
             self.consecutive_failures = 0;
             self.retry_not_before = None;
         }
+    }
+}
+
+fn local_usage_catch_up_delay(failed: bool) -> Duration {
+    if failed {
+        LOCAL_USAGE_CATCH_UP_ERROR_DELAY
+    } else {
+        LOCAL_USAGE_CATCH_UP_SUCCESS_DELAY
     }
 }
 
@@ -5187,19 +5201,30 @@ mod tests {
 
         core.activate_usage_sync_generation(2).unwrap();
         assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
-        assert!(
-            core.pending_usage_sync_batch(2)
-                .unwrap()
-                .unwrap()
-                .snapshots()
-                .is_empty()
-        );
+        let activation_marker = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(activation_marker.snapshots().len(), 1);
+        let marker = &activation_marker.snapshots()[0];
+        assert_eq!(marker.provider, CodingProvider::Codex);
+        assert_eq!(marker.ranking_day, now.date().to_string());
+        assert_eq!(marker.revision, 1);
+        assert_eq!(marker.evidence_basis, SyncEvidenceBasis::ProviderReported);
+        assert_eq!(marker.coverage, SyncCoverage::Partial);
+        assert_eq!(marker.observed_tokens, 0);
+        assert_eq!(marker.api_equivalent_cost, None);
+        assert_eq!(marker.correction_reason, None);
+        assert_eq!(marker.correction_revision, None);
 
         core.request_refresh(RefreshSource::Manual).unwrap();
         core.wait_for_refresh_completion().unwrap();
         let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].provider, CodingProvider::Codex);
+        assert_eq!(pending.snapshots()[0].ranking_day, now.date().to_string());
+        assert_eq!(pending.snapshots()[0].revision, 2);
         assert_eq!(pending.snapshots()[0].observed_tokens, 50);
         assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(pending.snapshots()[0].correction_reason, None);
+        assert_eq!(pending.snapshots()[0].correction_revision, None);
         assert_eq!(
             pending.snapshots()[0]
                 .api_equivalent_cost
@@ -7569,7 +7594,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_main_v5_cache_to_the_extended_sync_contract() {
+    fn migrates_main_v5_cache_to_the_current_contract() {
         let database = TestDatabase::new();
         let mut previous = serde_json::to_value(observed_state(test_time(), 42)).unwrap();
         previous["contractVersion"] = json!(3);
@@ -7646,7 +7671,26 @@ mod tests {
             versions,
             (READ_MODEL_SCHEMA_VERSION, i64::from(CONTRACT_VERSION))
         );
-        assert!(read_model_backup_path(&database.0, 5).is_file());
+        let sync_table_count = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'usage_sync_generations'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(sync_table_count, 1);
+
+        let backup = Connection::open(read_model_backup_path(&database.0, 5)).unwrap();
+        let backup_versions = backup
+            .query_row(
+                "SELECT schema_version, contract_version
+                 FROM sanitized_desktop_state WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(backup_versions, (5, 3));
     }
 
     #[test]
@@ -7903,6 +7947,15 @@ mod tests {
                 .scan_status,
             UsageScanStatus::Complete
         );
+    }
+
+    #[test]
+    fn local_usage_catch_up_is_prompt_but_failures_back_off() {
+        assert_eq!(
+            local_usage_catch_up_delay(false),
+            Duration::from_millis(250)
+        );
+        assert_eq!(local_usage_catch_up_delay(true), Duration::from_secs(60));
     }
 
     #[test]

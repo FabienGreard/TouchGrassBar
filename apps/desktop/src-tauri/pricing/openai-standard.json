@@ -40,7 +40,7 @@
             "outputMultiplier": 1.5
           },
           "fastLongContext": {
-            "effectiveFrom": "2026-07-30",
+            "effectiveFrom": "2026-08-05",
             "effectiveUntil": null,
             "inputUsdPerMillion": 20.0,
             "cachedInputUsdPerMillion": 2.0,
@@ -68,7 +68,7 @@
             "outputMultiplier": 1.5
           },
           "fastLongContext": {
-            "effectiveFrom": "2026-07-30",
+            "effectiveFrom": "2026-08-05",
             "effectiveUntil": null,
             "inputUsdPerMillion": 8.0,
             "cachedInputUsdPerMillion": 0.8,
@@ -96,7 +96,7 @@
             "outputMultiplier": 1.5
           },
           "fastLongContext": {
-            "effectiveFrom": "2026-07-30",
+            "effectiveFrom": "2026-08-05",
             "effectiveUntil": null,
             "inputUsdPerMillion": 0.8,
             "cachedInputUsdPerMillion": 0.08,

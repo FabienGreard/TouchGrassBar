@@ -19,13 +19,13 @@ use crate::{
     updater,
 };
 
-const CURRENT_DATABASE_FORMAT: i64 = 6;
+const CURRENT_DATABASE_FORMAT: i64 = 7;
 const CURRENT_MODULE_VERSIONS: &[(&str, i64)] = &[
-    ("claude-usage-index", 4),
-    ("codex-usage-index", 3),
+    ("claude-usage-index", 7),
+    ("codex-usage-index", 6),
     ("database-coordinator", 1),
     ("desktop-lifecycle", 5),
-    ("sanitized-desktop-state", 5),
+    ("sanitized-desktop-state", 6),
     ("update-state", 3),
 ];
 const CURRENT_TABLES: &[&str] = &[
@@ -37,15 +37,27 @@ const CURRENT_TABLES: &[&str] = &[
     "claude_usage_messages",
     "codex_account_usage_days",
     "codex_account_usage_meta",
+    "codex_usage_fast_turns",
     "codex_usage_file_days",
     "codex_usage_file_model_days",
+    "codex_usage_file_turns",
     "codex_usage_files",
     "codex_usage_index_meta",
+    "codex_usage_token_snapshots",
     "lifecycle_state",
     "provider_settings",
     "sanitized_desktop_state",
     "touchgrassbar_schema_versions",
     "touchgrassbar_update_state_v3",
+    "usage_sync_correction_lineage",
+    "usage_sync_daily_aggregates",
+    "usage_sync_generation_activations",
+    "usage_sync_generation_baselines",
+    "usage_sync_generations",
+    "usage_sync_latest_outbox",
+    "usage_sync_provider_settings_outbox",
+    "usage_sync_terminal_conflicts",
+    "usage_sync_transfer_day_carryovers",
 ];
 
 static NEXT_FIXTURE_COPY: AtomicU64 = AtomicU64::new(1);
@@ -265,11 +277,8 @@ fn every_release_fixture_upgrades_and_reopens_without_loss() {
         );
         let first_state = observe_state(&working.database);
         assert_expected_state(&first_state, &fixture);
-        assert_provider_facts_preserved(&working.database, &source_provider_facts, &fixture.tag);
+        assert_provider_facts_preserved(&working.database, &source_provider_facts, &fixture);
         assert_current_database(&working.database, &fixture.tag);
-        if fixture.release_status == "official" {
-            assert_no_usage_sync_tables(&working.database, &fixture.tag);
-        }
         let first_backups = backup_inventory(&working.directory);
         if fixture.release_status == "official" {
             let names = first_backups
@@ -298,7 +307,7 @@ fn every_release_fixture_upgrades_and_reopens_without_loss() {
         );
         let reopened_state = observe_state(&working.database);
         assert_eq!(reopened_state, first_state, "{}", fixture.tag);
-        assert_provider_facts_preserved(&working.database, &source_provider_facts, &fixture.tag);
+        assert_provider_facts_preserved(&working.database, &source_provider_facts, &fixture);
         assert_eq!(
             backup_inventory(&working.directory),
             first_backups,
@@ -342,14 +351,29 @@ fn provider_facts(path: &Path) -> Vec<ProviderTableFacts> {
 
 fn assert_source_provider_concepts(source: &[ProviderTableFacts], fixture: &ReleaseFixture) {
     let has_table = |table: &&str| source.iter().any(|facts| facts.table == *table);
+    let required_codex_tables = [
+        "codex_account_usage_days",
+        "codex_account_usage_meta",
+        "codex_usage_file_days",
+        "codex_usage_file_model_days",
+        "codex_usage_files",
+        "codex_usage_index_meta",
+    ];
     assert!(
-        CURRENT_TABLES
-            .iter()
-            .filter(|table| table.starts_with("codex_"))
-            .all(has_table),
+        required_codex_tables.iter().all(has_table),
         "{} has incomplete source Codex facts",
         fixture.tag
     );
+    if fixture.release_status == "candidate" {
+        assert!(
+            CURRENT_TABLES
+                .iter()
+                .filter(|table| table.starts_with("codex_"))
+                .all(has_table),
+            "{} has an incomplete current Codex schema",
+            fixture.tag
+        );
+    }
     let mut claude_tables = CURRENT_TABLES
         .iter()
         .filter(|table| table.starts_with("claude_"));
@@ -368,26 +392,45 @@ fn assert_source_provider_concepts(source: &[ProviderTableFacts], fixture: &Rele
     }
 }
 
-fn assert_provider_facts_preserved(path: &Path, source: &[ProviderTableFacts], tag: &str) {
+fn assert_provider_facts_preserved(
+    path: &Path,
+    source: &[ProviderTableFacts],
+    fixture: &ReleaseFixture,
+) {
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("open migrated provider facts");
     let current_tables = provider_table_names(&connection);
     for expected in source {
         assert!(
             current_tables.contains(&expected.table),
-            "{tag} removed provider table {}",
+            "{} removed provider table {}",
+            fixture.tag,
             expected.table
         );
+        if fixture.release_status == "official"
+            && matches!(
+                expected.table.as_str(),
+                "codex_usage_file_days" | "codex_usage_file_model_days" | "codex_usage_files"
+            )
+        {
+            assert_eq!(
+                table_row_count(&connection, &expected.table),
+                0,
+                "{} retained a stale rebuildable Codex index",
+                fixture.tag
+            );
+            continue;
+        }
         let actual = provider_table_facts(&connection, &expected.table, expected.columns.clone());
         assert_eq!(
             actual.row_count, expected.row_count,
-            "{tag} changed {} row count",
-            expected.table
+            "{} changed {} row count",
+            fixture.tag, expected.table
         );
         assert_eq!(
             actual.rows, expected.rows,
-            "{tag} changed {} durable facts",
-            expected.table
+            "{} changed {} durable facts",
+            fixture.tag, expected.table
         );
     }
 
@@ -398,7 +441,8 @@ fn assert_provider_facts_preserved(path: &Path, source: &[ProviderTableFacts], t
         assert_eq!(
             table_row_count(&connection, &table),
             0,
-            "{tag} invented durable facts in historical provider table {table}"
+            "{} invented durable facts in historical provider table {table}",
+            fixture.tag
         );
     }
 }
@@ -716,8 +760,13 @@ fn assert_expected_state(state: &LogicalState, fixture: &ReleaseFixture) {
         )
     });
     assert_eq!(state.top_model_usage, expected_top_model, "{}", fixture.tag);
+    let expected_codex_usage = if fixture.release_status == "candidate" {
+        fixture.expected_state.usage.codex.as_slice()
+    } else {
+        &[]
+    };
     assert_eq!(
-        state.codex_usage, fixture.expected_state.usage.codex,
+        state.codex_usage, expected_codex_usage,
         "{} Codex usage",
         fixture.tag
     );

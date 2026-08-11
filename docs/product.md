@@ -66,7 +66,15 @@ A full provider observation is required to initialize a Quota Snapshot. A sparse
 
 Observed Usage records three independent facts: its evidence basis is provider-reported or locally derived; its coverage is complete or partial; and current-day availability is current, stale, or unavailable. Complete means the selected source proves its declared provider scope and supported token categories through the observation time. Any known gap makes it partial. Partial Observed Tokens still contribute their known value to Token Score, with no imputation. Missing usage is unavailable, never zero or estimated. Completed historical days remain available with their recorded coverage rather than becoming stale with age.
 
-Exactly one source owns each provider and Ranking Day. A provider-account daily total wins when available. Local parsing is fallback or model/category detail and is never summed with that total. Codex account daily tokens are used directly; local Codex fallback uses cumulative deltas without adding cached-input or reasoning breakdowns again. Claude sums input, cache-creation input, cache-read input, and output, with thinking already included in output. Claude message copies are grouped across main and subagent transcripts before totals are calculated. Superseded copies do not contribute. An incomplete message keeps only its proved lower bound and is partial. Unknown schemas fail closed as partial or unavailable.
+Exactly one source owns each provider and Ranking Day. TouchGrassBar never sums a provider-account total with local tokens.
+
+Claude uses its provider total when that total is available. Local Claude evidence is the fallback and supplies private cost detail.
+
+Codex uses the account daily total when that period contains provider data. The local rollout index is the fallback when the account has no applicable bucket. Local model evidence supplies private cost detail and can model a provider-total estimate. Price coverage does not control token source selection. An unresolved inherited rollout makes local fallback coverage partial, but it does not discard proved local tokens.
+
+Copied Codex history uses one trusted parent and the last safe parent snapshot at or before the fork. TouchGrassBar subtracts that snapshot per token category. Missing, ambiguous, cyclic, or unstable lineage contributes no tokens and makes local coverage partial.
+
+Local Codex accounting uses cumulative deltas. It does not add cached-input or reasoning subsets again. The pricing tier uses the input size of each request. Claude sums input, cache-creation input, cache-read input, and output. Thinking is already included in Claude output. Claude groups message copies across main and subagent transcripts before it calculates totals. Superseded copies do not contribute. An incomplete message keeps only its proved lower bound and is partial. Unknown schemas fail closed as partial or unavailable.
 
 A Usage Snapshot may replace an earlier provider/day value only with a higher revision. Decreases require explicit stronger evidence from a provider replacement or parser correction; disappearing local logs never reduce a synchronized total. An accepted correction updates the daily total and its derived ranking state together. The revision and reason remain auditable, but “corrected” is not a lasting status or permanent public badge.
 

@@ -11,7 +11,7 @@ use rusqlite::{Connection, OpenFlags, params};
 
 use super::{
     DatabaseOpenError,
-    catalog::{DATABASE_FORMAT_VERSION, MODULES, normalize_sql},
+    catalog::{DATABASE_FORMAT_VERSION, MODULES, STRICT_TABLES, normalize_sql},
     invariants::verify_invariants,
     migration::{
         PrepareFault, coordinator_backup_partial_path, coordinator_backup_path,
@@ -91,11 +91,11 @@ fn prepares_one_complete_versioned_database() {
     assert_eq!(
         versions,
         vec![
-            ("claude-usage-index".to_owned(), 4),
-            ("codex-usage-index".to_owned(), 3),
+            ("claude-usage-index".to_owned(), 7),
+            ("codex-usage-index".to_owned(), 6),
             ("database-coordinator".to_owned(), 1),
             ("desktop-lifecycle".to_owned(), 5),
-            ("sanitized-desktop-state".to_owned(), 5),
+            ("sanitized-desktop-state".to_owned(), 6),
             ("update-state".to_owned(), 3),
         ]
     );
@@ -104,6 +104,74 @@ fn prepares_one_complete_versioned_database() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("database format"),
         DATABASE_FORMAT_VERSION
+    );
+}
+
+#[test]
+fn prepares_strict_usage_sync_tables_and_cascade_carryovers() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare database");
+    let connection = Connection::open(&database.0).expect("open prepared database");
+    connection
+        .pragma_update(None, "foreign_keys", true)
+        .expect("enable foreign keys");
+
+    for table in STRICT_TABLES {
+        let schema = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                [table],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("read strict table schema");
+        assert!(normalize_sql(&schema).ends_with(")strict"), "{table}");
+    }
+
+    connection
+        .execute_batch(
+            "INSERT INTO usage_sync_generations(active_generation, queue_state)
+               VALUES(1, 'abandoned');
+             INSERT INTO usage_sync_latest_outbox(
+               active_generation, provider, ranking_day, revision,
+               snapshot_json, queue_state
+             ) VALUES(1, 'codex', '2026-08-11', 1, '{}', 'abandoned');
+             INSERT INTO usage_sync_transfer_day_carryovers(
+               active_generation, provider, ranking_day, carryover_kind
+             ) VALUES(1, 'codex', '2026-08-11', 'pending-segment');
+             DELETE FROM usage_sync_latest_outbox
+             WHERE active_generation = 1 AND provider = 'codex'
+               AND ranking_day = '2026-08-11';",
+        )
+        .expect("exercise carryover cascade");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM usage_sync_transfer_day_carryovers",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count carryovers"),
+        0
+    );
+}
+
+#[test]
+fn rejects_two_live_usage_sync_generations() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare database");
+    let connection = Connection::open(&database.0).expect("open prepared database");
+    connection
+        .execute_batch(
+            "INSERT INTO usage_sync_generations(active_generation, queue_state)
+               VALUES(1, 'active'), (2, 'blocked');",
+        )
+        .expect("write invalid usage sync generations");
+
+    assert_eq!(
+        verify_invariants(&connection).expect_err("reject two live generations"),
+        DatabaseOpenError::InvariantFailed {
+            invariant: "usage-sync-values"
+        }
     );
 }
 
@@ -374,7 +442,7 @@ fn rejects_unknown_legacy_definitions_before_backup_or_write() {
                snapshot_json TEXT NOT NULL
              );
              INSERT INTO sanitized_desktop_state
-               SELECT singleton, 4, contract_version, revision, snapshot_json
+               SELECT singleton, 4, 3, revision, snapshot_json
                FROM sanitized_desktop_state_old;
              DROP TABLE sanitized_desktop_state_old;",
         ),

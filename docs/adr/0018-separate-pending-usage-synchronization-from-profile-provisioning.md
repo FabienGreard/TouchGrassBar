@@ -1,4 +1,4 @@
-# Separate Pending Usage synchronization from Profile provisioning
+# Separate Pending Usage Synchronization from Profile Provisioning
 
 ## Status
 

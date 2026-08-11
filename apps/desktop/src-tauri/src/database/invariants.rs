@@ -6,8 +6,8 @@ use super::{
     DatabaseOpenError,
     catalog::{
         COLUMN_DEFAULTS, DATABASE_FORMAT_VERSION, FOREIGN_KEYS, INDEX_DEFINITIONS, INDEXES,
-        MODULES, NULLABLE_COLUMNS, PRIMARY_KEYS, TABLE_CHECKS, TABLE_COLUMNS, TABLES, VIEWS,
-        normalize_sql,
+        MODULES, NULLABLE_COLUMNS, PRIMARY_KEYS, STRICT_TABLES, TABLE_CHECKS, TABLE_COLUMNS,
+        TABLES, VIEWS, normalize_sql,
     },
     inspection::{read_version_rows, reject_unknown_objects},
 };
@@ -249,14 +249,27 @@ fn verify_table_definitions(connection: &Connection) -> Result<(), DatabaseOpenE
         }
 
         let schema = schema_sql(connection, "table", table, "table-definitions")?;
+        if schema.ends_with(")strict") != STRICT_TABLES.contains(table) {
+            return Err(DatabaseOpenError::InvariantFailed {
+                invariant: "table-definitions",
+            });
+        }
         let expected_checks = TABLE_CHECKS
             .iter()
             .find(|(known_table, _)| known_table == table)
             .map(|(_, checks)| *checks)
             .unwrap_or_default();
-        if schema.matches("check(").count() != expected_checks.len()
-            || expected_checks.iter().any(|check| !schema.contains(check))
-        {
+        let check_count = schema.matches("check(").count();
+        let check_count_matches = if *table == "claude_usage_daily" {
+            matches!(check_count, 4 | 5)
+                && (check_count == 4
+                    || schema.contains(
+                        "check(correction_provenanceisnullorcorrection_provenance='parser-correction')",
+                    ))
+        } else {
+            check_count == expected_checks.len()
+        };
+        if !check_count_matches || expected_checks.iter().any(|check| !schema.contains(check)) {
             return Err(DatabaseOpenError::InvariantFailed {
                 invariant: "table-definitions",
             });
@@ -295,14 +308,14 @@ fn verify_foreign_key_definitions(connection: &Connection) -> Result<(), Databas
             })?;
         let mut expected = FOREIGN_KEYS
             .iter()
-            .filter(|(known_table, _, _, _)| known_table == table)
-            .map(|(_, from, target_table, target_column)| {
+            .filter(|(known_table, _, _, _, _)| known_table == table)
+            .map(|(_, from, target_table, target_column, on_delete)| {
                 (
                     (*from).to_owned(),
                     (*target_table).to_owned(),
                     (*target_column).to_owned(),
                     "NO ACTION".to_owned(),
-                    "CASCADE".to_owned(),
+                    (*on_delete).to_owned(),
                     "NONE".to_owned(),
                 )
             })
@@ -656,6 +669,7 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                   OR cached_input_tokens < 0 OR cache_write_input_tokens < 0
                   OR output_tokens < 0 OR reasoning_output_tokens < 0
                   OR observed_tokens < 0 OR complete NOT IN (0, 1)
+                  OR pricing_mode NOT IN ('standard', 'fast')
              ) OR EXISTS(
                SELECT 1 FROM codex_usage_file_days
                WHERE strftime('%Y-%m-%d', day, '+0 days') IS NULL
@@ -665,12 +679,35 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                   OR complete NOT IN (0, 1)
              ) OR EXISTS(
                SELECT 1 FROM codex_usage_files
-               WHERE deferred_until_day IS NOT NULL AND (
-                 strftime('%Y-%m-%d', deferred_until_day, '+0 days') IS NULL
-                 OR strftime('%Y-%m-%d', deferred_until_day, '+0 days')
-                    != deferred_until_day
-                 OR length(deferred_until_day) != 10
-               )
+               WHERE (deferred_until_day IS NOT NULL AND (
+                        strftime('%Y-%m-%d', deferred_until_day, '+0 days') IS NULL
+                        OR strftime('%Y-%m-%d', deferred_until_day, '+0 days')
+                           != deferred_until_day
+                        OR length(deferred_until_day) != 10
+                      ))
+                  OR lineage_mode NOT IN (
+                    'unknown', 'root', 'discovering', 'explicit-boundary',
+                    'independent', 'parent-resolved', 'unresolved'
+                  )
+                  OR usage_excluded NOT IN (0, 1)
+                  OR schema_supported NOT IN (0, 1)
+                  OR parent_identity_explicit NOT IN (0, 1)
+                  OR embedded_ancestor_seen NOT IN (0, 1)
+                  OR lineage_invalid NOT IN (0, 1)
+                  OR last_turn_context_is_first NOT IN (0, 1)
+                  OR marker_based_boundary NOT IN (0, 1)
+                  OR marker_candidate_invalidated NOT IN (0, 1)
+                  OR (marker_local_confirmation IS NOT NULL
+                      AND marker_local_confirmation NOT IN (0, 1))
+                  OR accounting_ready NOT IN (0, 1)
+                  OR parser_error_seen NOT IN (0, 1)
+                  OR snapshot_timestamp_regressed NOT IN (0, 1)
+             ) OR EXISTS(
+               SELECT 1 FROM codex_usage_token_snapshots
+               WHERE record_ordinal < 0 OR timestamp_ns < 0
+                  OR input_tokens < 0 OR cached_input_tokens < 0
+                  OR cache_write_input_tokens < 0 OR output_tokens < 0
+                  OR reasoning_output_tokens < 0 OR total_tokens < 0
              )",
         ),
         (
@@ -696,7 +733,14 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                   OR length(day) != 10
                   OR observed_tokens < 0 OR priced_tokens < 0
                   OR cost_usd < 0 OR coverage NOT IN ('complete', 'partial')
-                  OR revision < 1
+                  OR revision < 1 OR cost_modeled NOT IN (0, 1)
+                  OR (correction_provenance IS NULL)
+                     != (correction_source_revision IS NULL)
+                  OR (correction_provenance IS NOT NULL AND (
+                        correction_provenance != 'parser-correction'
+                        OR correction_source_revision < 1
+                        OR correction_source_revision > revision
+                     ))
              )",
         ),
         (
@@ -717,6 +761,7 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                   OR edge.parser_version != replacement.parser_version
                   OR edge.parser_version != superseded.parser_version
                   OR edge.parser_version != superseded_frame.parser_version
+                  OR edge.aggregate_applied NOT IN (0, 1)
              ) OR EXISTS(
                SELECT 1
                FROM claude_usage_messages AS message
@@ -726,6 +771,13 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                   OR frame.day != message.day
                   OR frame.observed_at != message.observed_at
                   OR frame.parser_version != message.parser_version
+             )",
+        ),
+        (
+            "usage-sync-values",
+            "SELECT (
+               SELECT COUNT(*) > 1 FROM usage_sync_generations
+               WHERE queue_state IN ('active', 'blocked')
              )",
         ),
         (
