@@ -31,7 +31,7 @@ The native synchronization module also keeps one latest-only provider-setting
 outbox row for the Active Mac generation. Its authenticated mutation stores a
 monotonic enabled-provider revision before later usage delivery. Score
 recomputation excludes accepted daily rows for disabled providers. The daily
-facts stay retained and private to this projection path, so a later re-enable
+facts stay retained and private to this projection path. A later re-enable
 restores their valid 1-day, 7-day, and 30-day contribution without a new scan.
 A stale provider-setting acknowledgement advances the local revision floor;
 therefore, a late disable or re-enable request cannot restore an older setting.

@@ -92,13 +92,32 @@ describe("panel sync status", () => {
     "offline",
     "authority-rejected",
     "unavailable",
-  ] as const)("keeps the loaded %s state live", (status) => {
+  ] as const)("keeps the loaded %s state safe", (status) => {
     const markup = renderHeader({ state: stateWithSync(status) });
 
     expect(markup).toContain(`data-sync-status="${status}"`);
-    expect(markup).toContain(">Live</small>");
     expect(markup).toContain('aria-live="polite"');
+    if (status === "pending") {
+      expect(markup).toContain(">Syncing…</small>");
+    } else {
+      expect(markup).toContain(">Live");
+    }
   });
+
+  test.each([
+    ["stale", "Synchronization is delayed"],
+    ["offline", "Synchronization is offline"],
+    ["authority-rejected", "Mac authorization is required"],
+    ["unavailable", "Synchronization is unavailable"],
+  ] as const)(
+    "reports the loaded %s detail outside the headline",
+    (status, detail) => {
+      const markup = renderHeader({ state: stateWithSync(status) });
+
+      expect(markup).toContain('>Live<span class="sr-only">. ');
+      expect(markup).toContain(detail);
+    },
+  );
 
   test("keeps sync status independent from provider freshness", () => {
     const markup = renderToStaticMarkup(
@@ -135,7 +154,7 @@ describe("panel sync status", () => {
     );
     expect(
       renderHeader({ error: true, state: stateWithSync("unavailable") }),
-    ).toContain(">Live</small>");
+    ).toContain('>Live<span class="sr-only">. Synchronization is unavailable');
   });
 
   test("uses refresh copy for the broad provider action", () => {
@@ -158,7 +177,8 @@ describe("panel sync status", () => {
 
     const markup = renderHeader({ state });
 
-    expect(markup).toContain(">Live</small>");
+    expect(markup).toContain(">Live<span");
+    expect(markup).toContain("Mac authorization is required");
     expect(markup).not.toContain("sentinel-");
   });
 });

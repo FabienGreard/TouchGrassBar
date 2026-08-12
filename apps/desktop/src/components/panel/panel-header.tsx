@@ -32,19 +32,40 @@ function syncPresentation(
   error: boolean,
   refreshing: boolean,
   state: SanitizedDesktopState | null,
-): { label: string; status: PanelSyncStatus | undefined } {
+): {
+  detailLabel: string | undefined;
+  label: string;
+  status: PanelSyncStatus | undefined;
+} {
   if (refreshing) {
-    return { label: "Syncing…", status: state?.sync.status };
+    return {
+      detailLabel: undefined,
+      label: "Syncing…",
+      status: state?.sync.status,
+    };
   }
   if (!state) {
     return {
+      detailLabel: undefined,
       label: error ? "Sync unavailable" : "Connecting…",
       status: undefined,
     };
   }
 
   const status = state.sync.status;
-  return { label: "Live", status };
+  if (status === "pending") {
+    return { detailLabel: undefined, label: "Syncing…", status };
+  }
+
+  const detailLabel = {
+    "authority-rejected": "Mac authorization is required",
+    offline: "Synchronization is offline",
+    stale: "Synchronization is delayed",
+    synced: undefined,
+    unavailable: "Synchronization is unavailable",
+  } satisfies Record<Exclude<PanelSyncStatus, "pending">, string | undefined>;
+
+  return { detailLabel: detailLabel[status], label: "Live", status };
 }
 
 function PanelHeader({
@@ -69,6 +90,9 @@ function PanelHeader({
           data-sync-status={sync.status}
         >
           {sync.label}
+          {sync.detailLabel ? (
+            <span className="sr-only">. {sync.detailLabel}</span>
+          ) : null}
         </small>
       </div>
 
@@ -101,6 +125,16 @@ function PanelHeader({
             </Button>
           </PanelMenuTrigger>
           <PanelMenuContent align="end" sideOffset={7}>
+            {sync.detailLabel ? (
+              <PanelMenuItem
+                aria-label={sync.detailLabel}
+                className="text-pearl-muted"
+                data-slot="sync-status"
+                disabled
+              >
+                {sync.detailLabel}
+              </PanelMenuItem>
+            ) : null}
             <PanelMenuItem disabled={refreshing} onSelect={onRefresh}>
               <RefreshIcon aria-hidden="true" spin={refreshing} />
               {refreshActionLabel(refreshing)}

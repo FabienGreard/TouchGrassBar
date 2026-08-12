@@ -96,7 +96,8 @@ describe("panel states", () => {
     );
 
     expect(markup).not.toContain(">0<");
-    expect(markup).toContain(">Live</small>");
+    expect(markup).toContain(">Live<span");
+    expect(markup).toContain("Synchronization is unavailable");
     expect(markup).toContain('aria-label="Open panel menu"');
     expect(markup).toContain('data-slot="brand-mark"');
     expect(markup).toContain('data-tone="ink"');
