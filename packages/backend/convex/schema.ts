@@ -1,10 +1,15 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
-const provider = v.union(v.literal("codex"), v.literal("claude"));
-const scoreScope = v.union(provider, v.literal("combined"));
-const scoreWindow = v.union(v.literal(1), v.literal(7), v.literal(30));
-const coverage = v.union(v.literal("complete"), v.literal("partial"));
+import {
+  apiEquivalentCostValidator as apiEquivalentCost,
+  correctionReasonValidator as correctionReason,
+  coverageValidator as coverage,
+  evidenceBasisValidator as evidenceBasis,
+  providerValidator as provider,
+  scoreScopeValidator as scoreScope,
+  scoreWindowValidator as scoreWindow,
+} from "./model/values";
 
 export default defineSchema({
   signupProofs: defineTable({
@@ -38,13 +43,12 @@ export default defineSchema({
 
   devices: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
-    installationId: v.string(),
+    installationCredentialDigest: v.string(),
+    generation: v.number(),
     createdAt: v.number(),
     lastSeenAt: v.number(),
     revokedAt: v.optional(v.number()),
-  })
-    .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
-    .index("by_tokenmaxxer_id_and_installation_id", ["tokenmaxxerId", "installationId"]),
+  }).index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
 
   usageBuckets: defineTable({
     deviceId: v.id("devices"),
@@ -53,10 +57,13 @@ export default defineSchema({
     rankingDay: v.string(),
     revision: v.number(),
     observedTokens: v.number(),
-    apiEquivalentCostMicros: v.optional(v.number()),
-    priceBasisVersion: v.optional(v.string()),
+    apiEquivalentCost,
     coverage,
-    source: v.literal("local-observed"),
+    evidenceBasis,
+    correctionReason: v.union(correctionReason, v.null()),
+    correctionRevision: v.union(v.number(), v.null()),
+    lastCorrectionReason: v.optional(correctionReason),
+    lastCorrectionRevision: v.optional(v.number()),
     observedAt: v.number(),
     syncedAt: v.number(),
   })
@@ -65,15 +72,40 @@ export default defineSchema({
       "deviceId",
       "provider",
       "rankingDay",
+    ])
+    .index("by_tokenmaxxer_id_and_provider_and_ranking_day", [
+      "tokenmaxxerId",
+      "provider",
+      "rankingDay",
     ]),
+
+  usageCorrectionAudits: defineTable({
+    bucketId: v.id("usageBuckets"),
+    deviceId: v.id("devices"),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+    provider,
+    rankingDay: v.string(),
+    revision: v.number(),
+    reason: correctionReason,
+    createdAt: v.number(),
+  }).index("by_bucket_id_and_revision", ["bucketId", "revision"]),
+
+  deviceProviderSettings: defineTable({
+    activeMacGeneration: v.number(),
+    claudeEnabled: v.boolean(),
+    codexEnabled: v.boolean(),
+    deviceId: v.id("devices"),
+    revision: v.number(),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+    updatedAt: v.number(),
+  }).index("by_device_id", ["deviceId"]),
 
   userDailyUsage: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
     provider,
     rankingDay: v.string(),
     observedTokens: v.number(),
-    apiEquivalentCostMicros: v.optional(v.number()),
-    costIsComplete: v.boolean(),
+    apiEquivalentCost,
     updatedAt: v.number(),
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
@@ -83,30 +115,13 @@ export default defineSchema({
       "rankingDay",
     ]),
 
-  userScores: defineTable({
+  publicUsages: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
     boardKey: v.string(),
     scope: scoreScope,
     windowDays: scoreWindow,
     tokenScore: v.number(),
-    apiEquivalentCostMicros: v.optional(v.number()),
-    computedAt: v.number(),
-  })
-    .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
-    .index("by_board_key", ["boardKey"])
-    .index("by_tokenmaxxer_id_and_scope_and_window_days", [
-      "tokenmaxxerId",
-      "scope",
-      "windowDays",
-    ]),
-
-  publicScores: defineTable({
-    tokenmaxxerId: v.id("tokenmaxxers"),
-    boardKey: v.string(),
-    scope: scoreScope,
-    windowDays: scoreWindow,
-    tokenScore: v.number(),
-    apiEquivalentCostMicros: v.optional(v.number()),
+    apiEquivalentCost,
     displayName: v.string(),
     touchGrassId: v.string(),
     computedAt: v.number(),

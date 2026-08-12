@@ -18,16 +18,17 @@ describe("ranking invariants", () => {
   test("rejects stale-style invalid revisions", () => {
     expect(() =>
       assertUsageSnapshot({
-        apiEquivalentCostMicros: null,
+        apiEquivalentCost: null,
+        correctionReason: null,
+        correctionRevision: null,
         coverage: "complete",
+        evidenceBasis: "locally-derived",
         observedAt: 0,
         observedTokens: 1,
-        priceBasisVersion: null,
         provider: "codex",
         rankingDay: "2026-08-03",
         revision: 0,
-        source: "local-observed",
-      }),
+      }, "2026-08-03"),
     ).toThrow("revision");
   });
 });

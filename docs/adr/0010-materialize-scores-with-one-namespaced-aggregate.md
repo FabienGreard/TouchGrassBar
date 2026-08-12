@@ -10,7 +10,7 @@ Computing rolling global rankings by scanning daily observations would become ex
 
 ## Decision
 
-Convex materializes 1-day, 7-day, and 30-day scores for Codex, Claude, and Combined scopes. A single `@convex-dev/aggregate` component installation partitions global boards by a versioned Board Key. Public Score and Aggregate changes occur in the same mutation.
+Convex materializes 1-day, 7-day, and 30-day scores for Codex, Claude, and Combined scopes. The `publicUsages` table stores these public usage projections. A single `@convex-dev/aggregate` component installation partitions global boards by a versioned Board Key. Public Usage and Aggregate changes occur in the same mutation.
 
 My Tokenmaxxers uses indexed, bounded reads followed by in-memory filtering and sorting. It does not use Aggregate.
 

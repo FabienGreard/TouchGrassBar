@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
+import { syncPreviewStatuses } from "@/dev/preview-scenario";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
 const fixedNow = () => new Date("2026-08-03T00:00:00.000Z");
@@ -23,6 +24,32 @@ async function waitForRevision(
 }
 
 describe("browser sanitized desktop state fixtures", () => {
+  test.each(syncPreviewStatuses)(
+    "projects the $key sync state without changing stale provider data",
+    async ({ key }) => {
+      const delivery = createSanitizedDesktopStateDelivery(
+        createBrowserSanitizedDesktopStateAdapter(
+          "stale",
+          fixedNow,
+          undefined,
+          key,
+        ),
+      );
+      const unsubscribe = delivery.subscribe(() => undefined);
+
+      await waitForRevision(delivery, "3");
+
+      const snapshot = delivery.getSnapshot().snapshot;
+      expect(snapshot?.providers[0]?.usage.today.availability).toBe("stale");
+      expect(snapshot?.sync).toEqual({
+        lastSuccessfulAt:
+          key === "synced" || key === "stale" ? fixedNow().toISOString() : null,
+        status: key,
+      });
+      unsubscribe();
+    },
+  );
+
   test("routes fixtures through the production delivery contract", async () => {
     const delivery = createSanitizedDesktopStateDelivery(
       createBrowserSanitizedDesktopStateAdapter(

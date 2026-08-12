@@ -107,6 +107,7 @@ function DevPreviewApp() {
         scenario.fixture,
         () => new Date(),
         providerEnabled,
+        scenario.syncStatus,
       ),
     ),
   );
@@ -246,6 +247,7 @@ function DevPreviewApp() {
       <DevPreviewSwitcher
         activeFixture={scenario.fixture}
         activeSurface={scenario.surface}
+        activeSyncStatus={scenario.syncStatus}
         devInstance={devInstance}
         onboardingCodexPreviewState={
           scenario.surface === "onboarding"

@@ -59,6 +59,13 @@ pub(crate) fn all_providers_enabled_policy() -> Arc<dyn ProviderEnablementPolicy
     Arc::new(AllProvidersEnabled)
 }
 
+/// A correction is fixed, content-free proof tied to the local aggregate
+/// revision that created it. Later aggregate revisions can retain the proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProviderCorrection {
+    ParserCorrection { source_revision: u64 },
+}
+
 /// Sanitized output from one deep provider adapter.
 /// Provider-native models, token categories, paths, and parser data must stay
 /// behind the adapter boundary.
@@ -67,6 +74,7 @@ pub(crate) struct ProviderObservation {
     pub(crate) quota: ProviderSnapshot,
     pub(crate) usage: UsagePeriods,
     pub(crate) top_model_usage: Option<TopModelUsage>,
+    pub(crate) correction: Option<ProviderCorrection>,
 }
 
 pub(crate) fn normalized_model_display_name(canonical: &str) -> Option<String> {
@@ -278,6 +286,7 @@ impl ProviderObservationCoordinator {
         let previous = cached.clone();
         self.normalize_registry(&mut cached);
         let mut completed_providers = BTreeSet::new();
+        let mut corrections = BTreeMap::new();
 
         thread::scope(|scope| -> Result<(), RefreshFailure> {
             let (result_sender, result_receiver) = mpsc::channel();
@@ -328,16 +337,21 @@ impl ProviderObservationCoordinator {
                 }
 
                 let mut provider_changed = false;
+                let mut provider_correction = None;
                 match result {
                     Ok(Ok(Some(observation))) => {
                         if observation.quota.provider() != provider {
                             debug_refresh_failure(provider, "invalid_provider");
                         } else if let Some(presentation) = cached.provider_mut(provider) {
+                            provider_correction = observation.correction;
                             let previous_presentation = presentation.clone();
                             presentation.quota = observation.quota;
                             presentation.usage = observation.usage;
                             presentation.top_model_usage = observation.top_model_usage;
                             provider_changed = *presentation != previous_presentation;
+                            if let Some(correction) = provider_correction {
+                                corrections.insert(provider, correction);
+                            }
                             debug_refresh_event(provider, "completed");
                         }
                     }
@@ -362,7 +376,7 @@ impl ProviderObservationCoordinator {
                     cached.refresh_combined_usage();
                 }
                 if let Some(progress) = progress
-                    && (provider_changed || provider_completed)
+                    && (provider_changed || provider_completed || provider_correction.is_some())
                 {
                     progress.report(SnapshotRefreshOutcome {
                         snapshot: provider_changed.then(|| cached.clone()),
@@ -371,6 +385,9 @@ impl ProviderObservationCoordinator {
                         } else {
                             BTreeSet::new()
                         },
+                        corrections: provider_correction
+                            .map(|correction| BTreeMap::from([(provider, correction)]))
+                            .unwrap_or_default(),
                     })?;
                 }
             }
@@ -382,6 +399,7 @@ impl ProviderObservationCoordinator {
         Ok(SnapshotRefreshOutcome {
             snapshot: (cached != previous).then_some(cached),
             completed_providers,
+            corrections,
         })
     }
 }
@@ -826,6 +844,7 @@ mod tests {
                 },
                 usage: usage_with_tokens(tokens),
                 top_model_usage: None,
+                correction: None,
             }))
         }
     }
@@ -999,6 +1018,7 @@ mod tests {
                 },
                 usage: usage_with_tokens(42),
                 top_model_usage: None,
+                correction: None,
             })),
         });
         let claude = Arc::new(FixedAdapter {
@@ -1062,6 +1082,38 @@ mod tests {
         assert_eq!(
             outcome.completed_providers,
             BTreeSet::from([CodingProvider::Claude])
+        );
+    }
+
+    #[test]
+    fn correction_is_exposed_when_the_snapshot_does_not_change() {
+        let cached = unavailable_state(1);
+        let claude = cached
+            .provider(CodingProvider::Claude)
+            .expect("Claude presentation")
+            .clone();
+        let adapter = Arc::new(FixedAdapter {
+            provider: CodingProvider::Claude,
+            result: Ok(Some(ProviderObservation {
+                quota: claude.quota,
+                usage: claude.usage,
+                top_model_usage: claude.top_model_usage,
+                correction: Some(ProviderCorrection::ParserCorrection { source_revision: 2 }),
+            })),
+        });
+        let coordinator = ProviderObservationCoordinator::new(vec![adapter]);
+
+        let outcome = coordinator
+            .refresh(cached, &RefreshAttempt::test())
+            .expect("correction refresh");
+
+        assert_eq!(outcome.snapshot, None);
+        assert_eq!(
+            outcome.corrections,
+            BTreeMap::from([(
+                CodingProvider::Claude,
+                ProviderCorrection::ParserCorrection { source_revision: 2 }
+            )])
         );
     }
 
@@ -1207,6 +1259,7 @@ mod tests {
                     },
                     usage,
                     top_model_usage: None,
+                    correction: None,
                 })),
             })
         };
@@ -1282,6 +1335,7 @@ mod tests {
                             }),
                             observed_tokens: tokens,
                         }),
+                        correction: None,
                     })),
                 },
                 runs: AtomicUsize::new(0),

@@ -283,6 +283,7 @@ fn unavailable_observation(provider: CodingProvider) -> ProviderObservation {
             thirty_days: UsageTotal::Unavailable,
         },
         top_model_usage: None,
+        correction: None,
     }
 }
 
@@ -346,6 +347,7 @@ fn observed(
             thirty_days: observed_total(provider, now, tokens[2], costs[2]),
         },
         top_model_usage: None,
+        correction: None,
     }
 }
 

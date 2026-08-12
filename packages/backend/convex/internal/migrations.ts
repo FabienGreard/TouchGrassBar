@@ -1,18 +1,18 @@
 import { Migrations } from "@convex-dev/migrations";
 
 import { components } from "../_generated/api";
-import { globalDoomerboard } from "../model/aggregate";
+import { doomerboard } from "../model/doomerboard";
 import schema from "../schema";
 
 export const migrations = new Migrations(components.migrations, { schema });
 
-export const backfillPublicScoreAggregate = migrations.define({
-  table: "publicScores",
-  migrateOne: async (ctx, publicScore) => {
-    await globalDoomerboard.insertIfDoesNotExist(ctx, {
-      id: publicScore._id,
-      key: publicScore.tokenScore,
-      namespace: publicScore.boardKey,
+export const backfillDoomerboard = migrations.define({
+  table: "publicUsages",
+  migrateOne: async (ctx, publicUsage) => {
+    await doomerboard.insertIfDoesNotExist(ctx, {
+      id: publicUsage._id,
+      key: publicUsage.tokenScore,
+      namespace: publicUsage.boardKey,
     });
   },
 });

@@ -1,5 +1,6 @@
 import { createClient, type GenericCtx } from "@convex-dev/better-auth";
 import { convex } from "@convex-dev/better-auth/plugins";
+import { ConvexError } from "convex/values";
 import { betterAuth } from "better-auth/minimal";
 import { bearer } from "better-auth/plugins/bearer";
 import { username } from "better-auth/plugins/username";
@@ -12,6 +13,7 @@ import {
   touchGrassSignup,
   type TouchGrassPolicyPort,
 } from "./auth/touchgrassSignup";
+import { rejectAuthority } from "./model/authority";
 import { rateLimiter } from "./model/rateLimits";
 
 declare const process: {
@@ -126,6 +128,15 @@ export const createAuth = (ctx: GenericCtx<DataModel>) =>
   });
 
 export async function requireAuthUser(ctx: GenericCtx<DataModel>) {
-  const user = await authComponent.getAuthUser(ctx);
-  return { ...user, id: user._id };
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) return rejectAuthority();
+  try {
+    const user = await authComponent.getAuthUser(ctx);
+    return { ...user, id: user._id };
+  } catch (error) {
+    if (error instanceof ConvexError && error.data === "Unauthenticated") {
+      return rejectAuthority();
+    }
+    throw error;
+  }
 }

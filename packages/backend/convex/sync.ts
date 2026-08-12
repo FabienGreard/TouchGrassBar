@@ -2,35 +2,68 @@ import { v } from "convex/values";
 
 import { mutation } from "./_generated/server";
 import { requireAuthUser } from "./auth";
-import { applyUsageSnapshots } from "./model/sync";
+import { applyProviderSettings, applyUsageSnapshots } from "./model/sync";
 import {
-  scoreScopeValidator,
-  scoreWindowValidator,
+  providerValidator,
   usageSnapshotValidator,
 } from "./model/values";
 
-const overviewRow = v.object({
-  apiEquivalentCostMicros: v.union(v.number(), v.null()),
-  scope: scoreScopeValidator,
-  tokenScore: v.number(),
-  windowDays: scoreWindowValidator,
+const acknowledgement = v.object({
+  outcome: v.union(
+    v.literal("committed"),
+    v.literal("conflict"),
+    v.literal("idempotent"),
+    v.literal("stale"),
+  ),
+  provider: providerValidator,
+  rankingDay: v.string(),
+  revision: v.number(),
+});
+
+const providerSettingsAcknowledgement = v.object({
+  outcome: v.union(
+    v.literal("committed"),
+    v.literal("idempotent"),
+    v.literal("stale"),
+  ),
+  revision: v.number(),
+});
+
+export const providerSettings = mutation({
+  args: {
+    activeMacGeneration: v.number(),
+    enabledProviders: v.array(providerValidator),
+    installationCredential: v.string(),
+    revision: v.number(),
+  },
+  returns: providerSettingsAcknowledgement,
+  handler: async (ctx, args) => {
+    const authUser = await requireAuthUser(ctx);
+    return applyProviderSettings(
+      ctx,
+      authUser,
+      args.installationCredential,
+      args.activeMacGeneration,
+      args.revision,
+      args.enabledProviders,
+    );
+  },
 });
 
 export const dailyUsage = mutation({
   args: {
-    installationId: v.string(),
+    activeMacGeneration: v.number(),
+    installationCredential: v.string(),
     snapshots: v.array(usageSnapshotValidator),
   },
-  returns: v.object({
-    changedBuckets: v.number(),
-    overview: v.array(overviewRow),
-  }),
+  returns: v.array(acknowledgement),
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
     return applyUsageSnapshots(
       ctx,
-      authUser.id,
-      args.installationId,
+      authUser,
+      args.installationCredential,
+      args.activeMacGeneration,
       args.snapshots,
     );
   },

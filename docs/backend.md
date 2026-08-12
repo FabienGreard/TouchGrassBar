@@ -6,7 +6,16 @@ Convex receives authenticated daily usage snapshots from the Rust native core an
 
 The deployed flow is:
 
-`usageBuckets → userDailyUsage → userScores → publicScores → @convex-dev/aggregate`
+`usageBuckets → userDailyUsage → publicUsages → doomerboard`
+
+`deviceProviderSettings → filtered publicUsages recompute`
+
+`usageBuckets` is the synchronization ledger. It owns Active Mac authority,
+revisions, evidence, and correction provenance. `userDailyUsage` is the
+canonical private history for one Tokenmaxxer, provider, and UTC day.
+`publicUsages` materializes each public scope and window. The
+`doomerboard` wraps `@convex-dev/aggregate` only for ordered
+pagination. It does not calculate daily usage or rolling scores.
 
 `packages/contracts` is not the sync contract. It is reserved for the sanitized Rust-to-React Tauri IPC boundary. Convex generates its own TypeScript API and data-model types in `convex/_generated`.
 
@@ -14,11 +23,50 @@ Rust is the only desktop Convex client. It exchanges its Keychain-held Better Au
 
 ## Snapshot invariant
 
-One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Aggregate with a monotonically increasing revision. The server ignores an equal or lower revision, so retries are idempotent and an older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. Disappearance of a local record is never valid downward evidence.
+One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Snapshot with a monotonically increasing revision. The server treats an equal, exact payload as idempotent. A lower revision is stale. An equal revision with different data is also stale if its token total is not lower. The client rebases that snapshot to the server revision plus one. A snapshot is a conflict if its observation time moves backward or an equal revision has a lower unproved total. The client keeps that uncommitted request, records a terminal conflict for the exact revision, and stops retrying it. A new local observation can create a later revision. An older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. The request pairs that reason with the original correction revision. A later cumulative retry can identify the same correction without a second audit or authority for a new decrease. Disappearance of a local record is never valid downward evidence.
 
-Each request contains at most 62 snapshots and commits atomically. An acknowledgement names only revisions committed by that mutation. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. The current Active Mac's accepted snapshot updates the corresponding User Daily Usage value and recomputes its derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
+Each request contains at most 62 snapshots and commits atomically. A committed or idempotent acknowledgement names the submitted revision. A conflict result also names the submitted revision, but it does not acknowledge a commit. A stale acknowledgement names the same or a newer server revision. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. An accepted snapshot updates its Usage Bucket. The server then rebuilds the User Daily Usage value from every accepted Active Mac generation segment. It recomputes the derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.
 
-On same-day Active Mac transfer, the old generation's accepted contribution is frozen and the new generation contributes only its post-transfer segment. Later writes from the old generation fail, earlier Ranking Days are not rewritten, and a known unsynchronized old segment makes the transferred day partial.
+The native synchronization module also keeps one latest-only provider-setting
+outbox row for the Active Mac generation. Its authenticated mutation stores a
+monotonic enabled-provider revision before later usage delivery. Score
+recomputation excludes accepted daily rows for disabled providers. The daily
+facts stay retained and private to this projection path. A later re-enable
+restores their valid 1-day, 7-day, and 30-day contribution without a new scan.
+A stale provider-setting acknowledgement advances the local revision floor;
+therefore, a late disable or re-enable request cannot restore an older setting.
+
+On Active Mac transfer, the old generation's accepted contribution is frozen
+and the new generation contributes only its post-transfer segment. Later writes
+from the old generation fail. Ranking Days before the transfer day are not
+rewritten. A known unsynchronized old segment makes the transfer day partial.
+
+Native records the server-owned activation time. It captures a sanitized
+baseline at installation only when the observation matches that time. Native
+ignores earlier totals. The first later observation becomes a partial baseline.
+Native subtracts compatible tokens and cost for the transfer day.
+
+If authority installation occurs after a UTC rollover, Native does not relabel
+current usage as transfer-day usage. It first sends one tagged transfer-day
+carryover for each affected provider, with a maximum of two carryovers. A
+carryover is either a zero-token partial record or an unacknowledged non-zero
+partial segment that was observed after activation on that UTC day.
+
+The backend accepts this historical exception only from the Active Mac
+generation after the first generation. Its Ranking Day must equal the
+server-owned device activation day and precede the current day. Its coverage
+must be partial, and its observation time must be at or after activation and
+remain within that day. A non-zero segment uses the normal token, cost,
+correction, and revision rules. The zero-token marker must use the exact
+activation time when Native creates it during delayed installation. A first
+post-activation partial baseline can also leave a later zero-token carryover.
+Both zero-token forms must use revision one and no cost or correction. The same
+mutation records the carryover, rebuilds `userDailyUsage` for the transfer day
+with unavailable API-Equivalent Cost, and recomputes the rolling scores.
+A stale zero-token carryover is complete because the server has a newer
+historical revision. Native removes it. A stale non-zero carryover rebases and
+keeps its carryover tag.
+Normal Usage Snapshots remain limited to the current UTC Ranking Day.
 
 ## Usage-contract verification
 
@@ -26,15 +74,23 @@ Automated fixtures must cover Quota Lane freshness and reset transitions; provid
 
 ## Score materialization
 
-Every accepted change recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. The same mutation updates both `publicScores` and the global Aggregate entry.
+Every accepted change writes `userDailyUsage` and recomputes the affected Tokenmaxxer's Codex, Claude, and Combined Token Scores for 1, 7, and 30 UTC days. Recompute reads at most 30 rows for each enabled provider through the Tokenmaxxer, provider, and Ranking Day index. It does not scan older history. The same mutation updates `publicUsages` and `doomerboard`. Each daily fact and score keeps the complete API-equivalent cost object: micros, quality, coverage, and pricing basis. Combined scores use the same conservative reduction as the native usage summary. They sum valid estimates, keep all pricing bases, use the weakest quality, and report token-weighted modeled coverage. An unpriced provider does not hide another provider's valid estimate.
 
-The Aggregate component has one installation named `doomerboard`. It partitions scores by keys such as:
+The `@convex-dev/aggregate` component has one installation named `doomerboard`.
+The local `doomerboard` symbol partitions score document IDs by keys
+such as:
 
 - `tokens-v1:codex:30d`
 - `tokens-v1:claude:7d`
 - `tokens-v1:combined:1d`
 
-Global Doomerboards page the Aggregate in descending order. `publicScores` and the Aggregate have one write path: every insert, replacement, or deletion changes both within the same mutation. A read-only invariant check proves a one-to-one match of document ID, Board Key, and Token Score, while an idempotent migration can repair divergence. Production dashboard edits to either side are prohibited.
+Doomerboards page this index in descending order. `publicUsages` and
+`doomerboard` have one write path: every insert, replacement, or
+deletion changes both within the same mutation. A read-only invariant check
+proves a one-to-one match of document ID, Board Key, and Token Score. The
+`backfillDoomerboard` migration can repair index divergence without
+recomputing usage or scores. Production dashboard edits to either side are
+prohibited.
 
 My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most those 100 indexed edges, performs indexed score lookups, and sorts only that bounded set in memory. It never scans the global score table.
 
@@ -42,13 +98,17 @@ My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most
 
 A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer whose rolling score can change has been processed, so expired Ranking Days leave all windows. The drain is idempotent, retries safely, alerts if progress stalls, and has no correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain within the approved backend performance budget.
 
-The migrations component owns repair/backfill work. Migrations are forward-only, resumable, idempotent, and bounded. A required-field or Board Key change adds new storage, backfills it, verifies counts and invariants, switches reads and writes, then removes legacy state only in a later release. Readiness includes an interruption/resume rehearsal on production-shaped data and Aggregate-repair coverage.
+The migrations component owns bounded repair work. The
+`backfillDoomerboard` migration is forward-only, resumable, and
+idempotent. It rebuilds only missing index entries from `publicUsages`.
+
+This feature requires the credential-based Active Mac and current usage schemas directly. It has no compatibility migration. Reset a local development deployment if it contains data from an earlier feature shape. This branch does not change a cloud deployment.
 
 ## Authentication boundary
 
-Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from `tokenIdentifier`, and never accepts a client-supplied user identifier as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
+Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from the Better Auth user, and never accepts a client-supplied user identifier as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
 
-Better Auth is pinned but its generated Recovery Key adapter and device-transfer flow remain an implementation gate. Until that is wired, the authenticated mutations are deliberately inaccessible to the desktop scaffold.
+Better Auth generated credentials and the desktop session-to-JWT exchange are wired. Active Mac transfer and recovery remain separate implementation gates. Synchronization accepts only the current claimed installation credential and server-owned generation.
 
 ## Abuse policy
 
@@ -70,13 +130,13 @@ The automated evidence set contains:
 - authorization tests for absent, expired, revoked, and mismatched sessions; wrong installations; stale Active Mac generations; and transfer/sync races;
 - atomic synchronization tests for retries, duplicate and concurrent delivery, valid corrections, rollback, same-day transfer segmentation, and abandoned old-generation work;
 - fake-clock UTC rollover tests across month, year, leap-day, and daylight-saving boundaries, plus a complete paginated-drain test;
-- an independent reference oracle that applies randomized synchronization, correction, transfer, and rollover sequences and compares User Daily Usage, User Scores, Public Scores, and Aggregate ranks;
+- an independent reference oracle that applies randomized synchronization, correction, transfer, and rollover sequences and compares User Daily Usage, Public Usage projections, and Doomerboard index ranks;
 - bounded-query and rate-limit boundary tests, hostile-input tests, and an interrupted migration rehearsal;
 - a disposable authenticated canary against the exact production deployment before public visibility. It proves generated credentials, session/JWT exchange, Active Mac claim, synchronization and identical retry, public and private reads, transfer, old-Mac rejection, new-Mac synchronization, and complete internal cleanup without logging secrets; and
-- a production health check for the exact deployment, presence-only required environment variables, installed schema and components, the canary's sanitized correlation window, zero unhandled backend errors, and the Public Score/Aggregate invariant.
+- a production health check for the exact deployment, presence-only required environment variables, installed schema and components, the canary's sanitized correlation window, zero unhandled backend errors, and the Public Usage/Doomerboard index invariant.
 
 The resulting Backend Readiness Evidence is one machine-readable CI artifact containing the exact Git commit, dependency-lock hash, schema and Board Key versions, policy version, deployment identity, suite results, migration rehearsal, production-canary result, and production-health result. Relevant code, configuration, schema, dependency, or policy changes make it stale. Before real traffic exists, production evidence is explicitly labeled `canary-only`; post-launch monitoring is a separate operational gate.
 
 ## Validation
 
-This document defines the target contract; it does not claim launch readiness. The current backend has been generated and pushed successfully only to an anonymous local Convex deployment. Better Auth is not wired into Convex, protected functions still trust the raw JWT subject, Active Mac generations and correction provenance are absent from the schema, rollover stops after a fixed batch, and My Tokenmaxxers scans broad capped sets. Production deployment, implementation of this contract, regenerated Backend Readiness Evidence, and explicit launch approval remain separate gates.
+This document defines the target contract; it does not claim launch readiness. The issue 26 implementation has a typed current-day synchronization mutation, live Better Auth authorization, Active Mac generation checks, correction provenance, and a native latest-revision outbox. Local tests do not prove a production deployment, authenticated canary, production Active Mac transfer, historical backfill, rollover completion, or release approval. Those items and regenerated Backend Readiness Evidence remain separate gates.

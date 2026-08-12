@@ -2,7 +2,9 @@ import { v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
 import { requireAuthUser } from "./auth";
+import { rejectAuthority } from "./model/authority";
 import {
+  claimActiveDevice,
   ensureTokenmaxxer,
   tokenmaxxerForAuthUser,
 } from "./model/profile";
@@ -10,6 +12,10 @@ import {
 const publicTokenmaxxer = v.object({
   displayName: v.string(),
   touchGrassId: v.string(),
+});
+const ensuredTokenmaxxer = publicTokenmaxxer.extend({
+  activeMacActivatedAt: v.number(),
+  activeMacGeneration: v.number(),
 });
 
 function cleanDisplayName(displayName: string) {
@@ -25,23 +31,44 @@ function touchGrassIdForAuthUser(user: { username?: unknown }) {
     typeof user.username !== "string" ||
     !/^TG-[A-HJ-NP-Z2-9]{6}$/.test(user.username)
   ) {
-    throw new Error("authenticated Profile has no TouchGrass ID");
+    return rejectAuthority();
   }
   return user.username;
 }
 
 export const ensureProfile = mutation({
-  args: { displayName: v.string() },
-  returns: publicTokenmaxxer,
+  args: {
+    displayName: v.string(),
+    expectedTouchGrassId: v.string(),
+    installationCredential: v.string(),
+  },
+  returns: ensuredTokenmaxxer,
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
+    const touchGrassId = touchGrassIdForAuthUser(authUser);
+    if (args.expectedTouchGrassId !== touchGrassId) {
+      return rejectAuthority();
+    }
     const tokenmaxxer = await ensureTokenmaxxer(
       ctx,
-      authUser.id,
+      authUser,
       cleanDisplayName(args.displayName),
-      touchGrassIdForAuthUser(authUser),
+      touchGrassId,
     );
+    const activeDevice = await claimActiveDevice(
+      ctx,
+      tokenmaxxer._id,
+      args.installationCredential,
+    );
+    if (
+      !Number.isSafeInteger(activeDevice.createdAt) ||
+      activeDevice.createdAt < 0
+    ) {
+      return rejectAuthority();
+    }
     return {
+      activeMacActivatedAt: activeDevice.createdAt,
+      activeMacGeneration: activeDevice.generation,
       displayName: tokenmaxxer.displayName,
       touchGrassId: tokenmaxxer.publicId,
     };
@@ -53,7 +80,7 @@ export const updateDisplayName = mutation({
   returns: publicTokenmaxxer,
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
-    const tokenmaxxer = await tokenmaxxerForAuthUser(ctx, authUser.id);
+    const tokenmaxxer = await tokenmaxxerForAuthUser(ctx, authUser);
     if (!tokenmaxxer) {
       throw new Error("TouchGrass Profile not found");
     }
@@ -82,7 +109,7 @@ export const addToMyTokenmaxxers = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
-    const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
+    const owner = await tokenmaxxerForAuthUser(ctx, authUser);
     if (!owner) {
       throw new Error("TouchGrass Profile not found");
     }
@@ -114,7 +141,7 @@ export const removeFromMyTokenmaxxers = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
-    const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
+    const owner = await tokenmaxxerForAuthUser(ctx, authUser);
     if (!owner) {
       throw new Error("TouchGrass Profile not found");
     }

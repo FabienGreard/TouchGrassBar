@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
-import { resolveDevPreviewScenario } from "@/dev/preview-scenario";
+import {
+  resolveDevPreviewScenario,
+  syncPreviewStatuses,
+} from "@/dev/preview-scenario";
 
 describe("development preview scenarios", () => {
   test("resolves explicit panel fixtures and rejects unknown values", () => {
@@ -11,6 +14,29 @@ describe("development preview scenarios", () => {
     expect(resolveDevPreviewScenario("?fixture=anything-else").fixture).toBe(
       "unavailable",
     );
+  });
+
+  test.each(syncPreviewStatuses)(
+    "resolves the $key sync status independently from provider freshness",
+    ({ key }) => {
+      expect(
+        resolveDevPreviewScenario(
+          `?fixture=stale&syncStatus=${encodeURIComponent(key)}`,
+        ),
+      ).toMatchObject({ fixture: "stale", syncStatus: key });
+    },
+  );
+
+  test("rejects unknown sync status details", () => {
+    const scenario = resolveDevPreviewScenario(
+      "?fixture=current&syncStatus=retrying&syncReason=private-detail",
+    );
+
+    expect(scenario).toMatchObject({
+      fixture: "current",
+      syncStatus: "unavailable",
+    });
+    expect(scenario).not.toHaveProperty("syncReason");
   });
 
   test("owns surface and onboarding query parsing outside production", () => {

@@ -96,7 +96,8 @@ describe("panel states", () => {
     );
 
     expect(markup).not.toContain(">0<");
-    expect(markup).toContain("Live");
+    expect(markup).toContain(">Live<span");
+    expect(markup).toContain("Synchronization is unavailable");
     expect(markup).toContain('aria-label="Open panel menu"');
     expect(markup).toContain('data-slot="brand-mark"');
     expect(markup).toContain('data-tone="ink"');
@@ -563,7 +564,7 @@ describe("panel states", () => {
     expect(markup).toContain("partial period coverage");
     expect(markup).toContain("cost estimated from local pricing evidence");
     expect(markup).toContain(
-      "pricing basis openai-standard-2026-08-06-v1 + anthropic-standard-2026-08-07-v1",
+      "pricing basis openai-api-2026-08-09-v3 + anthropic-standard-2026-08-07-v1",
     );
     expect(markup).toContain("width:5%");
     expect(markup).toContain("width:26%");

@@ -17,6 +17,7 @@ use crate::daily_usage_aggregate::{
     DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_usage_periods,
     checked_sum, period_days,
 };
+use crate::providers::ProviderCorrection;
 use crate::sanitized::{
     ApiEquivalentCostQuality, TopModelUsage, UsageCoverage, UsagePeriods, UsageScanStatus,
     UsageTotal,
@@ -37,8 +38,9 @@ const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
 const TRANSCRIPT_PARSER_VERSION: i64 = 4;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
-pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 4;
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
+const PARSER_CORRECTION_PROVENANCE: &str = "parser-correction";
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -205,7 +207,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
         && (usage.cache_creation_input == 0 || cache_breakdown_matches);
     let pricing = ClaudePricingMetadata {
         service_tier: normalized_modifier(line.message.usage.service_tier),
-        inference_geo: normalized_modifier(line.message.usage.inference_geo),
+        inference_geo: normalized_inference_geo(line.message.usage.inference_geo),
         speed: normalized_modifier(line.message.usage.speed),
         web_search_requests: line
             .message
@@ -406,6 +408,13 @@ fn normalized_modifier(value: Option<String>) -> Option<String> {
     }
 }
 
+fn normalized_inference_geo(value: Option<String>) -> Option<String> {
+    match value.as_deref() {
+        Some("") => None,
+        _ => normalized_modifier(value),
+    }
+}
+
 fn supported_claude_code_version(value: &str) -> bool {
     SUPPORTED_CLAUDE_CODE_VERSIONS.contains(&value)
 }
@@ -498,6 +507,7 @@ pub(super) struct LocalUsageObservation {
     scan_scope_known: bool,
     transcript_source_present: bool,
     aggregate_changed: bool,
+    pub(super) correction: Option<ProviderCorrection>,
 }
 
 impl LocalUsageObservation {
@@ -637,6 +647,42 @@ pub(crate) fn usage_index_schema_version(connection: &Connection) -> Result<i64,
         .optional()
         .map(|version| version.unwrap_or(0))
         .map_err(|_| ())
+}
+
+fn daily_usage_optional_columns(connection: &Connection) -> Result<(bool, bool, bool), ()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(claude_usage_daily)")
+        .map_err(|_| ())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| ())?;
+    let mut has_provenance = false;
+    let mut has_source_revision = false;
+    let mut has_cost_modeled = false;
+    for column in columns {
+        match column.map_err(|_| ())?.as_str() {
+            "correction_provenance" => has_provenance = true,
+            "correction_source_revision" => has_source_revision = true,
+            "cost_modeled" => has_cost_modeled = true,
+            _ => {}
+        }
+    }
+    Ok((has_provenance, has_source_revision, has_cost_modeled))
+}
+
+fn supersede_edges_have_aggregate_applied(connection: &Connection) -> Result<bool, ()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(claude_usage_message_supersedes)")
+        .map_err(|_| ())?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| ())?;
+    for column in columns {
+        if column.map_err(|_| ())? == "aggregate_applied" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn usage_index_backup_path(path: &Path, source_version: i64) -> PathBuf {
@@ -820,11 +866,82 @@ fn ensure_index_schema(connection: &mut Connection, database_path: &Path) -> Res
                revision INTEGER NOT NULL CHECK (revision >= 1),
                priced_tokens INTEGER NOT NULL DEFAULT 0,
                cost_usd REAL,
+               cost_modeled INTEGER NOT NULL DEFAULT 0 CHECK (cost_modeled IN (0, 1)),
                pricing_basis TEXT,
-               pricing_fingerprint TEXT
+               pricing_fingerprint TEXT,
+               correction_provenance TEXT,
+               correction_source_revision INTEGER,
+               CHECK (
+                 (
+                   correction_provenance IS NULL
+                   AND correction_source_revision IS NULL
+                 ) OR (
+                   correction_provenance = 'parser-correction'
+                   AND correction_source_revision >= 1
+                   AND correction_source_revision <= revision
+                 )
+               )
              );",
         )
         .map_err(|_| ())?;
+    let (has_provenance, has_source_revision, has_cost_modeled) =
+        daily_usage_optional_columns(&transaction)?;
+    if !has_provenance {
+        transaction
+            .execute_batch(
+                "ALTER TABLE claude_usage_daily
+                 ADD COLUMN correction_provenance TEXT CHECK (
+                   correction_provenance IS NULL
+                   OR correction_provenance = 'parser-correction'
+                 );",
+            )
+            .map_err(|_| ())?;
+    }
+    if !has_source_revision {
+        // A legacy marker has no exact source revision. Clear it instead of
+        // deriving provenance from the current aggregate revision.
+        transaction
+            .execute(
+                "UPDATE claude_usage_daily SET correction_provenance = NULL",
+                [],
+            )
+            .map_err(|_| ())?;
+        transaction
+            .execute_batch(
+                "ALTER TABLE claude_usage_daily
+                 ADD COLUMN correction_source_revision INTEGER CHECK (
+                   (
+                     correction_provenance IS NULL
+                     AND correction_source_revision IS NULL
+                   ) OR (
+                     correction_provenance = 'parser-correction'
+                     AND correction_source_revision >= 1
+                     AND correction_source_revision <= revision
+                   )
+                 );",
+            )
+            .map_err(|_| ())?;
+    }
+    if !has_cost_modeled {
+        transaction
+            .execute_batch(
+                "ALTER TABLE claude_usage_daily
+                 ADD COLUMN cost_modeled INTEGER NOT NULL DEFAULT 0
+                 CHECK (cost_modeled IN (0, 1));",
+            )
+            .map_err(|_| ())?;
+    }
+    if !supersede_edges_have_aggregate_applied(&transaction)? {
+        // Existing edges predate this proof lifecycle. Mark them as consumed
+        // so migration cannot create new correction authority.
+        transaction
+            .execute_batch(
+                "ALTER TABLE claude_usage_message_supersedes
+                 ADD COLUMN aggregate_applied INTEGER NOT NULL DEFAULT 1
+                 CHECK (aggregate_applied IN (0, 1));",
+            )
+            .map_err(|_| ())?;
+    }
     transaction
         .execute(
             "INSERT INTO touchgrassbar_schema_versions(module, version) VALUES(?1, ?2)
@@ -1059,8 +1176,9 @@ fn store_frame(transaction: &rusqlite::Transaction<'_>, frame: &NormalizedFrame)
         transaction
             .execute(
                 "INSERT OR IGNORE INTO claude_usage_message_supersedes(
-                   replacement_frame_key, superseded_frame_key, parser_version
-                 ) VALUES(?1, ?2, ?3)",
+                   replacement_frame_key, superseded_frame_key, parser_version,
+                   aggregate_applied
+                 ) VALUES(?1, ?2, ?3, 0)",
                 params![
                     frame.frame_key,
                     superseded_frame_key,
@@ -1338,6 +1456,7 @@ struct DailyAccumulator {
     observed_through: Option<OffsetDateTime>,
     priced_tokens: u64,
     cost_usd: f64,
+    modeled: bool,
     pricing_rule_fingerprints: BTreeSet<String>,
 }
 
@@ -1514,8 +1633,30 @@ struct StoredDailyAggregate {
     revision: u64,
     priced_tokens: u64,
     cost_usd: Option<f64>,
+    modeled: bool,
     pricing_basis: Option<String>,
     pricing_fingerprint: Option<String>,
+    correction: Option<ProviderCorrection>,
+}
+
+fn decode_stored_correction(
+    provenance: Option<String>,
+    source_revision: Option<i64>,
+    current_revision: u64,
+) -> Result<Option<ProviderCorrection>, ()> {
+    match (provenance.as_deref(), source_revision) {
+        (None, None) => Ok(None),
+        (Some(PARSER_CORRECTION_PROVENANCE), Some(source_revision)) => {
+            let source_revision = from_i64(source_revision)?;
+            if source_revision == 0 || source_revision > current_revision {
+                return Err(());
+            }
+            Ok(Some(ProviderCorrection::ParserCorrection {
+                source_revision,
+            }))
+        }
+        _ => Err(()),
+    }
 }
 
 fn load_stored_daily_aggregates(
@@ -1526,7 +1667,8 @@ fn load_stored_daily_aggregates(
     let mut statement = connection
         .prepare(
             "SELECT day, observed_tokens, coverage, observed_through, revision,
-                    priced_tokens, cost_usd, pricing_basis, pricing_fingerprint
+                    priced_tokens, cost_usd, cost_modeled, pricing_basis, pricing_fingerprint,
+                    correction_provenance, correction_source_revision
              FROM claude_usage_daily
              WHERE day >= ?1 AND day <= ?2
              ORDER BY day",
@@ -1534,6 +1676,7 @@ fn load_stored_daily_aggregates(
         .map_err(|_| ())?;
     let rows = statement
         .query_map(params![cutoff.to_string(), today.to_string()], |row| {
+            let revision = from_i64(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
             Ok((
                 parse_ranking_day(&row.get::<_, String>(0)?)
                     .map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -1543,12 +1686,15 @@ fn load_stored_daily_aggregates(
                     coverage: row.get(2)?,
                     observed_through: OffsetDateTime::parse(&row.get::<_, String>(3)?, &Rfc3339)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
-                    revision: from_i64(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    revision,
                     priced_tokens: from_i64(row.get(5)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     cost_usd: row.get(6)?,
-                    pricing_basis: row.get(7)?,
-                    pricing_fingerprint: row.get(8)?,
+                    modeled: row.get(7)?,
+                    pricing_basis: row.get(8)?,
+                    pricing_fingerprint: row.get(9)?,
+                    correction: decode_stored_correction(row.get(10)?, row.get(11)?, revision)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 },
             ))
         })
@@ -1575,7 +1721,7 @@ fn stored_usage_aggregate_parser_version(connection: &Connection) -> Result<Opti
         .transpose()
 }
 
-fn load_explicit_supersede_days(
+fn load_pending_explicit_supersede_days(
     connection: &Connection,
     cutoff: Date,
     today: Date,
@@ -1589,6 +1735,7 @@ fn load_explicit_supersede_days(
              JOIN claude_usage_messages AS superseded
                ON superseded.frame_key = edge.superseded_frame_key
              WHERE edge.parser_version = ?1
+               AND edge.aggregate_applied = 0
                AND replacement.parser_version = ?1
                AND superseded.parser_version = ?1
                AND superseded.day >= ?2 AND superseded.day <= ?3",
@@ -1615,6 +1762,37 @@ fn load_explicit_supersede_days(
             .or_insert(observed_at);
     }
     Ok(corrections)
+}
+
+fn mark_explicit_supersede_edges_applied(
+    connection: &Connection,
+    cutoff: Date,
+    today: Date,
+) -> Result<(), ()> {
+    connection
+        .execute(
+            "UPDATE claude_usage_message_supersedes AS edge
+             SET aggregate_applied = 1
+             WHERE edge.parser_version = ?1
+               AND edge.aggregate_applied = 0
+               AND EXISTS (
+                 SELECT 1
+                 FROM claude_usage_frames AS replacement
+                 JOIN claude_usage_messages AS superseded
+                   ON superseded.frame_key = edge.superseded_frame_key
+                 WHERE replacement.frame_key = edge.replacement_frame_key
+                   AND replacement.parser_version = ?1
+                   AND superseded.parser_version = ?1
+                   AND superseded.day >= ?2 AND superseded.day <= ?3
+               )",
+            params![
+                TRANSCRIPT_PARSER_VERSION,
+                cutoff.to_string(),
+                today.to_string()
+            ],
+        )
+        .map(|_| ())
+        .map_err(|_| ())
 }
 
 fn refresh_daily_aggregates(
@@ -1649,7 +1827,7 @@ fn refresh_daily_aggregates_with_catalog(
     let parser_correction_pending =
         !existing_daily.is_empty() && stored_parser_version != Some(TRANSCRIPT_PARSER_VERSION);
     let explicit_corrections = if scan_can_prove_complete {
-        load_explicit_supersede_days(&transaction, cutoff, today)?
+        load_pending_explicit_supersede_days(&transaction, cutoff, today)?
     } else {
         BTreeMap::new()
     };
@@ -1685,6 +1863,7 @@ fn refresh_daily_aggregates_with_catalog(
                     .checked_add(decision.priced_tokens)
                     .ok_or(())?;
                 entry.cost_usd += cost_usd;
+                entry.modeled |= decision.modeled;
             }
         }
         entry.observed_through = Some(
@@ -1756,8 +1935,10 @@ fn refresh_daily_aggregates_with_catalog(
             revision,
             priced_tokens,
             cost_usd,
+            modeled,
             pricing_basis,
             pricing_fingerprint,
+            correction,
             row_changed,
         ) = match existing_daily.get(&day) {
             None => (
@@ -1766,13 +1947,17 @@ fn refresh_daily_aggregates_with_catalog(
                 1,
                 candidate.priced_tokens,
                 candidate_cost_usd,
+                candidate.modeled,
                 candidate_pricing_basis,
                 candidate_pricing_fingerprint,
+                None,
                 true,
             ),
             Some(previous) => {
                 let lower_correction_allowed = scan_can_prove_complete
                     && (parser_correction_pending || explicit_corrections.contains_key(&day));
+                let proven_parser_correction_applied = lower_correction_allowed
+                    && candidate.observed_tokens < previous.observed_tokens;
                 let accept_candidate = scan_can_prove_complete
                     && (lower_correction_allowed
                         || candidate.observed_tokens >= previous.observed_tokens);
@@ -1782,11 +1967,12 @@ fn refresh_daily_aggregates_with_catalog(
                     previous.observed_tokens.max(candidate.observed_tokens)
                 };
                 let observed_through = previous.observed_through.max(observed_through);
-                let (priced_tokens, cost_usd, accepted_pricing_basis, pricing_fingerprint) =
+                let (priced_tokens, cost_usd, modeled, accepted_pricing_basis, pricing_fingerprint) =
                     if accept_candidate {
                         (
                             candidate.priced_tokens,
                             candidate_cost_usd,
+                            candidate.modeled,
                             candidate_pricing_basis,
                             candidate_pricing_fingerprint,
                         )
@@ -1794,6 +1980,7 @@ fn refresh_daily_aggregates_with_catalog(
                         (
                             previous.priced_tokens,
                             previous.cost_usd,
+                            previous.modeled,
                             previous.pricing_basis.clone(),
                             previous.pricing_fingerprint.clone(),
                         )
@@ -1803,6 +1990,7 @@ fn refresh_daily_aggregates_with_catalog(
                     || previous.coverage != coverage
                     || previous.priced_tokens != priced_tokens
                     || previous.cost_usd.map(f64::to_bits) != cost_usd.map(f64::to_bits)
+                    || previous.modeled != modeled
                     || previous.pricing_fingerprint != pricing_fingerprint;
                 let pricing_basis =
                     if accept_candidate && !material_changed && previous.pricing_basis.is_some() {
@@ -1811,28 +1999,46 @@ fn refresh_daily_aggregates_with_catalog(
                         accepted_pricing_basis
                     };
                 let changed = material_changed || previous.pricing_basis != pricing_basis;
+                let revision = previous
+                    .revision
+                    .checked_add(u64::from(changed))
+                    .ok_or(())?;
+                let correction = if proven_parser_correction_applied {
+                    Some(ProviderCorrection::ParserCorrection {
+                        source_revision: revision,
+                    })
+                } else {
+                    previous.correction
+                };
                 (
                     observed_tokens,
                     observed_through,
-                    previous
-                        .revision
-                        .checked_add(u64::from(changed))
-                        .ok_or(())?,
+                    revision,
                     priced_tokens,
                     cost_usd,
+                    modeled,
                     pricing_basis,
                     pricing_fingerprint,
+                    correction,
                     changed,
                 )
             }
         };
         aggregate_changed |= row_changed;
+        let (correction_provenance, correction_source_revision) = match correction {
+            Some(ProviderCorrection::ParserCorrection { source_revision }) => (
+                Some(PARSER_CORRECTION_PROVENANCE),
+                Some(to_i64(source_revision)?),
+            ),
+            None => (None, None),
+        };
         transaction
             .execute(
                 "INSERT INTO claude_usage_daily(
                    day, observed_tokens, coverage, observed_through, revision,
-                   priced_tokens, cost_usd, pricing_basis, pricing_fingerprint
-                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                   priced_tokens, cost_usd, cost_modeled, pricing_basis, pricing_fingerprint,
+                   correction_provenance, correction_source_revision
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(day) DO UPDATE SET
                    observed_tokens=excluded.observed_tokens,
                    coverage=excluded.coverage,
@@ -1840,8 +2046,11 @@ fn refresh_daily_aggregates_with_catalog(
                    revision=excluded.revision,
                    priced_tokens=excluded.priced_tokens,
                    cost_usd=excluded.cost_usd,
+                   cost_modeled=excluded.cost_modeled,
                    pricing_basis=excluded.pricing_basis,
-                   pricing_fingerprint=excluded.pricing_fingerprint",
+                   pricing_fingerprint=excluded.pricing_fingerprint,
+                   correction_provenance=excluded.correction_provenance,
+                   correction_source_revision=excluded.correction_source_revision",
                 params![
                     day.to_string(),
                     to_i64(observed_tokens)?,
@@ -1850,11 +2059,17 @@ fn refresh_daily_aggregates_with_catalog(
                     to_i64(revision)?,
                     to_i64(priced_tokens)?,
                     cost_usd,
+                    modeled,
                     pricing_basis,
                     pricing_fingerprint,
+                    correction_provenance,
+                    correction_source_revision,
                 ],
             )
             .map_err(|_| ())?;
+    }
+    if scan_can_prove_complete {
+        mark_explicit_supersede_edges_applied(&transaction, cutoff, today)?;
     }
     match pricing_catalog {
         Some(catalog) => transaction
@@ -1959,10 +2174,12 @@ fn prune_private_message_details(connection: &Connection, today: Date) -> Result
             "UPDATE claude_usage_daily
              SET priced_tokens = 0,
                  cost_usd = NULL,
+                 cost_modeled = 0,
                  pricing_basis = NULL,
                  pricing_fingerprint = NULL
              WHERE day < ?1 AND (
                priced_tokens != 0 OR cost_usd IS NOT NULL
+               OR cost_modeled != 0
                OR pricing_basis IS NOT NULL OR pricing_fingerprint IS NOT NULL
              )",
             [detail_cutoff.to_string()],
@@ -1984,7 +2201,8 @@ fn read_indexed_usage(
     let mut statement = connection
         .prepare(
             "SELECT day, observed_tokens, coverage, observed_through,
-                    priced_tokens, cost_usd, pricing_basis
+                    priced_tokens, cost_usd, cost_modeled, pricing_basis, revision,
+                    correction_provenance, correction_source_revision
              FROM claude_usage_daily
              WHERE day >= ?1 AND day <= ?2 ORDER BY day",
         )
@@ -2009,7 +2227,11 @@ fn read_indexed_usage(
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
             let priced_tokens = from_i64(row.get(4)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
             let cost_usd = row.get::<_, Option<f64>>(5)?;
-            let pricing_basis = row.get::<_, Option<String>>(6)?;
+            let modeled = row.get::<_, bool>(6)?;
+            let pricing_basis = row.get::<_, Option<String>>(7)?;
+            let revision = from_i64(row.get(8)?).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let correction = decode_stored_correction(row.get(9)?, row.get(10)?, revision)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
             Ok((
                 day,
                 observed_tokens,
@@ -2017,7 +2239,9 @@ fn read_indexed_usage(
                 observed_through,
                 priced_tokens,
                 cost_usd,
+                modeled,
                 pricing_basis,
+                correction,
             ))
         })
         .map_err(|_| ())?
@@ -2026,6 +2250,7 @@ fn read_indexed_usage(
     let mut daily_usage = BTreeMap::new();
     let mut daily_cost = BTreeMap::new();
     let mut pricing_bases = BTreeSet::new();
+    let mut correction = None;
     for (
         day,
         observed_tokens,
@@ -2033,9 +2258,14 @@ fn read_indexed_usage(
         observed_through,
         priced_tokens,
         cost_usd,
+        modeled,
         pricing_basis,
+        stored_correction,
     ) in rows
     {
+        if day == today {
+            correction = stored_correction;
+        }
         daily_usage.insert(
             day,
             DailyUsageEvidence {
@@ -2053,6 +2283,7 @@ fn read_indexed_usage(
                         observed_tokens,
                         priced_tokens,
                         api_equivalent_cost_usd: Some(cost_usd),
+                        modeled,
                         complete: priced_tokens == observed_tokens,
                         observed_through: Some(observed_through),
                         priced_observed_through: Some(observed_through),
@@ -2090,6 +2321,7 @@ fn read_indexed_usage(
         scan_scope_known,
         transcript_source_present,
         aggregate_changed,
+        correction,
     })
 }
 
@@ -2794,6 +3026,17 @@ mod tests {
         );
         assert_eq!(stored_supersede_edge_count(&database), 1);
         assert_eq!(stored_frame_count(&database), 1);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT aggregate_applied
+                     FROM claude_usage_message_supersedes",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )
+                .unwrap(),
+            1
+        );
         assert!(usage_index_backup_path(&database, 1).is_file());
         let old_checkpoint = StoredFileSummary {
             identity: "device:inode".to_owned(),
@@ -2805,6 +3048,118 @@ mod tests {
             completion_state: "complete".to_owned(),
         };
         assert!(old_checkpoint.needs_work("device:inode", 10, 20));
+    }
+
+    #[test]
+    fn schema_migration_adds_correction_fields_without_inventing_them() {
+        let fixture = FixtureRoot::new();
+        let database = fixture.database();
+        let mut connection = Connection::open(&database).unwrap();
+        ensure_index_schema(&mut connection, &database).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE claude_usage_daily;
+                 CREATE TABLE claude_usage_daily (
+                   day TEXT PRIMARY KEY NOT NULL,
+                   observed_tokens INTEGER NOT NULL,
+                   coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial')),
+                   observed_through TEXT NOT NULL,
+                   revision INTEGER NOT NULL CHECK (revision >= 1),
+                   priced_tokens INTEGER NOT NULL DEFAULT 0,
+                   cost_usd REAL,
+                   pricing_basis TEXT,
+                   pricing_fingerprint TEXT
+                 );
+                 INSERT INTO claude_usage_daily(
+                   day, observed_tokens, coverage, observed_through, revision
+                 ) VALUES(
+                   '2026-08-07', 40, 'complete', '2026-08-07T12:00:00Z', 3
+                 );
+                 UPDATE touchgrassbar_schema_versions
+                 SET version = 3 WHERE module = 'claude-usage-index';",
+            )
+            .unwrap();
+
+        ensure_index_schema(&mut connection, &database).unwrap();
+
+        assert_eq!(
+            usage_index_schema_version(&connection).unwrap(),
+            USAGE_INDEX_SCHEMA_VERSION
+        );
+        let stored = connection
+            .query_row(
+                "SELECT observed_tokens, revision, cost_modeled,
+                        correction_provenance, correction_source_revision
+                 FROM claude_usage_daily WHERE day = '2026-08-07'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, bool>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<u64>>(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored, (40, 3, false, None, None));
+        assert!(usage_index_backup_path(&database, 3).is_file());
+    }
+
+    #[test]
+    fn schema_migration_discards_a_marker_without_its_source_revision() {
+        let fixture = FixtureRoot::new();
+        let database = fixture.database();
+        let mut connection = Connection::open(&database).unwrap();
+        ensure_index_schema(&mut connection, &database).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE claude_usage_daily;
+                 CREATE TABLE claude_usage_daily (
+                   day TEXT PRIMARY KEY NOT NULL,
+                   observed_tokens INTEGER NOT NULL,
+                   coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial')),
+                   observed_through TEXT NOT NULL,
+                   revision INTEGER NOT NULL CHECK (revision >= 1),
+                   priced_tokens INTEGER NOT NULL DEFAULT 0,
+                   cost_usd REAL,
+                   pricing_basis TEXT,
+                   pricing_fingerprint TEXT,
+                   correction_provenance TEXT CHECK (
+                     correction_provenance IS NULL
+                     OR correction_provenance = 'parser-correction'
+                   )
+                 );
+                 INSERT INTO claude_usage_daily(
+                   day, observed_tokens, coverage, observed_through, revision,
+                   correction_provenance
+                 ) VALUES(
+                   '2026-08-07', 40, 'complete', '2026-08-07T12:00:00Z', 3,
+                   'parser-correction'
+                 );
+                 UPDATE touchgrassbar_schema_versions
+                 SET version = 4 WHERE module = 'claude-usage-index';",
+            )
+            .unwrap();
+
+        ensure_index_schema(&mut connection, &database).unwrap();
+
+        let stored = connection
+            .query_row(
+                "SELECT correction_provenance, correction_source_revision
+                 FROM claude_usage_daily WHERE day = '2026-08-07'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<u64>>(1)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(stored, (None, None));
+        assert!(usage_index_backup_path(&database, 4).is_file());
     }
 
     #[test]
@@ -3387,7 +3742,7 @@ mod tests {
     }
 
     #[test]
-    fn later_valid_superseder_replaces_a_completed_daily_total() {
+    fn correction_source_survives_increase_and_accepts_a_late_older_superseder() {
         let fixture = FixtureRoot::new();
         let config = fixture.config();
         let transcript = config.join("projects/project-a/session.jsonl");
@@ -3401,6 +3756,7 @@ mod tests {
         let first = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
             .expect("the original frame must index");
         assert_eq!(first.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(first.correction, None);
         let first_revision = stored_daily_revision(&fixture.database(), now().date());
 
         let replacement = transcript_line(
@@ -3414,7 +3770,7 @@ mod tests {
             "\"supersedes\":[\"frame-fixture-staged-old\"],\"timestamp\"",
             1,
         );
-        write_transcript(&transcript, &[old, replacement]);
+        write_transcript(&transcript, &[old.clone(), replacement.clone()]);
         let corrected = index_local_usage_at(
             &fixture.database(),
             &config,
@@ -3425,8 +3781,139 @@ mod tests {
 
         assert_eq!(corrected.scan_status, UsageScanStatus::Complete);
         assert_eq!(corrected.daily_usage[&now().date()].observed_tokens, 40);
-        assert!(stored_daily_revision(&fixture.database(), now().date()) > first_revision);
+        let correction_revision = stored_daily_revision(&fixture.database(), now().date());
+        assert_eq!(
+            corrected.correction,
+            Some(ProviderCorrection::ParserCorrection {
+                source_revision: correction_revision
+            })
+        );
+        assert!(correction_revision > first_revision);
         assert_eq!(stored_supersede_edge_count(&fixture.database()), 1);
+
+        let retried = index_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(2),
+        )
+        .expect("the correction marker must survive an unchanged retry");
+        assert_eq!(
+            retried.correction,
+            Some(ProviderCorrection::ParserCorrection {
+                source_revision: correction_revision
+            })
+        );
+
+        let ordinary = transcript_line(
+            "fixture-staged-ordinary",
+            now() - Duration::minutes(3),
+            "claude-sonnet-4-20250514",
+            usage(10, 0, 0, 0),
+        );
+        write_transcript(&transcript, &[old.clone(), replacement.clone(), ordinary]);
+        let increased = index_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(3),
+        )
+        .expect("an ordinary increase must keep the correction source revision");
+        let increased_revision = stored_daily_revision(&fixture.database(), now().date());
+        assert_eq!(increased.daily_usage[&now().date()].observed_tokens, 50);
+        assert!(increased_revision > correction_revision);
+        assert_eq!(
+            increased.correction,
+            Some(ProviderCorrection::ParserCorrection {
+                source_revision: correction_revision
+            })
+        );
+
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection
+            .execute(
+                "DELETE FROM claude_usage_frames
+                 WHERE frame_key IN (
+                   SELECT frame_key FROM claude_usage_messages
+                   WHERE day = ?1 AND observed_tokens = 10
+                 )",
+                [now().date().to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "DELETE FROM claude_usage_messages
+                 WHERE day = ?1 AND observed_tokens = 10",
+                [now().date().to_string()],
+            )
+            .unwrap();
+        let cutoff = now().date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
+        assert_eq!(
+            load_active_provider_messages(&connection, cutoff, now().date())
+                .unwrap()
+                .into_iter()
+                .map(|message| message.observed_tokens)
+                .sum::<u64>(),
+            40
+        );
+        refresh_daily_aggregates(&connection, cutoff, now().date(), true).unwrap();
+        let unproved_decrease = read_indexed_usage(
+            &connection,
+            cutoff,
+            now().date(),
+            UsageScanStatus::Complete,
+            true,
+            true,
+            false,
+        )
+        .expect("an unproved decrease must keep the accepted lower bound");
+        assert_eq!(
+            unproved_decrease.daily_usage[&now().date()].observed_tokens,
+            50
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            increased_revision
+        );
+        assert_eq!(
+            unproved_decrease.correction,
+            Some(ProviderCorrection::ParserCorrection {
+                source_revision: correction_revision
+            })
+        );
+        drop(connection);
+
+        let newer_replacement = transcript_line(
+            "fixture-staged-newer",
+            now() - Duration::minutes(20),
+            "claude-sonnet-4-20250514",
+            usage(20, 0, 0, 0),
+        )
+        .replacen(
+            "\"timestamp\"",
+            "\"supersedes\":[\"frame-fixture-staged-new\"],\"timestamp\"",
+            1,
+        );
+        write_transcript(&transcript, &[old, replacement, newer_replacement]);
+        let newer_correction = index_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(5),
+        )
+        .expect("a late-scanned correction must replace the source revision");
+        let newer_revision = stored_daily_revision(&fixture.database(), now().date());
+        assert_eq!(
+            newer_correction.daily_usage[&now().date()].observed_tokens,
+            20
+        );
+        assert!(newer_revision > increased_revision);
+        assert_eq!(
+            newer_correction.correction,
+            Some(ProviderCorrection::ParserCorrection {
+                source_revision: newer_revision
+            })
+        );
     }
 
     #[test]
@@ -3532,7 +4019,9 @@ mod tests {
         refresh_daily_aggregates(&connection, cutoff, now().date(), false).unwrap();
         let incomplete = connection
             .query_row(
-                "SELECT observed_tokens, coverage, revision FROM claude_usage_daily
+                "SELECT observed_tokens, coverage, revision, correction_provenance,
+                        correction_source_revision
+                 FROM claude_usage_daily
                  WHERE day = ?1",
                 [now().date().to_string()],
                 |row| {
@@ -3540,17 +4029,23 @@ mod tests {
                         row.get::<_, u64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, u64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<u64>>(4)?,
                     ))
                 },
             )
             .unwrap();
         assert_eq!(incomplete.0, 100);
         assert_eq!(incomplete.1, "partial");
+        assert_eq!(incomplete.3, None);
+        assert_eq!(incomplete.4, None);
 
         refresh_daily_aggregates(&connection, cutoff, now().date(), true).unwrap();
         let completed = connection
             .query_row(
-                "SELECT observed_tokens, coverage, revision FROM claude_usage_daily
+                "SELECT observed_tokens, coverage, revision, correction_provenance,
+                        correction_source_revision
+                 FROM claude_usage_daily
                  WHERE day = ?1",
                 [now().date().to_string()],
                 |row| {
@@ -3558,6 +4053,8 @@ mod tests {
                         row.get::<_, u64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, u64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<u64>>(4)?,
                     ))
                 },
             )
@@ -3565,10 +4062,72 @@ mod tests {
         assert_eq!(completed.0, 40);
         assert_eq!(completed.1, "complete");
         assert!(completed.2 > incomplete.2);
+        assert_eq!(completed.3.as_deref(), Some(PARSER_CORRECTION_PROVENANCE));
+        assert_eq!(completed.4, Some(completed.2));
         assert_eq!(
             stored_usage_aggregate_parser_version(&connection).unwrap(),
             Some(TRANSCRIPT_PARSER_VERSION)
         );
+
+        let observation = read_indexed_usage(
+            &connection,
+            cutoff,
+            now().date(),
+            UsageScanStatus::Complete,
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            observation.correction,
+            Some(ProviderCorrection::ParserCorrection {
+                source_revision: completed.2
+            })
+        );
+
+        refresh_daily_aggregates(&connection, cutoff, now().date(), true).unwrap();
+        let unchanged = connection
+            .query_row(
+                "SELECT revision, correction_provenance, correction_source_revision
+                 FROM claude_usage_daily
+                 WHERE day = ?1",
+                [now().date().to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<u64>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(unchanged.0, completed.2);
+        assert_eq!(unchanged.1.as_deref(), Some(PARSER_CORRECTION_PROVENANCE));
+        assert_eq!(unchanged.2, Some(completed.2));
+
+        refresh_daily_aggregates(&connection, cutoff, now().date(), false).unwrap();
+        let later_revision = connection
+            .query_row(
+                "SELECT revision, correction_provenance, correction_source_revision
+                 FROM claude_usage_daily
+                 WHERE day = ?1",
+                [now().date().to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, u64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<u64>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert!(later_revision.0 > unchanged.0);
+        assert_eq!(
+            later_revision.1.as_deref(),
+            Some(PARSER_CORRECTION_PROVENANCE)
+        );
+        assert_eq!(later_revision.2, Some(completed.2));
     }
 
     #[test]
@@ -4097,6 +4656,64 @@ mod tests {
         );
         let cost_coverage = api_equivalent_cost_coverage_percent.expect("partial price coverage");
         assert!((cost_coverage - (200.0 / 3.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn unavailable_geo_uses_persisted_modeled_global_cost() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let transcript = transcript_line(
+            "fixture-unavailable-geo",
+            now() - Duration::minutes(5),
+            "claude-opus-4-8",
+            usage(1_000_000, 0, 0, 1_000_000),
+        )
+        .replacen(
+            r#""server_tool_use""#,
+            r#""service_tier":"standard","inference_geo":"not_available","speed":"standard","server_tool_use""#,
+            1,
+        );
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[transcript],
+        );
+
+        let indexed = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("unavailable geo must retain a modeled standard cost");
+        let detail = &indexed.daily_cost[&now().date()];
+        assert_eq!(detail.observed_tokens, 2_000_000);
+        assert_eq!(detail.priced_tokens, 2_000_000);
+        assert_eq!(detail.api_equivalent_cost_usd, Some(30.0));
+        assert!(detail.modeled);
+
+        let restored = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("the modeled marker must survive a cached scan");
+        assert!(restored.daily_cost[&now().date()].modeled);
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = project_usage_periods(Some(&restored), now()).today
+        else {
+            panic!("today must be available");
+        };
+        assert_eq!(api_equivalent_cost_usd, Some(30.0));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
+        assert!(
+            Connection::open(fixture.database())
+                .unwrap()
+                .query_row(
+                    "SELECT cost_modeled FROM claude_usage_daily WHERE day = ?1",
+                    [now().date().to_string()],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        );
     }
 
     #[test]

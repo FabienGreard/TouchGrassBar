@@ -1,3 +1,4 @@
+mod fast_pricing;
 mod usage;
 
 pub(crate) use usage::{
@@ -641,6 +642,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
             quota: cached.quota.clone(),
             usage: cached.usage.clone(),
             top_model_usage: cached.top_model_usage.clone(),
+            correction: None,
         };
         if attempt.is_local_usage_only() {
             let observed_at = self.clock.now();

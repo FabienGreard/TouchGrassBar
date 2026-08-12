@@ -64,7 +64,7 @@ describe("production landing contract", () => {
       "Most used",
       "GPT 5.6 Sol",
       "Leaderboard",
-      "Global Leaderboard",
+      "Doomerboard",
       "Prompts and provider data stay on your Mac",
       "See who burned the most tokens and who still remembers daylight.",
       "PROMPT ENJOYER",

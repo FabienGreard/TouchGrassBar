@@ -1,6 +1,6 @@
 use crate::{lifecycle, providers, sanitized, updater};
 
-pub(super) const DATABASE_FORMAT_VERSION: i64 = 6;
+pub(super) const DATABASE_FORMAT_VERSION: i64 = 7;
 pub(super) const COORDINATOR_SCHEMA_MODULE: &str = "database-coordinator";
 pub(super) const COORDINATOR_SCHEMA_VERSION: i64 = 1;
 
@@ -37,15 +37,27 @@ pub(super) const TABLES: &[&str] = &[
     "claude_usage_messages",
     "codex_account_usage_days",
     "codex_account_usage_meta",
+    "codex_usage_fast_turns",
     "codex_usage_file_days",
     "codex_usage_file_model_days",
+    "codex_usage_file_turns",
     "codex_usage_files",
     "codex_usage_index_meta",
+    "codex_usage_token_snapshots",
     "lifecycle_state",
     "provider_settings",
     "sanitized_desktop_state",
     "touchgrassbar_schema_versions",
     "touchgrassbar_update_state_v3",
+    "usage_sync_correction_lineage",
+    "usage_sync_daily_aggregates",
+    "usage_sync_generation_activations",
+    "usage_sync_generation_baselines",
+    "usage_sync_generations",
+    "usage_sync_latest_outbox",
+    "usage_sync_provider_settings_outbox",
+    "usage_sync_terminal_conflicts",
+    "usage_sync_transfer_day_carryovers",
 ];
 
 pub(super) const INDEXES: &[&str] = &[
@@ -54,11 +66,27 @@ pub(super) const INDEXES: &[&str] = &[
     "claude_usage_messages_by_message",
     "claude_usage_messages_by_superseded_frame",
     "claude_usage_supersedes_by_superseded_frame",
+    "codex_usage_file_turns_by_turn_id",
+    "codex_usage_files_by_leaf_session",
     "codex_usage_model_days_by_day",
+    "codex_usage_snapshots_by_path_timestamp",
     "codex_usage_unpriced_model_days",
+    "usage_sync_latest_outbox_pending",
 ];
 
 pub(super) const VIEWS: &[&str] = &["touchgrassbar_update_state"];
+
+pub(super) const STRICT_TABLES: &[&str] = &[
+    "usage_sync_correction_lineage",
+    "usage_sync_daily_aggregates",
+    "usage_sync_generation_activations",
+    "usage_sync_generation_baselines",
+    "usage_sync_generations",
+    "usage_sync_latest_outbox",
+    "usage_sync_provider_settings_outbox",
+    "usage_sync_terminal_conflicts",
+    "usage_sync_transfer_day_carryovers",
+];
 
 // This catalog contains every distinct object definition emitted by releases
 // v0.0.3 through v0.0.9. Case and whitespace do not affect a definition. Any
@@ -75,11 +103,21 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "createindexclaude_usage_supersedes_by_superseded_frame",
         "onclaude_usage_message_supersedes(superseded_frame_key,parser_version)"
     ),
+    "createindexcodex_usage_file_turns_by_turn_idoncodex_usage_file_turns(turn_id)",
+    "createindexcodex_usage_files_by_leaf_sessiononcodex_usage_files(leaf_session_id)",
     "createindexcodex_usage_model_days_by_dayoncodex_usage_file_model_days(day)",
+    concat!(
+        "createindexcodex_usage_snapshots_by_path_timestamp",
+        "oncodex_usage_token_snapshots(path,timestamp_ns,record_ordinal)"
+    ),
     concat!(
         "createindexcodex_usage_unpriced_model_days",
         "oncodex_usage_file_model_days(day,model,cache_write_input_tokens)",
         "wherecost_usdisnull"
+    ),
+    concat!(
+        "createindexusage_sync_latest_outbox_pending",
+        "onusage_sync_latest_outbox(active_generation,queue_state,ranking_day,provider)"
     ),
     concat!(
         "createtableclaude_usage_daily(",
@@ -90,6 +128,31 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "revisionintegernotnullcheck(revision>=1),",
         "priced_tokensintegernotnulldefault0,",
         "cost_usdreal,pricing_basistext,pricing_fingerprinttext)"
+    ),
+    concat!(
+        "createtableclaude_usage_daily(",
+        "daytextprimarykeynotnull,observed_tokensintegernotnull,",
+        "coveragetextnotnullcheck(coveragein('complete','partial')),",
+        "observed_throughtextnotnull,revisionintegernotnullcheck(revision>=1),",
+        "priced_tokensintegernotnulldefault0,cost_usdreal,",
+        "cost_modeledintegernotnulldefault0check(cost_modeledin(0,1)),",
+        "pricing_basistext,pricing_fingerprinttext,correction_provenancetext,",
+        "correction_source_revisioninteger,check((correction_provenanceisnulland",
+        "correction_source_revisionisnull)or(correction_provenance='parser-correction'and",
+        "correction_source_revision>=1andcorrection_source_revision<=revision)))"
+    ),
+    concat!(
+        "createtableclaude_usage_daily(",
+        "daytextprimarykeynotnull,observed_tokensintegernotnull,",
+        "coveragetextnotnullcheck(coveragein('complete','partial')),",
+        "observed_throughtextnotnull,revisionintegernotnullcheck(revision>=1),",
+        "priced_tokensintegernotnulldefault0,cost_usdreal,pricing_basistext,",
+        "pricing_fingerprinttext,correction_provenancetextcheck(",
+        "correction_provenanceisnullorcorrection_provenance='parser-correction'),",
+        "correction_source_revisionintegercheck((correction_provenanceisnulland",
+        "correction_source_revisionisnull)or(correction_provenance='parser-correction'and",
+        "correction_source_revision>=1andcorrection_source_revision<=revision)),",
+        "cost_modeledintegernotnulldefault0check(cost_modeledin(0,1)))"
     ),
     concat!(
         "createtableclaude_usage_files(",
@@ -119,6 +182,24 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "createtable\"claude_usage_message_supersedes\"(",
         "replacement_frame_keytextnotnull,superseded_frame_keytextnotnull,",
         "parser_versionintegernotnull,",
+        "primarykey(replacement_frame_key,superseded_frame_key),",
+        "foreignkey(replacement_frame_key)",
+        "referencesclaude_usage_frames(frame_key)ondeletecascade)"
+    ),
+    concat!(
+        "createtableclaude_usage_message_supersedes(",
+        "replacement_frame_keytextnotnull,superseded_frame_keytextnotnull,",
+        "parser_versionintegernotnull,aggregate_appliedintegernotnulldefault1",
+        "check(aggregate_appliedin(0,1)),",
+        "primarykey(replacement_frame_key,superseded_frame_key),",
+        "foreignkey(replacement_frame_key)",
+        "referencesclaude_usage_frames(frame_key)ondeletecascade)"
+    ),
+    concat!(
+        "createtable\"claude_usage_message_supersedes\"(",
+        "replacement_frame_keytextnotnull,superseded_frame_keytextnotnull,",
+        "parser_versionintegernotnull,aggregate_appliedintegernotnulldefault1",
+        "check(aggregate_appliedin(0,1)),",
         "primarykey(replacement_frame_key,superseded_frame_key),",
         "foreignkey(replacement_frame_key)",
         "referencesclaude_usage_frames(frame_key)ondeletecascade)"
@@ -170,6 +251,18 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
     ),
     concat!(
+        "createtablecodex_usage_file_model_days(",
+        "pathtextnotnull,daytextnotnull,modeltextnotnull,",
+        "pricing_input_tokensintegernotnull,pricing_modetextnotnull",
+        "check(pricing_modein('standard','fast')),input_tokensintegernotnull,",
+        "cached_input_tokensintegernotnull,cache_write_input_tokensintegernotnull,",
+        "output_tokensintegernotnull,reasoning_output_tokensintegernotnull,",
+        "observed_tokensintegernotnull,cost_usdreal,pricing_basistext,",
+        "pricing_fingerprinttext,completeintegernotnull,observed_throughtextnotnull,",
+        "primarykey(path,day,model,pricing_input_tokens,pricing_mode),",
+        "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
+    ),
+    concat!(
         "createtablecodex_usage_files(",
         "pathtextprimarykeynotnull,file_identitytextnotnull,",
         "size_bytesintegernotnull,modified_nsintegernotnull,",
@@ -183,6 +276,49 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "previous_cached_inputinteger,previous_cache_write_inputinteger,",
         "previous_outputinteger,previous_reasoning_outputinteger,",
         "previous_totalinteger)"
+    ),
+    concat!(
+        "createtablecodex_usage_fast_turns(",
+        "turn_idtextprimarykeynotnull,modeltext)"
+    ),
+    concat!(
+        "createtablecodex_usage_file_turns(",
+        "pathtextnotnull,turn_idtextnotnull,primarykey(path,turn_id),",
+        "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
+    ),
+    concat!(
+        "createtablecodex_usage_files(",
+        "pathtextprimarykeynotnull,file_identitytextnotnull,size_bytesintegernotnull,",
+        "modified_nsintegernotnull,parsed_offsetintegernotnull,parsed_prefix_anchortext,",
+        "parser_versionintegernotnull,completion_statetextnotnull,deferred_until_daytext,",
+        "active_modeltext,active_turn_idtext,baseline_is_inheritedinteger,",
+        "history_start_ordinalinteger,record_ordinalintegernotnulldefault0,",
+        "usage_excludedintegernotnulldefault0,schema_supportedintegernotnull,",
+        "previous_inputinteger,previous_cached_inputinteger,",
+        "previous_cache_write_inputinteger,previous_outputinteger,",
+        "previous_reasoning_outputinteger,previous_totalinteger,",
+        "lineage_modetextnotnulldefault'unknown',leaf_session_idtext,",
+        "parent_session_idtext,parent_identity_explicitintegernotnulldefault0,",
+        "fork_timestamp_nsinteger,embedded_ancestor_seenintegernotnulldefault0,",
+        "lineage_invalidintegernotnulldefault0,parent_dependency_keytext,",
+        "parent_baseline_inputinteger,parent_baseline_cached_inputinteger,",
+        "parent_baseline_cache_write_inputinteger,parent_baseline_outputinteger,",
+        "parent_baseline_reasoning_outputinteger,parent_baseline_totalinteger,",
+        "last_turn_context_is_firstintegernotnulldefault0,last_turn_context_ordinalinteger,",
+        "marker_based_boundaryintegernotnulldefault0,",
+        "marker_candidate_invalidatedintegernotnulldefault0,",
+        "marker_local_confirmationinteger,accounting_readyintegernotnulldefault0,",
+        "parser_error_seenintegernotnulldefault0,snapshot_last_timestamp_nsinteger,",
+        "snapshot_timestamp_regressedintegernotnulldefault0)"
+    ),
+    concat!(
+        "createtablecodex_usage_token_snapshots(",
+        "pathtextnotnull,record_ordinalintegernotnull,timestamp_nsintegernotnull,",
+        "input_tokensintegernotnull,cached_input_tokensintegernotnull,",
+        "cache_write_input_tokensintegernotnull,output_tokensintegernotnull,",
+        "reasoning_output_tokensintegernotnull,total_tokensintegernotnull,",
+        "primarykey(path,record_ordinal),",
+        "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
     ),
     concat!(
         "createtablecodex_usage_index_meta(",
@@ -215,6 +351,15 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "singletonintegerprimarykeycheck(singleton=1),",
         "schema_versionintegernotnullcheck(schema_version=4),",
         "contract_versionintegernotnullcheck(contract_version=3),",
+        "revisiontextnotnullcheck(",
+        "length(revision)>0andrevisionnotglob'*[^0-9]*'),",
+        "snapshot_jsontextnotnull)"
+    ),
+    concat!(
+        "createtablesanitized_desktop_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "schema_versionintegernotnullcheck(schema_version=6),",
+        "contract_versionintegernotnullcheck(contract_version=4),",
         "revisiontextnotnullcheck(",
         "length(revision)>0andrevisionnotglob'*[^0-9]*'),",
         "snapshot_jsontextnotnull)"
@@ -310,6 +455,104 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "offered_version,minimum_required_version",
         "fromtouchgrassbar_update_state_v3"
     ),
+    concat!(
+        "createtableusage_sync_correction_lineage(",
+        "providertextnotnullcheck(providerin('codex','claude')),",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "source_revisionintegernotnullcheck(",
+        "source_revision>=1andsource_revision<=9007199254740991),",
+        "reasontextnotnullcheck(reason='parser-correction'),",
+        "consumed_generationintegercheck(consumed_generationisnullor(",
+        "consumed_generation>=1andconsumed_generation<=9007199254740991)),",
+        "primarykey(provider,ranking_day))strict"
+    ),
+    concat!(
+        "createtableusage_sync_daily_aggregates(",
+        "active_generationintegernotnull,",
+        "providertextnotnullcheck(providerin('codex','claude')),",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "revisionintegernotnullcheck(revision>=1andrevision<=9007199254740991),",
+        "aggregate_jsontextnotnullcheck(length(aggregate_json)<=4096),",
+        "primarykey(active_generation,provider,ranking_day),",
+        "foreignkey(active_generation)",
+        "referencesusage_sync_generations(active_generation))strict"
+    ),
+    concat!(
+        "createtableusage_sync_generation_activations(",
+        "active_generationintegerprimarykey,",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "activated_atintegernotnullcheck(",
+        "activated_at>=0andactivated_at<=9007199254740991),",
+        "foreignkey(active_generation)",
+        "referencesusage_sync_generations(active_generation))strict"
+    ),
+    concat!(
+        "createtableusage_sync_generation_baselines(",
+        "active_generationintegernotnull,",
+        "providertextnotnullcheck(providerin('codex','claude')),",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "aggregate_jsontextnotnullcheck(length(aggregate_json)<=4096),",
+        "primarykey(active_generation,provider,ranking_day),",
+        "foreignkey(active_generation)",
+        "referencesusage_sync_generations(active_generation))strict"
+    ),
+    concat!(
+        "createtableusage_sync_generations(",
+        "active_generationintegerprimarykey,queue_statetextnotnullcheck(",
+        "queue_statein('active','blocked','abandoned')),",
+        "check(active_generation>=1andactive_generation<=9007199254740991))strict"
+    ),
+    concat!(
+        "createtableusage_sync_latest_outbox(",
+        "active_generationintegernotnull,",
+        "providertextnotnullcheck(providerin('codex','claude')),",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "revisionintegernotnullcheck(revision>=1andrevision<=9007199254740991),",
+        "snapshot_jsontextnotnullcheck(length(snapshot_json)<=4096),",
+        "correction_reasontextcheck(correction_reasonisnullorcorrection_reasonin(",
+        "'provider-replacement','parser-correction')),correction_revisioninteger,",
+        "queue_statetextnotnullcheck(queue_statein('active','blocked','abandoned')),",
+        "check((correction_reasonisnullandcorrection_revisionisnull)or(",
+        "correction_reasonisnotnullandcorrection_revisionisnotnulland",
+        "correction_revision>=1andcorrection_revision<=revisionand",
+        "correction_revision<=9007199254740991)),",
+        "primarykey(active_generation,provider,ranking_day),",
+        "foreignkey(active_generation)",
+        "referencesusage_sync_generations(active_generation))strict"
+    ),
+    concat!(
+        "createtableusage_sync_provider_settings_outbox(",
+        "active_generationintegerprimarykey,",
+        "revisionintegernotnullcheck(revision>=1andrevision<=9007199254740991),",
+        "codex_enabledintegernotnullcheck(codex_enabledin(0,1)),",
+        "claude_enabledintegernotnullcheck(claude_enabledin(0,1)),",
+        "delivery_statetextnotnullcheck(",
+        "delivery_statein('pending','synced','blocked','abandoned')),",
+        "foreignkey(active_generation)",
+        "referencesusage_sync_generations(active_generation))strict"
+    ),
+    concat!(
+        "createtableusage_sync_terminal_conflicts(",
+        "active_generationintegernotnull,",
+        "providertextnotnullcheck(providerin('codex','claude')),",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "revisionintegernotnullcheck(revision>=1andrevision<=9007199254740991),",
+        "primarykey(active_generation,provider,ranking_day,revision),",
+        "foreignkey(active_generation)",
+        "referencesusage_sync_generations(active_generation))strict"
+    ),
+    concat!(
+        "createtableusage_sync_transfer_day_carryovers(",
+        "active_generationintegernotnull,",
+        "providertextnotnullcheck(providerin('codex','claude')),",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "carryover_kindtextnotnullcheck(carryover_kindin(",
+        "'delayed-installation-marker','pending-segment')),",
+        "primarykey(active_generation,provider,ranking_day),",
+        "foreignkey(active_generation,provider,ranking_day)",
+        "referencesusage_sync_latest_outbox(",
+        "active_generation,provider,ranking_day)ondeletecascade)strict"
+    ),
 ];
 
 pub(super) const PRIMARY_KEYS: &[(&str, &[&str])] = &[
@@ -324,24 +567,69 @@ pub(super) const PRIMARY_KEYS: &[(&str, &[&str])] = &[
     ("claude_usage_messages", &["frame_key"]),
     ("codex_account_usage_days", &["day"]),
     ("codex_account_usage_meta", &["singleton"]),
+    ("codex_usage_fast_turns", &["turn_id"]),
     ("codex_usage_file_days", &["path", "day"]),
     (
         "codex_usage_file_model_days",
-        &["path", "day", "model", "pricing_input_tokens"],
+        &[
+            "path",
+            "day",
+            "model",
+            "pricing_input_tokens",
+            "pricing_mode",
+        ],
     ),
+    ("codex_usage_file_turns", &["path", "turn_id"]),
     ("codex_usage_files", &["path"]),
     ("codex_usage_index_meta", &["key"]),
+    ("codex_usage_token_snapshots", &["path", "record_ordinal"]),
     ("lifecycle_state", &["singleton"]),
     ("provider_settings", &["provider"]),
     ("sanitized_desktop_state", &["singleton"]),
     ("touchgrassbar_schema_versions", &["module"]),
     ("touchgrassbar_update_state_v3", &["singleton"]),
+    (
+        "usage_sync_correction_lineage",
+        &["provider", "ranking_day"],
+    ),
+    (
+        "usage_sync_daily_aggregates",
+        &["active_generation", "provider", "ranking_day"],
+    ),
+    ("usage_sync_generation_activations", &["active_generation"]),
+    (
+        "usage_sync_generation_baselines",
+        &["active_generation", "provider", "ranking_day"],
+    ),
+    ("usage_sync_generations", &["active_generation"]),
+    (
+        "usage_sync_latest_outbox",
+        &["active_generation", "provider", "ranking_day"],
+    ),
+    (
+        "usage_sync_provider_settings_outbox",
+        &["active_generation"],
+    ),
+    (
+        "usage_sync_terminal_conflicts",
+        &["active_generation", "provider", "ranking_day", "revision"],
+    ),
+    (
+        "usage_sync_transfer_day_carryovers",
+        &["active_generation", "provider", "ranking_day"],
+    ),
 ];
 
 pub(super) const NULLABLE_COLUMNS: &[(&str, &[&str])] = &[
     (
         "claude_usage_daily",
-        &["cost_usd", "pricing_basis", "pricing_fingerprint"],
+        &[
+            "cost_usd",
+            "pricing_basis",
+            "pricing_fingerprint",
+            "correction_provenance",
+            "correction_source_revision",
+        ],
     ),
     ("claude_usage_files", &["resume_anchor"]),
     (
@@ -362,6 +650,7 @@ pub(super) const NULLABLE_COLUMNS: &[(&str, &[&str])] = &[
         "codex_usage_file_days",
         &["priced_observed_through", "pricing_fingerprint"],
     ),
+    ("codex_usage_fast_turns", &["model"]),
     (
         "codex_usage_file_model_days",
         &["cost_usd", "pricing_basis", "pricing_fingerprint"],
@@ -372,6 +661,7 @@ pub(super) const NULLABLE_COLUMNS: &[(&str, &[&str])] = &[
             "parsed_prefix_anchor",
             "deferred_until_day",
             "active_model",
+            "active_turn_id",
             "baseline_is_inherited",
             "history_start_ordinal",
             "previous_input",
@@ -380,6 +670,19 @@ pub(super) const NULLABLE_COLUMNS: &[(&str, &[&str])] = &[
             "previous_output",
             "previous_reasoning_output",
             "previous_total",
+            "leaf_session_id",
+            "parent_session_id",
+            "fork_timestamp_ns",
+            "parent_dependency_key",
+            "parent_baseline_input",
+            "parent_baseline_cached_input",
+            "parent_baseline_cache_write_input",
+            "parent_baseline_output",
+            "parent_baseline_reasoning_output",
+            "parent_baseline_total",
+            "last_turn_context_ordinal",
+            "marker_local_confirmation",
+            "snapshot_last_timestamp_ns",
         ],
     ),
     (
@@ -394,11 +697,28 @@ pub(super) const NULLABLE_COLUMNS: &[(&str, &[&str])] = &[
             "minimum_required_version",
         ],
     ),
+    ("usage_sync_correction_lineage", &["consumed_generation"]),
+    (
+        "usage_sync_latest_outbox",
+        &["correction_reason", "correction_revision"],
+    ),
 ];
 
 pub(super) const COLUMN_DEFAULTS: &[(&str, &str, &str)] = &[
+    ("claude_usage_daily", "cost_modeled", "0"),
     ("claude_usage_daily", "priced_tokens", "0"),
+    ("claude_usage_message_supersedes", "aggregate_applied", "1"),
+    ("codex_usage_files", "accounting_ready", "0"),
+    ("codex_usage_files", "embedded_ancestor_seen", "0"),
+    ("codex_usage_files", "last_turn_context_is_first", "0"),
+    ("codex_usage_files", "lineage_invalid", "0"),
+    ("codex_usage_files", "lineage_mode", "'unknown'"),
+    ("codex_usage_files", "marker_based_boundary", "0"),
+    ("codex_usage_files", "marker_candidate_invalidated", "0"),
+    ("codex_usage_files", "parent_identity_explicit", "0"),
+    ("codex_usage_files", "parser_error_seen", "0"),
     ("codex_usage_files", "record_ordinal", "0"),
+    ("codex_usage_files", "snapshot_timestamp_regressed", "0"),
     ("codex_usage_files", "usage_excluded", "0"),
     ("lifecycle_state", "recovery_disclosure_pending", "0"),
     (
@@ -408,19 +728,104 @@ pub(super) const COLUMN_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-pub(super) const FOREIGN_KEYS: &[(&str, &str, &str, &str)] = &[
+pub(super) const FOREIGN_KEYS: &[(&str, &str, &str, &str, &str)] = &[
     (
         "claude_usage_message_supersedes",
         "replacement_frame_key",
         "claude_usage_frames",
         "frame_key",
+        "CASCADE",
     ),
-    ("codex_usage_file_days", "path", "codex_usage_files", "path"),
+    (
+        "codex_usage_file_days",
+        "path",
+        "codex_usage_files",
+        "path",
+        "CASCADE",
+    ),
     (
         "codex_usage_file_model_days",
         "path",
         "codex_usage_files",
         "path",
+        "CASCADE",
+    ),
+    (
+        "codex_usage_file_turns",
+        "path",
+        "codex_usage_files",
+        "path",
+        "CASCADE",
+    ),
+    (
+        "codex_usage_token_snapshots",
+        "path",
+        "codex_usage_files",
+        "path",
+        "CASCADE",
+    ),
+    (
+        "usage_sync_daily_aggregates",
+        "active_generation",
+        "usage_sync_generations",
+        "active_generation",
+        "NO ACTION",
+    ),
+    (
+        "usage_sync_generation_activations",
+        "active_generation",
+        "usage_sync_generations",
+        "active_generation",
+        "NO ACTION",
+    ),
+    (
+        "usage_sync_generation_baselines",
+        "active_generation",
+        "usage_sync_generations",
+        "active_generation",
+        "NO ACTION",
+    ),
+    (
+        "usage_sync_latest_outbox",
+        "active_generation",
+        "usage_sync_generations",
+        "active_generation",
+        "NO ACTION",
+    ),
+    (
+        "usage_sync_provider_settings_outbox",
+        "active_generation",
+        "usage_sync_generations",
+        "active_generation",
+        "NO ACTION",
+    ),
+    (
+        "usage_sync_terminal_conflicts",
+        "active_generation",
+        "usage_sync_generations",
+        "active_generation",
+        "NO ACTION",
+    ),
+    (
+        "usage_sync_transfer_day_carryovers",
+        "active_generation",
+        "usage_sync_latest_outbox",
+        "active_generation",
+        "CASCADE",
+    ),
+    (
+        "usage_sync_transfer_day_carryovers",
+        "provider",
+        "usage_sync_latest_outbox",
+        "provider",
+        "CASCADE",
+    ),
+    (
+        "usage_sync_transfer_day_carryovers",
+        "ranking_day",
+        "usage_sync_latest_outbox",
+        "ranking_day",
+        "CASCADE",
     ),
 ];
 
@@ -456,9 +861,27 @@ pub(super) const INDEX_DEFINITIONS: &[(&str, &str, &[&str], Option<&str>)] = &[
         None,
     ),
     (
+        "codex_usage_file_turns_by_turn_id",
+        "codex_usage_file_turns",
+        &["turn_id"],
+        None,
+    ),
+    (
+        "codex_usage_files_by_leaf_session",
+        "codex_usage_files",
+        &["leaf_session_id"],
+        None,
+    ),
+    (
         "codex_usage_model_days_by_day",
         "codex_usage_file_model_days",
         &["day"],
+        None,
+    ),
+    (
+        "codex_usage_snapshots_by_path_timestamp",
+        "codex_usage_token_snapshots",
+        &["path", "timestamp_ns", "record_ordinal"],
         None,
     ),
     (
@@ -466,6 +889,17 @@ pub(super) const INDEX_DEFINITIONS: &[(&str, &str, &[&str], Option<&str>)] = &[
         "codex_usage_file_model_days",
         &["day", "model", "cache_write_input_tokens"],
         Some("cost_usd is null"),
+    ),
+    (
+        "usage_sync_latest_outbox_pending",
+        "usage_sync_latest_outbox",
+        &[
+            "active_generation",
+            "queue_state",
+            "ranking_day",
+            "provider",
+        ],
+        None,
     ),
 ];
 
@@ -475,9 +909,23 @@ pub(super) const TABLE_CHECKS: &[(&str, &[&str])] = &[
         &[
             "check(coveragein('complete','partial'))",
             "check(revision>=1)",
+            "check(cost_modeledin(0,1))",
+            concat!(
+                "check((correction_provenanceisnullandcorrection_source_revisionisnull)or(",
+                "correction_provenance='parser-correction'andcorrection_source_revision>=1and",
+                "correction_source_revision<=revision))"
+            ),
         ],
     ),
+    (
+        "claude_usage_message_supersedes",
+        &["check(aggregate_appliedin(0,1))"],
+    ),
     ("codex_account_usage_meta", &["check(singleton=1)"]),
+    (
+        "codex_usage_file_model_days",
+        &["check(pricing_modein('standard','fast'))"],
+    ),
     (
         "lifecycle_state",
         &[
@@ -502,8 +950,8 @@ pub(super) const TABLE_CHECKS: &[(&str, &[&str])] = &[
         "sanitized_desktop_state",
         &[
             "check(singleton=1)",
-            "check(schema_version=5)",
-            "check(contract_version=3)",
+            "check(schema_version=6)",
+            "check(contract_version=4)",
             "check(length(revision)>0andrevisionnotglob'*[^0-9]*')",
         ],
     ),
@@ -515,6 +963,101 @@ pub(super) const TABLE_CHECKS: &[(&str, &[&str])] = &[
             "check(automatic_checks_enabledin(0,1))",
             "check(offered_versionisnullorlength(offered_version)between1and64)",
             "check(minimum_required_versionisnullorlength(minimum_required_version)between1and64)",
+        ],
+    ),
+    (
+        "usage_sync_correction_lineage",
+        &[
+            "check(providerin('codex','claude'))",
+            "check(length(ranking_day)=10)",
+            concat!(
+                "check(source_revision>=1and",
+                "source_revision<=9007199254740991)"
+            ),
+            "check(reason='parser-correction')",
+            concat!(
+                "check(consumed_generationisnullor(consumed_generation>=1and",
+                "consumed_generation<=9007199254740991))"
+            ),
+        ],
+    ),
+    (
+        "usage_sync_daily_aggregates",
+        &[
+            "check(providerin('codex','claude'))",
+            "check(length(ranking_day)=10)",
+            "check(revision>=1andrevision<=9007199254740991)",
+            "check(length(aggregate_json)<=4096)",
+        ],
+    ),
+    (
+        "usage_sync_generation_activations",
+        &[
+            "check(length(ranking_day)=10)",
+            "check(activated_at>=0andactivated_at<=9007199254740991)",
+        ],
+    ),
+    (
+        "usage_sync_generation_baselines",
+        &[
+            "check(providerin('codex','claude'))",
+            "check(length(ranking_day)=10)",
+            "check(length(aggregate_json)<=4096)",
+        ],
+    ),
+    (
+        "usage_sync_generations",
+        &[
+            "check(queue_statein('active','blocked','abandoned'))",
+            "check(active_generation>=1andactive_generation<=9007199254740991)",
+        ],
+    ),
+    (
+        "usage_sync_latest_outbox",
+        &[
+            "check(providerin('codex','claude'))",
+            "check(length(ranking_day)=10)",
+            "check(revision>=1andrevision<=9007199254740991)",
+            "check(length(snapshot_json)<=4096)",
+            concat!(
+                "check(correction_reasonisnullorcorrection_reasonin(",
+                "'provider-replacement','parser-correction'))"
+            ),
+            "check(queue_statein('active','blocked','abandoned'))",
+            concat!(
+                "check((correction_reasonisnullandcorrection_revisionisnull)or(",
+                "correction_reasonisnotnullandcorrection_revisionisnotnulland",
+                "correction_revision>=1andcorrection_revision<=revisionand",
+                "correction_revision<=9007199254740991))"
+            ),
+        ],
+    ),
+    (
+        "usage_sync_provider_settings_outbox",
+        &[
+            "check(revision>=1andrevision<=9007199254740991)",
+            "check(codex_enabledin(0,1))",
+            "check(claude_enabledin(0,1))",
+            "check(delivery_statein('pending','synced','blocked','abandoned'))",
+        ],
+    ),
+    (
+        "usage_sync_terminal_conflicts",
+        &[
+            "check(providerin('codex','claude'))",
+            "check(length(ranking_day)=10)",
+            "check(revision>=1andrevision<=9007199254740991)",
+        ],
+    ),
+    (
+        "usage_sync_transfer_day_carryovers",
+        &[
+            "check(providerin('codex','claude'))",
+            "check(length(ranking_day)=10)",
+            concat!(
+                "check(carryover_kindin(",
+                "'delayed-installation-marker','pending-segment'))"
+            ),
         ],
     ),
 ];
@@ -530,8 +1073,11 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "revision",
             "priced_tokens",
             "cost_usd",
+            "cost_modeled",
             "pricing_basis",
             "pricing_fingerprint",
+            "correction_provenance",
+            "correction_source_revision",
         ],
     ),
     (
@@ -558,6 +1104,7 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "replacement_frame_key",
             "superseded_frame_key",
             "parser_version",
+            "aggregate_applied",
         ],
     ),
     (
@@ -589,6 +1136,7 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
     ),
     ("codex_account_usage_days", &["day", "tokens"]),
     ("codex_account_usage_meta", &["singleton", "observed_at"]),
+    ("codex_usage_fast_turns", &["turn_id", "model"]),
     (
         "codex_usage_file_days",
         &[
@@ -610,6 +1158,7 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "day",
             "model",
             "pricing_input_tokens",
+            "pricing_mode",
             "input_tokens",
             "cached_input_tokens",
             "cache_write_input_tokens",
@@ -623,6 +1172,7 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "observed_through",
         ],
     ),
+    ("codex_usage_file_turns", &["path", "turn_id"]),
     (
         "codex_usage_files",
         &[
@@ -636,6 +1186,7 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "completion_state",
             "deferred_until_day",
             "active_model",
+            "active_turn_id",
             "baseline_is_inherited",
             "history_start_ordinal",
             "record_ordinal",
@@ -647,9 +1198,46 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "previous_output",
             "previous_reasoning_output",
             "previous_total",
+            "lineage_mode",
+            "leaf_session_id",
+            "parent_session_id",
+            "parent_identity_explicit",
+            "fork_timestamp_ns",
+            "embedded_ancestor_seen",
+            "lineage_invalid",
+            "parent_dependency_key",
+            "parent_baseline_input",
+            "parent_baseline_cached_input",
+            "parent_baseline_cache_write_input",
+            "parent_baseline_output",
+            "parent_baseline_reasoning_output",
+            "parent_baseline_total",
+            "last_turn_context_is_first",
+            "last_turn_context_ordinal",
+            "marker_based_boundary",
+            "marker_candidate_invalidated",
+            "marker_local_confirmation",
+            "accounting_ready",
+            "parser_error_seen",
+            "snapshot_last_timestamp_ns",
+            "snapshot_timestamp_regressed",
         ],
     ),
     ("codex_usage_index_meta", &["key", "value"]),
+    (
+        "codex_usage_token_snapshots",
+        &[
+            "path",
+            "record_ordinal",
+            "timestamp_ns",
+            "input_tokens",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "total_tokens",
+        ],
+    ),
     (
         "lifecycle_state",
         &[
@@ -694,6 +1282,79 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "last_automatic_check_at",
             "offered_version",
             "minimum_required_version",
+        ],
+    ),
+    (
+        "usage_sync_correction_lineage",
+        &[
+            "provider",
+            "ranking_day",
+            "source_revision",
+            "reason",
+            "consumed_generation",
+        ],
+    ),
+    (
+        "usage_sync_daily_aggregates",
+        &[
+            "active_generation",
+            "provider",
+            "ranking_day",
+            "revision",
+            "aggregate_json",
+        ],
+    ),
+    (
+        "usage_sync_generation_activations",
+        &["active_generation", "ranking_day", "activated_at"],
+    ),
+    (
+        "usage_sync_generation_baselines",
+        &[
+            "active_generation",
+            "provider",
+            "ranking_day",
+            "aggregate_json",
+        ],
+    ),
+    (
+        "usage_sync_generations",
+        &["active_generation", "queue_state"],
+    ),
+    (
+        "usage_sync_latest_outbox",
+        &[
+            "active_generation",
+            "provider",
+            "ranking_day",
+            "revision",
+            "snapshot_json",
+            "correction_reason",
+            "correction_revision",
+            "queue_state",
+        ],
+    ),
+    (
+        "usage_sync_provider_settings_outbox",
+        &[
+            "active_generation",
+            "revision",
+            "codex_enabled",
+            "claude_enabled",
+            "delivery_state",
+        ],
+    ),
+    (
+        "usage_sync_terminal_conflicts",
+        &["active_generation", "provider", "ranking_day", "revision"],
+    ),
+    (
+        "usage_sync_transfer_day_carryovers",
+        &[
+            "active_generation",
+            "provider",
+            "ranking_day",
+            "carryover_kind",
         ],
     ),
 ];

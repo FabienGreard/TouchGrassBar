@@ -44,9 +44,9 @@ type FixtureManifestEntry = {
   sourceSchema: {
     databaseFormat: number;
     lifecycle: number;
-    sanitizedDesktopState: 4 | 5;
-    codexUsageIndex: 2 | 3;
-    claudeUsageIndex: 3 | 4 | null;
+    sanitizedDesktopState: 4 | 5 | 6;
+    codexUsageIndex: 2 | 3 | 6;
+    claudeUsageIndex: 3 | 4 | 7 | null;
     updateState: 1 | 2 | 3;
     databaseCoordinator: 1 | null;
   };
@@ -180,19 +180,23 @@ const definitions: FixtureDefinition[] = [
   },
 ];
 
-function readModelVersion(definition: FixtureDefinition): 4 | 5 {
-  return definition.hasExplicitVersions ? 5 : 4;
+function readModelVersion(definition: FixtureDefinition): 4 | 6 {
+  return definition.hasExplicitVersions ? 6 : 4;
 }
 
-function codexUsageVersion(definition: FixtureDefinition): 2 | 3 {
-  return definition.hasExplicitVersions ? 3 : 2;
+function readModelContractVersion(definition: FixtureDefinition): 3 | 4 {
+  return definition.hasExplicitVersions ? 4 : 3;
 }
 
-function claudeUsageVersion(definition: FixtureDefinition): 3 | 4 | null {
+function codexUsageVersion(definition: FixtureDefinition): 2 | 6 {
+  return definition.hasExplicitVersions ? 6 : 2;
+}
+
+function claudeUsageVersion(definition: FixtureDefinition): 3 | 7 | null {
   if (!definition.hasClaudeUsageIndex) {
     return null;
   }
-  return definition.hasExplicitVersions ? 4 : 3;
+  return definition.hasExplicitVersions ? 7 : 3;
 }
 
 const unavailablePeriods = {
@@ -349,7 +353,7 @@ function snapshot(definition: FixtureDefinition): Record<string, unknown> {
     return presentation;
   };
   const state: Record<string, unknown> = {
-    contractVersion: 3,
+    contractVersion: readModelContractVersion(definition),
     generatedAt,
     revision: definition.revision,
     providers: [
@@ -431,11 +435,12 @@ function createReadModelSchema(
   definition: FixtureDefinition,
 ): void {
   const schemaVersion = readModelVersion(definition);
+  const contractVersion = readModelContractVersion(definition);
   database.exec(`
     CREATE TABLE sanitized_desktop_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       schema_version INTEGER NOT NULL CHECK (schema_version = ${schemaVersion}),
-      contract_version INTEGER NOT NULL CHECK (contract_version = 3),
+      contract_version INTEGER NOT NULL CHECK (contract_version = ${contractVersion}),
       revision TEXT NOT NULL CHECK (
         length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
       ),
@@ -446,10 +451,11 @@ function createReadModelSchema(
     .query(
       `INSERT INTO sanitized_desktop_state (
          singleton, schema_version, contract_version, revision, snapshot_json
-       ) VALUES (1, ?1, 3, ?2, ?3)`,
+       ) VALUES (1, ?1, ?2, ?3, ?4)`,
     )
     .run(
       schemaVersion,
+      contractVersion,
       definition.revision,
       JSON.stringify(snapshot(definition)),
     );
@@ -460,6 +466,72 @@ function createCodexUsageSchema(
   database: Database,
   definition: FixtureDefinition,
 ): void {
+  const activeTurnColumn = definition.hasExplicitVersions
+    ? ",\n      active_turn_id TEXT"
+    : "";
+  const currentFileColumns = definition.hasExplicitVersions
+    ? `,
+      lineage_mode TEXT NOT NULL DEFAULT 'unknown',
+      leaf_session_id TEXT,
+      parent_session_id TEXT,
+      parent_identity_explicit INTEGER NOT NULL DEFAULT 0,
+      fork_timestamp_ns INTEGER,
+      embedded_ancestor_seen INTEGER NOT NULL DEFAULT 0,
+      lineage_invalid INTEGER NOT NULL DEFAULT 0,
+      parent_dependency_key TEXT,
+      parent_baseline_input INTEGER,
+      parent_baseline_cached_input INTEGER,
+      parent_baseline_cache_write_input INTEGER,
+      parent_baseline_output INTEGER,
+      parent_baseline_reasoning_output INTEGER,
+      parent_baseline_total INTEGER,
+      last_turn_context_is_first INTEGER NOT NULL DEFAULT 0,
+      last_turn_context_ordinal INTEGER,
+      marker_based_boundary INTEGER NOT NULL DEFAULT 0,
+      marker_candidate_invalidated INTEGER NOT NULL DEFAULT 0,
+      marker_local_confirmation INTEGER,
+      accounting_ready INTEGER NOT NULL DEFAULT 0,
+      parser_error_seen INTEGER NOT NULL DEFAULT 0,
+      snapshot_last_timestamp_ns INTEGER,
+      snapshot_timestamp_regressed INTEGER NOT NULL DEFAULT 0`
+    : "";
+  const pricingModeColumn = definition.hasExplicitVersions
+    ? `,
+      pricing_mode TEXT NOT NULL CHECK(pricing_mode IN ('standard', 'fast'))`
+    : "";
+  const currentCodexObjects = definition.hasExplicitVersions
+    ? `
+      CREATE TABLE codex_usage_file_turns (
+        path TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        PRIMARY KEY (path, turn_id),
+        FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+      );
+      CREATE TABLE codex_usage_fast_turns (
+        turn_id TEXT PRIMARY KEY NOT NULL,
+        model TEXT
+      );
+      CREATE TABLE codex_usage_token_snapshots (
+        path TEXT NOT NULL,
+        record_ordinal INTEGER NOT NULL,
+        timestamp_ns INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        cached_input_tokens INTEGER NOT NULL,
+        cache_write_input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        reasoning_output_tokens INTEGER NOT NULL,
+        total_tokens INTEGER NOT NULL,
+        PRIMARY KEY (path, record_ordinal),
+        FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+      );
+      CREATE INDEX codex_usage_file_turns_by_turn_id
+        ON codex_usage_file_turns(turn_id);
+      CREATE INDEX codex_usage_files_by_leaf_session
+        ON codex_usage_files(leaf_session_id);
+      CREATE INDEX codex_usage_snapshots_by_path_timestamp
+        ON codex_usage_token_snapshots(path, timestamp_ns, record_ordinal);
+    `
+    : "";
   database.exec(`
     CREATE TABLE codex_usage_index_meta (
       key TEXT PRIMARY KEY NOT NULL,
@@ -483,7 +555,7 @@ function createCodexUsageSchema(
       parser_version INTEGER NOT NULL,
       completion_state TEXT NOT NULL,
       deferred_until_day TEXT,
-      active_model TEXT,
+      active_model TEXT${activeTurnColumn},
       baseline_is_inherited INTEGER,
       history_start_ordinal INTEGER,
       record_ordinal INTEGER NOT NULL DEFAULT 0,
@@ -494,13 +566,13 @@ function createCodexUsageSchema(
       previous_cache_write_input INTEGER,
       previous_output INTEGER,
       previous_reasoning_output INTEGER,
-      previous_total INTEGER
+      previous_total INTEGER${currentFileColumns}
     );
     CREATE TABLE codex_usage_file_model_days (
       path TEXT NOT NULL,
       day TEXT NOT NULL,
       model TEXT NOT NULL,
-      pricing_input_tokens INTEGER NOT NULL,
+      pricing_input_tokens INTEGER NOT NULL${pricingModeColumn},
       input_tokens INTEGER NOT NULL,
       cached_input_tokens INTEGER NOT NULL,
       cache_write_input_tokens INTEGER NOT NULL,
@@ -512,7 +584,11 @@ function createCodexUsageSchema(
       pricing_fingerprint TEXT,
       complete INTEGER NOT NULL,
       observed_through TEXT NOT NULL,
-      PRIMARY KEY (path, day, model, pricing_input_tokens),
+      PRIMARY KEY (
+        path, day, model, pricing_input_tokens${
+          definition.hasExplicitVersions ? ", pricing_mode" : ""
+        }
+      ),
       FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
     );
     CREATE TABLE codex_usage_file_days (
@@ -533,6 +609,7 @@ function createCodexUsageSchema(
     CREATE INDEX codex_usage_unpriced_model_days
       ON codex_usage_file_model_days(day, model, cache_write_input_tokens)
       WHERE cost_usd IS NULL;
+    ${currentCodexObjects}
   `);
   setModuleVersion(
     database,
@@ -541,12 +618,22 @@ function createCodexUsageSchema(
   );
 
   const path = `fixture-codex-session-${definition.tag}`;
+  const currentFileInsertColumns = definition.hasExplicitVersions
+    ? ", lineage_mode, accounting_ready"
+    : "";
+  const currentFileInsertValues = definition.hasExplicitVersions
+    ? ", 'root', 1"
+    : "";
   database
     .query(
       `INSERT INTO codex_usage_files (
          path, file_identity, size_bytes, modified_ns, parsed_offset,
          parsed_prefix_anchor, parser_version, completion_state, schema_supported
-       ) VALUES (?1, ?2, 4096, 1700000000, 4096, ?3, 8, 'complete', 1)`,
+         ${currentFileInsertColumns}
+       ) VALUES (
+         ?1, ?2, 4096, 1700000000, 4096, ?3, 8, 'complete', 1
+         ${currentFileInsertValues}
+       )`,
     )
     .run(
       path,
@@ -561,12 +648,16 @@ function createCodexUsageSchema(
     .run(generatedAt);
   const modelDay = database.query(
     `INSERT INTO codex_usage_file_model_days (
-       path, day, model, pricing_input_tokens, input_tokens,
+       path, day, model, pricing_input_tokens${
+         definition.hasExplicitVersions ? ", pricing_mode" : ""
+       }, input_tokens,
        cached_input_tokens, cache_write_input_tokens, output_tokens,
        reasoning_output_tokens, observed_tokens, cost_usd, pricing_basis,
        pricing_fingerprint, complete, observed_through
      ) VALUES (
-       ?1, ?2, 'gpt-5.2', ?3, ?4, 100, 50, 100, 50, ?5, ?6, ?7, ?8, ?9, ?10
+       ?1, ?2, 'gpt-5.2', ?3${
+         definition.hasExplicitVersions ? ", 'standard'" : ""
+       }, ?4, 100, 50, 100, 50, ?5, ?6, ?7, ?8, ?9, ?10
      )`,
   );
   const fileDay = database.query(
@@ -609,6 +700,31 @@ function createClaudeUsageSchema(
   database: Database,
   definition: FixtureDefinition,
 ): void {
+  const aggregateAppliedColumn = definition.hasExplicitVersions
+    ? `,
+      aggregate_applied INTEGER NOT NULL DEFAULT 1
+        CHECK (aggregate_applied IN (0, 1))`
+    : "";
+  const modeledCostColumn = definition.hasExplicitVersions
+    ? `,
+      cost_modeled INTEGER NOT NULL DEFAULT 0
+        CHECK (cost_modeled IN (0, 1))`
+    : "";
+  const correctionColumns = definition.hasExplicitVersions
+    ? `,
+      correction_provenance TEXT,
+      correction_source_revision INTEGER,
+      CHECK (
+        (
+          correction_provenance IS NULL
+          AND correction_source_revision IS NULL
+        ) OR (
+          correction_provenance = 'parser-correction'
+          AND correction_source_revision >= 1
+          AND correction_source_revision <= revision
+        )
+      )`
+    : "";
   database.exec(`
     CREATE TABLE claude_usage_index_meta (
       key TEXT PRIMARY KEY NOT NULL,
@@ -665,7 +781,7 @@ function createClaudeUsageSchema(
     CREATE TABLE claude_usage_message_supersedes (
       replacement_frame_key TEXT NOT NULL,
       superseded_frame_key TEXT NOT NULL,
-      parser_version INTEGER NOT NULL,
+      parser_version INTEGER NOT NULL${aggregateAppliedColumn},
       PRIMARY KEY(replacement_frame_key, superseded_frame_key),
       FOREIGN KEY(replacement_frame_key)
         REFERENCES claude_usage_frames(frame_key) ON DELETE CASCADE
@@ -679,9 +795,9 @@ function createClaudeUsageSchema(
       observed_through TEXT NOT NULL,
       revision INTEGER NOT NULL CHECK (revision >= 1),
       priced_tokens INTEGER NOT NULL DEFAULT 0,
-      cost_usd REAL,
+      cost_usd REAL${modeledCostColumn},
       pricing_basis TEXT,
-      pricing_fingerprint TEXT
+      pricing_fingerprint TEXT${correctionColumns}
     );
   `);
   const schemaVersion = claudeUsageVersion(definition);
@@ -730,8 +846,12 @@ function createClaudeUsageSchema(
   const daily = database.query(
     `INSERT INTO claude_usage_daily (
        day, observed_tokens, coverage, observed_through, revision,
-       priced_tokens, cost_usd, pricing_basis, pricing_fingerprint
-     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+       priced_tokens, cost_usd${
+         definition.hasExplicitVersions ? ", cost_modeled" : ""
+       }, pricing_basis, pricing_fingerprint
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7${
+       definition.hasExplicitVersions ? ", 0" : ""
+     }, ?8, ?9)`,
   );
   for (const [index, fact] of facts.entries()) {
     const frameKey = `fixture-claude-frame-${definition.tag}-${index + 1}`;
@@ -763,13 +883,135 @@ function createClaudeUsageSchema(
   database
     .query(
       `INSERT INTO claude_usage_message_supersedes (
-         replacement_frame_key, superseded_frame_key, parser_version
-       ) VALUES (?1, ?2, 4)`,
+         replacement_frame_key, superseded_frame_key, parser_version${
+           definition.hasExplicitVersions ? ", aggregate_applied" : ""
+         }
+       ) VALUES (?1, ?2, 4${definition.hasExplicitVersions ? ", 1" : ""})`,
     )
     .run(
       `fixture-claude-frame-${definition.tag}-2`,
       `fixture-claude-frame-${definition.tag}-1`,
     );
+}
+
+function createUsageSyncSchema(database: Database): void {
+  database.exec(`
+    CREATE TABLE usage_sync_generations (
+      active_generation INTEGER PRIMARY KEY,
+      queue_state TEXT NOT NULL
+        CHECK(queue_state IN ('active', 'blocked', 'abandoned')),
+      CHECK(active_generation >= 1 AND active_generation <= 9007199254740991)
+    ) STRICT;
+    CREATE TABLE usage_sync_daily_aggregates (
+      active_generation INTEGER NOT NULL,
+      provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+      ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+      revision INTEGER NOT NULL
+        CHECK(revision >= 1 AND revision <= 9007199254740991),
+      aggregate_json TEXT NOT NULL CHECK(length(aggregate_json) <= 4096),
+      PRIMARY KEY(active_generation, provider, ranking_day),
+      FOREIGN KEY(active_generation)
+        REFERENCES usage_sync_generations(active_generation)
+    ) STRICT;
+    CREATE TABLE usage_sync_generation_baselines (
+      active_generation INTEGER NOT NULL,
+      provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+      ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+      aggregate_json TEXT NOT NULL CHECK(length(aggregate_json) <= 4096),
+      PRIMARY KEY(active_generation, provider, ranking_day),
+      FOREIGN KEY(active_generation)
+        REFERENCES usage_sync_generations(active_generation)
+    ) STRICT;
+    CREATE TABLE usage_sync_generation_activations (
+      active_generation INTEGER PRIMARY KEY,
+      ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+      activated_at INTEGER NOT NULL
+        CHECK(activated_at >= 0 AND activated_at <= 9007199254740991),
+      FOREIGN KEY(active_generation)
+        REFERENCES usage_sync_generations(active_generation)
+    ) STRICT;
+    CREATE TABLE usage_sync_latest_outbox (
+      active_generation INTEGER NOT NULL,
+      provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+      ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+      revision INTEGER NOT NULL
+        CHECK(revision >= 1 AND revision <= 9007199254740991),
+      snapshot_json TEXT NOT NULL CHECK(length(snapshot_json) <= 4096),
+      correction_reason TEXT CHECK(
+        correction_reason IS NULL OR correction_reason IN (
+          'provider-replacement', 'parser-correction'
+        )
+      ),
+      correction_revision INTEGER,
+      queue_state TEXT NOT NULL
+        CHECK(queue_state IN ('active', 'blocked', 'abandoned')),
+      CHECK(
+        (correction_reason IS NULL AND correction_revision IS NULL)
+        OR (
+          correction_reason IS NOT NULL
+          AND correction_revision IS NOT NULL
+          AND correction_revision >= 1
+          AND correction_revision <= revision
+          AND correction_revision <= 9007199254740991
+        )
+      ),
+      PRIMARY KEY(active_generation, provider, ranking_day),
+      FOREIGN KEY(active_generation)
+        REFERENCES usage_sync_generations(active_generation)
+    ) STRICT;
+    CREATE INDEX usage_sync_latest_outbox_pending
+      ON usage_sync_latest_outbox(
+        active_generation, queue_state, ranking_day, provider
+      );
+    CREATE TABLE usage_sync_transfer_day_carryovers (
+      active_generation INTEGER NOT NULL,
+      provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+      ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+      carryover_kind TEXT NOT NULL CHECK(carryover_kind IN (
+        'delayed-installation-marker', 'pending-segment'
+      )),
+      PRIMARY KEY(active_generation, provider, ranking_day),
+      FOREIGN KEY(active_generation, provider, ranking_day)
+        REFERENCES usage_sync_latest_outbox(
+          active_generation, provider, ranking_day
+        ) ON DELETE CASCADE
+    ) STRICT;
+    CREATE TABLE usage_sync_terminal_conflicts (
+      active_generation INTEGER NOT NULL,
+      provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+      ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+      revision INTEGER NOT NULL
+        CHECK(revision >= 1 AND revision <= 9007199254740991),
+      PRIMARY KEY(active_generation, provider, ranking_day, revision),
+      FOREIGN KEY(active_generation)
+        REFERENCES usage_sync_generations(active_generation)
+    ) STRICT;
+    CREATE TABLE usage_sync_provider_settings_outbox (
+      active_generation INTEGER PRIMARY KEY,
+      revision INTEGER NOT NULL
+        CHECK(revision >= 1 AND revision <= 9007199254740991),
+      codex_enabled INTEGER NOT NULL CHECK(codex_enabled IN (0, 1)),
+      claude_enabled INTEGER NOT NULL CHECK(claude_enabled IN (0, 1)),
+      delivery_state TEXT NOT NULL
+        CHECK(delivery_state IN ('pending', 'synced', 'blocked', 'abandoned')),
+      FOREIGN KEY(active_generation)
+        REFERENCES usage_sync_generations(active_generation)
+    ) STRICT;
+    CREATE TABLE usage_sync_correction_lineage (
+      provider TEXT NOT NULL CHECK(provider IN ('codex', 'claude')),
+      ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+      source_revision INTEGER NOT NULL
+        CHECK(source_revision >= 1 AND source_revision <= 9007199254740991),
+      reason TEXT NOT NULL CHECK(reason = 'parser-correction'),
+      consumed_generation INTEGER CHECK(
+        consumed_generation IS NULL OR (
+          consumed_generation >= 1
+          AND consumed_generation <= 9007199254740991
+        )
+      ),
+      PRIMARY KEY(provider, ranking_day)
+    ) STRICT;
+  `);
 }
 
 function createUpdateStateSchema(
@@ -938,7 +1180,7 @@ function validateFixtureContents(
       scalarValue(database.query("PRAGMA user_version").get()),
     );
     const expectedDatabaseFormat = definition.hasExplicitVersions
-      ? 6
+      ? 7
       : definition.lifecycleVersion;
     if (databaseFormat !== expectedDatabaseFormat) {
       throw new Error(`The database format is wrong for ${definition.tag}.`);
@@ -976,6 +1218,22 @@ function validateFixtureContents(
         "claude_usage_index_meta",
         "claude_usage_message_supersedes",
         "claude_usage_messages",
+      );
+    }
+    if (definition.hasExplicitVersions) {
+      expectedTables.push(
+        "codex_usage_fast_turns",
+        "codex_usage_file_turns",
+        "codex_usage_token_snapshots",
+        "usage_sync_correction_lineage",
+        "usage_sync_daily_aggregates",
+        "usage_sync_generation_activations",
+        "usage_sync_generation_baselines",
+        "usage_sync_generations",
+        "usage_sync_latest_outbox",
+        "usage_sync_provider_settings_outbox",
+        "usage_sync_terminal_conflicts",
+        "usage_sync_transfer_day_carryovers",
       );
     }
     expectedTables.sort();
@@ -1057,7 +1315,7 @@ function validateFixtureContents(
     };
     if (
       readModel.schema_version !== readModelVersion(definition) ||
-      readModel.contract_version !== 3 ||
+      readModel.contract_version !== readModelContractVersion(definition) ||
       readModel.revision !== entry.expectedState.revision ||
       persistedSnapshot.revision !== entry.expectedState.revision ||
       JSON.stringify(persistedSnapshot.profile) !==
@@ -1254,6 +1512,9 @@ async function writeFixture(
     `);
     createLifecycleSchema(database, definition);
     createReadModelSchema(database, definition);
+    if (definition.hasExplicitVersions) {
+      createUsageSyncSchema(database);
+    }
     createCodexUsageSchema(database, definition);
     if (definition.hasClaudeUsageIndex) {
       createClaudeUsageSchema(database, definition);
@@ -1263,7 +1524,7 @@ async function writeFixture(
       setModuleVersion(database, "desktop-lifecycle", 5);
       setModuleVersion(database, "update-state", 3);
       setModuleVersion(database, "database-coordinator", 1);
-      database.exec("PRAGMA user_version = 6");
+      database.exec("PRAGMA user_version = 7");
     }
     database.exec("COMMIT");
     database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -1273,6 +1534,8 @@ async function writeFixture(
     database.close();
   }
 
+  await rm(`${databasePath}-wal`, { force: true });
+  await rm(`${databasePath}-shm`, { force: true });
   checkDatabase(databasePath);
   await assertNoSidecars(databasePath);
   const bytes = await readFile(databasePath);
@@ -1286,7 +1549,7 @@ async function writeFixture(
     releaseStatus: definition.releaseStatus,
     sourceSchema: {
       databaseFormat: definition.hasExplicitVersions
-        ? 6
+        ? 7
         : definition.lifecycleVersion,
       lifecycle: definition.lifecycleVersion,
       sanitizedDesktopState: readModelVersion(definition),

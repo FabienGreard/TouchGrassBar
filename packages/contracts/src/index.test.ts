@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  CONTRACT_VERSION,
   bootstrapStateSchema,
   refreshReceiptSchema,
   sanitizedDesktopStateSchema,
   settingsStateSchema,
+  syncStateSchema,
   tokenmaxxerSchema,
 } from "./index";
 
@@ -17,7 +19,7 @@ const unavailableUsage = {
 
 const unavailableState = {
   combinedUsage: unavailableUsage,
-  contractVersion: 3,
+  contractVersion: CONTRACT_VERSION,
   generatedAt: "2026-08-03T00:00:00.000Z",
   profile: { status: "not-authorized" },
   revision: "1",
@@ -55,6 +57,33 @@ describe("public contracts", () => {
       unavailableState,
     );
     expect(JSON.stringify(unavailableState)).not.toContain("observedTokens");
+  });
+
+  test.each([
+    "synced",
+    "pending",
+    "stale",
+    "offline",
+    "authority-rejected",
+    "unavailable",
+  ] as const)("accepts the sanitized %s sync state", (status) => {
+    const lastSuccessfulAt = status === "synced" || status === "stale"
+      ? "2026-08-08T12:00:00.000Z"
+      : null;
+    expect(syncStateSchema.parse({ lastSuccessfulAt, status })).toEqual({
+      lastSuccessfulAt,
+      status,
+    });
+  });
+
+  test.each([
+    { status: "retrying" },
+    { lastSuccessfulAt: "not-a-time", status: "offline" },
+    { credential: "sentinel", status: "authority-rejected" },
+    { installationId: "sentinel", status: "pending" },
+    { status: "offline", transportError: "sentinel" },
+  ])("rejects a non-sanitized sync state", (sync) => {
+    expect(syncStateSchema.safeParse(sync).success).toBe(false);
   });
 
   test("rejects partial API-equivalent cost metadata", () => {

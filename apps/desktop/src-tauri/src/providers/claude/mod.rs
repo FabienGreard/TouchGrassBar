@@ -21,7 +21,7 @@ use std::{
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::registry::resolve_provider_executable;
-use super::{ProviderObservation, ProviderObservationAdapter};
+use super::{ProviderCorrection, ProviderObservation, ProviderObservationAdapter};
 use crate::daily_usage_aggregate::preserve_best_known_costs;
 use crate::providers::process::ProviderProcessSupervisor;
 use crate::sanitized::{
@@ -101,6 +101,8 @@ pub(crate) struct ClaudeProviderObservationAdapter {
     fixture_failure: Option<RefreshFailure>,
     #[cfg(test)]
     fixture_usage: Option<crate::sanitized::UsagePeriods>,
+    #[cfg(test)]
+    fixture_correction: Option<ProviderCorrection>,
 }
 
 impl ClaudeProviderObservationAdapter {
@@ -123,6 +125,8 @@ impl ClaudeProviderObservationAdapter {
             fixture_failure: None,
             #[cfg(test)]
             fixture_usage: None,
+            #[cfg(test)]
+            fixture_correction: None,
         }
     }
 
@@ -140,6 +144,7 @@ impl ClaudeProviderObservationAdapter {
             fixture: Some(observation),
             fixture_failure: None,
             fixture_usage: None,
+            fixture_correction: None,
         }
     }
 
@@ -161,6 +166,7 @@ impl ClaudeProviderObservationAdapter {
             fixture,
             fixture_failure,
             fixture_usage: Some(fixture_usage),
+            fixture_correction: None,
         }
     }
 
@@ -205,10 +211,17 @@ impl ClaudeProviderObservationAdapter {
         })
     }
 
-    fn observe_usage(&self, now: OffsetDateTime) -> Option<(UsagePeriods, Option<TopModelUsage>)> {
+    fn observe_usage(
+        &self,
+        now: OffsetDateTime,
+    ) -> Option<(
+        UsagePeriods,
+        Option<TopModelUsage>,
+        Option<ProviderCorrection>,
+    )> {
         #[cfg(test)]
         if let Some(usage) = &self.fixture_usage {
-            return Some((usage.clone(), None));
+            return Some((usage.clone(), None, self.fixture_correction));
         }
 
         usage::scan_local_usage(
@@ -221,6 +234,7 @@ impl ClaudeProviderObservationAdapter {
             (
                 usage::project_usage_periods(Some(local), now),
                 local.top_model_usage.clone(),
+                local.correction,
             )
         })
     }
@@ -249,14 +263,15 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
         } else {
             None
         };
-        let (usage, top_model_usage) = projected_usage
-            .map(|(usage, top_model_usage)| {
+        let (usage, top_model_usage, correction) = projected_usage
+            .map(|(usage, top_model_usage, correction)| {
                 (
                     preserve_best_known_costs(usage, &cached.usage),
                     top_model_usage,
+                    correction,
                 )
             })
-            .unwrap_or_else(|| (cached.usage.clone(), cached.top_model_usage.clone()));
+            .unwrap_or_else(|| (cached.usage.clone(), cached.top_model_usage.clone(), None));
         let mut quota_failed = false;
         let quota = if skip_quota {
             cached.quota.clone()
@@ -282,6 +297,7 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
         if cached.quota == quota
             && cached.usage == usage
             && cached.top_model_usage == top_model_usage
+            && correction.is_none()
         {
             if quota_failed {
                 return Err(RefreshFailure::SourceUnavailable);
@@ -294,6 +310,7 @@ impl ProviderObservationAdapter for ClaudeProviderObservationAdapter {
             quota,
             usage,
             top_model_usage,
+            correction,
         }))
     }
 }
@@ -448,6 +465,35 @@ mod tests {
 
         assert_eq!(observation.quota, cached.quota);
         assert_eq!(observation.usage, expected_usage);
+    }
+
+    #[test]
+    fn parser_correction_publishes_when_the_usage_snapshot_is_unchanged() {
+        let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
+        let expected_usage = fixture_usage(now, 321);
+        let quota_observation = fixture_observation(now);
+        let mut adapter = ClaudeProviderObservationAdapter::fixture_with_usage(
+            Arc::new(FixedClock(now)),
+            Ok(quota_observation.clone()),
+            expected_usage.clone(),
+        );
+        adapter.fixture_correction =
+            Some(ProviderCorrection::ParserCorrection { source_revision: 2 });
+        let mut cached = ProviderPresentation::unavailable(CodingProvider::Claude);
+        cached.quota = quota_observation.sanitized_snapshot(now).unwrap();
+        cached.usage = expected_usage;
+
+        let observation = adapter
+            .refresh(&cached, &RefreshAttempt::test())
+            .unwrap()
+            .expect("the correction marker must publish without a snapshot change");
+
+        assert_eq!(observation.quota, cached.quota);
+        assert_eq!(observation.usage, cached.usage);
+        assert_eq!(
+            observation.correction,
+            Some(ProviderCorrection::ParserCorrection { source_revision: 2 })
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -26,23 +26,38 @@ use crate::lifecycle::{
 };
 pub use crate::providers::{CodingProvider, ProviderPresenceStatus};
 use crate::providers::{
-    PROVIDER_REGISTRY, ProviderEnablementPolicy, all_providers_enabled_policy,
+    PROVIDER_REGISTRY, ProviderCorrection, ProviderEnablementPolicy, all_providers_enabled_policy,
     detect_provider_presence, production_observation_coordinator, provider_descriptor,
 };
 use crate::quota_headroom::{RevisionedOverallQuotaHeadroom, overall_quota_headroom};
 use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update_state_schema};
+#[cfg(test)]
+use crate::usage_sync::{
+    DailyUsageAggregate, ProviderSettingsAcknowledgement, SyncCoverage, SyncEvidenceBasis,
+    UsageSyncAcknowledgement, queue_daily_aggregate,
+};
+use crate::usage_sync::{
+    PendingUsageBatch, QueueState, QueueUpdate, UsageSyncAcknowledgements, UsageSyncAttemptResult,
+    UsageSyncCorrections, activate_generation, apply_provider_settings_acknowledgement,
+    apply_usage_acknowledgements, capture_generation_baselines,
+    has_current_terminal_usage_conflict, install_usage_sync_schema,
+    load_active_usage_sync_generation, load_current_pending_usage_batch,
+    load_usage_sync_generation_state, mark_generation_authority_rejected, queue_current_utc_day,
+    queue_current_utc_day_with_corrections, queue_provider_settings, stage_usage_sync_corrections,
+};
 
-pub const CONTRACT_VERSION: u8 = 3;
+pub const CONTRACT_VERSION: u8 = 4;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
-pub(crate) const READ_MODEL_SCHEMA_VERSION: i64 = 5;
+pub(crate) const READ_MODEL_SCHEMA_VERSION: i64 = 6;
 pub(crate) const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const REFRESH_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const REFRESH_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 const REFRESH_ATTEMPT_TIMEOUT: Duration = REFRESH_INTERVAL;
 const NETWORK_RECOVERY_POLL_INTERVAL: Duration = Duration::from_secs(5);
-const LOCAL_USAGE_CATCH_UP_DEFAULT_ACTIVE: Duration = Duration::from_secs(2);
+const LOCAL_USAGE_CATCH_UP_SUCCESS_DELAY: Duration = Duration::from_millis(250);
 const LOCAL_USAGE_CATCH_UP_ERROR_DELAY: Duration = Duration::from_secs(60);
 
 #[cfg(debug_assertions)]
@@ -479,11 +494,13 @@ pub struct SyncState {
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum SyncStatus {
     Synced,
     Pending,
     Stale,
+    Offline,
+    AuthorityRejected,
     Unavailable,
 }
 
@@ -647,6 +664,8 @@ pub(crate) struct SnapshotRefreshOutcome {
     /// Providers whose own refresh work reached a non-cancelled terminal result.
     /// The native commit uses this set to end only matching first-observation waits.
     pub(crate) completed_providers: BTreeSet<CodingProvider>,
+    /// Content-free correction proof from provider-private aggregation.
+    pub(crate) corrections: BTreeMap<CodingProvider, ProviderCorrection>,
 }
 
 impl From<Option<SanitizedDesktopStateV3>> for SnapshotRefreshOutcome {
@@ -654,13 +673,16 @@ impl From<Option<SanitizedDesktopStateV3>> for SnapshotRefreshOutcome {
         Self {
             snapshot,
             completed_providers: BTreeSet::new(),
+            corrections: BTreeMap::new(),
         }
     }
 }
 
 impl SnapshotRefreshOutcome {
     fn is_empty(&self) -> bool {
-        self.snapshot.is_none() && self.completed_providers.is_empty()
+        self.snapshot.is_none()
+            && self.completed_providers.is_empty()
+            && self.corrections.is_empty()
     }
 }
 
@@ -698,6 +720,35 @@ pub(crate) trait Clock: Send + Sync {
 }
 
 pub(crate) type RefreshTrigger = Arc<dyn Fn() + Send + Sync>;
+pub(crate) type UsageSyncRequest = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Default)]
+struct UsageSyncRequests {
+    request: Mutex<Option<UsageSyncRequest>>,
+}
+
+impl UsageSyncRequests {
+    fn install(&self, request: UsageSyncRequest) -> Result<(), &'static str> {
+        *self
+            .request
+            .lock()
+            .map_err(|_| "usage synchronization unavailable")? = Some(request);
+        Ok(())
+    }
+
+    fn request(&self) {
+        let request = self.request.lock().ok().and_then(|request| request.clone());
+        if let Some(request) = request {
+            request();
+        }
+    }
+
+    fn clear(&self) {
+        if let Ok(mut request) = self.request.lock() {
+            *request = None;
+        }
+    }
+}
 
 struct SystemClock;
 
@@ -705,6 +756,14 @@ impl Clock for SystemClock {
     fn now(&self) -> OffsetDateTime {
         OffsetDateTime::now_utc()
     }
+}
+
+fn active_mac_activation_time(milliseconds: u64) -> Result<OffsetDateTime, &'static str> {
+    if milliseconds > MAX_SAFE_INTEGER {
+        return Err("native state persistence unavailable");
+    }
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(milliseconds) * 1_000_000)
+        .map_err(|_| "native state persistence unavailable")
 }
 
 fn production_refresh_adapter(
@@ -720,7 +779,23 @@ fn production_refresh_adapter(
 }
 
 struct SqliteReadModelStore {
+    active_mac_generation: Option<u64>,
     connection: Connection,
+}
+
+enum UsageSyncCommit<'a> {
+    QueueCurrent(UsageSyncCorrections),
+    Activate {
+        activated_at: OffsetDateTime,
+        generation: u64,
+    },
+    Acknowledge {
+        acknowledgements: &'a UsageSyncAcknowledgements,
+        batch: &'a PendingUsageBatch,
+    },
+    Pending,
+    Offline,
+    AuthorityRejected(Option<u64>),
 }
 
 impl SqliteReadModelStore {
@@ -737,12 +812,23 @@ impl SqliteReadModelStore {
         connection
             .busy_timeout(Duration::from_secs(2))
             .map_err(|_| "native state persistence unavailable")?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(|_| "native state persistence unavailable")?;
         Self::migrate(&mut connection, path, initial)?;
         connection
             .execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")
             .map_err(|_| "native state persistence unavailable")?;
         let state = Self::read_from(&connection)?;
-        Ok((Self { connection }, state))
+        let active_mac_generation = load_active_usage_sync_generation(&connection)
+            .map_err(|_| "native state persistence unavailable")?;
+        Ok((
+            Self {
+                active_mac_generation,
+                connection,
+            },
+            state,
+        ))
     }
 
     fn migrate(
@@ -756,6 +842,20 @@ impl SqliteReadModelStore {
             return Err("native state persistence unavailable");
         }
         if version == READ_MODEL_SCHEMA_VERSION {
+            let stored_versions = connection
+                .query_row(
+                    "SELECT schema_version, contract_version
+                     FROM sanitized_desktop_state
+                     WHERE singleton = 1",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+            if stored_versions != (READ_MODEL_SCHEMA_VERSION, i64::from(CONTRACT_VERSION)) {
+                return Err("native state persistence unavailable");
+            }
+            install_usage_sync_schema(connection)
+                .map_err(|_| "native state persistence unavailable")?;
             return Ok(());
         }
 
@@ -795,10 +895,11 @@ impl SqliteReadModelStore {
             }
             let snapshot: LegacySanitizedDesktopState = serde_json::from_value(snapshot_value)
                 .map_err(|_| "native state persistence unavailable")?;
-            let snapshot = snapshot.into_current(revision.clone(), version)?;
+            let mut snapshot = snapshot.into_current(revision.clone(), version)?;
+            normalize_legacy_sync_state(&mut snapshot);
             validate_snapshot(&snapshot)?;
             (snapshot, revision)
-        } else if version == 4 {
+        } else if (4..=5).contains(&version) {
             let (schema_version, contract_version, revision, snapshot_json) = connection
                 .query_row(
                     "SELECT schema_version, contract_version, revision, snapshot_json
@@ -814,14 +915,28 @@ impl SqliteReadModelStore {
                     },
                 )
                 .map_err(|_| "native state persistence unavailable")?;
-            if schema_version != 4 || contract_version != CONTRACT_VERSION {
+            if schema_version != version || contract_version != 3 {
                 return Err("native state persistence unavailable");
             }
-            let snapshot: SanitizedDesktopStateV3 = serde_json::from_str(&snapshot_json)
+            let mut snapshot_value: Value = serde_json::from_str(&snapshot_json)
+                .map_err(|_| "native state persistence unavailable")?;
+            let snapshot_object = snapshot_value
+                .as_object_mut()
+                .ok_or("native state persistence unavailable")?;
+            if snapshot_object
+                .get("contractVersion")
+                .and_then(Value::as_u64)
+                != Some(3)
+            {
+                return Err("native state persistence unavailable");
+            }
+            snapshot_object.insert("contractVersion".to_owned(), json!(CONTRACT_VERSION));
+            let mut snapshot: SanitizedDesktopStateV3 = serde_json::from_value(snapshot_value)
                 .map_err(|_| "native state persistence unavailable")?;
             if snapshot.revision != revision {
                 return Err("native state persistence unavailable");
             }
+            normalize_legacy_sync_state(&mut snapshot);
             validate_snapshot(&snapshot)?;
             (snapshot, revision)
         } else {
@@ -848,8 +963,8 @@ impl SqliteReadModelStore {
                  );
                  CREATE TABLE sanitized_desktop_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   schema_version INTEGER NOT NULL CHECK (schema_version = 5),
-                   contract_version INTEGER NOT NULL CHECK (contract_version = 3),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 6),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 4),
                    revision TEXT NOT NULL CHECK (
                      length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
                    ),
@@ -882,6 +997,8 @@ impl SqliteReadModelStore {
                  ON CONFLICT(module) DO UPDATE SET version = excluded.version",
                 params![READ_MODEL_SCHEMA_MODULE, READ_MODEL_SCHEMA_VERSION],
             )
+            .map_err(|_| "native state persistence unavailable")?;
+        install_usage_sync_schema(&transaction)
             .map_err(|_| "native state persistence unavailable")?;
         transaction
             .commit()
@@ -917,30 +1034,272 @@ impl SqliteReadModelStore {
         Ok(snapshot)
     }
 
-    fn commit(&mut self, state: &SanitizedDesktopStateV3) -> Result<(), &'static str> {
-        validate_snapshot(state)?;
-        let snapshot_json =
-            serde_json::to_string(state).map_err(|_| "native state persistence unavailable")?;
+    fn commit(
+        &mut self,
+        state: &mut SanitizedDesktopStateV3,
+        now: OffsetDateTime,
+        usage_sync: UsageSyncCommit<'_>,
+        previous_enabled_providers: &BTreeSet<CodingProvider>,
+        enabled_providers: &BTreeSet<CodingProvider>,
+    ) -> Result<bool, &'static str> {
         let transaction = self
             .connection
             .transaction()
             .map_err(|_| "native state persistence unavailable")?;
-        let updated = transaction
-            .execute(
-                "UPDATE sanitized_desktop_state
-                 SET contract_version = ?1, revision = ?2, snapshot_json = ?3
-                 WHERE singleton = 1 AND schema_version = ?4",
-                params![
-                    state.contract_version,
-                    state.revision,
-                    snapshot_json,
-                    READ_MODEL_SCHEMA_VERSION
-                ],
-            )
+        let pending_before = self
+            .active_mac_generation
+            .map(|generation| {
+                load_current_pending_usage_batch(
+                    &transaction,
+                    generation,
+                    now,
+                    previous_enabled_providers,
+                )
+            })
+            .transpose()
+            .map_err(|_| "native state persistence unavailable")?
+            .flatten();
+        let mut pending_usage_changed = false;
+        match usage_sync {
+            UsageSyncCommit::QueueCurrent(corrections) => {
+                if let Some(generation) = self.active_mac_generation {
+                    if previous_enabled_providers != enabled_providers {
+                        pending_usage_changed |=
+                            queue_provider_settings(&transaction, generation, enabled_providers)
+                                .map_err(|_| "native state persistence unavailable")?;
+                    }
+                    let updates = queue_current_utc_day_with_corrections(
+                        &transaction,
+                        generation,
+                        state,
+                        now,
+                        &corrections,
+                        enabled_providers,
+                    )
+                    .map_err(|_| "native state persistence unavailable")?;
+                    pending_usage_changed |= updates.iter().any(|update| {
+                        matches!(
+                            update,
+                            QueueUpdate::Stored {
+                                state: QueueState::Pending,
+                                ..
+                            }
+                        )
+                    });
+                    apply_queue_status(
+                        &transaction,
+                        generation,
+                        state,
+                        now,
+                        &updates,
+                        enabled_providers,
+                    )?;
+                } else {
+                    stage_usage_sync_corrections(&transaction, now, &corrections)
+                        .map_err(|_| "native state persistence unavailable")?;
+                }
+            }
+            UsageSyncCommit::Activate {
+                activated_at,
+                generation,
+            } => {
+                activate_generation(&transaction, generation)
+                    .map_err(|_| "native state persistence unavailable")?;
+                capture_generation_baselines(&transaction, generation, state, activated_at, now)
+                    .map_err(|_| "native state persistence unavailable")?;
+                self.active_mac_generation = Some(generation);
+                pending_usage_changed |=
+                    queue_provider_settings(&transaction, generation, enabled_providers)
+                        .map_err(|_| "native state persistence unavailable")?;
+                state.sync.status = SyncStatus::Pending;
+                let updates =
+                    queue_current_utc_day(&transaction, generation, state, now, enabled_providers)
+                        .map_err(|_| "native state persistence unavailable")?;
+                apply_queue_status(
+                    &transaction,
+                    generation,
+                    state,
+                    now,
+                    &updates,
+                    enabled_providers,
+                )?;
+            }
+            UsageSyncCommit::Acknowledge {
+                acknowledgements,
+                batch,
+            } => {
+                if self.active_mac_generation != Some(batch.active_mac_generation()) {
+                    return Err("native state persistence unavailable");
+                }
+                pending_usage_changed |= apply_provider_settings_acknowledgement(
+                    &transaction,
+                    batch,
+                    acknowledgements.provider_settings.as_ref(),
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+                if !acknowledgements.usage.is_empty() {
+                    apply_usage_acknowledgements(&transaction, batch, &acknowledgements.usage)
+                        .map_err(|_| "native state persistence unavailable")?;
+                } else if batch.has_usage_snapshots()
+                    && !acknowledgements
+                        .provider_settings
+                        .as_ref()
+                        .is_some_and(|acknowledgement| {
+                            acknowledgement.outcome
+                                == crate::usage_sync::AcknowledgementOutcome::Stale
+                        })
+                {
+                    return Err("native state persistence unavailable");
+                }
+                let has_stale = acknowledgements.usage.iter().any(|acknowledgement| {
+                    acknowledgement.outcome == crate::usage_sync::AcknowledgementOutcome::Stale
+                });
+                let has_terminal_conflict = has_current_terminal_usage_conflict(
+                    &transaction,
+                    batch.active_mac_generation(),
+                    now,
+                    enabled_providers,
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+                pending_usage_changed |= has_stale;
+                if acknowledgements.usage.is_empty() {
+                    state.sync.status = if has_terminal_conflict {
+                        if state.sync.last_successful_at.is_some() {
+                            SyncStatus::Stale
+                        } else {
+                            SyncStatus::Unavailable
+                        }
+                    } else {
+                        sync_status_from_last_successful_day(state, now)
+                    };
+                } else {
+                    if acknowledgements.usage.iter().any(|acknowledgement| {
+                        acknowledgement.outcome
+                            != crate::usage_sync::AcknowledgementOutcome::Conflict
+                    }) {
+                        state.sync.last_successful_at = Some(format_time(now));
+                    }
+                    state.sync.status =
+                        if !batch.is_for_current_utc_day(now) || has_stale || has_terminal_conflict
+                        {
+                            if state.sync.last_successful_at.is_some() {
+                                SyncStatus::Stale
+                            } else {
+                                SyncStatus::Unavailable
+                            }
+                        } else {
+                            SyncStatus::Synced
+                        };
+                }
+                let updates = queue_current_utc_day(
+                    &transaction,
+                    batch.active_mac_generation(),
+                    state,
+                    now,
+                    enabled_providers,
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+                pending_usage_changed |= updates.iter().any(|update| {
+                    matches!(
+                        update,
+                        QueueUpdate::Stored {
+                            state: QueueState::Pending,
+                            ..
+                        }
+                    )
+                });
+                apply_queue_status(
+                    &transaction,
+                    batch.active_mac_generation(),
+                    state,
+                    now,
+                    &updates,
+                    enabled_providers,
+                )?;
+            }
+            UsageSyncCommit::Offline => {
+                state.sync.status = SyncStatus::Offline;
+            }
+            UsageSyncCommit::Pending => {
+                state.sync.status = SyncStatus::Pending;
+                if let Some(generation) = self.active_mac_generation {
+                    apply_queue_status(
+                        &transaction,
+                        generation,
+                        state,
+                        now,
+                        &[],
+                        enabled_providers,
+                    )?;
+                }
+            }
+            UsageSyncCommit::AuthorityRejected(generation) => {
+                if let Some(generation) = generation {
+                    if self.active_mac_generation != Some(generation) {
+                        return Err("native state persistence unavailable");
+                    }
+                    mark_generation_authority_rejected(&transaction, generation)
+                        .map_err(|_| "native state persistence unavailable")?;
+                }
+                state.sync.status = SyncStatus::AuthorityRejected;
+            }
+        }
+        let pending_after = self
+            .active_mac_generation
+            .map(|generation| {
+                load_current_pending_usage_batch(&transaction, generation, now, enabled_providers)
+            })
+            .transpose()
+            .map_err(|_| "native state persistence unavailable")?
+            .flatten();
+        pending_usage_changed |= pending_after.is_some() && pending_after != pending_before;
+        persist_snapshot(&transaction, state)?;
+        transaction
+            .commit()
             .map_err(|_| "native state persistence unavailable")?;
-        if updated != 1 {
+        Ok(pending_usage_changed)
+    }
+
+    fn pending_usage_batch(
+        &self,
+        active_mac_generation: u64,
+        now: OffsetDateTime,
+        enabled_providers: &BTreeSet<CodingProvider>,
+    ) -> Result<Option<PendingUsageBatch>, &'static str> {
+        if self.active_mac_generation != Some(active_mac_generation) {
+            return Ok(None);
+        }
+        load_current_pending_usage_batch(
+            &self.connection,
+            active_mac_generation,
+            now,
+            enabled_providers,
+        )
+        .map_err(|_| "native state persistence unavailable")
+    }
+
+    fn confirm_active_mac_activation(
+        &mut self,
+        active_mac_generation: u64,
+        active_mac_activated_at: OffsetDateTime,
+        now: OffsetDateTime,
+        state: &SanitizedDesktopStateV3,
+    ) -> Result<(), &'static str> {
+        if self.active_mac_generation != Some(active_mac_generation) {
             return Err("native state persistence unavailable");
         }
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| "native state persistence unavailable")?;
+        capture_generation_baselines(
+            &transaction,
+            active_mac_generation,
+            state,
+            active_mac_activated_at,
+            now,
+        )
+        .map_err(|_| "native state persistence unavailable")?;
         transaction
             .commit()
             .map_err(|_| "native state persistence unavailable")
@@ -953,6 +1312,116 @@ impl SqliteReadModelStore {
     }
 }
 
+fn normalize_legacy_sync_state(snapshot: &mut SanitizedDesktopStateV3) {
+    if snapshot.sync.last_successful_at.is_none()
+        && matches!(snapshot.sync.status, SyncStatus::Synced | SyncStatus::Stale)
+    {
+        snapshot.sync.status = SyncStatus::Unavailable;
+    }
+}
+
+fn sync_status_from_last_successful_day(
+    state: &SanitizedDesktopStateV3,
+    now: OffsetDateTime,
+) -> SyncStatus {
+    let Some(last_successful_at) = state.sync.last_successful_at.as_deref() else {
+        return SyncStatus::Unavailable;
+    };
+    if OffsetDateTime::parse(last_successful_at, &Rfc3339).is_ok_and(|last_success| {
+        last_success.to_offset(time::UtcOffset::UTC).date()
+            == now.to_offset(time::UtcOffset::UTC).date()
+    }) {
+        SyncStatus::Synced
+    } else {
+        SyncStatus::Stale
+    }
+}
+
+fn apply_queue_status(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    state: &mut SanitizedDesktopStateV3,
+    now: OffsetDateTime,
+    updates: &[QueueUpdate],
+    enabled_providers: &BTreeSet<CodingProvider>,
+) -> Result<(), &'static str> {
+    if updates.iter().any(|update| {
+        matches!(
+            update,
+            QueueUpdate::Stored {
+                state: QueueState::Blocked,
+                ..
+            }
+        )
+    }) {
+        state.sync.status = SyncStatus::AuthorityRejected;
+        return Ok(());
+    }
+
+    let pending = load_current_pending_usage_batch(
+        transaction,
+        active_mac_generation,
+        now,
+        enabled_providers,
+    )
+    .map_err(|_| "native state persistence unavailable")?
+    .is_some();
+    if pending {
+        if !matches!(
+            state.sync.status,
+            SyncStatus::Offline | SyncStatus::AuthorityRejected
+        ) {
+            state.sync.status = SyncStatus::Pending;
+        }
+    } else if updates
+        .iter()
+        .any(|update| matches!(update, QueueUpdate::Stale { .. }))
+        || state.sync.status == SyncStatus::Pending
+        || (state.sync.status == SyncStatus::Synced
+            && !state
+                .sync
+                .last_successful_at
+                .as_deref()
+                .is_some_and(|value| {
+                    OffsetDateTime::parse(value, &Rfc3339).is_ok_and(|last_success| {
+                        last_success.date() == now.to_offset(time::UtcOffset::UTC).date()
+                    })
+                }))
+    {
+        state.sync.status = if state.sync.last_successful_at.is_some() {
+            SyncStatus::Stale
+        } else {
+            SyncStatus::Unavailable
+        };
+    }
+    Ok(())
+}
+
+fn persist_snapshot(
+    transaction: &Transaction<'_>,
+    state: &SanitizedDesktopStateV3,
+) -> Result<(), &'static str> {
+    validate_snapshot(state)?;
+    let snapshot_json =
+        serde_json::to_string(state).map_err(|_| "native state persistence unavailable")?;
+    let updated = transaction
+        .execute(
+            "UPDATE sanitized_desktop_state
+             SET contract_version = ?1, revision = ?2, snapshot_json = ?3
+             WHERE singleton = 1 AND schema_version = ?4",
+            params![
+                state.contract_version,
+                state.revision,
+                snapshot_json,
+                READ_MODEL_SCHEMA_VERSION
+            ],
+        )
+        .map_err(|_| "native state persistence unavailable")?;
+    (updated == 1)
+        .then_some(())
+        .ok_or("native state persistence unavailable")
+}
+
 enum ReadModelStore {
     Persistent(SqliteReadModelStore),
     Memory,
@@ -960,6 +1429,7 @@ enum ReadModelStore {
 
 struct SnapshotCommitOutcome {
     notice: Option<RevisionNotice>,
+    pending_usage_changed: bool,
     persistence_failed: bool,
 }
 
@@ -1093,6 +1563,13 @@ impl CachedProjection {
         Ok((state.snapshot.clone(), state.enabled_providers.clone()))
     }
 
+    fn enabled_providers(&self) -> Result<BTreeSet<CodingProvider>, &'static str> {
+        self.state
+            .lock()
+            .map(|state| state.enabled_providers.clone())
+            .map_err(|_| "native state unavailable")
+    }
+
     fn snapshot_with_first_observation_waits(
         &self,
     ) -> Result<(SanitizedDesktopStateV3, BTreeSet<CodingProvider>), &'static str> {
@@ -1116,6 +1593,7 @@ impl CachedProjection {
             enablement,
             now,
             &BTreeSet::new(),
+            &BTreeMap::new(),
         )
     }
 
@@ -1126,6 +1604,7 @@ impl CachedProjection {
         enablement: &dyn ProviderEnablementPolicy,
         now: OffsetDateTime,
         completed_first_observations: &BTreeSet<CodingProvider>,
+        corrections: &BTreeMap<CodingProvider, ProviderCorrection>,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         let (cached, mut first_observation_waits) = self.snapshot_with_first_observation_waits()?;
         let previous_first_observation_waits = first_observation_waits.clone();
@@ -1159,16 +1638,27 @@ impl CachedProjection {
         refreshed.refresh_combined_usage();
         let first_observation_wait_changed =
             first_observation_waits != previous_first_observation_waits;
-        self.commit_snapshot_with_force(
+        let mut usage_sync_corrections = UsageSyncCorrections::default();
+        for (provider, correction) in corrections {
+            match correction {
+                ProviderCorrection::ParserCorrection { source_revision } => {
+                    usage_sync_corrections
+                        .record_parser_correction(*provider, *source_revision)
+                        .map_err(|_| "native state persistence unavailable")?;
+                }
+            }
+        }
+        self.commit_snapshot_with_force_and_corrections(
             store,
             refreshed,
             cached,
             first_observation_waits,
             now,
             SnapshotCommitOptions {
-                force_revision: first_observation_wait_changed,
+                force_revision: first_observation_wait_changed || !corrections.is_empty(),
                 ..SnapshotCommitOptions::default()
             },
+            usage_sync_corrections,
         )
     }
 
@@ -1182,6 +1672,7 @@ impl CachedProjection {
         if cached.profile == profile {
             return Ok(SnapshotCommitOutcome {
                 notice: None,
+                pending_usage_changed: false,
                 persistence_failed: false,
             });
         }
@@ -1237,16 +1728,90 @@ impl CachedProjection {
     fn commit_snapshot_with_force(
         &self,
         store: &mut ReadModelStore,
-        mut refreshed: SanitizedDesktopStateV3,
+        refreshed: SanitizedDesktopStateV3,
         cached: SanitizedDesktopStateV3,
         first_observation_waits: BTreeSet<CodingProvider>,
         now: OffsetDateTime,
         options: SnapshotCommitOptions,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
+        self.commit_snapshot_with_force_and_corrections(
+            store,
+            refreshed,
+            cached,
+            first_observation_waits,
+            now,
+            options,
+            UsageSyncCorrections::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_snapshot_with_force_and_corrections(
+        &self,
+        store: &mut ReadModelStore,
+        refreshed: SanitizedDesktopStateV3,
+        cached: SanitizedDesktopStateV3,
+        first_observation_waits: BTreeSet<CodingProvider>,
+        now: OffsetDateTime,
+        options: SnapshotCommitOptions,
+        corrections: UsageSyncCorrections,
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
+        self.commit_snapshot_with_usage_sync(
+            store,
+            refreshed,
+            cached,
+            first_observation_waits,
+            now,
+            options,
+            UsageSyncCommit::QueueCurrent(corrections),
+        )
+    }
+
+    fn commit_usage_sync(
+        &self,
+        store: &mut ReadModelStore,
+        now: OffsetDateTime,
+        usage_sync: UsageSyncCommit<'_>,
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
+        let (cached, first_observation_waits) = self.snapshot_with_first_observation_waits()?;
+        self.commit_snapshot_with_usage_sync(
+            store,
+            cached.clone(),
+            cached,
+            first_observation_waits,
+            now,
+            SnapshotCommitOptions {
+                force_revision: true,
+                ..SnapshotCommitOptions::default()
+            },
+            usage_sync,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_snapshot_with_usage_sync(
+        &self,
+        store: &mut ReadModelStore,
+        mut refreshed: SanitizedDesktopStateV3,
+        cached: SanitizedDesktopStateV3,
+        first_observation_waits: BTreeSet<CodingProvider>,
+        now: OffsetDateTime,
+        options: SnapshotCommitOptions,
+        usage_sync: UsageSyncCommit<'_>,
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
         let SnapshotCommitOptions {
             force_revision,
             provider_enablement_change,
         } = options;
+        let previous_enabled_providers = self.enabled_providers()?;
+        let mut enabled_providers = previous_enabled_providers.clone();
+        if let Some(change) = provider_enablement_change {
+            if change.enabled {
+                enabled_providers.insert(change.provider);
+            } else {
+                enabled_providers.remove(&change.provider);
+            }
+        }
         refreshed.contract_version = CONTRACT_VERSION;
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
@@ -1257,6 +1822,7 @@ impl CachedProjection {
         if refreshed == cached && !force_revision {
             return Ok(SnapshotCommitOutcome {
                 notice: None,
+                pending_usage_changed: false,
                 persistence_failed: false,
             });
         }
@@ -1274,18 +1840,25 @@ impl CachedProjection {
         // clone the previous complete snapshot during this transaction. If the
         // write fails, keep operating from memory and expose that synchronization
         // is unavailable instead of leaving expired values marked as current.
-        let persistence_failed = match store {
+        let (persistence_failed, pending_usage_changed) = match store {
             ReadModelStore::Persistent(persistent) => {
-                if persistent.commit(&refreshed).is_err() {
-                    *store = ReadModelStore::Memory;
-                    true
-                } else {
-                    false
+                match persistent.commit(
+                    &mut refreshed,
+                    now,
+                    usage_sync,
+                    &previous_enabled_providers,
+                    &enabled_providers,
+                ) {
+                    Ok(pending_usage_changed) => (false, pending_usage_changed),
+                    Err(_) => {
+                        *store = ReadModelStore::Memory;
+                        (true, false)
+                    }
                 }
             }
             ReadModelStore::Memory => {
                 refreshed.sync.status = SyncStatus::Unavailable;
-                false
+                (false, false)
             }
         };
         if persistence_failed {
@@ -1293,14 +1866,6 @@ impl CachedProjection {
         }
         validate_snapshot(&refreshed)?;
         let mut state = self.state.lock().map_err(|_| "native state unavailable")?;
-        let mut enabled_providers = state.enabled_providers.clone();
-        if let Some(change) = provider_enablement_change {
-            if change.enabled {
-                enabled_providers.insert(change.provider);
-            } else {
-                enabled_providers.remove(&change.provider);
-            }
-        }
         *state = CachedProjectionState {
             snapshot: refreshed,
             first_observation_waits,
@@ -1310,6 +1875,7 @@ impl CachedProjection {
             notice: Some(RevisionNotice {
                 revision: revision.to_string(),
             }),
+            pending_usage_changed,
             persistence_failed,
         })
     }
@@ -1464,6 +2030,7 @@ impl RefreshCoordinator {
         projection: Arc<CachedProjection>,
         store: Arc<Mutex<ReadModelStore>>,
         subscribers: Arc<RevisionSubscribers>,
+        usage_sync_requests: Arc<UsageSyncRequests>,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
         enablement: Arc<dyn ProviderEnablementPolicy>,
@@ -1494,6 +2061,7 @@ impl RefreshCoordinator {
             projection,
             store,
             subscribers: Arc::clone(&subscribers),
+            usage_sync_requests,
             clock,
             refresh_adapter: Arc::clone(&refresh_adapter),
             inbox: Arc::clone(&inbox),
@@ -1604,6 +2172,7 @@ struct NativeSnapshotRefreshProgress {
     projection: Arc<CachedProjection>,
     store: Arc<Mutex<ReadModelStore>>,
     subscribers: Arc<RevisionSubscribers>,
+    usage_sync_requests: Arc<UsageSyncRequests>,
     clock: Arc<dyn Clock>,
     inbox: Arc<RefreshInbox>,
     enablement: Arc<dyn ProviderEnablementPolicy>,
@@ -1651,6 +2220,11 @@ impl SnapshotRefreshProgress for NativeSnapshotRefreshProgress {
             .into_iter()
             .filter(|provider| self.enablement.is_provider_enabled(*provider))
             .collect::<BTreeSet<_>>();
+        let corrections = outcome
+            .corrections
+            .into_iter()
+            .filter(|(provider, _)| self.enablement.is_provider_enabled(*provider))
+            .collect::<BTreeMap<_, _>>();
         let mut store = self
             .store
             .lock()
@@ -1671,6 +2245,7 @@ impl SnapshotRefreshProgress for NativeSnapshotRefreshProgress {
                 self.enablement.as_ref(),
                 completed_at,
                 &completed_providers,
+                &corrections,
             )
             .map_err(|_| RefreshFailure::SourceUnavailable)?;
         drop(store);
@@ -1684,6 +2259,9 @@ impl SnapshotRefreshProgress for NativeSnapshotRefreshProgress {
         if let Some(notice) = commit.notice {
             self.subscribers.publish(notice);
         }
+        if commit.pending_usage_changed {
+            self.usage_sync_requests.request();
+        }
         Ok(())
     }
 }
@@ -1692,6 +2270,7 @@ struct CoordinatorWorker {
     projection: Arc<CachedProjection>,
     store: Arc<Mutex<ReadModelStore>>,
     subscribers: Arc<RevisionSubscribers>,
+    usage_sync_requests: Arc<UsageSyncRequests>,
     clock: Arc<dyn Clock>,
     refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
     inbox: Arc<RefreshInbox>,
@@ -1813,13 +2392,7 @@ impl CoordinatorWorker {
     }
 
     fn record_local_usage_catch_up_result(&mut self, failed: bool, active_duration: Duration) {
-        let delay = if failed {
-            LOCAL_USAGE_CATCH_UP_ERROR_DELAY
-        } else {
-            active_duration
-                .max(LOCAL_USAGE_CATCH_UP_DEFAULT_ACTIVE)
-                .saturating_mul(4)
-        };
+        let delay = local_usage_catch_up_delay(failed);
         self.next_local_usage_catch_up_at = Instant::now() + delay;
         debug_local_usage_event(&format!(
             "catch_up_scheduled delay_ms={} active_ms={} failed={failed}",
@@ -1835,6 +2408,7 @@ impl CoordinatorWorker {
         let current = crate::network::is_reachable();
         if self.last_network_reachability == Some(false) && current == Some(true) {
             self.inbox.record(RefreshSource::NetworkRecovery);
+            self.usage_sync_requests.request();
         }
         if current.is_some() {
             self.last_network_reachability = current;
@@ -1897,6 +2471,9 @@ impl CoordinatorWorker {
                     if let Some(notice) = outcome.notice {
                         self.subscribers.publish(notice);
                     }
+                    if outcome.pending_usage_changed {
+                        self.usage_sync_requests.request();
+                    }
                     match self.projection.snapshot() {
                         Ok(transitioned) => cached = transitioned,
                         Err(_) => pre_refresh_failed = true,
@@ -1910,6 +2487,7 @@ impl CoordinatorWorker {
             projection: Arc::clone(&self.projection),
             store: Arc::clone(&self.store),
             subscribers: Arc::clone(&self.subscribers),
+            usage_sync_requests: Arc::clone(&self.usage_sync_requests),
             clock: Arc::clone(&self.clock),
             inbox: Arc::clone(&self.inbox),
             enablement: Arc::clone(&self.enablement),
@@ -1979,10 +2557,19 @@ impl CoordinatorWorker {
     }
 }
 
+fn local_usage_catch_up_delay(failed: bool) -> Duration {
+    if failed {
+        LOCAL_USAGE_CATCH_UP_ERROR_DELAY
+    } else {
+        LOCAL_USAGE_CATCH_UP_SUCCESS_DELAY
+    }
+}
+
 struct NativeCoreInner {
     projection: Arc<CachedProjection>,
     store: Arc<Mutex<ReadModelStore>>,
     subscribers: Arc<RevisionSubscribers>,
+    usage_sync_requests: Arc<UsageSyncRequests>,
     coordinator: RefreshCoordinator,
     clock: Arc<dyn Clock>,
     enablement: Arc<dyn ProviderEnablementPolicy>,
@@ -2020,7 +2607,7 @@ impl NativeCore {
     }
 
     #[cfg(test)]
-    fn open_with(
+    pub(crate) fn open_with(
         path: &Path,
         clock: Arc<dyn Clock>,
         refresh_adapter: Arc<dyn SnapshotRefreshAdapter>,
@@ -2127,12 +2714,14 @@ impl NativeCore {
             enabled_provider_set(enablement.as_ref()),
         ));
         let subscribers = Arc::new(RevisionSubscribers::new());
+        let usage_sync_requests = Arc::new(UsageSyncRequests::default());
         Self {
             inner: Arc::new(NativeCoreInner {
                 projection,
                 store: Arc::new(Mutex::new(ReadModelStore::Memory)),
                 coordinator: RefreshCoordinator::unavailable(Arc::clone(&subscribers)),
                 subscribers,
+                usage_sync_requests,
                 clock,
                 enablement,
             }),
@@ -2176,11 +2765,13 @@ impl NativeCore {
         enablement: Arc<dyn ProviderEnablementPolicy>,
     ) -> Self {
         let subscribers = Arc::new(RevisionSubscribers::new());
+        let usage_sync_requests = Arc::new(UsageSyncRequests::default());
         let store = Arc::new(Mutex::new(store));
         let coordinator = RefreshCoordinator::start(
             Arc::clone(&projection),
             Arc::clone(&store),
             Arc::clone(&subscribers),
+            Arc::clone(&usage_sync_requests),
             Arc::clone(&clock),
             refresh_adapter,
             Arc::clone(&enablement),
@@ -2190,6 +2781,7 @@ impl NativeCore {
                 projection,
                 store,
                 subscribers,
+                usage_sync_requests,
                 coordinator,
                 clock,
                 enablement,
@@ -2252,6 +2844,7 @@ impl NativeCore {
         if let Some(notice) = commit.notice {
             self.inner.subscribers.publish(notice);
         }
+        self.inner.usage_sync_requests.request();
         if !enabled {
             self.inner.coordinator.cancel_provider(provider);
         }
@@ -2275,7 +2868,309 @@ impl NativeCore {
         if let Some(notice) = outcome.notice {
             self.inner.subscribers.publish(notice);
         }
+        if outcome.pending_usage_changed {
+            self.inner.usage_sync_requests.request();
+        }
         Ok(())
+    }
+
+    pub(crate) fn install_usage_sync_authority(
+        &self,
+        active_mac_generation: u64,
+        active_mac_activated_at: u64,
+    ) -> Result<(), &'static str> {
+        let active_mac_activated_at = active_mac_activation_time(active_mac_activated_at)?;
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let already_active = match &*store {
+            ReadModelStore::Persistent(persistent)
+                if persistent.active_mac_generation == Some(active_mac_generation) =>
+            {
+                true
+            }
+            ReadModelStore::Persistent(_) => false,
+            ReadModelStore::Memory => return Err("native state persistence unavailable"),
+        };
+        let notice = if already_active {
+            let state = self.inner.projection.snapshot()?;
+            let ReadModelStore::Persistent(persistent) = &mut *store else {
+                return Err("native state persistence unavailable");
+            };
+            persistent.confirm_active_mac_activation(
+                active_mac_generation,
+                active_mac_activated_at,
+                self.inner.clock.now(),
+                &state,
+            )?;
+            None
+        } else {
+            self.inner
+                .projection
+                .commit_usage_sync(
+                    &mut store,
+                    self.inner.clock.now(),
+                    UsageSyncCommit::Activate {
+                        activated_at: active_mac_activated_at,
+                        generation: active_mac_generation,
+                    },
+                )?
+                .notice
+        };
+        drop(store);
+        if let Some(notice) = notice {
+            self.inner.subscribers.publish(notice);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_usage_sync_attempt(
+        &self,
+        active_mac_generation: u64,
+        active_mac_activated_at: u64,
+    ) -> Result<Option<PendingUsageBatch>, &'static str> {
+        self.install_usage_sync_authority(active_mac_generation, active_mac_activated_at)?;
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let enabled_providers = self.inner.projection.enabled_providers()?;
+        match &*store {
+            ReadModelStore::Persistent(persistent) => persistent.pending_usage_batch(
+                active_mac_generation,
+                self.inner.clock.now(),
+                &enabled_providers,
+            ),
+            ReadModelStore::Memory => Ok(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn activate_usage_sync_generation(
+        &self,
+        active_mac_generation: u64,
+    ) -> Result<(), &'static str> {
+        let activated_at = self
+            .inner
+            .clock
+            .now()
+            .unix_timestamp_nanos()
+            .div_euclid(1_000_000);
+        let activated_at =
+            u64::try_from(activated_at).map_err(|_| "native state persistence unavailable")?;
+        self.install_usage_sync_authority(active_mac_generation, activated_at)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_usage_sync_generation(&self) -> Result<Option<u64>, &'static str> {
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        match &*store {
+            ReadModelStore::Persistent(persistent) => Ok(persistent.active_mac_generation),
+            ReadModelStore::Memory => Ok(None),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_usage_sync_batch(
+        &self,
+        active_mac_generation: u64,
+    ) -> Result<Option<PendingUsageBatch>, &'static str> {
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let enabled_providers = self.inner.projection.enabled_providers()?;
+        match &*store {
+            ReadModelStore::Persistent(persistent) => persistent.pending_usage_batch(
+                active_mac_generation,
+                self.inner.clock.now(),
+                &enabled_providers,
+            ),
+            ReadModelStore::Memory => Ok(None),
+        }
+    }
+
+    pub(crate) fn finish_usage_sync_attempt(
+        &self,
+        batch: &PendingUsageBatch,
+        result: UsageSyncAttemptResult,
+    ) -> Result<(), &'static str> {
+        if matches!(result, UsageSyncAttemptResult::Offline)
+            && self.inner.projection.snapshot()?.sync.status == SyncStatus::Offline
+        {
+            return Ok(());
+        }
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let enabled_providers = self.inner.projection.enabled_providers()?;
+        if matches!(result, UsageSyncAttemptResult::Deferred)
+            && self.inner.projection.snapshot()?.sync.status == SyncStatus::Pending
+            && matches!(
+                &*store,
+                ReadModelStore::Persistent(persistent)
+                    if persistent
+                        .pending_usage_batch(
+                            batch.active_mac_generation(),
+                            self.inner.clock.now(),
+                            &enabled_providers,
+                        )?
+                        .is_some()
+            )
+        {
+            return Ok(());
+        }
+        let usage_sync = match &result {
+            UsageSyncAttemptResult::Committed(acknowledgements) => UsageSyncCommit::Acknowledge {
+                acknowledgements,
+                batch,
+            },
+            UsageSyncAttemptResult::Offline => UsageSyncCommit::Offline,
+            UsageSyncAttemptResult::Deferred => UsageSyncCommit::Pending,
+        };
+        let outcome = self.inner.projection.commit_usage_sync(
+            &mut store,
+            self.inner.clock.now(),
+            usage_sync,
+        )?;
+        drop(store);
+        if let Some(notice) = outcome.notice {
+            self.inner.subscribers.publish(notice);
+        }
+        if outcome.pending_usage_changed {
+            self.inner.usage_sync_requests.request();
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn acknowledge_usage_sync(
+        &self,
+        batch: &PendingUsageBatch,
+        acknowledgements: &[UsageSyncAcknowledgement],
+    ) -> Result<(), &'static str> {
+        self.finish_usage_sync_attempt(
+            batch,
+            UsageSyncAttemptResult::Committed(UsageSyncAcknowledgements {
+                provider_settings: batch.provider_settings().map(|settings| {
+                    ProviderSettingsAcknowledgement {
+                        revision: settings.revision(),
+                        outcome: crate::usage_sync::AcknowledgementOutcome::Committed,
+                    }
+                }),
+                usage: acknowledgements.to_vec(),
+            }),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_usage_sync_offline(&self) -> Result<(), &'static str> {
+        if self.inner.projection.snapshot()?.sync.status == SyncStatus::Offline {
+            return Ok(());
+        }
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let outcome = self.inner.projection.commit_usage_sync(
+            &mut store,
+            self.inner.clock.now(),
+            UsageSyncCommit::Offline,
+        )?;
+        drop(store);
+        if let Some(notice) = outcome.notice {
+            self.inner.subscribers.publish(notice);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_usage_sync_pending(&self) -> Result<(), &'static str> {
+        if self.inner.projection.snapshot()?.sync.status == SyncStatus::Pending
+            && let Some(generation) = self.active_usage_sync_generation()?
+            && self.pending_usage_sync_batch(generation)?.is_some()
+        {
+            return Ok(());
+        }
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let outcome = self.inner.projection.commit_usage_sync(
+            &mut store,
+            self.inner.clock.now(),
+            UsageSyncCommit::Pending,
+        )?;
+        drop(store);
+        if let Some(notice) = outcome.notice {
+            self.inner.subscribers.publish(notice);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reject_active_usage_sync_authority(&self) -> Result<(), &'static str> {
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let active_mac_generation = match &*store {
+            ReadModelStore::Persistent(persistent) => persistent.active_mac_generation,
+            ReadModelStore::Memory => None,
+        };
+        if self.inner.projection.snapshot()?.sync.status == SyncStatus::AuthorityRejected {
+            match active_mac_generation {
+                Some(active_mac_generation)
+                    if matches!(
+                        &*store,
+                        ReadModelStore::Persistent(persistent)
+                            if persistent.active_mac_generation == Some(active_mac_generation)
+                                && load_usage_sync_generation_state(
+                                    &persistent.connection,
+                                    active_mac_generation,
+                                )
+                                .is_ok_and(|state| state == Some(QueueState::Blocked))
+                    ) =>
+                {
+                    return Ok(());
+                }
+                None => return Ok(()),
+                Some(_) => {}
+            }
+        }
+        let outcome = self.inner.projection.commit_usage_sync(
+            &mut store,
+            self.inner.clock.now(),
+            UsageSyncCommit::AuthorityRejected(active_mac_generation),
+        )?;
+        drop(store);
+        if let Some(notice) = outcome.notice {
+            self.inner.subscribers.publish(notice);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_usage_sync_authority_rejected(
+        &self,
+        active_mac_generation: u64,
+    ) -> Result<(), &'static str> {
+        if self.active_usage_sync_generation()? != Some(active_mac_generation) {
+            return Err("native state persistence unavailable");
+        }
+        self.reject_active_usage_sync_authority()
     }
 
     pub fn revision_notices(&self) -> Result<Receiver<RevisionNotice>, &'static str> {
@@ -2322,6 +3217,17 @@ impl NativeCore {
 
     pub(crate) fn request_provider_refresh(&self) -> Result<RefreshReceipt, &'static str> {
         self.inner.coordinator.request_provider_refresh()
+    }
+
+    pub(crate) fn install_usage_sync_request(
+        &self,
+        request: UsageSyncRequest,
+    ) -> Result<(), &'static str> {
+        self.inner.usage_sync_requests.install(request)
+    }
+
+    pub(crate) fn clear_usage_sync_request(&self) {
+        self.inner.usage_sync_requests.clear();
     }
 
     pub(crate) fn shutdown(&self) {
@@ -2414,7 +3320,8 @@ fn read_model_backup_is_valid(
     let expected_contract_version = match source_version {
         1 => 1,
         2 => 2,
-        3 | 4 => i64::from(CONTRACT_VERSION),
+        3..=5 => 3,
+        6 => i64::from(CONTRACT_VERSION),
         _ => return Ok(false),
     };
     Ok(stored_versions == (source_version, expected_contract_version))
@@ -2752,6 +3659,13 @@ fn validate_snapshot(snapshot: &SanitizedDesktopStateV3) -> Result<(), &'static 
     if snapshot.contract_version != CONTRACT_VERSION
         || snapshot.revision.parse::<u64>().is_err()
         || OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339).is_err()
+        || snapshot
+            .sync
+            .last_successful_at
+            .as_ref()
+            .is_some_and(|value| OffsetDateTime::parse(value, &Rfc3339).is_err())
+        || (matches!(snapshot.sync.status, SyncStatus::Synced | SyncStatus::Stale)
+            && snapshot.sync.last_successful_at.is_none())
     {
         return Err("native state unavailable");
     }
@@ -3023,6 +3937,8 @@ mod tests {
                 read_model_backup_partial_path(&self.0, 3),
                 read_model_backup_path(&self.0, 4),
                 read_model_backup_partial_path(&self.0, 4),
+                read_model_backup_path(&self.0, 5),
+                read_model_backup_partial_path(&self.0, 5),
             ] {
                 let _ = fs::remove_file(path);
             }
@@ -3275,6 +4191,122 @@ mod tests {
         state
     }
 
+    fn claude_observed_state(
+        observed_at: OffsetDateTime,
+        observed_tokens: u64,
+    ) -> SanitizedDesktopStateV3 {
+        let mut state = observed_state(observed_at, observed_tokens);
+        let mut usage = state
+            .provider(CodingProvider::Codex)
+            .expect("Codex fixture")
+            .usage
+            .clone();
+        let UsageTotal::Current { evidence_basis, .. } = &mut usage.today else {
+            panic!("fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::LocallyDerived;
+        state
+            .provider_mut(CodingProvider::Codex)
+            .expect("Codex fixture")
+            .usage = unavailable_periods();
+        let claude = state
+            .provider_mut(CodingProvider::Claude)
+            .expect("Claude fixture");
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.usage = usage;
+        state.refresh_combined_usage();
+        state
+    }
+
+    fn claude_provider_reported_state(
+        observed_at: OffsetDateTime,
+        observed_tokens: u64,
+    ) -> SanitizedDesktopStateV3 {
+        let mut state = claude_observed_state(observed_at, observed_tokens);
+        let UsageTotal::Current { evidence_basis, .. } = &mut state
+            .provider_mut(CodingProvider::Claude)
+            .expect("Claude fixture")
+            .usage
+            .today
+        else {
+            panic!("Claude fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::ProviderReported;
+        state.refresh_combined_usage();
+        state
+    }
+
+    fn both_provider_observed_state(
+        observed_at: OffsetDateTime,
+        codex_tokens: u64,
+        codex_cost_usd: f64,
+        claude_tokens: u64,
+        claude_cost_usd: f64,
+    ) -> SanitizedDesktopStateV3 {
+        let mut state = observed_state(observed_at, codex_tokens);
+        let codex_usage = &mut state
+            .provider_mut(CodingProvider::Codex)
+            .expect("Codex fixture")
+            .usage;
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            api_equivalent_cost_quality,
+            ..
+        } = &mut codex_usage.today
+        else {
+            panic!("Codex fixture usage must be current");
+        };
+        *api_equivalent_cost_usd = Some(codex_cost_usd);
+        *api_equivalent_cost_basis = Some("openai-api-2026-08-09-v3".to_owned());
+        *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::Reconciled);
+
+        let mut claude_usage = codex_usage.clone();
+        let UsageTotal::Current {
+            evidence_basis,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            api_equivalent_cost_quality,
+            ..
+        } = &mut claude_usage.today
+        else {
+            panic!("Claude fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::LocallyDerived;
+        *observed_tokens = claude_tokens;
+        *api_equivalent_cost_usd = Some(claude_cost_usd);
+        *api_equivalent_cost_basis = Some("anthropic-standard-2026-08-07-v1".to_owned());
+        *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::LocalOnly);
+        let claude = state
+            .provider_mut(CodingProvider::Claude)
+            .expect("Claude fixture");
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.usage = claude_usage;
+        state.refresh_combined_usage();
+        state
+    }
+
+    struct CorrectionRefreshSource {
+        responses: Mutex<VecDeque<SnapshotRefreshOutcome>>,
+    }
+
+    impl SnapshotRefreshAdapter for CorrectionRefreshSource {
+        fn refresh(
+            &self,
+            _cached: SanitizedDesktopStateV3,
+            attempt: &RefreshAttempt,
+        ) -> Result<SnapshotRefreshOutcome, RefreshFailure> {
+            attempt.remaining()?;
+            Ok(self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_default())
+        }
+    }
+
     fn legacy_observed_state_value(
         contract_version: u8,
         observed_at: OffsetDateTime,
@@ -3360,6 +4392,35 @@ mod tests {
             json!({ "availability": "unavailable" })
         );
         assert!(value.to_string().find("observedTokens").is_none());
+    }
+
+    #[test]
+    fn sync_state_uses_only_sanitized_outcomes() {
+        assert_eq!(
+            serde_json::to_value(SyncStatus::AuthorityRejected).unwrap(),
+            json!("authority-rejected")
+        );
+        assert_eq!(
+            serde_json::to_value(SyncStatus::Offline).unwrap(),
+            json!("offline")
+        );
+
+        let mut state = observed_state(test_time(), 42);
+        state.sync.status = SyncStatus::Synced;
+        assert!(validate_snapshot(&state).is_err());
+
+        state.sync.last_successful_at = Some("not-a-time".to_owned());
+        assert!(validate_snapshot(&state).is_err());
+
+        state.sync.last_successful_at = Some(format_time(test_time()));
+        assert!(validate_snapshot(&state).is_ok());
+
+        state.sync.status = SyncStatus::Stale;
+        assert!(validate_snapshot(&state).is_ok());
+
+        state.sync.status = SyncStatus::Offline;
+        state.sync.last_successful_at = None;
+        assert!(validate_snapshot(&state).is_ok());
     }
 
     #[test]
@@ -3949,6 +5010,1503 @@ mod tests {
                 quota_lanes: []
             }
         ));
+    }
+
+    #[test]
+    fn usage_sync_keeps_newer_revisions_and_stops_a_rejected_generation() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(test_time(), 42))),
+            Ok(Some(observed_state(test_time(), 84))),
+        ]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            source,
+        )
+        .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let first = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(first.snapshots()[0].revision, 1);
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Pending);
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let newer = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(newer.snapshots()[0].revision, 2);
+
+        let late_acknowledgement = UsageSyncAcknowledgement {
+            provider: first.snapshots()[0].provider,
+            ranking_day: first.snapshots()[0].ranking_day.clone(),
+            revision: first.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&first, &[late_acknowledgement])
+            .unwrap();
+        let after_late_ack = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(after_late_ack.snapshots()[0].revision, 2);
+        let panel = core.panel_state().unwrap();
+        assert_eq!(panel.sync.status, SyncStatus::Pending);
+        assert!(panel.sync.last_successful_at.is_some());
+
+        core.mark_usage_sync_offline().unwrap();
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Offline);
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_some());
+
+        core.mark_usage_sync_authority_rejected(1).unwrap();
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn transferred_generation_sends_only_both_provider_post_activation_segments() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let initial = both_provider_observed_state(now, 100, 1.0, 200, 2.0);
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now)),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(initial))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        core.activate_usage_sync_generation(2).unwrap();
+
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert!(activation.snapshots().is_empty());
+        core.shutdown();
+        drop(core);
+
+        let later =
+            both_provider_observed_state(now + TimeDuration::seconds(1), 150, 1.5, 275, 2.75);
+        let latest =
+            both_provider_observed_state(now + TimeDuration::seconds(2), 160, 1.6, 290, 2.9);
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now + TimeDuration::seconds(2))),
+            Arc::new(ScriptedRefreshSource::new([
+                Ok(Some(later)),
+                Ok(Some(latest)),
+            ])),
+        )
+        .unwrap();
+        restored.request_refresh(RefreshSource::Manual).unwrap();
+        restored.wait_for_refresh_completion().unwrap();
+
+        let pending = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 2);
+        let codex = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.observed_tokens, 50);
+        assert_eq!(codex.api_equivalent_cost.as_ref().unwrap().micros, 500_000);
+        let claude = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.observed_tokens, 75);
+        assert_eq!(claude.api_equivalent_cost.as_ref().unwrap().micros, 750_000);
+
+        let acknowledgements = pending
+            .snapshots()
+            .iter()
+            .map(|snapshot| UsageSyncAcknowledgement {
+                provider: snapshot.provider,
+                ranking_day: snapshot.ranking_day.clone(),
+                revision: snapshot.revision,
+                outcome: AcknowledgementOutcome::Committed,
+            })
+            .collect::<Vec<_>>();
+        restored
+            .acknowledge_usage_sync(&pending, &acknowledgements)
+            .unwrap();
+        assert!(restored.pending_usage_sync_batch(2).unwrap().is_none());
+
+        restored.request_refresh(RefreshSource::Manual).unwrap();
+        restored.wait_for_refresh_completion().unwrap();
+        let cumulative = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        let codex = cumulative
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.revision, 2);
+        assert_eq!(codex.observed_tokens, 60);
+        assert_eq!(codex.api_equivalent_cost.as_ref().unwrap().micros, 600_000);
+        let claude = cumulative
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.revision, 2);
+        assert_eq!(claude.observed_tokens, 90);
+        assert_eq!(claude.api_equivalent_cost.as_ref().unwrap().micros, 900_000);
+    }
+
+    #[test]
+    fn transferred_generation_keeps_abandoned_same_day_usage_partial() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let now = test_time();
+        let next_day = now + TimeDuration::days(1);
+        let database = TestDatabase::new();
+        let priced_state = |observed_at, observed_tokens, cost| {
+            let mut state = observed_state(observed_at, observed_tokens);
+            let UsageTotal::Current {
+                api_equivalent_cost_usd,
+                api_equivalent_cost_basis,
+                api_equivalent_cost_quality,
+                ..
+            } = &mut state
+                .provider_mut(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today
+            else {
+                panic!("Codex fixture usage must be current");
+            };
+            *api_equivalent_cost_usd = Some(cost);
+            *api_equivalent_cost_basis = Some("openai-api-2026-08-09-v3".to_owned());
+            *api_equivalent_cost_quality = Some(ApiEquivalentCostQuality::Reconciled);
+            state.refresh_combined_usage();
+            state
+        };
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(priced_state(now, 100, 1.0))),
+            Ok(Some(priced_state(now + TimeDuration::seconds(1), 150, 1.5))),
+        ]));
+        let clock = Arc::new(FixtureClock::new(now));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let abandoned = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(abandoned.snapshots()[0].observed_tokens, 100);
+        assert_eq!(abandoned.snapshots()[0].coverage, SyncCoverage::Complete);
+
+        core.activate_usage_sync_generation(2).unwrap();
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        let activation_marker = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(activation_marker.snapshots().len(), 1);
+        let marker = &activation_marker.snapshots()[0];
+        assert_eq!(marker.provider, CodingProvider::Codex);
+        assert_eq!(marker.ranking_day, now.date().to_string());
+        assert_eq!(marker.revision, 1);
+        assert_eq!(marker.evidence_basis, SyncEvidenceBasis::ProviderReported);
+        assert_eq!(marker.coverage, SyncCoverage::Partial);
+        assert_eq!(marker.observed_tokens, 0);
+        assert_eq!(marker.api_equivalent_cost, None);
+        assert_eq!(marker.correction_reason, None);
+        assert_eq!(marker.correction_revision, None);
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].provider, CodingProvider::Codex);
+        assert_eq!(pending.snapshots()[0].ranking_day, now.date().to_string());
+        assert_eq!(pending.snapshots()[0].revision, 2);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 50);
+        assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(pending.snapshots()[0].correction_reason, None);
+        assert_eq!(pending.snapshots()[0].correction_revision, None);
+        assert_eq!(
+            pending.snapshots()[0]
+                .api_equivalent_cost
+                .as_ref()
+                .unwrap()
+                .micros,
+            500_000
+        );
+        let expected_carryover = pending.snapshots()[0].clone();
+
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+        let active_mac_activated_at =
+            u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+        let carryover_count = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(carryover_count, 1);
+        core.shutdown();
+        drop(core);
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            clock,
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                next_day, 25,
+            )))])),
+        )
+        .unwrap();
+        let carryover = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(
+            carryover.snapshots(),
+            std::slice::from_ref(&expected_carryover)
+        );
+        assert!(
+            carryover
+                .mutation_args(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    next_day,
+                )
+                .is_ok()
+        );
+
+        restored.request_refresh(RefreshSource::Manual).unwrap();
+        restored.wait_for_refresh_completion().unwrap();
+        assert_eq!(
+            restored
+                .pending_usage_sync_batch(2)
+                .unwrap()
+                .unwrap()
+                .snapshots(),
+            std::slice::from_ref(&expected_carryover)
+        );
+        restored
+            .acknowledge_usage_sync(
+                &carryover,
+                &[UsageSyncAcknowledgement {
+                    provider: expected_carryover.provider,
+                    ranking_day: expected_carryover.ranking_day.clone(),
+                    revision: expected_carryover.revision,
+                    outcome: AcknowledgementOutcome::Committed,
+                }],
+            )
+            .unwrap();
+
+        restored
+            .install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+        let stored_carryovers = match &*restored.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_carryovers, 0);
+        let current = restored.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(current.snapshots().len(), 1);
+        assert_eq!(
+            current.snapshots()[0].ranking_day,
+            next_day.date().to_string()
+        );
+        assert_eq!(current.snapshots()[0].observed_tokens, 25);
+    }
+
+    #[test]
+    fn transferred_generation_queues_full_totals_after_the_activation_day() {
+        let now = test_time();
+        let next_day = now + TimeDuration::days(1);
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(now));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(both_provider_observed_state(now, 100, 1.0, 200, 2.0))),
+            Ok(Some(both_provider_observed_state(
+                next_day, 25, 0.25, 40, 0.4,
+            ))),
+        ]));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        assert!(
+            core.pending_usage_sync_batch(2)
+                .unwrap()
+                .unwrap()
+                .snapshots()
+                .is_empty()
+        );
+
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 2);
+        let codex = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.observed_tokens, 25);
+        assert_eq!(codex.api_equivalent_cost.as_ref().unwrap().micros, 250_000);
+        let claude = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.observed_tokens, 40);
+        assert_eq!(claude.api_equivalent_cost.as_ref().unwrap().micros, 400_000);
+    }
+
+    #[test]
+    fn delayed_install_after_rollover_does_not_relabel_current_usage() {
+        let activation_time = test_time();
+        let worker_time = activation_time + TimeDuration::days(1);
+        let active_mac_activated_at =
+            u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(
+            both_provider_observed_state(worker_time, 25, 0.25, 40, 0.4),
+        ))]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(worker_time)),
+            source,
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+
+        let baseline_count = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_generation_baselines",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(baseline_count, 0);
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        let codex = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Codex)
+            .unwrap();
+        assert_eq!(codex.ranking_day, worker_time.date().to_string());
+        assert_eq!(codex.observed_tokens, 25);
+        let claude = pending
+            .snapshots()
+            .iter()
+            .find(|snapshot| snapshot.provider == CodingProvider::Claude)
+            .unwrap();
+        assert_eq!(claude.ranking_day, worker_time.date().to_string());
+        assert_eq!(claude.observed_tokens, 40);
+    }
+
+    #[test]
+    fn delayed_install_after_rollover_sends_the_transfer_day_partial_marker_first() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let ranking_day_start = test_time();
+        let first_observation =
+            ranking_day_start + TimeDuration::hours(23) + TimeDuration::minutes(58);
+        let activation_time = first_observation + TimeDuration::minutes(1);
+        let install_time = activation_time + TimeDuration::minutes(2);
+        let active_mac_activated_at =
+            u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(first_observation));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(first_observation, 100))),
+            Ok(Some(observed_state(install_time, 25))),
+        ]));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let abandoned = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(abandoned.snapshots()[0].observed_tokens, 100);
+        assert_eq!(abandoned.snapshots()[0].coverage, SyncCoverage::Complete);
+
+        clock.advance(Duration::from_secs(3 * 60));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        let carryover = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(carryover.snapshots().len(), 1);
+        let marker = &carryover.snapshots()[0];
+        assert_eq!(marker.ranking_day, activation_time.date().to_string());
+        assert_eq!(marker.observed_at, active_mac_activated_at);
+        assert_eq!(marker.observed_tokens, 0);
+        assert_eq!(marker.coverage, SyncCoverage::Partial);
+        assert_eq!(marker.api_equivalent_cost, None);
+        assert_eq!(marker.correction_reason, None);
+        assert_eq!(marker.correction_revision, None);
+        let stored_carryovers = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_carryovers, 1);
+        assert!(
+            carryover
+                .mutation_args(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    install_time,
+                )
+                .is_ok()
+        );
+
+        core.acknowledge_usage_sync(
+            &carryover,
+            &[UsageSyncAcknowledgement {
+                provider: marker.provider,
+                ranking_day: marker.ranking_day.clone(),
+                revision: marker.revision,
+                outcome: AcknowledgementOutcome::Committed,
+            }],
+        )
+        .unwrap();
+
+        let stored_carryovers = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_carryovers, 0);
+
+        let current = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(current.snapshots().len(), 1);
+        assert_eq!(
+            current.snapshots()[0].ranking_day,
+            install_time.date().to_string()
+        );
+        assert_eq!(current.snapshots()[0].observed_tokens, 25);
+        assert_eq!(current.snapshots()[0].coverage, SyncCoverage::Complete);
+    }
+
+    #[test]
+    fn transferred_generation_ignores_a_stale_install_total() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let now = test_time();
+        let activation_time = now + TimeDuration::minutes(1);
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(now, 100))),
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(1),
+                200,
+            ))),
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(2),
+                230,
+            ))),
+        ]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(activation_time)),
+            source,
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let stored_counts = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => (
+                store
+                    .connection
+                    .query_row(
+                        "SELECT count(*) FROM usage_sync_generation_baselines",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                store
+                    .connection
+                    .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            ),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(stored_counts, (0, 0));
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert!(activation.snapshots().is_empty());
+        core.acknowledge_usage_sync(&activation, &[]).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let marker = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(marker.snapshots().len(), 1);
+        assert_eq!(marker.snapshots()[0].revision, 1);
+        assert_eq!(marker.snapshots()[0].observed_tokens, 0);
+        assert_eq!(marker.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(marker.snapshots()[0].api_equivalent_cost, None);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Codex,
+            ranking_day: marker.snapshots()[0].ranking_day.clone(),
+            revision: marker.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&marker, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].revision, 2);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 30);
+        assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(pending.snapshots()[0].api_equivalent_cost, None);
+    }
+
+    #[test]
+    fn transferred_generation_keeps_a_missing_install_baseline_partial() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let activation_time = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(1),
+                150,
+            ))),
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(2),
+                180,
+            ))),
+        ]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(activation_time)),
+            source,
+        )
+        .unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert!(activation.snapshots().is_empty());
+        core.acknowledge_usage_sync(&activation, &[]).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let marker = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(marker.snapshots().len(), 1);
+        assert_eq!(marker.snapshots()[0].observed_tokens, 0);
+        assert_eq!(marker.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(marker.snapshots()[0].api_equivalent_cost, None);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Codex,
+            ranking_day: marker.snapshots()[0].ranking_day.clone(),
+            revision: marker.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&marker, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let pending = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].revision, 2);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 30);
+        assert_eq!(pending.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(pending.snapshots()[0].api_equivalent_cost, None);
+    }
+
+    #[test]
+    fn post_activation_zero_baseline_carries_over_after_rollover() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let activation_time = test_time();
+        let next_day = activation_time + TimeDuration::days(1);
+        let active_mac_activated_at =
+            u64::try_from(activation_time.unix_timestamp_nanos() / 1_000_000).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(activation_time));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(
+                activation_time + TimeDuration::seconds(1),
+                150,
+            ))),
+            Ok(Some(observed_state(next_day, 25))),
+        ]));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let activation = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        core.acknowledge_usage_sync(&activation, &[]).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let expected = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(expected.snapshots().len(), 1);
+        assert_eq!(expected.snapshots()[0].revision, 1);
+        assert_eq!(expected.snapshots()[0].observed_tokens, 0);
+        assert_eq!(expected.snapshots()[0].coverage, SyncCoverage::Partial);
+        assert_eq!(expected.snapshots()[0].api_equivalent_cost, None);
+        assert!(expected.snapshots()[0].observed_at > active_mac_activated_at);
+
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+        core.install_usage_sync_authority(2, active_mac_activated_at)
+            .unwrap();
+        let carryover_kind = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT carryover_kind FROM usage_sync_transfer_day_carryovers",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("transfer fixture requires SQLite"),
+        };
+        assert_eq!(carryover_kind, "pending-segment");
+        let carryover = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(carryover.snapshots(), expected.snapshots());
+        assert!(
+            carryover
+                .mutation_args(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    next_day,
+                )
+                .is_ok()
+        );
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let snapshot = &carryover.snapshots()[0];
+        core.acknowledge_usage_sync(
+            &carryover,
+            &[UsageSyncAcknowledgement {
+                provider: snapshot.provider,
+                ranking_day: snapshot.ranking_day.clone(),
+                revision: snapshot.revision,
+                outcome: AcknowledgementOutcome::Committed,
+            }],
+        )
+        .unwrap();
+        let current = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(current.snapshots().len(), 1);
+        assert_eq!(
+            current.snapshots()[0].ranking_day,
+            next_day.date().to_string()
+        );
+        assert_eq!(current.snapshots()[0].observed_tokens, 25);
+    }
+
+    #[test]
+    fn transferred_generation_keeps_its_baseline_after_a_parser_correction() {
+        use crate::usage_sync::{
+            AcknowledgementOutcome, CorrectionReason, UsageSyncAcknowledgement,
+        };
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(CorrectionRefreshSource {
+            responses: Mutex::new(VecDeque::from([
+                SnapshotRefreshOutcome::from(Some(claude_observed_state(now, 100))),
+                SnapshotRefreshOutcome::from(Some(claude_observed_state(
+                    now + TimeDuration::seconds(1),
+                    150,
+                ))),
+                SnapshotRefreshOutcome {
+                    snapshot: Some(claude_observed_state(now + TimeDuration::seconds(2), 90)),
+                    completed_providers: BTreeSet::new(),
+                    corrections: BTreeMap::from([(
+                        CodingProvider::Claude,
+                        ProviderCorrection::ParserCorrection { source_revision: 2 },
+                    )]),
+                },
+                SnapshotRefreshOutcome::from(Some(claude_observed_state(
+                    now + TimeDuration::seconds(3),
+                    110,
+                ))),
+            ])),
+        });
+        let core =
+            NativeCore::open_without_launch(&database.0, Arc::new(FixtureClock::new(now)), source)
+                .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let first = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(first.snapshots()[0].observed_tokens, 50);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: first.snapshots()[0].ranking_day.clone(),
+            revision: 1,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&first, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let corrected = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(corrected.snapshots()[0].revision, 2);
+        assert_eq!(corrected.snapshots()[0].observed_tokens, 0);
+        assert_eq!(
+            corrected.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ParserCorrection)
+        );
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: corrected.snapshots()[0].ranking_day.clone(),
+            revision: 2,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&corrected, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let later = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(later.snapshots()[0].revision, 3);
+        assert_eq!(later.snapshots()[0].observed_tokens, 10);
+        assert_eq!(later.snapshots()[0].correction_reason, None);
+    }
+
+    #[test]
+    fn transferred_generation_keeps_its_baseline_after_a_provider_replacement() {
+        use crate::usage_sync::{
+            AcknowledgementOutcome, CorrectionReason, UsageSyncAcknowledgement,
+        };
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(claude_observed_state(now, 100))),
+            Ok(Some(claude_observed_state(
+                now + TimeDuration::seconds(1),
+                150,
+            ))),
+            Ok(Some(claude_provider_reported_state(
+                now + TimeDuration::seconds(2),
+                90,
+            ))),
+            Ok(Some(claude_provider_reported_state(
+                now + TimeDuration::seconds(3),
+                110,
+            ))),
+        ]));
+        let core =
+            NativeCore::open_without_launch(&database.0, Arc::new(FixtureClock::new(now)), source)
+                .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let first = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(first.snapshots()[0].observed_tokens, 50);
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: first.snapshots()[0].ranking_day.clone(),
+            revision: 1,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&first, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let corrected = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(corrected.snapshots()[0].revision, 2);
+        assert_eq!(corrected.snapshots()[0].observed_tokens, 0);
+        assert_eq!(
+            corrected.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ProviderReplacement)
+        );
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: CodingProvider::Claude,
+            ranking_day: corrected.snapshots()[0].ranking_day.clone(),
+            revision: 2,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&corrected, &[acknowledgement])
+            .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let later = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert_eq!(later.snapshots()[0].revision, 3);
+        assert_eq!(later.snapshots()[0].observed_tokens, 10);
+        assert_eq!(later.snapshots()[0].correction_reason, None);
+    }
+
+    #[test]
+    fn disabled_provider_is_excluded_before_activation_and_delivery() {
+        let database = TestDatabase::new();
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
+        let policy = Arc::new(ClaudeTogglePolicy {
+            enabled: AtomicBool::new(true),
+        });
+        let enablement: Arc<dyn ProviderEnablementPolicy> = policy.clone();
+        let mut state = observed_state(test_time(), 42);
+        let mut claude_usage = state
+            .provider(CodingProvider::Codex)
+            .expect("Codex fixture")
+            .usage
+            .clone();
+        let UsageTotal::Current { evidence_basis, .. } = &mut claude_usage.today else {
+            panic!("fixture usage must be current");
+        };
+        *evidence_basis = UsageEvidenceBasis::LocallyDerived;
+        let claude = state
+            .provider_mut(CodingProvider::Claude)
+            .expect("Claude fixture");
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.usage = claude_usage;
+        state.refresh_combined_usage();
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(state))]));
+        let core =
+            NativeCore::open_without_launch_with_enablement(&database.0, clock, source, enablement)
+                .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        policy.enabled.store(false, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+
+        let before_activation = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(
+            before_activation
+                .provider_settings()
+                .unwrap()
+                .enabled_providers(),
+            &[CodingProvider::Codex]
+        );
+        assert_eq!(
+            before_activation
+                .snapshots()
+                .iter()
+                .map(|snapshot| snapshot.provider)
+                .collect::<Vec<_>>(),
+            vec![CodingProvider::Codex]
+        );
+        assert!(matches!(
+            core.inner
+                .projection
+                .snapshot()
+                .unwrap()
+                .provider(CodingProvider::Claude)
+                .unwrap()
+                .usage
+                .today,
+            UsageTotal::Current { .. }
+        ));
+
+        policy.enabled.store(true, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, true)
+            .unwrap();
+        let enabled = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(enabled.snapshots().len(), 2);
+        assert_eq!(enabled.provider_settings().unwrap().revision(), 2);
+        assert_eq!(
+            enabled.provider_settings().unwrap().enabled_providers(),
+            &[CodingProvider::Codex, CodingProvider::Claude]
+        );
+
+        policy.enabled.store(false, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        let before_delivery = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(before_delivery.provider_settings().unwrap().revision(), 3);
+        assert_eq!(
+            before_delivery
+                .provider_settings()
+                .unwrap()
+                .enabled_providers(),
+            &[CodingProvider::Codex]
+        );
+        assert_eq!(
+            before_delivery
+                .snapshots()
+                .iter()
+                .map(|snapshot| snapshot.provider)
+                .collect::<Vec<_>>(),
+            vec![CodingProvider::Codex]
+        );
+    }
+
+    #[test]
+    fn stale_provider_setting_acknowledgement_requeues_before_usage_delivery() {
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed_requests = Arc::clone(&requests);
+        core.install_usage_sync_request(Arc::new(move || {
+            observed_requests.fetch_add(1, Ordering::AcqRel);
+        }))
+        .unwrap();
+
+        core.finish_usage_sync_attempt(
+            &sent,
+            UsageSyncAttemptResult::Committed(UsageSyncAcknowledgements {
+                provider_settings: Some(ProviderSettingsAcknowledgement {
+                    revision: 3,
+                    outcome: crate::usage_sync::AcknowledgementOutcome::Stale,
+                }),
+                usage: Vec::new(),
+            }),
+        )
+        .unwrap();
+
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(pending.provider_settings().unwrap().revision(), 4);
+        assert_eq!(
+            pending.snapshots()[0].revision,
+            sent.snapshots()[0].revision
+        );
+        assert_eq!(requests.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn authority_rejection_is_visible_before_a_generation_is_activated() {
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let notices = core.revision_notices().unwrap();
+
+        core.reject_active_usage_sync_authority().unwrap();
+
+        notices
+            .recv_timeout(Duration::from_secs(1))
+            .expect("authority transition notice");
+        assert!(core.active_usage_sync_generation().unwrap().is_none());
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        let rejected_revision = core.panel_state().unwrap().revision;
+
+        core.reject_active_usage_sync_authority().unwrap();
+
+        assert_eq!(core.panel_state().unwrap().revision, rejected_revision);
+        assert!(notices.try_recv().is_err());
+
+        core.activate_usage_sync_generation(1).unwrap();
+
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert!(pending.snapshots().is_empty());
+        assert_eq!(
+            pending.provider_settings().unwrap().enabled_providers(),
+            &[CodingProvider::Codex, CodingProvider::Claude]
+        );
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Pending);
+    }
+
+    #[test]
+    fn stale_acknowledgement_requests_the_requeued_snapshot_immediately() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed_requests = Arc::clone(&requests);
+        core.install_usage_sync_request(Arc::new(move || {
+            observed_requests.fetch_add(1, Ordering::AcqRel);
+        }))
+        .unwrap();
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: sent.snapshots()[0].provider,
+            ranking_day: sent.snapshots()[0].ranking_day.clone(),
+            revision: 3,
+            outcome: AcknowledgementOutcome::Stale,
+        };
+
+        core.acknowledge_usage_sync(&sent, &[acknowledgement])
+            .unwrap();
+
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(pending.snapshots()[0].revision, 4);
+        assert_eq!(requests.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn lower_revision_conflict_stops_without_an_immediate_retry() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed_requests = Arc::clone(&requests);
+        core.install_usage_sync_request(Arc::new(move || {
+            observed_requests.fetch_add(1, Ordering::AcqRel);
+        }))
+        .unwrap();
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: sent.snapshots()[0].provider,
+            ranking_day: sent.snapshots()[0].ranking_day.clone(),
+            revision: sent.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Conflict,
+        };
+
+        core.acknowledge_usage_sync(&sent, &[acknowledgement])
+            .unwrap();
+
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        assert_eq!(requests.load(Ordering::Acquire), 0);
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
+
+        drop(core);
+        let connection = Connection::open(&database.0).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_terminal_conflicts",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+
+        let relaunched = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        assert!(relaunched.pending_usage_sync_batch(1).unwrap().is_none());
+        assert_eq!(
+            relaunched.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
+
+        relaunched
+            .provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        let settings_only = relaunched.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert!(settings_only.snapshots().is_empty());
+        relaunched
+            .acknowledge_usage_sync(&settings_only, &[])
+            .unwrap();
+        assert_eq!(
+            relaunched.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn acknowledgement_keeps_an_unsupported_local_decrease_stale() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(test_time(), 100))),
+            Ok(Some(observed_state(
+                test_time() + TimeDuration::seconds(1),
+                80,
+            ))),
+        ]));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time() + TimeDuration::seconds(2))),
+            source,
+        )
+        .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Pending);
+
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: sent.snapshots()[0].provider,
+            ranking_day: sent.snapshots()[0].ranking_day.clone(),
+            revision: sent.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&sent, &[acknowledgement])
+            .unwrap();
+
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
+    }
+
+    #[test]
+    fn provider_parser_correction_reaches_the_atomic_snapshot_outbox_commit() {
+        use crate::usage_sync::CorrectionReason;
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(CorrectionRefreshSource {
+            responses: Mutex::new(VecDeque::from([
+                SnapshotRefreshOutcome::from(Some(claude_observed_state(now, 100))),
+                SnapshotRefreshOutcome {
+                    snapshot: Some(claude_observed_state(now + TimeDuration::seconds(1), 80)),
+                    completed_providers: BTreeSet::new(),
+                    corrections: BTreeMap::from([(
+                        CodingProvider::Claude,
+                        ProviderCorrection::ParserCorrection { source_revision: 2 },
+                    )]),
+                },
+            ])),
+        });
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now + TimeDuration::seconds(2))),
+            source,
+        )
+        .unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let pending = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(pending.snapshots().len(), 1);
+        assert_eq!(pending.snapshots()[0].revision, 2);
+        assert_eq!(pending.snapshots()[0].observed_tokens, 80);
+        assert_eq!(
+            pending.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ParserCorrection)
+        );
+    }
+
+    #[test]
+    fn correction_survives_identity_pending_later_usage_and_restart() {
+        use crate::usage_sync::CorrectionReason;
+
+        let now = test_time();
+        let database = TestDatabase::new();
+        let correction = BTreeMap::from([(
+            CodingProvider::Claude,
+            ProviderCorrection::ParserCorrection { source_revision: 2 },
+        )]);
+        let source = Arc::new(CorrectionRefreshSource {
+            responses: Mutex::new(VecDeque::from([
+                SnapshotRefreshOutcome {
+                    snapshot: Some(claude_observed_state(now, 40)),
+                    completed_providers: BTreeSet::new(),
+                    corrections: correction.clone(),
+                },
+                SnapshotRefreshOutcome {
+                    snapshot: Some(claude_observed_state(now + TimeDuration::seconds(1), 50)),
+                    completed_providers: BTreeSet::new(),
+                    corrections: correction,
+                },
+            ])),
+        });
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now + TimeDuration::seconds(2))),
+            source,
+        )
+        .unwrap();
+        for _ in 0..2 {
+            core.request_refresh(RefreshSource::Manual).unwrap();
+            core.wait_for_refresh_completion().unwrap();
+        }
+        assert!(core.active_usage_sync_generation().unwrap().is_none());
+        core.shutdown();
+        drop(core);
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now + TimeDuration::seconds(2))),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        restored.activate_usage_sync_generation(1).unwrap();
+
+        let pending = restored.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(pending.snapshots()[0].observed_tokens, 50);
+        assert_eq!(
+            pending.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ParserCorrection)
+        );
+    }
+
+    #[test]
+    fn pending_usage_revision_survives_a_native_restart() {
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        assert_eq!(
+            core.pending_usage_sync_batch(1)
+                .unwrap()
+                .unwrap()
+                .snapshots()[0]
+                .revision,
+            1
+        );
+        core.shutdown();
+        drop(core);
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        assert_eq!(restored.active_usage_sync_generation().unwrap(), Some(1));
+        restored.activate_usage_sync_generation(1).unwrap();
+        let pending = restored.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(pending.snapshots()[0].revision, 1);
+        assert_eq!(
+            restored.panel_state().unwrap().sync.status,
+            SyncStatus::Pending
+        );
+        let notices = restored.revision_notices().unwrap();
+        restored.mark_usage_sync_authority_rejected(1).unwrap();
+        notices
+            .recv_timeout(Duration::from_secs(1))
+            .expect("authority transition notice");
+        assert_eq!(
+            restored.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        assert!(restored.pending_usage_sync_batch(1).unwrap().is_none());
+        let rejected_revision = restored.panel_state().unwrap().revision;
+        restored.mark_usage_sync_authority_rejected(1).unwrap();
+        assert_eq!(restored.panel_state().unwrap().revision, rejected_revision);
+        assert!(notices.try_recv().is_err());
+    }
+
+    #[test]
+    fn utc_rollover_keeps_persistence_when_today_cache_is_from_yesterday() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            clock.clone(),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: sent.snapshots()[0].provider,
+            ranking_day: sent.snapshots()[0].ranking_day.clone(),
+            revision: sent.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&sent, &[acknowledgement])
+            .unwrap();
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Synced);
+
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+        core.activate_usage_sync_generation(2).unwrap();
+
+        assert!(matches!(
+            &*core.inner.store.lock().unwrap(),
+            ReadModelStore::Persistent(_)
+        ));
+        let settings = core.pending_usage_sync_batch(2).unwrap().unwrap();
+        assert!(settings.snapshots().is_empty());
+        core.acknowledge_usage_sync(&settings, &[]).unwrap();
+        assert!(core.pending_usage_sync_batch(2).unwrap().is_none());
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
+    }
+
+    #[test]
+    fn acknowledgement_after_utc_midnight_does_not_sync_the_new_day() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let before_midnight = OffsetDateTime::parse("2026-08-08T23:59:59Z", &Rfc3339).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(before_midnight));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            clock.clone(),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                before_midnight,
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: sent.snapshots()[0].provider,
+            ranking_day: sent.snapshots()[0].ranking_day.clone(),
+            revision: sent.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+
+        clock.advance(Duration::from_secs(2));
+        core.acknowledge_usage_sync(&sent, &[acknowledgement])
+            .unwrap();
+
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        assert!(matches!(
+            &*core.inner.store.lock().unwrap(),
+            ReadModelStore::Persistent(_)
+        ));
+    }
+
+    #[test]
+    fn deferred_prior_day_batch_does_not_leave_the_new_day_pending() {
+        use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
+
+        let before_midnight = OffsetDateTime::parse("2026-08-08T23:59:59Z", &Rfc3339).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(before_midnight));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            clock.clone(),
+            Arc::new(ScriptedRefreshSource::new([
+                Ok(Some(observed_state(before_midnight, 42))),
+                Ok(Some(observed_state(before_midnight, 84))),
+            ])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let initial = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        let acknowledgement = UsageSyncAcknowledgement {
+            provider: initial.snapshots()[0].provider,
+            ranking_day: initial.snapshots()[0].ranking_day.clone(),
+            revision: initial.snapshots()[0].revision,
+            outcome: AcknowledgementOutcome::Committed,
+        };
+        core.acknowledge_usage_sync(&initial, &[acknowledgement])
+            .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_some());
+
+        clock.advance(Duration::from_secs(2));
+        core.mark_usage_sync_pending().unwrap();
+
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
+        let old_rows: i64 = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_latest_outbox WHERE queue_state = 'active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("persistence must remain available"),
+        };
+        assert_eq!(old_rows, 1);
     }
 
     #[test]
@@ -4558,20 +7116,71 @@ mod tests {
         let Some(database_path) = env::var_os("TOUCHGRASS_CRASH_DB_PATH") else {
             return;
         };
-        let connection = Connection::open(database_path).unwrap();
+        let mut connection = Connection::open(database_path).unwrap();
         connection
-            .execute_batch(
-                "BEGIN IMMEDIATE;
-                 UPDATE sanitized_desktop_state
-                 SET revision = '999'
-                 WHERE singleton = 1;",
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        let mut state = SqliteReadModelStore::read_from(&connection).unwrap();
+        let now = test_time();
+        state.revision = state
+            .revision
+            .parse::<u64>()
+            .unwrap()
+            .checked_add(1)
+            .unwrap()
+            .to_string();
+        state.generated_at = format_time(now);
+        state.sync.status = SyncStatus::Pending;
+
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 7).unwrap();
+        let ranking_day = now.to_offset(time::UtcOffset::UTC).date().to_string();
+        let observed_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            queue_daily_aggregate(
+                &transaction,
+                7,
+                DailyUsageAggregate {
+                    provider,
+                    ranking_day: ranking_day.clone(),
+                    evidence_basis: match provider {
+                        CodingProvider::Codex => SyncEvidenceBasis::ProviderReported,
+                        CodingProvider::Claude => SyncEvidenceBasis::LocallyDerived,
+                    },
+                    coverage: SyncCoverage::Complete,
+                    observed_at,
+                    observed_tokens: 42,
+                    api_equivalent_cost: None,
+                    correction_reason: None,
+                },
+                now,
             )
             .unwrap();
+        }
+        persist_snapshot(&transaction, &state).unwrap();
+        assert_eq!(
+            transaction
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_daily_aggregates",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            transaction
+                .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            2
+        );
         process::exit(97);
     }
 
     #[test]
-    fn restores_cached_snapshot_after_interrupted_transaction_without_panel_io() {
+    fn process_exit_keeps_snapshot_and_both_provider_sync_writes_atomic() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
         let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
@@ -4610,10 +7219,24 @@ mod tests {
             Arc::new(ScriptedRefreshSource::new([])),
         )
         .unwrap();
-        fs::remove_file(&database.0).unwrap();
         let cached = relaunched.panel_state().unwrap();
 
+        let connection = Connection::open(&database.0).unwrap();
+        let aggregate_count = connection
+            .query_row(
+                "SELECT count(*) FROM usage_sync_daily_aggregates",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let outbox_count = connection
+            .query_row("SELECT count(*) FROM usage_sync_latest_outbox", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
         assert_eq!(cached.revision, "2");
+        assert_eq!((aggregate_count, outbox_count), (0, 0));
+        assert_eq!(relaunched.active_usage_sync_generation().unwrap(), None);
         assert_eq!(
             relaunched.menu_bar_headroom().unwrap(),
             crate::quota_headroom::RevisionedOverallQuotaHeadroom {
@@ -4893,6 +7516,184 @@ mod tests {
     }
 
     #[test]
+    fn migrates_v4_cache_to_the_extended_sync_contract() {
+        let database = TestDatabase::new();
+        let mut legacy = serde_json::to_value(observed_state(test_time(), 42)).unwrap();
+        legacy["contractVersion"] = json!(3);
+        legacy["sync"] = json!({
+            "status": "synced",
+            "lastSuccessfulAt": null
+        });
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL CHECK (version >= 1)
+                 );
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 4),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 3),
+                   revision TEXT NOT NULL,
+                   snapshot_json TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO touchgrassbar_schema_versions (module, version) VALUES (?1, 4)",
+                [READ_MODEL_SCHEMA_MODULE],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sanitized_desktop_state (
+                   singleton, schema_version, contract_version, revision, snapshot_json
+                 ) VALUES (1, 4, 3, '1', ?1)",
+                [legacy.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let migrated = core.panel_state().unwrap();
+        assert_eq!(migrated.contract_version, CONTRACT_VERSION);
+        assert!(matches!(
+            &migrated
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        assert_eq!(migrated.sync.status, SyncStatus::Unavailable);
+
+        let connection = Connection::open(&database.0).unwrap();
+        let versions = connection
+            .query_row(
+                "SELECT schema_version, contract_version
+                 FROM sanitized_desktop_state WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            versions,
+            (READ_MODEL_SCHEMA_VERSION, i64::from(CONTRACT_VERSION))
+        );
+        assert!(read_model_backup_path(&database.0, 4).is_file());
+    }
+
+    #[test]
+    fn migrates_main_v5_cache_to_the_current_contract() {
+        let database = TestDatabase::new();
+        let mut previous = serde_json::to_value(observed_state(test_time(), 42)).unwrap();
+        previous["contractVersion"] = json!(3);
+        previous["sync"] = json!({
+            "status": "synced",
+            "lastSuccessfulAt": null
+        });
+        let connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE touchgrassbar_schema_versions (
+                   module TEXT PRIMARY KEY,
+                   version INTEGER NOT NULL CHECK (version >= 1)
+                 );
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 5),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 3),
+                   revision TEXT NOT NULL CHECK (
+                     length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
+                   ),
+                   snapshot_json TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO touchgrassbar_schema_versions (module, version) VALUES (?1, 5)",
+                [READ_MODEL_SCHEMA_MODULE],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sanitized_desktop_state (
+                   singleton, schema_version, contract_version, revision, snapshot_json
+                 ) VALUES (1, 5, 3, '1', ?1)",
+                [previous.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let migrated = core.panel_state().unwrap();
+
+        assert_eq!(migrated.contract_version, CONTRACT_VERSION);
+        assert!(matches!(
+            &migrated
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .usage
+                .today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        assert_eq!(migrated.sync.status, SyncStatus::Unavailable);
+
+        let connection = Connection::open(&database.0).unwrap();
+        let versions = connection
+            .query_row(
+                "SELECT schema_version, contract_version
+                 FROM sanitized_desktop_state WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            versions,
+            (READ_MODEL_SCHEMA_VERSION, i64::from(CONTRACT_VERSION))
+        );
+        let sync_table_count = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'usage_sync_generations'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(sync_table_count, 1);
+
+        let backup = Connection::open(read_model_backup_path(&database.0, 5)).unwrap();
+        let backup_versions = backup
+            .query_row(
+                "SELECT schema_version, contract_version
+                 FROM sanitized_desktop_state WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(backup_versions, (5, 3));
+    }
+
+    #[test]
     fn migration_failure_preserves_the_existing_database_and_backup() {
         let database = TestDatabase::new();
         let connection = Connection::open(&database.0).unwrap();
@@ -5146,6 +7947,15 @@ mod tests {
                 .scan_status,
             UsageScanStatus::Complete
         );
+    }
+
+    #[test]
+    fn local_usage_catch_up_is_prompt_but_failures_back_off() {
+        assert_eq!(
+            local_usage_catch_up_delay(false),
+            Duration::from_millis(250)
+        );
+        assert_eq!(local_usage_catch_up_delay(true), Duration::from_secs(60));
     }
 
     #[test]

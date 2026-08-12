@@ -12,6 +12,7 @@ import schema from "./schema";
 
 const modules = import.meta.glob("./**/*.ts");
 const DEFAULT_PLATFORM_IP = "203.0.113.10";
+const INSTALLATION_CREDENTIAL = "A".repeat(52);
 
 function testBackend() {
   const t = convexTest(schema, modules);
@@ -201,8 +202,29 @@ test("Recovery Key signup is short-lived, hashed, and session-validating", async
   await expect(
     authenticated.mutation(api.tokenmaxxers.ensureProfile, {
       displayName: "Fabien",
+      expectedTouchGrassId: String(prepared.touchGrassId),
+      installationCredential: "0".repeat(52),
+    }),
+  ).rejects.toMatchObject({
+    data: { code: "authority-rejected" },
+    name: "ConvexError",
+  });
+  expect(
+    await t.run(async (ctx) => ({
+      devices: await ctx.db.query("devices").collect(),
+      tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
+    })),
+  ).toEqual({ devices: [], tokenmaxxers: [] });
+  const activeMacActivatedAt = Date.now();
+  await expect(
+    authenticated.mutation(api.tokenmaxxers.ensureProfile, {
+      displayName: "Fabien",
+      expectedTouchGrassId: String(prepared.touchGrassId),
+      installationCredential: INSTALLATION_CREDENTIAL,
     }),
   ).resolves.toEqual({
+    activeMacActivatedAt,
+    activeMacGeneration: 1,
     displayName: "Fabien",
     touchGrassId: prepared.touchGrassId,
   });
@@ -223,8 +245,10 @@ test("Recovery Key signup is short-lived, hashed, and session-validating", async
   await expect(
     authenticated.mutation(api.tokenmaxxers.ensureProfile, {
       displayName: "Fabien",
+      expectedTouchGrassId: String(prepared.touchGrassId),
+      installationCredential: INSTALLATION_CREDENTIAL,
     }),
-  ).rejects.toThrow("Unauthenticated");
+  ).rejects.toThrow("authority-rejected");
 });
 
 test("failed Recovery Keys use independent opaque limits", async () => {

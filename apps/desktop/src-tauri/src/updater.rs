@@ -906,6 +906,17 @@ impl UpdateRuntime {
             );
             return;
         };
+        let Some(synchronization) = self
+            .app
+            .try_state::<crate::usage_sync::PendingUsageSynchronization>()
+        else {
+            self.fail(
+                Some(pending.version),
+                UpdateFailure::Replacement,
+                RetryAction::Install,
+            );
+            return;
+        };
         let Some(core) = self.app.try_state::<crate::sanitized::NativeCore>() else {
             self.fail(
                 Some(pending.version),
@@ -927,10 +938,13 @@ impl UpdateRuntime {
                 let profile_pause = profile_runtime
                     .pause_for_update()
                     .map_err(|()| UpdateFailure::Replacement)?;
+                let synchronization_pause = synchronization
+                    .pause_for_update()
+                    .map_err(|()| UpdateFailure::Replacement)?;
                 let core_pause = core.pause_for_update();
                 lifecycle.flush().map_err(|_| UpdateFailure::Replacement)?;
                 core.flush().map_err(|_| UpdateFailure::Replacement)?;
-                Ok((profile_pause, core_pause))
+                Ok((profile_pause, synchronization_pause, core_pause))
             },
             || {
                 pending
@@ -938,8 +952,9 @@ impl UpdateRuntime {
                     .install(bytes)
                     .map_err(|error| classify_error(&error, true))
             },
-            |(profile_pause, core_pause)| {
+            |(profile_pause, synchronization_pause, core_pause)| {
                 profile_pause.keep_paused();
+                synchronization_pause.keep_paused();
                 core_pause.keep_paused();
             },
             || {

@@ -35,6 +35,35 @@ priced evidence, API-equivalent cost stays unavailable while account Observed
 Tokens remain visible. Updating the manifest and releasing the application are
 manual operations.
 
+The Codex scanner uses Standard prices unless an exact `response.create`
+request proves that a matching turn used the `priority` or `fast` service
+tier. A trusted provider submission can also prove this tier. A completed
+response can refine the request model. For short context, the
+scanner uses `fastMultiplier` when the selected model supports it. For requests
+with more than 272,000 input tokens, GPT-5.6 Sol, Terra, and Luna use the dated
+`fastLongContext` rates from August 5, 2026. GPT-5.5 has no published Fast
+long-context rates. Its Fast long-context cost stays unpriced.
+
+This rule intentionally differs from the current CodexBar implementation.
+CodexBar uses Standard long-context rates as a fallback for Fast requests.
+The official OpenAI pricing page and API changelog take precedence over that
+fallback. The scanner stores only the private turn classification in its local
+index. No turn identifier enters the sanitized state or sync payload.
+
+A stable fingerprint of the retained Fast evidence invalidates old local
+classifications when trace evidence arrives after a rollout was indexed. The
+scanner then rebuilds the private retained usage index. Regional processing
+also stays Standard unless a future reviewed local source reports the exact
+region. Do not infer a regional uplift from the user location or account.
+
+Use these primary sources for an OpenAI update:
+
+- [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
+- [OpenAI Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)
+- [OpenAI API changelog](https://developers.openai.com/api/docs/changelog)
+- [OpenAI model catalog](https://developers.openai.com/api/docs/models)
+- [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
+
 ## Anthropic rules
 
 `anthropic-standard.json` contains public Claude API list prices. It does not

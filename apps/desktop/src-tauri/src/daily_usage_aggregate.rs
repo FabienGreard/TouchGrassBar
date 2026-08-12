@@ -12,6 +12,7 @@ pub(crate) struct DailyCostEvidence {
     pub(crate) observed_tokens: u64,
     pub(crate) priced_tokens: u64,
     pub(crate) api_equivalent_cost_usd: Option<f64>,
+    pub(crate) modeled: bool,
     pub(crate) complete: bool,
     pub(crate) observed_through: Option<OffsetDateTime>,
     pub(crate) priced_observed_through: Option<OffsetDateTime>,
@@ -23,6 +24,7 @@ impl Default for DailyCostEvidence {
             observed_tokens: 0,
             priced_tokens: 0,
             api_equivalent_cost_usd: Some(0.0),
+            modeled: false,
             complete: true,
             observed_through: None,
             priced_observed_through: None,
@@ -172,6 +174,7 @@ fn provider_reported_cost(
         let observed_through = detail.observed_through?;
         let priced_observed_through = detail.priced_observed_through?;
         let local_cost = detail.api_equivalent_cost_usd?;
+        modeled |= detail.modeled;
         covered_tokens = covered_tokens.checked_add(detail.priced_tokens.min(provider_tokens))?;
         fallback_cost_usd += local_cost;
         fallback_priced_tokens = fallback_priced_tokens.checked_add(detail.priced_tokens)?;
@@ -223,6 +226,7 @@ fn locally_derived_cost(
 ) -> Option<CostProjection> {
     let mut usd = 0.0;
     let mut priced_tokens = 0_u64;
+    let mut modeled = false;
     for detail in days.filter_map(|day| local.get(&day)) {
         if detail.priced_tokens == 0 {
             continue;
@@ -232,11 +236,12 @@ fn locally_derived_cost(
         }
         usd += detail.api_equivalent_cost_usd?;
         priced_tokens = priced_tokens.checked_add(detail.priced_tokens)?;
+        modeled |= detail.modeled;
     }
     if priced_tokens == 0 || priced_tokens > total_tokens || !usd.is_finite() {
         return None;
     }
-    let modeled = priced_tokens < total_tokens;
+    modeled |= priced_tokens < total_tokens;
     if modeled {
         usd *= total_tokens as f64 / priced_tokens as f64;
     }
@@ -917,6 +922,7 @@ mod tests {
             observed_tokens,
             priced_tokens: observed_tokens,
             api_equivalent_cost_usd: Some(cost),
+            modeled: false,
             complete: true,
             observed_through: Some(now - Duration::minutes(1)),
             priced_observed_through: Some(now - Duration::minutes(1)),
@@ -1302,6 +1308,7 @@ mod tests {
                     observed_tokens: 100,
                     priced_tokens: 0,
                     api_equivalent_cost_usd: None,
+                    modeled: false,
                     complete: false,
                     observed_through: Some(now - Duration::minutes(1)),
                     priced_observed_through: None,
@@ -1349,6 +1356,7 @@ mod tests {
                         observed_tokens: 300,
                         priced_tokens: 0,
                         api_equivalent_cost_usd: None,
+                        modeled: false,
                         complete: false,
                         observed_through: Some(now - Duration::minutes(1)),
                         priced_observed_through: None,
@@ -1407,6 +1415,7 @@ mod tests {
                         observed_tokens: 300,
                         priced_tokens: 0,
                         api_equivalent_cost_usd: None,
+                        modeled: false,
                         complete: false,
                         observed_through: Some(now - Duration::minutes(1)),
                         priced_observed_through: None,
@@ -1455,6 +1464,7 @@ mod tests {
                     observed_tokens: 40,
                     priced_tokens: 40,
                     api_equivalent_cost_usd: Some(2.0),
+                    modeled: false,
                     complete: false,
                     observed_through: Some(now),
                     priced_observed_through: Some(now),
@@ -1487,6 +1497,58 @@ mod tests {
             Some(ApiEquivalentCostQuality::Modeled)
         );
         assert_eq!(api_equivalent_cost_coverage_percent, Some(40.0));
+    }
+
+    #[test]
+    fn provider_reported_today_remains_authoritative_after_local_scan_completes() {
+        let now = now();
+        let provider_tokens = 467_600;
+        let local_tokens = 1_100_000_000;
+        let local_cost = 675.78;
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(BTreeMap::from([(now.date(), provider_tokens)])),
+            provider_observed_at: Some(now),
+            local_usage_evidence: BTreeMap::from([(
+                now.date(),
+                usage_detail(now, local_tokens, UsageCoverage::Complete),
+            )]),
+            local_cost_evidence: BTreeMap::from([(
+                now.date(),
+                priced_detail(now, local_tokens, local_cost),
+            )]),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: Some("fixture-v1".to_owned()),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Indexing,
+            thirty_day_scan_status: UsageScanStatus::Indexing,
+        };
+
+        let periods = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current {
+            evidence_basis,
+            coverage,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = periods.today
+        else {
+            panic!("provider-reported Today usage must be available");
+        };
+
+        assert_eq!(evidence_basis, UsageEvidenceBasis::ProviderReported);
+        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(observed_tokens, provider_tokens);
+        let expected_cost = local_cost * provider_tokens as f64 / local_tokens as f64;
+        assert!((api_equivalent_cost_usd.unwrap() - expected_cost).abs() < 1e-12);
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
     }
 
     #[test]

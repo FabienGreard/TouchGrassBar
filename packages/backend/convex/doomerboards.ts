@@ -2,16 +2,18 @@ import { v } from "convex/values";
 
 import { query } from "./_generated/server";
 import { requireAuthUser } from "./auth";
-import { globalDoomerboard } from "./model/aggregate";
+import { doomerboard } from "./model/doomerboard";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
+  apiEquivalentCostValidator,
   boardKey,
   scoreScopeValidator,
   scoreWindowValidator,
+  type ApiEquivalentCost,
 } from "./model/values";
 
 const doomerboardRow = v.object({
-  apiEquivalentCostMicros: v.union(v.number(), v.null()),
+  apiEquivalentCost: apiEquivalentCostValidator,
   displayName: v.string(),
   rank: v.number(),
   tokenScore: v.number(),
@@ -20,7 +22,7 @@ const doomerboardRow = v.object({
 
 export function rankRows<
   T extends {
-    apiEquivalentCostMicros?: number;
+    apiEquivalentCost: ApiEquivalentCost | null;
     displayName: string;
     tokenScore: number;
     touchGrassId: string;
@@ -34,7 +36,7 @@ export function rankRows<
       previousScore = row.tokenScore;
     }
     return {
-      apiEquivalentCostMicros: row.apiEquivalentCostMicros ?? null,
+      apiEquivalentCost: row.apiEquivalentCost,
       displayName: row.displayName,
       rank,
       tokenScore: row.tokenScore,
@@ -52,7 +54,7 @@ export const global = query({
   returns: v.array(doomerboardRow),
   handler: async (ctx, args) => {
     const limit = Math.min(Math.max(Math.floor(args.limit ?? 50), 1), 100);
-    const { page } = await globalDoomerboard.paginate(ctx, {
+    const { page } = await doomerboard.paginate(ctx, {
       namespace: boardKey(args.scope, args.windowDays),
       order: "desc",
       pageSize: limit,
@@ -70,7 +72,7 @@ export const myTokenmaxxers = query({
   returns: v.array(doomerboardRow),
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
-    const owner = await tokenmaxxerForAuthUser(ctx, authUser.id);
+    const owner = await tokenmaxxerForAuthUser(ctx, authUser);
     if (!owner) {
       return [];
     }
@@ -80,7 +82,7 @@ export const myTokenmaxxers = query({
       .take(500);
     const includedIds = new Set(added.map((edge) => edge.addedId));
     const candidates = await ctx.db
-      .query("publicScores")
+      .query("publicUsages")
       .withIndex("by_board_key", (q) =>
         q.eq("boardKey", boardKey(args.scope, args.windowDays)),
       )
