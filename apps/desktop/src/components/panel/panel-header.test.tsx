@@ -86,17 +86,17 @@ function renderHeader({
 
 describe("panel sync status", () => {
   test.each([
-    ["synced", "Live"],
-    ["pending", "Waiting to sync"],
-    ["stale", "Sync is stale"],
-    ["offline", "Offline"],
-    ["authority-rejected", "This Mac cannot sync"],
-    ["unavailable", "Sync unavailable"],
-  ] as const)("presents %s with safe copy", (status, label) => {
+    "synced",
+    "pending",
+    "stale",
+    "offline",
+    "authority-rejected",
+    "unavailable",
+  ] as const)("keeps the loaded %s state live", (status) => {
     const markup = renderHeader({ state: stateWithSync(status) });
 
     expect(markup).toContain(`data-sync-status="${status}"`);
-    expect(markup).toContain(`>${label}</small>`);
+    expect(markup).toContain(">Live</small>");
     expect(markup).toContain('aria-live="polite"');
   });
 
@@ -117,7 +117,7 @@ describe("panel sync status", () => {
     expect(markup).not.toContain("Sync is stale");
   });
 
-  test("keeps a cached authority status during refresh and delivery failure", () => {
+  test("shows syncing during a refresh", () => {
     const markup = renderHeader({
       error: true,
       refreshing: true,
@@ -125,9 +125,17 @@ describe("panel sync status", () => {
     });
 
     expect(markup).toContain('data-sync-status="authority-rejected"');
-    expect(markup).toContain(">This Mac cannot sync</small>");
-    expect(markup).not.toContain("Syncing…");
+    expect(markup).toContain(">Syncing…</small>");
     expect(markup).not.toContain(">Sync unavailable</small>");
+  });
+
+  test("uses unavailable only when no state can load", () => {
+    expect(renderHeader({ error: true, state: null })).toContain(
+      ">Sync unavailable</small>",
+    );
+    expect(
+      renderHeader({ error: true, state: stateWithSync("unavailable") }),
+    ).toContain(">Live</small>");
   });
 
   test("uses refresh copy for the broad provider action", () => {
@@ -150,7 +158,7 @@ describe("panel sync status", () => {
 
     const markup = renderHeader({ state });
 
-    expect(markup).toContain("This Mac cannot sync");
+    expect(markup).toContain(">Live</small>");
     expect(markup).not.toContain("sentinel-");
   });
 });

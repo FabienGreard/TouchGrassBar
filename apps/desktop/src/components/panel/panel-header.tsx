@@ -28,19 +28,14 @@ type PanelHeaderProps = {
 
 type PanelSyncStatus = SanitizedDesktopState["sync"]["status"];
 
-const syncLabels = {
-  "authority-rejected": "This Mac cannot sync",
-  offline: "Offline",
-  pending: "Waiting to sync",
-  stale: "Sync is stale",
-  synced: "Live",
-  unavailable: "Sync unavailable",
-} as const satisfies Record<PanelSyncStatus, string>;
-
 function syncPresentation(
   error: boolean,
+  refreshing: boolean,
   state: SanitizedDesktopState | null,
 ): { label: string; status: PanelSyncStatus | undefined } {
+  if (refreshing) {
+    return { label: "Syncing…", status: state?.sync.status };
+  }
   if (!state) {
     return {
       label: error ? "Sync unavailable" : "Connecting…",
@@ -49,7 +44,7 @@ function syncPresentation(
   }
 
   const status = state.sync.status;
-  return { label: syncLabels[status], status };
+  return { label: "Live", status };
 }
 
 function PanelHeader({
@@ -62,7 +57,7 @@ function PanelHeader({
   state,
   updateActionLabel,
 }: PanelHeaderProps) {
-  const sync = syncPresentation(error, state);
+  const sync = syncPresentation(error, refreshing, state);
 
   return (
     <header className="flex items-center justify-between border-b border-pearl-line bg-panel-header px-4 pt-[15px] pb-3 contrast-more:border-pearl-ink">
