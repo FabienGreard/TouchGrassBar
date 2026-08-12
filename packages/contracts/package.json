@@ -10,7 +10,7 @@
   "scripts": {
     "build": "bun run typecheck",
     "lint": "bunx --bun oxlint -c ../tooling/oxlint.json src",
-    "test": "bunx vitest run",
+    "test": "bun ../../scripts/run-vitest.ts",
     "typecheck": "bunx --bun tsc --noEmit"
   },
   "dependencies": {

@@ -11,7 +11,7 @@
     "dev:web": "bunx --bun vite",
     "lint": "bunx --bun oxlint -c ../../packages/tooling/oxlint.json src vite.config.ts",
     "tauri": "bunx --bun tauri",
-    "test": "bunx vitest run",
+    "test": "bun ../../scripts/run-vitest.ts",
     "typecheck": "bunx --bun tsc --noEmit"
   },
   "dependencies": {
