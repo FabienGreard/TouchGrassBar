@@ -14,8 +14,8 @@ use serde::{
 use time::{Date, Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 use crate::daily_usage_aggregate::{
-    DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_usage_periods,
-    checked_sum, period_days,
+    DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_daily_usage_aggregates,
+    calculate_usage_periods, checked_sum, period_days,
 };
 use crate::providers::ProviderCorrection;
 use crate::sanitized::{
@@ -507,6 +507,7 @@ pub(super) struct LocalUsageObservation {
     scan_scope_known: bool,
     transcript_source_present: bool,
     aggregate_changed: bool,
+    daily_corrections: BTreeMap<Date, ProviderCorrection>,
     pub(super) correction: Option<ProviderCorrection>,
 }
 
@@ -536,8 +537,16 @@ pub(super) fn project_usage_periods(
     local: Option<&LocalUsageObservation>,
     now: OffsetDateTime,
 ) -> UsagePeriods {
+    let evidence = provider_usage_evidence(local, now);
+    calculate_usage_periods(&evidence, now)
+}
+
+fn provider_usage_evidence(
+    local: Option<&LocalUsageObservation>,
+    now: OffsetDateTime,
+) -> ProviderUsageEvidence {
     let today = utc_ranking_day(now);
-    let evidence = ProviderUsageEvidence {
+    ProviderUsageEvidence {
         provider_reported_tokens: None,
         provider_observed_at: None,
         local_usage_evidence: local.map_or_else(BTreeMap::new, |local| local.daily_usage.clone()),
@@ -555,8 +564,43 @@ pub(super) fn project_usage_periods(
         thirty_day_scan_status: local.map_or(UsageScanStatus::Unavailable, |local| {
             local.period_scan_status(today, 30)
         }),
-    };
-    calculate_usage_periods(&evidence, now)
+    }
+}
+
+pub(crate) fn load_daily_usage_history(
+    connection: &Connection,
+    now: OffsetDateTime,
+    anchor_day: Date,
+    length: i64,
+) -> Result<Vec<(Date, UsageTotal, Option<ProviderCorrection>)>, ()> {
+    if !(1..=60).contains(&length) {
+        return Err(());
+    }
+    let cutoff = anchor_day
+        .checked_sub(Duration::days(length - 1))
+        .ok_or(())?;
+    let local = read_indexed_usage(
+        connection,
+        cutoff,
+        anchor_day,
+        UsageScanStatus::Complete,
+        true,
+        true,
+        false,
+    )?;
+    let evidence = provider_usage_evidence(Some(&local), now);
+    Ok(calculate_daily_usage_aggregates(
+        &evidence,
+        anchor_day.midnight().assume_utc(),
+        anchor_day,
+        length,
+    )
+    .into_iter()
+    .map(|(day, total)| {
+        let correction = local.daily_corrections.get(&day).copied();
+        (day, total, correction)
+    })
+    .collect())
 }
 
 pub(super) fn scan_local_usage(
@@ -2250,6 +2294,7 @@ fn read_indexed_usage(
     let mut daily_usage = BTreeMap::new();
     let mut daily_cost = BTreeMap::new();
     let mut pricing_bases = BTreeSet::new();
+    let mut daily_corrections = BTreeMap::new();
     let mut correction = None;
     for (
         day,
@@ -2263,8 +2308,11 @@ fn read_indexed_usage(
         stored_correction,
     ) in rows
     {
-        if day == today {
-            correction = stored_correction;
+        if let Some(stored_correction) = stored_correction {
+            daily_corrections.insert(day, stored_correction);
+            if day == today {
+                correction = Some(stored_correction);
+            }
         }
         daily_usage.insert(
             day,
@@ -2276,7 +2324,7 @@ fn read_indexed_usage(
         );
         if day >= cost_cutoff && priced_tokens > 0 {
             if let (Some(cost_usd), Some(pricing_basis)) = (cost_usd, pricing_basis) {
-                pricing_bases.insert(pricing_basis);
+                pricing_bases.insert(pricing_basis.clone());
                 daily_cost.insert(
                     day,
                     DailyCostEvidence {
@@ -2287,6 +2335,7 @@ fn read_indexed_usage(
                         complete: priced_tokens == observed_tokens,
                         observed_through: Some(observed_through),
                         priced_observed_through: Some(observed_through),
+                        pricing_basis: Some(pricing_basis),
                     },
                 );
             }
@@ -2321,6 +2370,7 @@ fn read_indexed_usage(
         scan_scope_known,
         transcript_source_present,
         aggregate_changed,
+        daily_corrections,
         correction,
     })
 }
@@ -2885,6 +2935,140 @@ mod tests {
 
     fn now() -> OffsetDateTime {
         OffsetDateTime::parse("2026-08-07T12:00:00Z", &Rfc3339).unwrap()
+    }
+
+    #[test]
+    fn thirty_day_sync_fixture_keeps_each_day_revision_and_parser_correction() {
+        let now = now();
+        let first_day = now.date() - Duration::days(1);
+        let second_day = now.date() - Duration::days(2);
+        let usage = |tokens| DailyUsageEvidence {
+            observed_tokens: tokens,
+            coverage: UsageCoverage::Complete,
+            observed_through: Some(now - Duration::minutes(1)),
+        };
+        let local = LocalUsageObservation {
+            daily_usage: BTreeMap::from([(first_day, usage(100)), (second_day, usage(200))]),
+            daily_cost: BTreeMap::new(),
+            top_model_usage: None,
+            pricing_basis: None,
+            scan_status: UsageScanStatus::Complete,
+            latest_pending_modified_at: None,
+            latest_error_modified_at: None,
+            scan_scope_known: true,
+            transcript_source_present: true,
+            aggregate_changed: true,
+            daily_corrections: BTreeMap::from([
+                (
+                    first_day,
+                    ProviderCorrection::ParserCorrection { source_revision: 2 },
+                ),
+                (
+                    second_day,
+                    ProviderCorrection::ParserCorrection { source_revision: 5 },
+                ),
+            ]),
+            correction: None,
+        };
+
+        let evidence = provider_usage_evidence(Some(&local), now);
+        let daily = calculate_daily_usage_aggregates(&evidence, now, now.date(), 30);
+
+        assert_eq!(daily.len(), 2);
+        assert_eq!(
+            local.daily_corrections[&first_day],
+            ProviderCorrection::ParserCorrection { source_revision: 2 }
+        );
+        assert_eq!(
+            local.daily_corrections[&second_day],
+            ProviderCorrection::ParserCorrection { source_revision: 5 }
+        );
+    }
+
+    #[test]
+    fn sqlite_history_loader_keeps_sparse_day_cost_and_correction_evidence() {
+        let fixture = FixtureRoot::new();
+        prepare_database(&fixture.database()).expect("the Claude index must prepare");
+        let connection = Connection::open(fixture.database()).unwrap();
+        let priced_day = now().date() - Duration::days(1);
+        let unpriced_day = now().date() - Duration::days(3);
+        connection
+            .execute(
+                "INSERT INTO claude_usage_daily(
+                   day, observed_tokens, coverage, observed_through, revision,
+                   priced_tokens, cost_usd, cost_modeled, pricing_basis,
+                   pricing_fingerprint, correction_provenance,
+                   correction_source_revision
+                 ) VALUES(?1, 100, 'complete', ?2, 2, 100, 1.5, 0,
+                          'anthropic-standard-2026-08-07-v1', 'fixture-price',
+                          'parser-correction', 2)",
+                params![
+                    priced_day.to_string(),
+                    (now() - Duration::minutes(1)).format(&Rfc3339).unwrap()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO claude_usage_daily(
+                   day, observed_tokens, coverage, observed_through, revision,
+                   priced_tokens, cost_usd, cost_modeled, pricing_basis,
+                   pricing_fingerprint, correction_provenance,
+                   correction_source_revision
+                 ) VALUES(?1, 40, 'partial', ?2, 1, 0, NULL, 0,
+                          NULL, NULL, NULL, NULL)",
+                params![
+                    unpriced_day.to_string(),
+                    (now() - Duration::minutes(2)).format(&Rfc3339).unwrap()
+                ],
+            )
+            .unwrap();
+
+        let history = load_daily_usage_history(&connection, now(), now().date(), 30)
+            .expect("the stored sparse history must load");
+
+        assert_eq!(history.len(), 2);
+        let (_, priced, correction) = history
+            .iter()
+            .find(|(day, _, _)| *day == priced_day)
+            .expect("the priced day must remain present");
+        assert_eq!(
+            *correction,
+            Some(ProviderCorrection::ParserCorrection { source_revision: 2 })
+        );
+        let UsageTotal::Current {
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            ..
+        } = priced
+        else {
+            panic!("the priced day must be current");
+        };
+        assert_eq!(*observed_tokens, 100);
+        assert_eq!(*api_equivalent_cost_usd, Some(1.5));
+        assert_eq!(
+            api_equivalent_cost_basis.as_deref(),
+            Some("anthropic-standard-2026-08-07-v1")
+        );
+
+        let (_, unpriced, correction) = history
+            .iter()
+            .find(|(day, _, _)| *day == unpriced_day)
+            .expect("the unpriced sparse day must remain present");
+        assert_eq!(*correction, None);
+        let UsageTotal::Current {
+            coverage,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            ..
+        } = unpriced
+        else {
+            panic!("the sparse day must be current");
+        };
+        assert_eq!(*coverage, UsageCoverage::Partial);
+        assert_eq!(*observed_tokens, 40);
+        assert_eq!(*api_equivalent_cost_usd, None);
     }
 
     fn transcript_line(

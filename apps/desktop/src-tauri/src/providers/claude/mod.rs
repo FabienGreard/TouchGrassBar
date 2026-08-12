@@ -8,7 +8,7 @@ mod pricing;
 mod usage;
 
 pub(crate) use usage::{
-    USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION,
+    USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION, load_daily_usage_history,
     prepare_database as prepare_usage_database, usage_index_schema_version,
 };
 

@@ -124,7 +124,7 @@ Production WebViews deny arbitrary HTTP and WebSocket egress through CSP and rec
 
 Rust owns one transactional SQLite database in Application Support. It separates private parser checkpoints and deduplication metadata, sanitized provider/read-model state, effective-dated pricing versions, and a synchronization outbox. Raw provider content is never copied into the database. The Recovery Key, Better Auth session, and opaque installation credential are separate non-synchronizing Keychain items. Provider credentials remain in provider-owned storage and exist in TouchGrassBar memory only while needed. Profile creation stores the Recovery Key without displaying it. Settings State may contain only its real final three characters for the masked field. Profile Settings may request the full stored Recovery Key through one narrow command and hold it in React memory only while the inline field is visible. After reveal, an explicit Copy action may place the key on the macOS clipboard, which remains outside TouchGrassBar's clearing guarantees. This exception is recorded in [ADR 0015](adr/0015-allow-a-deliberate-recovery-key-reveal-in-react.md).
 
-The native core retains 60 UTC Ranking Days of sanitized Daily Usage Aggregates and synchronization deduplication metadata. Provider-private cost-detail indexes retain only the current UTC Ranking Day and the preceding 29 days. The Claude index stores salted frame and message keys, approved token and pricing metadata, and bounded file checkpoints. It does not store transcript content. Model and pricing details are removed after the 30-day cost window. File checkpoints remain only while they can contribute to the 60-day aggregate and trend window. Pricing versions remain while referenced. A Quota Lane may be cached as stale only until its reset. At reset, the old lane leaves the active set and its allowance and remaining value are unavailable. Profile creation queues at most the approved 30-day aggregate backfill.
+The native core retains 60 UTC Ranking Days of sanitized Daily Usage Aggregates and synchronization deduplication metadata. The Codex provider account cache uses the same 60-day UTC window and does not store future account buckets. Provider-private cost-detail indexes retain only the current UTC Ranking Day and the preceding 29 days. The Claude index stores salted frame and message keys, approved token and pricing metadata, and bounded file checkpoints. It does not store transcript content. Model and pricing details are removed after the 30-day cost window. File checkpoints remain only while they can contribute to the 60-day aggregate and trend window. Pricing versions remain while referenced. A Quota Lane may be cached as stale only until its reset. At reset, the old lane leaves the active set and its allowance and remaining value are unavailable. Profile creation queues at most the approved 30-day aggregate backfill.
 
 Each aggregate update and Pending Usage Snapshot upsert commits in one SQLite transaction. The outbox contains one latest cumulative revision per Active Mac generation, provider, and Ranking Day; uploads are bounded and idempotent, and acknowledged revisions alone leave the queue. Active Mac transfer permanently abandons the previous generation's pending rows without deleting local history.
 
@@ -159,11 +159,19 @@ Requests during an attempt produce one rerun.
 
 Each Coding Provider can request delivery as soon as its own commit completes.
 It does not wait for another provider. Outbox changes, safe synchronization
-status, and the Sanitized Desktop State revision commit atomically. For issue
-#26, the current UTC Ranking Day is normally eligible. One bounded transfer-day
-carryover can preserve partial coverage after an Active Mac change. Issue #27
-can expand the internal day policy without an external Interface change. This
-decision is recorded in [ADR 0018](adr/0018-separate-pending-usage-synchronization-from-profile-provisioning.md).
+status, and the Sanitized Desktop State revision commit atomically. The current
+UTC Ranking Day is normally eligible. On first Profile creation, generation one
+also queues each derivable provider day from the creation Ranking Day and the
+preceding 29 UTC days. This atomic batch includes derivable history for a
+disabled provider because the enabled-provider setting controls scores, not
+fact retention. An explicit creation-day marker completes an empty or sparse
+backfill. Missing days then stay missing. Later historical writes require a
+higher revision for an existing day. One exception lets a row first observed
+as current after the creation day retry after its UTC day closes when it waited
+behind the atomic Profile batch. One bounded transfer-day carryover can preserve
+partial coverage after an Active Mac change. The external Interface does not
+change. This decision is recorded in
+[ADR 0018](adr/0018-separate-pending-usage-synchronization-from-profile-provisioning.md).
 
 ## Refresh and backend transport
 

@@ -48,6 +48,7 @@ export default defineSchema({
     createdAt: v.number(),
     lastSeenAt: v.number(),
     revokedAt: v.optional(v.number()),
+    usageBackfillCompletedAt: v.optional(v.union(v.number(), v.null())),
   }).index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
 
   usageBuckets: defineTable({

@@ -66,7 +66,19 @@ with unavailable API-Equivalent Cost, and recomputes the rolling scores.
 A stale zero-token carryover is complete because the server has a newer
 historical revision. Native removes it. A stale non-zero carryover rebases and
 keeps its carryover tag.
-Normal Usage Snapshots remain limited to the current UTC Ranking Day.
+Normal Usage Snapshots remain limited to the current UTC Ranking Day. The first
+Active Mac can submit one atomic sparse Profile backfill for its server-owned
+creation Ranking Day and the preceding 29 UTC days. This backfill has at most
+60 provider-day rows. The request includes the server-owned creation Ranking
+Day as a completion marker, including when no row is derivable. The marker and
+all rows commit atomically. An exact retry is idempotent. After completion, a
+later historical request normally updates only an existing generation-one
+bucket at a higher revision. Missing days in the original backfill window stay
+absent. A post-creation row that was first observed as current can retry after
+its day closes only when `observedAt` is inside that exact UTC day. Later Active
+Mac generations cannot use this authority. Other historical observations can
+occur after their Ranking Day, but they cannot precede that day or exceed the
+clock-skew limit.
 
 ## Usage-contract verification
 
@@ -101,8 +113,16 @@ A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer 
 The migrations component owns bounded repair work. The
 `backfillDoomerboard` migration is forward-only, resumable, and
 idempotent. It rebuilds only missing index entries from `publicUsages`.
+The `backfillDeviceUsageCompletion` migration adds an explicit `null` pending
+state to older Device documents before `usageBackfillCompletedAt` becomes a
+required schema field. Missing and `null` use the same fail-closed behavior
+during this bounded migration.
 
-This feature requires the credential-based Active Mac and current usage schemas directly. It has no compatibility migration. Reset a local development deployment if it contains data from an earlier feature shape. This branch does not change a cloud deployment.
+This feature requires the credential-based Active Mac and current usage schemas
+directly. It has no compatibility migration for an earlier feature shape.
+Reset a local development deployment if it contains that older shape. The
+bounded Device completion-field migration applies only to current Active Mac
+documents. This branch does not change a cloud deployment.
 
 ## Authentication boundary
 
@@ -139,4 +159,4 @@ The resulting Backend Readiness Evidence is one machine-readable CI artifact con
 
 ## Validation
 
-This document defines the target contract; it does not claim launch readiness. The issue 26 implementation has a typed current-day synchronization mutation, live Better Auth authorization, Active Mac generation checks, correction provenance, and a native latest-revision outbox. Local tests do not prove a production deployment, authenticated canary, production Active Mac transfer, historical backfill, rollover completion, or release approval. Those items and regenerated Backend Readiness Evidence remain separate gates.
+This document defines the target contract; it does not claim launch readiness. The issue 26 and issue 27 implementations have a typed current-day mutation, a bounded first-Profile backfill, live Better Auth authorization, Active Mac generation checks, correction provenance, and a native latest-revision outbox. Local tests do not prove a production deployment, authenticated canary, production Active Mac transfer or backfill, rollover completion, or release approval. Those items and regenerated Backend Readiness Evidence remain separate gates.

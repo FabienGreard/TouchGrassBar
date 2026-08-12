@@ -64,21 +64,30 @@ SQLite transaction. Acknowledgements and safe status changes also update the
 outbox and Sanitized Desktop State atomically. Rust publishes a Revision Notice
 only after the transaction commits.
 
-For issue #26, the implementation selects Pending Usage Snapshots for the
-current UTC Ranking Day. It has one bounded exception. Authority activation
-can occur before UTC midnight, while local installation finishes after midnight.
-In that case, an abandoned transfer-day snapshot creates one zero-token partial
-marker for each affected Coding Provider. The marker uses the exact server
-activation time and has no cost or correction. If local installation finished
-before midnight but
-an activation-day partial snapshot is still pending at rollover, the Module
-sends that exact snapshot. It does not change its tokens, cost, correction, or
-revision. A stale zero-token carryover is complete because the server has a
-newer historical revision. The Module removes it. A stale non-zero segment
-rebases and keeps its carryover tag. The Module sends no other historical row.
-It sends the transfer-day carryover before current-day usage. Issue #27 can
-expand the day policy at Profile creation. It can include the approved current
-day and previous twenty-nine UTC days. The external Interface does not change.
+The implementation normally selects Pending Usage Snapshots for the current
+UTC Ranking Day. First Profile creation has one generation-one policy. It sends
+one atomic sparse backfill for every derivable Coding Provider day from the
+server-owned creation Ranking Day and the preceding 29 UTC days. It sends an
+explicit completion marker even when the sparse backfill has no rows. The
+marker fixes the admitted window, makes a retry idempotent across UTC rollover,
+and prevents a later insert for a missing day in that original window. A row
+that was first queued as current after the creation day can wait behind the
+Profile batch and then retry after its day closes. Its observation must be in
+that exact UTC day. Other retained historical changes require a higher revision
+of an existing Usage Bucket.
+
+Authority transfer has a separate bounded exception. Activation can occur
+before UTC midnight, while local installation finishes after midnight. In that
+case, an abandoned transfer-day snapshot creates one zero-token partial marker
+for each affected Coding Provider. The marker uses the exact server activation
+time and has no cost or correction. If local installation finished before
+midnight but an activation-day partial snapshot is still pending at rollover,
+the Module sends that exact snapshot. It does not change its tokens, cost,
+correction, or revision. A stale zero-token carryover is complete because the
+server has a newer historical revision. The Module removes it. A stale non-zero
+segment rebases and keeps its carryover tag. Later generations send no other
+historical row. The Module sends the transfer-day carryover before current-day
+usage. These day policies do not change the external Interface.
 
 ## Dependency seams
 

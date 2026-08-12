@@ -13,8 +13,9 @@ The current `response.create` request format is the required replacement.
 
 ## Execution plan
 
-1. Use the supported Codex version for one full 30-day retained window.
-2. Run a sanitized count-only probe for that window.
+1. Use the supported Codex version for one full 30-day private Fast
+   pricing-detail window.
+2. Run a sanitized count-only probe for that private detail window.
 3. Confirm that no Fast turn has only the old provider submission as proof.
 4. Remove the old SQL candidate, parser branch, reducer support, and tests.
 5. Run the Codex usage, pricing, privacy, and bounded-scan tests.
@@ -23,8 +24,10 @@ The current `response.create` request format is the required replacement.
 ## Verification
 
 Record only the number of old-format rows and old-format-only Fast turns. Both
-counts must be zero for the retained 30-day window. The current request-format
-tests must still detect Fast and Priority usage.
+counts must be zero for the private 30-day pricing-detail window. The current
+request-format tests must still detect Fast and Priority usage. Sanitized daily
+token aggregates and parser deduplication metadata have a separate 60-day
+retention window and are not cleanup evidence for this private trace format.
 
 Do not record trace bodies, turn identifiers, paths, prompts, sessions, or
 other provider content.
@@ -39,14 +42,16 @@ not need a data rollback.
 
 - `LEGACY_TARGET`, `LEGACY_SUBMISSION_MARKER`, `LEGACY_SETTINGS_MARKER`, and
   `LEGACY_PRIORITY_MARKER` in `fast_pricing.rs`;
-- both legacy SQL candidate filters in `fast_pricing.rs`;
-- the legacy provider submission branch in `parse_trace_evidence`;
-- reducer support that exists only for model-less legacy Fast evidence;
-- legacy Fast trace fixtures and tests; and
-- this cleanup entry.
+- the `legacy_filter` branches in `load_fast_turns_from_database` and
+  `load_fast_turns_full_scan`;
+- the `LEGACY_TARGET` fallback branch in `parse_trace_evidence`;
+- the `production_shaped_legacy_submission_proves_fast_without_a_model` and
+  `legacy_submission_uses_the_separate_trusted_target_column` tests;
+- the legacy assertion in `malformed_provider_evidence_fails_closed`; and
+- `docs/cleanup/remove-legacy-codex-fast-trace.md`.
 
 ## Exit condition
 
-Issue #72 has count-only evidence that the retained 30-day window has zero
-old-format rows and zero old-format-only Fast turns. The current
+Issue #72 has count-only evidence that the private 30-day pricing-detail window
+has zero old-format rows and zero old-format-only Fast turns. The current
 `response.create` path must pass all Fast and Priority pricing tests.

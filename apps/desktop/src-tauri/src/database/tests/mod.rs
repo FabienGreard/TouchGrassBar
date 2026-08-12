@@ -92,10 +92,10 @@ fn prepares_one_complete_versioned_database() {
         versions,
         vec![
             ("claude-usage-index".to_owned(), 7),
-            ("codex-usage-index".to_owned(), 6),
+            ("codex-usage-index".to_owned(), 7),
             ("database-coordinator".to_owned(), 1),
             ("desktop-lifecycle".to_owned(), 5),
-            ("sanitized-desktop-state".to_owned(), 6),
+            ("sanitized-desktop-state".to_owned(), 7),
             ("update-state".to_owned(), 3),
         ]
     );
@@ -104,6 +104,176 @@ fn prepares_one_complete_versioned_database() {
             .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .expect("database format"),
         DATABASE_FORMAT_VERSION
+    );
+}
+
+#[test]
+fn coordinator_upgrades_the_codex_v6_file_turn_shape_with_daily_references() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare current database");
+    let connection = Connection::open(&database.0).expect("open current database");
+    connection
+        .pragma_update(None, "foreign_keys", false)
+        .expect("disable foreign keys for historical fixture shape");
+    connection
+        .execute_batch(
+            "DROP INDEX codex_usage_file_turns_by_turn_id;
+             ALTER TABLE codex_usage_file_turns RENAME TO codex_usage_file_turns_v7;
+             CREATE TABLE codex_usage_file_turns (
+               path TEXT NOT NULL,
+               turn_id TEXT NOT NULL,
+               PRIMARY KEY (path, turn_id),
+               FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+             );
+             DROP TABLE codex_usage_file_turns_v7;
+             CREATE INDEX codex_usage_file_turns_by_turn_id
+             ON codex_usage_file_turns(turn_id);
+             INSERT INTO codex_usage_files(
+               path, file_identity, size_bytes, modified_ns, parsed_offset,
+               parser_version, completion_state, active_turn_id, schema_supported
+             ) VALUES(
+               'private-rollout', '1:2', 10, 20, 10, 15, 'complete',
+               'private-turn', 1
+             );
+             INSERT INTO codex_usage_fast_turns(turn_id, model)
+             VALUES('private-turn', 'gpt-5.6-sol');
+             INSERT INTO codex_usage_file_turns(path, turn_id)
+             VALUES('private-rollout', 'private-turn');
+             UPDATE touchgrassbar_schema_versions SET version = 6
+             WHERE module = 'codex-usage-index';
+             PRAGMA journal_mode = DELETE;",
+        )
+        .expect("make a known Codex v6 source");
+    drop(connection);
+
+    prepare(&database.0).expect("upgrade the Codex v6 source");
+
+    let connection = Connection::open(&database.0).expect("open upgraded database");
+    assert_eq!(
+        providers::codex_usage_schema_version(&connection).expect("Codex schema version"),
+        providers::CODEX_USAGE_SCHEMA_VERSION
+    );
+    let columns = connection
+        .prepare("SELECT name FROM pragma_table_info('codex_usage_file_turns') ORDER BY cid")
+        .expect("prepare file-turn columns")
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query file-turn columns")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read file-turn columns");
+    assert_eq!(columns, ["path", "turn_id", "day"]);
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM codex_usage_files", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count retained Codex files"),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM codex_usage_file_turns", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count rebuilt file-turn references"),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM codex_usage_fast_turns", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count cleared Fast details"),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT active_turn_id FROM codex_usage_files WHERE path = 'private-rollout'",
+                [],
+                |row| row.get::<_, Option<String>>(0)
+            )
+            .expect("read cleared active turn"),
+        None
+    );
+    verify_invariants(&connection).expect("verify upgraded database");
+    assert!(coordinator_backup_path(&database.0).is_file());
+}
+
+#[test]
+fn coordinator_adds_the_v7_profile_completion_field_without_losing_activation() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare current database");
+    let connection = Connection::open(&database.0).expect("open current database");
+    connection
+        .execute_batch(
+            "INSERT INTO usage_sync_generations(active_generation, queue_state)
+               VALUES(1, 'active');
+             INSERT INTO usage_sync_generation_activations(
+               active_generation, ranking_day, activated_at
+             ) VALUES(1, '2026-08-08', 1786147200000);
+             PRAGMA foreign_keys = OFF;
+             ALTER TABLE usage_sync_generation_activations
+               RENAME TO usage_sync_generation_activations_v7;
+             CREATE TABLE usage_sync_generation_activations (
+               active_generation INTEGER PRIMARY KEY,
+               ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+               activated_at INTEGER NOT NULL
+                 CHECK(activated_at >= 0 AND activated_at <= 9007199254740991),
+               FOREIGN KEY(active_generation)
+                 REFERENCES usage_sync_generations(active_generation)
+             ) STRICT;
+             INSERT INTO usage_sync_generation_activations(
+               active_generation, ranking_day, activated_at
+             ) SELECT active_generation, ranking_day, activated_at
+               FROM usage_sync_generation_activations_v7;
+             DROP TABLE usage_sync_generation_activations_v7;
+             ALTER TABLE sanitized_desktop_state
+               RENAME TO sanitized_desktop_state_v7;
+             CREATE TABLE sanitized_desktop_state (
+               singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+               schema_version INTEGER NOT NULL CHECK (schema_version = 6),
+               contract_version INTEGER NOT NULL CHECK (contract_version = 4),
+               revision TEXT NOT NULL CHECK (
+                 length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
+               ),
+               snapshot_json TEXT NOT NULL
+             );
+             INSERT INTO sanitized_desktop_state(
+               singleton, schema_version, contract_version, revision, snapshot_json
+             ) SELECT singleton, 6, contract_version, revision, snapshot_json
+               FROM sanitized_desktop_state_v7;
+             DROP TABLE sanitized_desktop_state_v7;
+             UPDATE touchgrassbar_schema_versions SET version = 6
+             WHERE module = 'sanitized-desktop-state';
+             PRAGMA journal_mode = DELETE;",
+        )
+        .expect("make a known read-model v6 source");
+    drop(connection);
+
+    prepare(&database.0).expect("upgrade the read-model v6 source");
+
+    let connection = Connection::open(&database.0).expect("open upgraded database");
+    assert_eq!(
+        sanitized::read_model_schema_version(&connection).unwrap(),
+        7
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT activated_at, profile_backfill_completed
+                 FROM usage_sync_generation_activations WHERE active_generation = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .expect("read retained activation"),
+        (1_786_147_200_000, 0)
+    );
+    drop(connection);
+    let before = fs::read(&database.0).expect("read migrated database");
+    prepare(&database.0).expect("reopen migrated database");
+    assert_eq!(
+        fs::read(&database.0).expect("reread migrated database"),
+        before
     );
 }
 
@@ -729,6 +899,46 @@ fn accepts_the_full_sixty_day_claude_history_window() {
         .expect("write sixty-day history");
 
     prepare(&database.0).expect("accept sixty-day Claude history");
+}
+
+#[test]
+fn accepts_sixty_day_codex_aggregates_with_thirty_day_cost_detail() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare database");
+    Connection::open(&database.0)
+        .expect("open database")
+        .execute_batch(
+            "INSERT INTO codex_usage_files(
+               path, file_identity, size_bytes, modified_ns, parsed_offset,
+               parser_version, completion_state, schema_supported,
+               accounting_ready
+             ) VALUES(
+               'fixture.jsonl', 'fixture', 0, 0, 0,
+               15, 'complete', 1, 1
+             );
+             INSERT INTO codex_usage_file_days(
+               path, day, observed_tokens, priced_tokens, cost_usd, complete,
+               observed_through, priced_observed_through, pricing_fingerprint
+             ) VALUES
+               ('fixture.jsonl', '2026-01-01', 10, 0, 0.0, 0,
+                '2026-01-01T00:00:00Z', NULL, NULL),
+               ('fixture.jsonl', '2026-03-01', 20, 0, 0.0, 0,
+                '2026-03-01T00:00:00Z', NULL, NULL);
+             INSERT INTO codex_usage_file_model_days(
+               path, day, model, pricing_input_tokens, pricing_mode,
+               input_tokens, cached_input_tokens, cache_write_input_tokens,
+               output_tokens, reasoning_output_tokens, observed_tokens,
+               cost_usd, pricing_basis, pricing_fingerprint, complete,
+               observed_through
+             ) VALUES(
+               'fixture.jsonl', '2026-02-01', 'gpt-5.6-sol', 0, 'standard',
+               0, 0, 0, 10, 0, 10, 0.1, 'fixture-v1', 'fixture', 1,
+               '2026-02-01T00:00:00Z'
+             );",
+        )
+        .expect("write retained Codex history");
+
+    prepare(&database.0).expect("accept retained Codex history");
 }
 
 #[test]

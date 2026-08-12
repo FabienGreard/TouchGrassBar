@@ -166,6 +166,7 @@ async function transferActiveDevice(
       installationCredentialDigest: credentialDigest,
       lastSeenAt: Date.now(),
       tokenmaxxerId: tokenmaxxer._id,
+      usageBackfillCompletedAt: null,
     });
     await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: deviceId });
     return activeMacActivatedAt;
@@ -214,6 +215,602 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+test("first Profile accepts a thirty UTC day backfill atomically", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const snapshots = Array.from({ length: 30 }, (_, offset) => {
+    const rankingDay = new Date(
+      NOW.getTime() - offset * 24 * 60 * 60 * 1_000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    return [
+      usageSnapshot({
+        evidenceBasis: "provider-reported",
+        observedAt: NOW.getTime(),
+        observedTokens: 100,
+        provider: "codex",
+        rankingDay,
+      }),
+      usageSnapshot({
+        evidenceBasis: "locally-derived",
+        observedAt: NOW.getTime(),
+        observedTokens: 200,
+        provider: "claude",
+        rankingDay,
+      }),
+    ];
+  }).flat();
+
+  const first = await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots,
+  });
+  expect(first).toHaveLength(60);
+  expect(first.every(({ outcome }) => outcome === "committed")).toBe(true);
+
+  const stored = await t.run(async (ctx) => ({
+    buckets: await ctx.db.query("usageBuckets").collect(),
+    daily: await ctx.db.query("userDailyUsage").collect(),
+    device: await ctx.db.query("devices").first(),
+    scores: await ctx.db.query("publicUsages").collect(),
+  }));
+  expect(stored.buckets).toHaveLength(60);
+  expect(stored.daily).toHaveLength(60);
+  expect(stored.device?.usageBackfillCompletedAt).toBe(NOW.getTime());
+  expect(stored.scores).toContainEqual(
+    expect.objectContaining({
+      apiEquivalentCost: expect.objectContaining({ micros: 60_000 }),
+      scope: "combined",
+      tokenScore: 9_000,
+      windowDays: 30,
+    }),
+  );
+
+  const retry = await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots,
+  });
+  expect(retry).toHaveLength(60);
+  expect(retry.every(({ outcome }) => outcome === "idempotent")).toBe(true);
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual(stored.buckets);
+
+  const historicalCorrection = {
+    ...snapshots.find(
+      (snapshot) =>
+        snapshot.provider === "claude" && snapshot.rankingDay !== TODAY,
+    )!,
+    correctionReason: "parser-correction" as const,
+    correctionRevision: 2,
+    observedAt: NOW.getTime() + 1_000,
+    observedTokens: 180,
+    revision: 2,
+  };
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [historicalCorrection],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "claude",
+      rankingDay: historicalCorrection.rankingDay,
+      revision: 2,
+    },
+  ]);
+});
+
+test("a completed sparse Profile backfill keeps missing days absent", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const oldestDay = new Date(NOW.getTime() - 29 * 24 * 60 * 60 * 1_000)
+    .toISOString()
+    .slice(0, 10);
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots: [usageSnapshot(), usageSnapshot({ rankingDay: oldestDay })],
+  });
+  const missingDay = new Date(NOW.getTime() - 1 * 24 * 60 * 60 * 1_000)
+    .toISOString()
+    .slice(0, 10);
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [usageSnapshot({ rankingDay: missingDay })],
+    }),
+  ).rejects.toThrow("keeps original-window missing days closed");
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toHaveLength(2);
+});
+
+test("an empty Profile backfill completes once and closes new historical days", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: TODAY,
+      snapshots: [],
+    }),
+  ).resolves.toEqual([]);
+  expect(
+    await t.run(async (ctx) =>
+      (await ctx.db.query("devices").first())?.usageBackfillCompletedAt,
+    ),
+  ).toBe(NOW.getTime());
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: TODAY,
+      snapshots: [],
+    }),
+  ).resolves.toEqual([]);
+
+  const previousDay = new Date(NOW.getTime() - 24 * 60 * 60 * 1_000)
+    .toISOString()
+    .slice(0, 10);
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [usageSnapshot({ rankingDay: previousDay })],
+    }),
+  ).rejects.toThrow("keeps original-window missing days closed");
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [usageSnapshot()],
+    }),
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 1 }]);
+});
+
+test("a Profile backfill completion rolls back with one invalid row", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const outsideProfileWindow = new Date(
+    NOW.getTime() - 30 * 24 * 60 * 60 * 1_000,
+  )
+    .toISOString()
+    .slice(0, 10);
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: TODAY,
+      snapshots: [
+        usageSnapshot(),
+        usageSnapshot({ rankingDay: outsideProfileWindow }),
+      ],
+    }),
+  ).rejects.toThrow("outside the Profile window");
+
+  await expect(
+    t.run(async (ctx) => ({
+      buckets: await ctx.db.query("usageBuckets").collect(),
+      completedAt: (await ctx.db.query("devices").first())
+        ?.usageBackfillCompletedAt,
+    })),
+  ).resolves.toEqual({ buckets: [], completedAt: null });
+});
+
+test("a normal sync cannot use an empty batch or an invalid Profile anchor", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [],
+    }),
+  ).rejects.toThrow("between 1 and 62");
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: "2026-08-07",
+      snapshots: [],
+    }),
+  ).rejects.toThrow("must match the Active Mac creation UTC day");
+});
+
+test("a marked Profile batch cannot join the next current UTC day", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const nextDay = "2026-08-09";
+  const nextObservedAt = Date.parse(`${nextDay}T00:01:00.000Z`);
+  vi.setSystemTime(nextObservedAt);
+  const nextDaySnapshot = usageSnapshot({
+    observedAt: nextObservedAt,
+    rankingDay: nextDay,
+  });
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: TODAY,
+      snapshots: [nextDaySnapshot],
+    }),
+  ).rejects.toThrow("marked Profile backfill snapshot is outside");
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: null,
+      snapshots: [nextDaySnapshot],
+    }),
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 1 }]);
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: TODAY,
+      snapshots: [nextDaySnapshot],
+    }),
+  ).rejects.toThrow("marked Profile backfill snapshot is outside");
+});
+
+test("a marked Profile retry admits the latest anchor-day revision", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  vi.setSystemTime(new Date("2026-08-09T00:01:00.000Z"));
+  const latestAnchorSnapshot = usageSnapshot({
+    observedAt: Date.parse(`${TODAY}T23:59:30.000Z`),
+    observedTokens: 120,
+    revision: 2,
+  });
+  const args = {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots: [latestAnchorSnapshot],
+  };
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, args),
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 2,
+    },
+  ]);
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, args),
+  ).resolves.toEqual([
+    {
+      outcome: "idempotent",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 2,
+    },
+  ]);
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").first()),
+  ).toMatchObject({ observedTokens: 120, revision: 2 });
+});
+
+test("a completed Profile accepts only in-day delayed post-anchor rows", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const secondRollover = Date.parse("2026-08-10T00:01:00.000Z");
+  vi.setSystemTime(secondRollover);
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots: [],
+  });
+
+  const delayedDay = "2026-08-09";
+  const delayed = usageSnapshot({
+    observedAt: Date.parse(`${delayedDay}T23:59:00.000Z`),
+    observedTokens: 120,
+    rankingDay: delayedDay,
+    revision: 2,
+  });
+  const delayedArgs = {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: null,
+    snapshots: [delayed],
+  };
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, delayedArgs),
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "codex",
+      rankingDay: delayedDay,
+      revision: 2,
+    },
+  ]);
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, delayedArgs),
+  ).resolves.toEqual([
+    {
+      outcome: "idempotent",
+      provider: "codex",
+      rankingDay: delayedDay,
+      revision: 2,
+    },
+  ]);
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: null,
+      snapshots: [usageSnapshot({ rankingDay: "2026-08-07" })],
+    }),
+  ).rejects.toThrow("keeps original-window missing days closed");
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: null,
+      snapshots: [
+        usageSnapshot({
+          observedAt: secondRollover,
+          provider: "claude",
+          rankingDay: delayedDay,
+          revision: 2,
+        }),
+      ],
+    }),
+  ).rejects.toThrow("must use in-day observation evidence");
+});
+
+test("a marked Profile backfill rejects more than sixty total snapshots", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const snapshots = Array.from({ length: 31 }, (_, offset) => {
+    const rankingDay = new Date(
+      NOW.getTime() - offset * 24 * 60 * 60 * 1_000,
+    )
+      .toISOString()
+      .slice(0, 10);
+    return [
+      usageSnapshot({ provider: "codex", rankingDay }),
+      usageSnapshot({ provider: "claude", rankingDay }),
+    ];
+  })
+    .flat()
+    .slice(0, 61);
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: TODAY,
+      snapshots,
+    }),
+  ).rejects.toThrow("at most 60 Daily Usage Snapshots");
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
+  ).toEqual([]);
+});
+
+test("a first Active Mac corrects a later current day after UTC rollover", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [usageSnapshot()],
+  });
+
+  const laterDay = "2026-08-09";
+  const laterObservedAt = Date.parse(`${laterDay}T12:00:00.000Z`);
+  vi.setSystemTime(laterObservedAt);
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [
+      usageSnapshot({
+        apiEquivalentCost: {
+          coveragePercent: null,
+          micros: 2_000,
+          pricingBasis: "openai-api-2026-08-09-v3",
+          quality: "local-only",
+        },
+        observedAt: laterObservedAt,
+        observedTokens: 200,
+        rankingDay: laterDay,
+      }),
+    ],
+  });
+
+  const correctionObservedAt = Date.parse("2026-08-10T12:00:00.000Z");
+  vi.setSystemTime(correctionObservedAt);
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({
+          apiEquivalentCost: {
+            coveragePercent: null,
+            micros: 1_500,
+            pricingBasis: "openai-api-2026-08-09-v3",
+            quality: "local-only",
+          },
+          correctionReason: "parser-correction",
+          correctionRevision: 2,
+          observedAt: correctionObservedAt,
+          observedTokens: 150,
+          rankingDay: laterDay,
+          revision: 2,
+        }),
+      ],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "codex",
+      rankingDay: laterDay,
+      revision: 2,
+    },
+  ]);
+
+  const corrected = await t.run(async (ctx) => ({
+    bucket: (
+      await ctx.db.query("usageBuckets").collect()
+    ).find((row) => row.rankingDay === laterDay),
+    daily: (
+      await ctx.db.query("userDailyUsage").collect()
+    ).find((row) => row.rankingDay === laterDay),
+    score: (
+      await ctx.db.query("publicUsages").collect()
+    ).find((row) => row.scope === "combined" && row.windowDays === 30),
+  }));
+  expect(corrected.bucket).toMatchObject({
+    observedTokens: 150,
+    revision: 2,
+  });
+  expect(corrected.daily).toMatchObject({ observedTokens: 150 });
+  expect(corrected.score).toMatchObject({ tokenScore: 250 });
+});
+
+test("provider-reported evidence rejects higher and lower local replacements", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const providerSnapshot = usageSnapshot({
+    evidenceBasis: "provider-reported",
+    observedTokens: 100,
+  });
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [providerSnapshot],
+  });
+
+  for (const observedTokens of [120, 80]) {
+    await expect(
+      authenticated.mutation(api.sync.dailyUsage, {
+        profileBackfillAnchor: null,
+        activeMacGeneration: 1,
+        installationCredential: credential,
+        snapshots: [
+          usageSnapshot({
+            observedAt: NOW.getTime() + observedTokens,
+            observedTokens,
+            revision: 2,
+          }),
+        ],
+      }),
+    ).resolves.toEqual([
+      {
+        outcome: "stale",
+        provider: "codex",
+        rankingDay: TODAY,
+        revision: 2,
+      },
+    ]);
+  }
+
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").first()),
+  ).toMatchObject({
+    evidenceBasis: "provider-reported",
+    observedTokens: 100,
+    revision: 1,
+  });
+});
+
+test("a retained Codex correction keeps an approved prior pricing basis", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const previousDay = new Date(NOW.getTime() - 24 * 60 * 60 * 1_000)
+    .toISOString()
+    .slice(0, 10);
+  const priorCost = {
+    coveragePercent: null,
+    micros: 1_000,
+    pricingBasis: "openai-standard-2026-08-06-v1",
+    quality: "local-only" as const,
+  };
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots: [
+      usageSnapshot({
+        apiEquivalentCost: priorCost,
+        rankingDay: previousDay,
+      }),
+    ],
+  });
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({
+          apiEquivalentCost: priorCost,
+          correctionReason: "parser-correction",
+          correctionRevision: 2,
+          observedAt: NOW.getTime() + 1_000,
+          observedTokens: 90,
+          rankingDay: previousDay,
+          revision: 2,
+        }),
+      ],
+    }),
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 2 }]);
+  expect(
+    await t.run(async (ctx) => ctx.db.query("usageBuckets").first()),
+  ).toMatchObject({
+    apiEquivalentCost: priorCost,
+    observedTokens: 90,
+    revision: 2,
+  });
+});
+
 test("both providers commit atomically and retries report exact revision outcomes", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
@@ -231,6 +828,7 @@ test("both providers commit atomically and retries report exact revision outcome
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots,
@@ -259,6 +857,7 @@ test("both providers commit atomically and retries report exact revision outcome
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots,
@@ -288,6 +887,7 @@ test("both providers commit atomically and retries report exact revision outcome
   );
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: higherSnapshots,
@@ -317,6 +917,7 @@ test("both providers commit atomically and retries report exact revision outcome
   );
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: lowerSnapshots,
@@ -348,6 +949,7 @@ test("both providers commit atomically and retries report exact revision outcome
   );
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: olderObservations,
@@ -371,12 +973,14 @@ test("both providers commit atomically and retries report exact revision outcome
   ).toEqual(beforeRetry);
 
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [usageSnapshot({ observedTokens: 110, revision: 3 })],
   });
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [usageSnapshot({ revision: 2 })],
@@ -396,6 +1000,7 @@ test("provider settings exclude accepted usage and restore retained history", as
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [
@@ -540,6 +1145,7 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   };
 
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [
@@ -589,6 +1195,7 @@ test("the migration repairs the Doomerboard index from public scores", async () 
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [usageSnapshot()],
@@ -643,6 +1250,64 @@ test("the migration repairs the Doomerboard index from public scores", async () 
   ]);
 });
 
+test("the device completion migration preserves pending Profile authority", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await t.run(async (ctx) => {
+    const device = await ctx.db.query("devices").unique();
+    if (!device) throw new Error("Active Mac missing");
+    const {
+      _creationTime,
+      _id,
+      usageBackfillCompletedAt: _usageBackfillCompletedAt,
+      ...legacyDevice
+    } = device;
+    expect(_creationTime).toBeGreaterThan(0);
+    await ctx.db.replace(_id, legacyDevice);
+  });
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({
+          rankingDay: "2026-08-07",
+          observedAt: Date.parse("2026-08-07T12:00:00.000Z"),
+        }),
+      ],
+    }),
+  ).rejects.toThrow(
+    "new Profile history requires an explicit backfill completion marker",
+  );
+
+  const args = { cursor: null, dryRun: false, oneBatchOnly: true };
+  await t.mutation(
+    internal.internal.migrations.backfillDeviceUsageCompletion,
+    args,
+  );
+  await t.mutation(
+    internal.internal.migrations.backfillDeviceUsageCompletion,
+    args,
+  );
+  expect(
+    await t.run(async (ctx) =>
+      (await ctx.db.query("devices").unique())?.usageBackfillCompletedAt,
+    ),
+  ).toBeNull();
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: TODAY,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [],
+    }),
+  ).resolves.toEqual([]);
+});
+
 test("Active Mac authority is isolated by Profile, credential, generation, and revocation", async () => {
   const t = testBackend();
   const aliceCredential = installationCredential("A");
@@ -653,16 +1318,19 @@ test("Active Mac authority is isolated by Profile, credential, generation, and r
 
   for (const attempt of [
     alice.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: bobCredential,
       snapshots: [snapshot],
     }),
     alice.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 2,
       installationCredential: aliceCredential,
       snapshots: [snapshot],
     }),
     bob.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: aliceCredential,
       snapshots: [snapshot],
@@ -681,6 +1349,7 @@ test("Active Mac authority is isolated by Profile, credential, generation, and r
   });
   await expect(
     alice.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: aliceCredential,
       snapshots: [snapshot],
@@ -698,6 +1367,7 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
   const profile = await createProfile(t, oldCredential, "Fabien");
 
   await profile.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: oldCredential,
     snapshots: [
@@ -736,6 +1406,7 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
 
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: oldCredential,
       snapshots: [usageSnapshot({ observedTokens: 150, revision: 2 })],
@@ -743,6 +1414,7 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
   ).rejects.toThrow("authority-rejected");
 
   await profile.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 2,
     installationCredential: newCredential,
     snapshots: [
@@ -838,6 +1510,7 @@ test("a rollover accepts a zero transfer carryover after activation", async () =
   const transferTime = new Date(`${TODAY}T23:59:00.000Z`);
   vi.setSystemTime(transferTime);
   await profile.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: oldCredential,
     snapshots: [
@@ -864,6 +1537,7 @@ test("a rollover accepts a zero transfer carryover after activation", async () =
   });
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: oldCredential,
       snapshots: [marker],
@@ -871,6 +1545,7 @@ test("a rollover accepts a zero transfer carryover after activation", async () =
   ).rejects.toThrow("authority-rejected");
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 2,
       installationCredential: newCredential,
       snapshots: [marker],
@@ -885,6 +1560,7 @@ test("a rollover accepts a zero transfer carryover after activation", async () =
   ]);
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 2,
       installationCredential: newCredential,
       snapshots: [marker],
@@ -942,6 +1618,7 @@ test("a rollover accepts a zero transfer carryover after activation", async () =
   const currentDay = "2026-08-09";
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 2,
       installationCredential: newCredential,
       snapshots: [
@@ -971,6 +1648,7 @@ test("a rollover commits and retries a partial transfer-day segment", async () =
   const acceptedTime = new Date(`${TODAY}T23:57:00.000Z`);
   vi.setSystemTime(acceptedTime);
   await profile.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: oldCredential,
     snapshots: [
@@ -999,6 +1677,7 @@ test("a rollover commits and retries a partial transfer-day segment", async () =
   vi.setSystemTime(new Date("2026-08-09T00:01:00.000Z"));
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 2,
       installationCredential: newCredential,
       snapshots: [segment],
@@ -1013,6 +1692,7 @@ test("a rollover commits and retries a partial transfer-day segment", async () =
   ]);
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 2,
       installationCredential: newCredential,
       snapshots: [segment],
@@ -1059,7 +1739,7 @@ test("a rollover commits and retries a partial transfer-day segment", async () =
   ).toBe(true);
 });
 
-test("the first Active Mac cannot submit a historical transfer carryover", async () => {
+test("the first Active Mac can backfill its creation day after UTC rollover", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const profile = await createProfile(t, credential, "Fabien");
@@ -1069,6 +1749,7 @@ test("the first Active Mac cannot submit a historical transfer carryover", async
     profile.authenticated.mutation(api.sync.dailyUsage, {
       activeMacGeneration: 1,
       installationCredential: credential,
+      profileBackfillAnchor: TODAY,
       snapshots: [
         usageSnapshot({
           apiEquivalentCost: null,
@@ -1078,10 +1759,17 @@ test("the first Active Mac cannot submit a historical transfer carryover", async
         }),
       ],
     }),
-  ).rejects.toThrow("transfer carryover");
+  ).resolves.toEqual([
+    {
+      outcome: "committed",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 1,
+    },
+  ]);
   expect(
     await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual([]);
+  ).toHaveLength(1);
 });
 
 test("historical usage rejects every value outside a transfer carryover", async () => {
@@ -1137,6 +1825,7 @@ test("historical usage rejects every value outside a transfer carryover", async 
   for (const snapshot of hostileSnapshots) {
     await expect(
       profile.authenticated.mutation(api.sync.dailyUsage, {
+        profileBackfillAnchor: null,
         activeMacGeneration: 2,
         installationCredential: newCredential,
         snapshots: [snapshot],
@@ -1272,6 +1961,7 @@ test("two Profiles commit both providers without crossing usage or score ownersh
   const bob = await createProfile(t, bobCredential, "Bob");
 
   await alice.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: aliceCredential,
     snapshots: [
@@ -1280,6 +1970,7 @@ test("two Profiles commit both providers without crossing usage or score ownersh
     ],
   });
   await bob.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: bobCredential,
     snapshots: [
@@ -1334,6 +2025,7 @@ test("a revoked Better Auth session cannot synchronize", async () => {
 
   await expect(
     profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [usageSnapshot()],
@@ -1346,6 +2038,7 @@ test("an unproved decrease rolls back the whole batch and an explicit correction
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [usageSnapshot()],
@@ -1358,6 +2051,7 @@ test("an unproved decrease rolls back the whole batch and an explicit correction
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [
@@ -1375,6 +2069,7 @@ test("an unproved decrease rolls back the whole batch and an explicit correction
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [
@@ -1409,6 +2104,7 @@ test("a corrected revision can be the first server insert", async () => {
   ]) {
     await expect(
       authenticated.mutation(api.sync.dailyUsage, {
+        profileBackfillAnchor: null,
         activeMacGeneration: 1,
         installationCredential: credential,
         snapshots: [snapshot],
@@ -1421,6 +2117,7 @@ test("a corrected revision can be the first server insert", async () => {
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [
@@ -1487,6 +2184,7 @@ test("lost correction acknowledgements keep one lineage for both providers", asy
   const { authenticated } = await createProfile(t, credential, "Fabien");
 
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [
@@ -1495,6 +2193,7 @@ test("lost correction acknowledgements keep one lineage for both providers", asy
     ],
   });
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [
@@ -1517,6 +2216,7 @@ test("lost correction acknowledgements keep one lineage for both providers", asy
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [
@@ -1569,6 +2269,7 @@ test("lost correction acknowledgements keep one lineage for both providers", asy
   ]) {
     await expect(
       authenticated.mutation(api.sync.dailyUsage, {
+        profileBackfillAnchor: null,
         activeMacGeneration: 1,
         installationCredential: credential,
         snapshots: [snapshot],
@@ -1628,11 +2329,13 @@ test("an acknowledged correction allows a later ordinary increase", async () => 
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [usageSnapshot()],
   });
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [
@@ -1647,6 +2350,7 @@ test("an acknowledged correction allows a later ordinary increase", async () => 
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [usageSnapshot({ observedTokens: 110, revision: 3 })],
@@ -1654,6 +2358,7 @@ test("an acknowledged correction allows a later ordinary increase", async () => 
   ).resolves.toMatchObject([{ outcome: "committed", revision: 3 }]);
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [usageSnapshot({ observedTokens: 100, revision: 4 })],
@@ -1685,6 +2390,7 @@ test("a skipped correction revision is new after an older server revision", asyn
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [
@@ -1695,6 +2401,7 @@ test("a skipped correction revision is new after an older server revision", asyn
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [
@@ -1735,6 +2442,7 @@ test("correction reasons require exact evidence transitions", async () => {
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [usageSnapshot()],
@@ -1757,6 +2465,7 @@ test("correction reasons require exact evidence transitions", async () => {
   ]) {
     await expect(
       authenticated.mutation(api.sync.dailyUsage, {
+        profileBackfillAnchor: null,
         activeMacGeneration: 1,
         installationCredential: credential,
         snapshots: [snapshot],
@@ -1766,6 +2475,7 @@ test("correction reasons require exact evidence transitions", async () => {
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [
@@ -1788,21 +2498,39 @@ test("correction reasons require exact evidence transitions", async () => {
       observedTokens: 80,
       revision: 3,
     }),
-    usageSnapshot({
-      correctionReason: "parser-correction",
-      correctionRevision: 2,
-      observedTokens: 80,
-      revision: 3,
-    }),
   ]) {
     await expect(
       authenticated.mutation(api.sync.dailyUsage, {
+        profileBackfillAnchor: null,
         activeMacGeneration: 1,
         installationCredential: credential,
         snapshots: [snapshot],
       }),
     ).rejects.toThrow();
   }
+
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({
+          correctionReason: "parser-correction",
+          correctionRevision: 2,
+          observedTokens: 80,
+          revision: 3,
+        }),
+      ],
+    }),
+  ).resolves.toEqual([
+    {
+      outcome: "stale",
+      provider: "codex",
+      rankingDay: TODAY,
+      revision: 3,
+    },
+  ]);
 
   const buckets = await t.run(async (ctx) =>
     ctx.db.query("usageBuckets").collect(),
@@ -1843,6 +2571,7 @@ test("every accepted correction keeps a private append-only audit row", async ()
     }),
   ]) {
     await authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       activeMacGeneration: 1,
       installationCredential: credential,
       snapshots: [snapshot],
@@ -2000,6 +2729,7 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
   for (const snapshots of invalidBatches) {
     await expect(
       authenticated.mutation(api.sync.dailyUsage, {
+        profileBackfillAnchor: null,
         ...baseArgs,
         snapshots,
       } as never),
@@ -2007,6 +2737,7 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
   }
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
       ...baseArgs,
       installationCredential: installationCredential("A").slice(1),
       snapshots: [usageSnapshot()],
@@ -2033,6 +2764,7 @@ test("the app database stores only the installation digest and approved usage fi
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
     snapshots: [

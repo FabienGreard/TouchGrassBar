@@ -20,6 +20,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
+use crate::daily_usage_aggregate::project_retained_cost;
+use crate::providers::{
+    PROVIDER_REGISTRY, ProviderCorrection, ProviderDailyUsage, load_daily_usage_history,
+};
 use crate::sanitized::{
     ApiEquivalentCostQuality, CodingProvider, SanitizedDesktopStateV3, UsageCoverage,
     UsageEvidenceBasis, UsageTotal,
@@ -42,6 +46,51 @@ const SETTINGS_PENDING: &str = "pending";
 const SETTINGS_SYNCED: &str = "synced";
 const SETTINGS_BLOCKED: &str = "blocked";
 const SETTINGS_ABANDONED: &str = "abandoned";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GenerationOneProfileBackfillState {
+    Pending { activated_at: u64 },
+    Complete,
+}
+
+fn generation_one_profile_backfill_state(
+    stored_activated_at: u64,
+    stored_completed: i64,
+) -> Result<GenerationOneProfileBackfillState, UsageSyncError> {
+    validate_safe_integer(stored_activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(stored_activated_at) * 1_000_000)
+        .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    match stored_completed {
+        0 => Ok(GenerationOneProfileBackfillState::Pending {
+            activated_at: stored_activated_at,
+        }),
+        1 => Ok(GenerationOneProfileBackfillState::Complete),
+        _ => Err(UsageSyncError::STORAGE_UNAVAILABLE),
+    }
+}
+
+pub(crate) fn generation_one_profile_backfill_is_pending(
+    connection: &Connection,
+) -> Result<bool, UsageSyncError> {
+    let activation = connection
+        .query_row(
+            "SELECT activated_at, profile_backfill_completed
+             FROM usage_sync_generation_activations
+             WHERE active_generation = 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((stored_activated_at, stored_completed)) = activation else {
+        return Ok(false);
+    };
+    let stored_activated_at =
+        u64::try_from(stored_activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    Ok(matches!(
+        generation_one_profile_backfill_state(stored_activated_at, stored_completed)?,
+        GenerationOneProfileBackfillState::Pending { .. }
+    ))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct UsageSyncError(&'static str);
@@ -342,7 +391,7 @@ pub(crate) enum AcknowledgementOutcome {
 pub(crate) struct UsageSyncAcknowledgement {
     pub(crate) provider: CodingProvider,
     pub(crate) ranking_day: String,
-    /// This is the committed server revision for a stale outcome.
+    /// This is the revision that resolved the submitted stale payload.
     pub(crate) revision: u64,
     pub(crate) outcome: AcknowledgementOutcome,
 }
@@ -375,6 +424,8 @@ impl ProviderSettingsAcknowledgement {
 pub(crate) struct UsageSyncAcknowledgements {
     pub(crate) provider_settings: Option<ProviderSettingsAcknowledgement>,
     pub(crate) usage: Vec<UsageSyncAcknowledgement>,
+    /// True only after `sync:dailyUsage` returns a parsed success value.
+    pub(crate) usage_mutation_completed: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -403,6 +454,8 @@ pub(crate) struct PendingUsageBatch {
     provider_settings: Option<ProviderSettingsSnapshot>,
     snapshots: Vec<UsageSyncSnapshot>,
     transfer_day_carryover: Option<TransferDayCarryover>,
+    profile_backfill_anchor: Option<String>,
+    retained_history: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -454,13 +507,28 @@ impl PendingUsageBatch {
         !self.snapshots.is_empty()
     }
 
-    pub(crate) fn is_for_current_utc_day(&self, now: OffsetDateTime) -> bool {
+    pub(crate) fn requires_usage_mutation(&self) -> bool {
+        self.has_usage_snapshots() || self.profile_backfill_anchor.is_some()
+    }
+
+    pub(crate) fn is_empty_profile_backfill(&self) -> bool {
+        self.snapshots.is_empty() && self.profile_backfill_anchor.is_some()
+    }
+
+    pub(crate) fn has_successful_current_day_acknowledgement(
+        &self,
+        acknowledgements: &[UsageSyncAcknowledgement],
+        now: OffsetDateTime,
+    ) -> bool {
         let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
-        !self.snapshots.is_empty()
-            && self
-                .snapshots
-                .iter()
-                .all(|snapshot| snapshot.ranking_day == ranking_day)
+        acknowledgements.iter().any(|acknowledgement| {
+            acknowledgement.ranking_day == ranking_day
+                && acknowledgement.outcome != AcknowledgementOutcome::Conflict
+                && self.snapshots.iter().any(|snapshot| {
+                    snapshot.provider == acknowledgement.provider
+                        && snapshot.ranking_day == acknowledgement.ranking_day
+                })
+        })
     }
 
     /// Add the Keychain value only at the transport boundary.
@@ -475,12 +543,17 @@ impl PendingUsageBatch {
         validate_generation(self.active_mac_generation)?;
         if let Some(carryover) = self.transfer_day_carryover.as_ref() {
             validate_transfer_day_carryover_batch(&self.snapshots, carryover, now)?;
+        } else if let Some(anchor_day) = self.profile_backfill_anchor.as_deref() {
+            validate_profile_backfill_batch(&self.snapshots, anchor_day, now)?;
+        } else if self.retained_history {
+            validate_retained_history_batch(&self.snapshots, now)?;
         } else {
             validate_current_day_batch(&self.snapshots, now)?;
         }
         Ok(UsageSyncMutationArgs {
             installation_credential,
             active_mac_generation: self.active_mac_generation,
+            profile_backfill_anchor: self.profile_backfill_anchor.as_deref(),
             snapshots: &self.snapshots,
         })
     }
@@ -516,6 +589,7 @@ impl PendingUsageBatch {
 pub(crate) struct UsageSyncMutationArgs<'a> {
     installation_credential: &'a str,
     active_mac_generation: u64,
+    profile_backfill_anchor: Option<&'a str>,
     snapshots: &'a [UsageSyncSnapshot],
 }
 
@@ -615,6 +689,11 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
              ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
              activated_at INTEGER NOT NULL
                  CHECK(activated_at >= 0 AND activated_at <= 9007199254740991),
+             profile_backfill_completed INTEGER NOT NULL DEFAULT 0
+                 CHECK(
+                     profile_backfill_completed IN (0, 1)
+                     AND (profile_backfill_completed = 0 OR active_generation = 1)
+                 ),
              FOREIGN KEY(active_generation)
                  REFERENCES usage_sync_generations(active_generation)
          ) STRICT;
@@ -705,6 +784,24 @@ pub(crate) fn install_usage_sync_schema(connection: &Connection) -> Result<(), U
     Ok(())
 }
 
+/// Add the generation-one Profile completion state to the released v6 schema.
+///
+/// SQLite keeps every existing activation row and gives it the pending value.
+/// The caller owns the transaction and the sanitized read-model version write.
+pub(crate) fn migrate_usage_sync_schema_from_v6(
+    connection: &Connection,
+) -> Result<(), UsageSyncError> {
+    connection.execute_batch(
+        "ALTER TABLE usage_sync_generation_activations
+         ADD COLUMN profile_backfill_completed INTEGER NOT NULL DEFAULT 0
+         CHECK(
+             profile_backfill_completed IN (0, 1)
+             AND (profile_backfill_completed = 0 OR active_generation = 1)
+         );",
+    )?;
+    install_usage_sync_schema(connection)
+}
+
 /// Restore the one generation that can still send or remain blocked.
 pub(crate) fn load_active_usage_sync_generation(
     connection: &Connection,
@@ -755,7 +852,8 @@ pub(crate) fn stage_usage_sync_corrections(
     let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
     validate_ranking_day(&ranking_day)?;
     transaction.execute(
-        "DELETE FROM usage_sync_correction_lineage WHERE ranking_day != ?1",
+        "DELETE FROM usage_sync_correction_lineage
+         WHERE ranking_day != ?1 AND consumed_generation IS NULL",
         [&ranking_day],
     )?;
     for (provider, correction) in &corrections.0 {
@@ -840,6 +938,127 @@ fn consume_staged_usage_sync_correction(
     )?;
     if updated != 1 {
         return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParserCorrectionLineage {
+    source_revision: u64,
+    consumed_generation: Option<u64>,
+}
+
+fn load_parser_correction_lineage(
+    connection: &Connection,
+    provider: CodingProvider,
+    ranking_day: &str,
+) -> Result<Option<ParserCorrectionLineage>, UsageSyncError> {
+    validate_ranking_day(ranking_day)?;
+    let lineage = connection
+        .query_row(
+            "SELECT source_revision, consumed_generation
+             FROM usage_sync_correction_lineage
+             WHERE provider = ?1 AND ranking_day = ?2
+               AND reason = 'parser-correction'",
+            params![provider_database_value(provider), ranking_day],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()?;
+    lineage
+        .map(|(source_revision, consumed_generation)| {
+            let source_revision =
+                u64::try_from(source_revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+            validate_revision(source_revision).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+            let consumed_generation = consumed_generation
+                .map(|generation| {
+                    let generation = u64::try_from(generation)
+                        .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+                    validate_generation(generation)
+                        .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+                    Ok::<u64, UsageSyncError>(generation)
+                })
+                .transpose()?;
+            Ok(ParserCorrectionLineage {
+                source_revision,
+                consumed_generation,
+            })
+        })
+        .transpose()
+}
+
+fn record_parser_correction_source_revision(
+    transaction: &Transaction<'_>,
+    provider: CodingProvider,
+    ranking_day: &str,
+    source_revision: u64,
+    active_mac_generation: u64,
+) -> Result<(), UsageSyncError> {
+    validate_ranking_day(ranking_day)?;
+    validate_revision(source_revision)?;
+    validate_generation(active_mac_generation)?;
+    transaction.execute(
+        "INSERT INTO usage_sync_correction_lineage(
+             provider, ranking_day, source_revision, reason, consumed_generation
+         ) VALUES(?1, ?2, ?3, 'parser-correction', ?4)
+         ON CONFLICT(provider, ranking_day) DO UPDATE SET
+             source_revision=excluded.source_revision,
+             consumed_generation=CASE
+                 WHEN excluded.source_revision > usage_sync_correction_lineage.source_revision
+                     THEN excluded.consumed_generation
+                 WHEN usage_sync_correction_lineage.consumed_generation IS NULL
+                     THEN excluded.consumed_generation
+                 ELSE usage_sync_correction_lineage.consumed_generation
+             END
+         WHERE excluded.source_revision >= usage_sync_correction_lineage.source_revision",
+        params![
+            provider_database_value(provider),
+            ranking_day,
+            to_database_integer(source_revision)?,
+            to_database_integer(active_mac_generation)?
+        ],
+    )?;
+    Ok(())
+}
+
+fn unconsumed_parser_correction_revision(
+    connection: &Connection,
+    daily: &ProviderDailyUsage,
+) -> Result<Option<u64>, UsageSyncError> {
+    let Some(ProviderCorrection::ParserCorrection { source_revision }) = daily.correction else {
+        return Ok(None);
+    };
+    validate_revision(source_revision)?;
+    let ranking_day = daily.day.to_string();
+    let known = load_parser_correction_lineage(connection, daily.provider, &ranking_day)?;
+    Ok(known
+        .is_none_or(|lineage| {
+            source_revision > lineage.source_revision
+                || (source_revision == lineage.source_revision
+                    && lineage.consumed_generation.is_none())
+        })
+        .then_some(source_revision))
+}
+
+fn record_parser_correction_if_queued(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    daily: &ProviderDailyUsage,
+    source_revision: Option<u64>,
+    update: &QueueUpdate,
+) -> Result<(), UsageSyncError> {
+    if let Some(source_revision) = source_revision
+        && matches!(
+            update,
+            QueueUpdate::Stored { .. } | QueueUpdate::Unchanged { .. }
+        )
+    {
+        record_parser_correction_source_revision(
+            transaction,
+            daily.provider,
+            &daily.day.to_string(),
+            source_revision,
+            active_mac_generation,
+        )?;
     }
     Ok(())
 }
@@ -1139,21 +1358,44 @@ pub(crate) fn capture_generation_baselines(
          ON CONFLICT(active_generation) DO NOTHING",
         params![generation, ranking_day, database_activated_at],
     )? == 1;
-    let (activation_day, stored_activated_at) = transaction.query_row(
-        "SELECT ranking_day, activated_at FROM usage_sync_generation_activations
+    let (activation_day, stored_activated_at, profile_backfill_completed) = transaction.query_row(
+        "SELECT ranking_day, activated_at, profile_backfill_completed
+         FROM usage_sync_generation_activations
          WHERE active_generation = ?1",
         [generation],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
     )?;
     validate_ranking_day(&activation_day).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
     let stored_activated_at =
         u64::try_from(stored_activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
     validate_safe_integer(stored_activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
-    if activation_day != ranking_day || stored_activated_at != requested_activated_at {
+    if activation_day != ranking_day {
         return Err(UsageSyncError::STORAGE_UNAVAILABLE);
     }
     if active_mac_generation == 1 {
-        return Ok(());
+        return match generation_one_profile_backfill_state(
+            stored_activated_at,
+            profile_backfill_completed,
+        )? {
+            GenerationOneProfileBackfillState::Pending { activated_at }
+                if activated_at == requested_activated_at =>
+            {
+                Ok(())
+            }
+            GenerationOneProfileBackfillState::Complete => Ok(()),
+            GenerationOneProfileBackfillState::Pending { .. } => {
+                Err(UsageSyncError::STORAGE_UNAVAILABLE)
+            }
+        };
+    }
+    if stored_activated_at != requested_activated_at {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
     }
     if activated_at.to_offset(UtcOffset::UTC).date() != now.to_offset(UtcOffset::UTC).date() {
         if activation_inserted {
@@ -1376,8 +1618,90 @@ fn segment_cost(
     })
 }
 
+/// The caller states why it needs a new ledger projection. This module owns
+/// the history window, provider scope, and queue order for that request.
+#[derive(Clone, Copy)]
+pub(crate) enum UsageQueueRequest<'a> {
+    Refresh(&'a UsageSyncCorrections),
+    ProfileActivation { anchor_day: time::Date },
+    AfterAcknowledgement,
+}
+
+/// Project all eligible provider-day facts in one caller-owned transaction.
+pub(crate) fn queue_usage_for_commit(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    state: &SanitizedDesktopStateV3,
+    now: OffsetDateTime,
+    enabled_providers: &BTreeSet<CodingProvider>,
+    request: UsageQueueRequest<'_>,
+) -> Result<Vec<QueueUpdate>, UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    let profile_backfill_is_pending =
+        active_mac_generation == 1 && generation_one_profile_backfill_is_pending(transaction)?;
+    let mut updates = Vec::new();
+
+    match request {
+        UsageQueueRequest::ProfileActivation { anchor_day } if active_mac_generation == 1 => {
+            let history = load_daily_usage_history(transaction, now, anchor_day, 30)
+                .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+            updates.extend(queue_profile_backfill(
+                transaction,
+                active_mac_generation,
+                &history,
+                anchor_day,
+                now,
+            )?);
+        }
+        UsageQueueRequest::Refresh(_) if active_mac_generation == 1 => {
+            if !profile_backfill_is_pending {
+                let today = now.to_offset(UtcOffset::UTC).date();
+                let history = load_daily_usage_history(transaction, now, today, 60)
+                    .map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+                updates.extend(queue_retained_history_corrections(
+                    transaction,
+                    active_mac_generation,
+                    &history,
+                    now,
+                    enabled_providers,
+                )?);
+            }
+        }
+        UsageQueueRequest::Refresh(_)
+        | UsageQueueRequest::ProfileActivation { .. }
+        | UsageQueueRequest::AfterAcknowledgement => {}
+    }
+
+    let all_providers = PROVIDER_REGISTRY
+        .iter()
+        .map(|descriptor| descriptor.provider)
+        .collect::<BTreeSet<_>>();
+    let current_providers = if profile_backfill_is_pending {
+        &all_providers
+    } else {
+        enabled_providers
+    };
+    let no_corrections = UsageSyncCorrections::default();
+    let corrections = match request {
+        UsageQueueRequest::Refresh(corrections) => corrections,
+        UsageQueueRequest::ProfileActivation { .. } | UsageQueueRequest::AfterAcknowledgement => {
+            &no_corrections
+        }
+    };
+    updates.extend(queue_current_utc_day_with_corrections(
+        transaction,
+        active_mac_generation,
+        state,
+        now,
+        corrections,
+        current_providers,
+    )?);
+    Ok(updates)
+}
+
 /// Store all current-day candidates in one caller-owned transaction.
-pub(crate) fn queue_current_utc_day(
+#[cfg(test)]
+fn queue_current_utc_day(
     transaction: &Transaction<'_>,
     active_mac_generation: u64,
     state: &SanitizedDesktopStateV3,
@@ -1394,7 +1718,7 @@ pub(crate) fn queue_current_utc_day(
     )
 }
 
-pub(crate) fn queue_current_utc_day_with_corrections(
+fn queue_current_utc_day_with_corrections(
     transaction: &Transaction<'_>,
     active_mac_generation: u64,
     state: &SanitizedDesktopStateV3,
@@ -1445,6 +1769,269 @@ pub(crate) fn queue_current_utc_day_with_corrections(
     Ok(updates)
 }
 
+/// Store the one sparse generation-one Profile backfill in the caller's transaction.
+fn queue_profile_backfill(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    history: &[ProviderDailyUsage],
+    anchor_day: time::Date,
+    now: OffsetDateTime,
+) -> Result<Vec<QueueUpdate>, UsageSyncError> {
+    if active_mac_generation != 1 || history.len() > 60 {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    if anchor_day > now.to_offset(UtcOffset::UTC).date() {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    validate_generation(active_mac_generation)?;
+    let anchor_day_value = anchor_day.to_string();
+    let stored_activation = transaction
+        .query_row(
+            "SELECT ranking_day, activated_at, profile_backfill_completed
+             FROM usage_sync_generation_activations
+             WHERE active_generation = ?1",
+            [to_database_integer(active_mac_generation)?],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((stored_anchor, stored_activation, profile_backfill_completed)) = stored_activation
+    else {
+        return Err(UsageSyncError::INVALID_VALUE);
+    };
+    let stored_activation =
+        u64::try_from(stored_activation).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    if stored_anchor != anchor_day_value
+        || generation_one_profile_backfill_state(stored_activation, profile_backfill_completed)?
+            == GenerationOneProfileBackfillState::Complete
+    {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    prune_expired_usage_sync_rows(transaction, now)?;
+    let first_day = anchor_day
+        .checked_sub(Duration::days(29))
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    let mut keys = BTreeSet::new();
+    let mut updates = Vec::with_capacity(history.len());
+    for daily in history {
+        if daily.day < first_day
+            || daily.day > anchor_day
+            || !keys.insert((daily.provider, daily.day))
+        {
+            return Err(UsageSyncError::INVALID_VALUE);
+        }
+        let Some(mut aggregate) = aggregate_from_total_with_day_policy(
+            daily.provider,
+            daily.day.to_string(),
+            &daily.total,
+            false,
+        )?
+        else {
+            continue;
+        };
+        let correction_source_revision = unconsumed_parser_correction_revision(transaction, daily)?;
+        aggregate.correction_reason = correction_source_revision
+            .is_some()
+            .then_some(CorrectionReason::ParserCorrection);
+        validate_profile_backfill_aggregate(&aggregate, anchor_day, now)?;
+        let update =
+            queue_validated_daily_aggregate(transaction, active_mac_generation, aggregate)?;
+        record_parser_correction_if_queued(
+            transaction,
+            active_mac_generation,
+            daily,
+            correction_source_revision,
+            &update,
+        )?;
+        updates.push(update);
+    }
+    Ok(updates)
+}
+
+/// Queue higher-revision corrections for retained generation-one days.
+///
+/// A day that was missing from the atomic Profile backfill stays missing. A
+/// disappearing local day also leaves the last accepted aggregate unchanged.
+fn queue_retained_history_corrections(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+    history: &[ProviderDailyUsage],
+    now: OffsetDateTime,
+    enabled_providers: &BTreeSet<CodingProvider>,
+) -> Result<Vec<QueueUpdate>, UsageSyncError> {
+    if active_mac_generation != 1 {
+        return Ok(Vec::new());
+    }
+    if history.len() > 120 {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    let initial_backfill_is_pending = generation_one_profile_backfill_is_pending(transaction)?;
+    if initial_backfill_is_pending {
+        return Ok(Vec::new());
+    }
+    prune_expired_usage_sync_rows(transaction, now)?;
+    let today = now.to_offset(UtcOffset::UTC).date();
+    let first_day = today
+        .checked_sub(Duration::days(USAGE_HISTORY_RETENTION_DAYS - 1))
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    let mut keys = BTreeSet::new();
+    let mut updates = Vec::new();
+    for daily in history {
+        if !enabled_providers.contains(&daily.provider) || daily.day == today {
+            continue;
+        }
+        if daily.day < first_day || daily.day > today || !keys.insert((daily.provider, daily.day)) {
+            return Err(UsageSyncError::INVALID_VALUE);
+        }
+        let Some(existing) = load_aggregate(
+            transaction,
+            active_mac_generation,
+            daily.provider,
+            &daily.day.to_string(),
+        )?
+        else {
+            continue;
+        };
+        let Some(mut aggregate) = aggregate_from_total_with_day_policy(
+            daily.provider,
+            daily.day.to_string(),
+            &daily.total,
+            false,
+        )?
+        else {
+            continue;
+        };
+        let correction_source_revision = unconsumed_parser_correction_revision(transaction, daily)?;
+        aggregate.correction_reason = correction_source_revision
+            .is_some()
+            .then_some(CorrectionReason::ParserCorrection);
+        if pending_in_day_snapshot_precedes_late_history(
+            transaction,
+            active_mac_generation,
+            daily,
+            aggregate.observed_at,
+        )? {
+            continue;
+        }
+        preserve_retained_cost(&existing.aggregate, &mut aggregate)?;
+        validate_retained_history_aggregate(&aggregate, now)?;
+        let update =
+            queue_validated_daily_aggregate(transaction, active_mac_generation, aggregate)?;
+        record_parser_correction_if_queued(
+            transaction,
+            active_mac_generation,
+            daily,
+            correction_source_revision,
+            &update,
+        )?;
+        updates.push(update);
+    }
+    Ok(updates)
+}
+
+fn pending_in_day_snapshot_precedes_late_history(
+    connection: &Connection,
+    active_mac_generation: u64,
+    daily: &ProviderDailyUsage,
+    candidate_observed_at: u64,
+) -> Result<bool, UsageSyncError> {
+    let Some(pending) = load_outbox_snapshot(
+        connection,
+        active_mac_generation,
+        daily.provider,
+        &daily.day.to_string(),
+    )?
+    else {
+        return Ok(false);
+    };
+    let terminal_conflict = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM usage_sync_terminal_conflicts
+             WHERE active_generation = ?1
+               AND provider = ?2
+               AND ranking_day = ?3
+               AND revision = ?4
+         )",
+        params![
+            to_database_integer(active_mac_generation)?,
+            provider_database_value(daily.provider),
+            daily.day.to_string(),
+            to_database_integer(pending.revision)?
+        ],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if terminal_conflict {
+        return Ok(false);
+    }
+    let day_start = daily
+        .day
+        .with_hms(0, 0, 0)
+        .map_err(|_| UsageSyncError::INVALID_VALUE)?
+        .assume_utc();
+    let next_day = daily
+        .day
+        .checked_add(Duration::days(1))
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    let next_day_start = next_day
+        .with_hms(0, 0, 0)
+        .map_err(|_| UsageSyncError::INVALID_VALUE)?
+        .assume_utc();
+    let earliest_millis = offset_date_time_millis(day_start)?;
+    let latest_millis = offset_date_time_millis(next_day_start)?;
+    Ok(
+        (earliest_millis..latest_millis).contains(&pending.observed_at)
+            && candidate_observed_at >= latest_millis,
+    )
+}
+
+fn preserve_retained_cost(
+    existing: &DailyUsageAggregate,
+    candidate: &mut DailyUsageAggregate,
+) -> Result<(), UsageSyncError> {
+    if candidate.api_equivalent_cost.is_some() {
+        return Ok(());
+    }
+    let Some(previous) = existing.api_equivalent_cost.as_ref() else {
+        return Ok(());
+    };
+    let previous_quality = match previous.quality {
+        SyncCostQuality::Reconciled => ApiEquivalentCostQuality::Reconciled,
+        SyncCostQuality::Modeled => ApiEquivalentCostQuality::Modeled,
+        SyncCostQuality::LocalOnly => ApiEquivalentCostQuality::LocalOnly,
+    };
+    let Some(projection) = project_retained_cost(
+        previous.micros as f64,
+        existing.observed_tokens,
+        Some(previous_quality),
+        previous.coverage_percent,
+        candidate.observed_tokens,
+    ) else {
+        return Ok(());
+    };
+    let scaled = projection.amount.round();
+    if !scaled.is_finite() || scaled < 0.0 || scaled > MAX_SAFE_INTEGER as f64 {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    let quality = match projection.quality {
+        Some(ApiEquivalentCostQuality::Reconciled) => SyncCostQuality::Reconciled,
+        Some(ApiEquivalentCostQuality::Modeled) => SyncCostQuality::Modeled,
+        Some(ApiEquivalentCostQuality::LocalOnly) => SyncCostQuality::LocalOnly,
+        None => return Err(UsageSyncError::INVALID_VALUE),
+    };
+    candidate.api_equivalent_cost = Some(SyncApiEquivalentCost {
+        micros: scaled as u64,
+        pricing_basis: previous.pricing_basis.clone(),
+        quality,
+        coverage_percent: projection.coverage_percent,
+    });
+    Ok(())
+}
+
 /// Store one validated aggregate and its latest cumulative outbox revision.
 ///
 /// Both writes use the supplied transaction. A blocked generation stays
@@ -1490,6 +2077,14 @@ fn queue_validated_daily_aggregate(
                 || aggregate.correction_reason == existing.aggregate.correction_reason)
         {
             return Ok(QueueUpdate::Unchanged {
+                provider: aggregate.provider,
+                revision: existing.revision,
+            });
+        }
+        if existing.aggregate.evidence_basis == SyncEvidenceBasis::ProviderReported
+            && aggregate.evidence_basis == SyncEvidenceBasis::LocallyDerived
+        {
+            return Ok(QueueUpdate::Stale {
                 provider: aggregate.provider,
                 revision: existing.revision,
             });
@@ -1860,7 +2455,15 @@ pub(crate) fn load_pending_usage_batch(
     connection: &Connection,
     active_mac_generation: u64,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
-    load_pending_usage_batch_for_day(connection, active_mac_generation, None, None, None)
+    load_pending_usage_batch_for_day(
+        connection,
+        active_mac_generation,
+        None,
+        None,
+        None,
+        None,
+        false,
+    )
 }
 
 fn load_transfer_day_carryover_kind(
@@ -1913,30 +2516,100 @@ fn load_transfer_day_carryover_kind(
     Ok(Some(kind))
 }
 
-/// Load one activation-day carryover before the current UTC Ranking Day.
-/// All other historical rows remain outside the issue #26 transport contract.
-pub(crate) fn load_current_pending_usage_batch(
+/// Load the next bounded Profile backfill, historical retry, transfer
+/// carryover, or current UTC day batch.
+pub(crate) fn load_next_pending_usage_batch(
     connection: &Connection,
     active_mac_generation: u64,
     now: OffsetDateTime,
     enabled_providers: &BTreeSet<CodingProvider>,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
+    if load_usage_sync_generation_state(connection, active_mac_generation)?
+        != Some(QueueState::Pending)
+    {
+        return Ok(None);
+    }
     let ranking_day = now.to_offset(UtcOffset::UTC).date().to_string();
     validate_ranking_day(&ranking_day)?;
     let activation = connection
         .query_row(
-            "SELECT ranking_day, activated_at
+            "SELECT ranking_day, activated_at, profile_backfill_completed
              FROM usage_sync_generation_activations
              WHERE active_generation = ?1",
             [to_database_integer(active_mac_generation)?],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
         )
         .optional()?;
-    if let Some((activation_day, activated_at)) = activation {
+    if let Some((activation_day, activated_at, profile_backfill_completed)) = activation {
         validate_ranking_day(&activation_day).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
         let activated_at =
             u64::try_from(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
         validate_safe_integer(activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+        if active_mac_generation == 1 {
+            if generation_one_profile_backfill_state(activated_at, profile_backfill_completed)?
+                != GenerationOneProfileBackfillState::Complete
+            {
+                return load_pending_usage_batch_for_day(
+                    connection,
+                    active_mac_generation,
+                    None,
+                    None,
+                    None,
+                    Some(activation_day),
+                    false,
+                );
+            }
+            let retained_day = connection
+                .query_row(
+                    "SELECT ranking_day
+                     FROM usage_sync_latest_outbox
+                     WHERE active_generation = 1
+                       AND queue_state = 'active'
+                       AND ranking_day < ?1
+                       AND (revision > 1 OR ranking_day > ?4)
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM usage_sync_terminal_conflicts AS terminal_conflict
+                           WHERE terminal_conflict.active_generation =
+                                     usage_sync_latest_outbox.active_generation
+                             AND terminal_conflict.provider = usage_sync_latest_outbox.provider
+                             AND terminal_conflict.ranking_day =
+                                     usage_sync_latest_outbox.ranking_day
+                             AND terminal_conflict.revision = usage_sync_latest_outbox.revision
+                       )
+                       AND (
+                           (provider = 'codex' AND ?2 = 1)
+                           OR (provider = 'claude' AND ?3 = 1)
+                       )
+                     ORDER BY ranking_day
+                     LIMIT 1",
+                    params![
+                        ranking_day,
+                        i64::from(enabled_providers.contains(&CodingProvider::Codex)),
+                        i64::from(enabled_providers.contains(&CodingProvider::Claude)),
+                        activation_day
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            if let Some(retained_day) = retained_day {
+                return load_pending_usage_batch_for_day(
+                    connection,
+                    active_mac_generation,
+                    Some(&retained_day),
+                    Some(enabled_providers),
+                    None,
+                    None,
+                    true,
+                );
+            }
+        }
         if activation_day < ranking_day
             && let Some(kind) = load_transfer_day_carryover_kind(
                 connection,
@@ -1956,6 +2629,8 @@ pub(crate) fn load_current_pending_usage_batch(
                 Some(&activation_day),
                 Some(enabled_providers),
                 Some(carryover),
+                None,
+                false,
             )?;
             if let Some(batch) = pending.filter(PendingUsageBatch::has_usage_snapshots) {
                 validate_transfer_day_carryover_batch(
@@ -1977,6 +2652,8 @@ pub(crate) fn load_current_pending_usage_batch(
         Some(&ranking_day),
         Some(enabled_providers),
         None,
+        None,
+        false,
     )
 }
 
@@ -2025,6 +2702,8 @@ fn load_pending_usage_batch_for_day(
     ranking_day: Option<&str>,
     enabled_providers: Option<&BTreeSet<CodingProvider>>,
     transfer_day_carryover: Option<TransferDayCarryover>,
+    profile_backfill_anchor: Option<String>,
+    retained_history: bool,
 ) -> Result<Option<PendingUsageBatch>, UsageSyncError> {
     validate_generation(active_mac_generation)?;
     let provider_settings = load_pending_provider_settings(connection, active_mac_generation)?;
@@ -2038,6 +2717,13 @@ fn load_pending_usage_batch_for_day(
          WHERE active_generation = ?1
            AND queue_state = 'active'
            AND (?2 IS NULL OR ranking_day = ?2)
+           AND (
+               ?5 IS NULL
+               OR (
+                   ranking_day >= date(?5, '-29 days')
+                   AND ranking_day <= ?5
+               )
+           )
            AND (
                ?3 = 0
                OR EXISTS (
@@ -2067,7 +2753,8 @@ fn load_pending_usage_batch_for_day(
             to_database_integer(active_mac_generation)?,
             ranking_day,
             i64::from(transfer_day_carryover.is_some()),
-            carryover_kind
+            carryover_kind,
+            profile_backfill_anchor.as_deref()
         ],
         |row| {
             Ok((
@@ -2122,7 +2809,7 @@ fn load_pending_usage_batch_for_day(
         }
         snapshots.push(snapshot);
     }
-    if snapshots.is_empty() && provider_settings.is_none() {
+    if snapshots.is_empty() && provider_settings.is_none() && profile_backfill_anchor.is_none() {
         return Ok(None);
     }
     if !snapshots.is_empty() {
@@ -2133,6 +2820,8 @@ fn load_pending_usage_batch_for_day(
         provider_settings,
         snapshots,
         transfer_day_carryover,
+        profile_backfill_anchor,
+        retained_history,
     }))
 }
 
@@ -2145,7 +2834,7 @@ pub(crate) fn parse_usage_acknowledgements(
     }
     let acknowledgements: Vec<UsageSyncAcknowledgement> =
         serde_json::from_slice(bytes).map_err(|_| UsageSyncError::INVALID_RESPONSE)?;
-    if acknowledgements.is_empty() || acknowledgements.len() > MAX_USAGE_SYNC_BATCH {
+    if acknowledgements.len() > MAX_USAGE_SYNC_BATCH {
         return Err(UsageSyncError::INVALID_RESPONSE);
     }
     let mut keys = BTreeSet::new();
@@ -2177,15 +2866,23 @@ pub(crate) fn parse_provider_settings_acknowledgement(
 ///
 /// A committed, conflict, or idempotent acknowledgement must name the
 /// submitted revision. A conflict stores a terminal marker and keeps the
-/// uncommitted payload. A stale acknowledgement names the same or a newer
-/// server revision. Each write uses the submitted revision. Therefore, a late
-/// response cannot remove or stop a newer local revision.
+/// uncommitted payload. An equal-revision stale acknowledgement resolves the
+/// submitted payload. A higher stale revision establishes a new local revision
+/// floor. Each write uses the submitted revision. Therefore, a late response
+/// cannot remove or stop a newer local revision.
 pub(crate) fn apply_usage_acknowledgements(
     transaction: &Transaction<'_>,
     batch: &PendingUsageBatch,
     acknowledgements: &[UsageSyncAcknowledgement],
 ) -> Result<usize, UsageSyncError> {
     validate_generation(batch.active_mac_generation)?;
+    if batch.snapshots.is_empty() {
+        if !batch.is_empty_profile_backfill() || !acknowledgements.is_empty() {
+            return Err(UsageSyncError::INVALID_RESPONSE);
+        }
+        mark_profile_backfill_complete(transaction, batch)?;
+        return Ok(0);
+    }
     validate_batch(&batch.snapshots)?;
     if acknowledgements.len() != batch.snapshots.len() {
         return Err(UsageSyncError::INVALID_RESPONSE);
@@ -2304,6 +3001,7 @@ pub(crate) fn apply_usage_acknowledgements(
                 )?;
                 if acknowledgement.outcome == AcknowledgementOutcome::Stale
                     && !resolves_zero_carryover
+                    && acknowledgement.revision > snapshot.revision
                 {
                     advance_local_revision_floor(
                         transaction,
@@ -2316,7 +3014,64 @@ pub(crate) fn apply_usage_acknowledgements(
             }
         }
     }
+    if batch.profile_backfill_anchor.is_some() {
+        mark_profile_backfill_complete(transaction, batch)?;
+    }
     Ok(applied)
+}
+
+fn mark_profile_backfill_complete(
+    transaction: &Transaction<'_>,
+    batch: &PendingUsageBatch,
+) -> Result<(), UsageSyncError> {
+    let Some(anchor_day) = batch.profile_backfill_anchor.as_deref() else {
+        return Err(UsageSyncError::INVALID_VALUE);
+    };
+    if batch.active_mac_generation != 1 {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    validate_ranking_day(anchor_day)?;
+    let activation = transaction
+        .query_row(
+            "SELECT ranking_day, activated_at, profile_backfill_completed
+             FROM usage_sync_generation_activations
+             WHERE active_generation = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((stored_anchor, stored_activated_at, profile_backfill_completed)) = activation else {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    };
+    if stored_anchor != anchor_day {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    let stored_activated_at =
+        u64::try_from(stored_activated_at).map_err(|_| UsageSyncError::STORAGE_UNAVAILABLE)?;
+    if generation_one_profile_backfill_state(stored_activated_at, profile_backfill_completed)?
+        == GenerationOneProfileBackfillState::Complete
+    {
+        return Ok(());
+    }
+    let updated = transaction.execute(
+        "UPDATE usage_sync_generation_activations
+         SET profile_backfill_completed = 1
+         WHERE active_generation = 1
+           AND ranking_day = ?1
+           AND activated_at = ?2
+           AND profile_backfill_completed = 0",
+        params![anchor_day, to_database_integer(stored_activated_at)?],
+    )?;
+    if updated != 1 {
+        return Err(UsageSyncError::STORAGE_UNAVAILABLE);
+    }
+    Ok(())
 }
 
 fn load_submitted_transfer_day_carryover_kind(
@@ -2619,6 +3374,15 @@ fn aggregate_from_total(
     ranking_day: String,
     total: &UsageTotal,
 ) -> Result<Option<DailyUsageAggregate>, UsageSyncError> {
+    aggregate_from_total_with_day_policy(provider, ranking_day, total, true)
+}
+
+fn aggregate_from_total_with_day_policy(
+    provider: CodingProvider,
+    ranking_day: String,
+    total: &UsageTotal,
+    observed_at_must_be_in_ranking_day: bool,
+) -> Result<Option<DailyUsageAggregate>, UsageSyncError> {
     let (
         evidence_basis,
         coverage,
@@ -2663,7 +3427,9 @@ fn aggregate_from_total(
         ),
     };
     let observed_at = parse_observed_at(observed_at)?;
-    if observed_at.to_offset(UtcOffset::UTC).date().to_string() != ranking_day {
+    if observed_at_must_be_in_ranking_day
+        && observed_at.to_offset(UtcOffset::UTC).date().to_string() != ranking_day
+    {
         return Ok(None);
     }
     let observed_at = offset_date_time_millis(observed_at)?;
@@ -2931,6 +3697,119 @@ fn validate_current_day_batch(
     Ok(())
 }
 
+fn validate_profile_backfill_batch(
+    snapshots: &[UsageSyncSnapshot],
+    anchor_day: &str,
+    now: OffsetDateTime,
+) -> Result<(), UsageSyncError> {
+    if snapshots.len() > 60 {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    if !snapshots.is_empty() {
+        validate_batch(snapshots)?;
+    }
+    let anchor_day = parse_ranking_day_value(anchor_day)?;
+    if anchor_day > now.to_offset(UtcOffset::UTC).date() {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    for snapshot in snapshots {
+        validate_profile_backfill_aggregate(&snapshot.as_aggregate(), anchor_day, now)?;
+    }
+    Ok(())
+}
+
+fn validate_profile_backfill_aggregate(
+    aggregate: &DailyUsageAggregate,
+    anchor_day: time::Date,
+    now: OffsetDateTime,
+) -> Result<(), UsageSyncError> {
+    aggregate.validate()?;
+    let ranking_day = parse_ranking_day_value(&aggregate.ranking_day)?;
+    let first_day = anchor_day
+        .checked_sub(Duration::days(29))
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    if anchor_day > now.to_offset(UtcOffset::UTC).date()
+        || ranking_day < first_day
+        || ranking_day > anchor_day
+    {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    let day_start = ranking_day
+        .with_hms(0, 0, 0)
+        .map_err(|_| UsageSyncError::INVALID_VALUE)?
+        .assume_utc();
+    let earliest_millis = offset_date_time_millis(day_start)?;
+    let latest_millis = offset_date_time_millis(now)?
+        .checked_add(FUTURE_OBSERVATION_TOLERANCE_MILLIS)
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    if aggregate.observed_at < earliest_millis || aggregate.observed_at > latest_millis {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    Ok(())
+}
+
+fn validate_retained_history_aggregate(
+    aggregate: &DailyUsageAggregate,
+    now: OffsetDateTime,
+) -> Result<(), UsageSyncError> {
+    aggregate.validate()?;
+    let ranking_day = parse_ranking_day_value(&aggregate.ranking_day)?;
+    let today = now.to_offset(UtcOffset::UTC).date();
+    let first_day = today
+        .checked_sub(Duration::days(USAGE_HISTORY_RETENTION_DAYS - 1))
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    if ranking_day < first_day || ranking_day >= today {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    let day_start = ranking_day
+        .with_hms(0, 0, 0)
+        .map_err(|_| UsageSyncError::INVALID_VALUE)?
+        .assume_utc();
+    let earliest_millis = offset_date_time_millis(day_start)?;
+    let latest_millis = offset_date_time_millis(now)?
+        .checked_add(FUTURE_OBSERVATION_TOLERANCE_MILLIS)
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    if aggregate.observed_at < earliest_millis || aggregate.observed_at > latest_millis {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    Ok(())
+}
+
+fn validate_retained_history_batch(
+    snapshots: &[UsageSyncSnapshot],
+    now: OffsetDateTime,
+) -> Result<(), UsageSyncError> {
+    validate_batch(snapshots)?;
+    for snapshot in snapshots {
+        validate_retained_history_aggregate(&snapshot.as_aggregate(), now)?;
+        if snapshot.revision == 1 {
+            validate_delayed_current_day_retry(snapshot)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_delayed_current_day_retry(snapshot: &UsageSyncSnapshot) -> Result<(), UsageSyncError> {
+    let ranking_day = parse_ranking_day_value(&snapshot.ranking_day)?;
+    let day_start = ranking_day
+        .with_hms(0, 0, 0)
+        .map_err(|_| UsageSyncError::INVALID_VALUE)?
+        .assume_utc();
+    let next_day = ranking_day
+        .checked_add(Duration::days(1))
+        .ok_or(UsageSyncError::INVALID_VALUE)?;
+    let next_day_start = next_day
+        .with_hms(0, 0, 0)
+        .map_err(|_| UsageSyncError::INVALID_VALUE)?
+        .assume_utc();
+    let earliest_millis = offset_date_time_millis(day_start)?;
+    let latest_millis = offset_date_time_millis(next_day_start)?;
+    if snapshot.observed_at < earliest_millis || snapshot.observed_at >= latest_millis {
+        return Err(UsageSyncError::INVALID_VALUE);
+    }
+    Ok(())
+}
+
 fn validate_transfer_day_carryover_batch(
     snapshots: &[UsageSyncSnapshot],
     carryover: &TransferDayCarryover,
@@ -3102,7 +3981,7 @@ fn to_database_integer(value: u64) -> Result<i64, UsageSyncError> {
     i64::try_from(value).map_err(|_| UsageSyncError::INVALID_VALUE)
 }
 
-fn validate_ranking_day(value: &str) -> Result<(), UsageSyncError> {
+fn parse_ranking_day_value(value: &str) -> Result<time::Date, UsageSyncError> {
     let bytes = value.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'
@@ -3124,9 +4003,11 @@ fn validate_ranking_day(value: &str) -> Result<(), UsageSyncError> {
         .parse::<u8>()
         .map_err(|_| UsageSyncError::INVALID_VALUE)?;
     let month = time::Month::try_from(month).map_err(|_| UsageSyncError::INVALID_VALUE)?;
-    time::Date::from_calendar_date(year, month, day)
-        .map(|_| ())
-        .map_err(|_| UsageSyncError::INVALID_VALUE)
+    time::Date::from_calendar_date(year, month, day).map_err(|_| UsageSyncError::INVALID_VALUE)
+}
+
+fn validate_ranking_day(value: &str) -> Result<(), UsageSyncError> {
+    parse_ranking_day_value(value).map(|_| ())
 }
 
 fn parse_observed_at(value: &str) -> Result<OffsetDateTime, UsageSyncError> {
@@ -3155,7 +4036,10 @@ fn valid_pricing_basis(value: &str) -> bool {
 fn approved_pricing_basis(provider: CodingProvider, value: &str) -> bool {
     matches!(
         (provider, value),
-        (CodingProvider::Codex, "openai-api-2026-08-09-v3")
+        // Keep the bounded prior Codex catalog while a retained 60-day row
+        // can still prove the exact effective-dated cost basis.
+        (CodingProvider::Codex, "openai-standard-2026-08-06-v1")
+            | (CodingProvider::Codex, "openai-api-2026-08-09-v3")
             | (CodingProvider::Claude, "anthropic-standard-2026-08-07-v1")
     )
 }
@@ -3210,6 +4094,7 @@ mod tests {
     use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
     use super::*;
+    use crate::providers::ProviderDailyUsage;
     use crate::sanitized::{
         ProviderPresenceStatus, ProviderPresentation, ProviderSnapshot, SanitizedProfileOutcome,
         SyncState, SyncStatus, TopModelUsage, UsagePeriods, UsageScanStatus,
@@ -3487,6 +4372,7 @@ mod tests {
             json!({
                 "installationCredential": INSTALLATION_CREDENTIAL,
                 "activeMacGeneration": 4,
+                "profileBackfillAnchor": null,
                 "snapshots": [
                     {
                         "provider": "claude",
@@ -3538,6 +4424,644 @@ mod tests {
         ] {
             assert!(!encoded.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn first_profile_backfill_queues_at_most_thirty_sparse_utc_days_for_both_providers() {
+        let mut connection = connection();
+        let state = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let anchor = now().date();
+        let history = (0..30)
+            .flat_map(|offset| {
+                [CodingProvider::Codex, CodingProvider::Claude].map(|provider| ProviderDailyUsage {
+                    provider,
+                    day: anchor - Duration::days(offset),
+                    total: total(
+                        match provider {
+                            CodingProvider::Codex => UsageEvidenceBasis::ProviderReported,
+                            CodingProvider::Claude => UsageEvidenceBasis::LocallyDerived,
+                        },
+                        100 + u64::try_from(offset).unwrap(),
+                        NOW,
+                        None,
+                    ),
+                    correction: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(history.len(), 60);
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+        let updates = queue_profile_backfill(&transaction, 1, &history, anchor, now()).unwrap();
+        assert_eq!(updates.len(), 60);
+        transaction.commit().unwrap();
+
+        let batch = load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch.snapshots().len(), 60);
+        assert_eq!(batch.snapshots()[0].ranking_day, "2026-07-10");
+        assert_eq!(batch.snapshots()[0].provider, CodingProvider::Claude);
+        assert_eq!(batch.snapshots()[1].provider, CodingProvider::Codex);
+        assert!(batch.mutation_args(INSTALLATION_CREDENTIAL, now()).is_ok());
+        let retry = load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry, batch);
+        let encoded =
+            serde_json::to_string(&retry.mutation_args(INSTALLATION_CREDENTIAL, now()).unwrap())
+                .unwrap();
+        for forbidden in [
+            "/Users/private",
+            "PRIVATE-CONTENT",
+            "PRIVATE-SESSION",
+            "private-model-name",
+            "provider-private-id",
+        ] {
+            assert!(!encoded.contains(forbidden));
+        }
+
+        let too_old = ProviderDailyUsage {
+            provider: CodingProvider::Codex,
+            day: anchor - Duration::days(30),
+            total: total(UsageEvidenceBasis::ProviderReported, 1, NOW, None),
+            correction: None,
+        };
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            queue_profile_backfill(&transaction, 1, &[too_old], anchor, now(),),
+            Err(UsageSyncError::INVALID_VALUE)
+        );
+    }
+
+    #[test]
+    fn profile_backfill_is_all_provider_bounded_and_durable_across_utc_rollover() {
+        let database = PersistentTestDatabase::new("profile-backfill-completion");
+        let mut connection = database.connect();
+        let state = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let anchor = now().date();
+        let history = vec![
+            ProviderDailyUsage {
+                provider: CodingProvider::Codex,
+                day: anchor - Duration::days(29),
+                total: total(UsageEvidenceBasis::ProviderReported, 10, NOW, None),
+                correction: None,
+            },
+            ProviderDailyUsage {
+                provider: CodingProvider::Claude,
+                day: anchor,
+                total: total(UsageEvidenceBasis::LocallyDerived, 20, NOW, None),
+                correction: None,
+            },
+        ];
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+        queue_profile_backfill(&transaction, 1, &history, anchor, now()).unwrap();
+        // This active row is outside the fixed Profile window and must not
+        // leak into that first atomic mutation.
+        let mut outside = aggregate(CodingProvider::Codex, 99, 1_000);
+        outside.ranking_day = (anchor - Duration::days(30)).to_string();
+        outside.observed_at = offset_date_time_millis(now() - Duration::days(30)).unwrap();
+        queue_validated_daily_aggregate(&transaction, 1, outside).unwrap();
+        transaction.commit().unwrap();
+
+        let next_day = now() + Duration::days(1);
+        let batch = load_next_pending_usage_batch(
+            &connection,
+            1,
+            next_day,
+            &BTreeSet::from([CodingProvider::Codex]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(batch.snapshots().len(), 2);
+        assert!(
+            batch
+                .snapshots()
+                .iter()
+                .any(|snapshot| snapshot.provider == CodingProvider::Claude)
+        );
+        assert!(
+            batch
+                .snapshots()
+                .iter()
+                .all(|snapshot| snapshot.ranking_day.as_str() >= "2026-07-10")
+        );
+        let value = serde_json::to_value(
+            batch
+                .mutation_args(INSTALLATION_CREDENTIAL, next_day)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["profileBackfillAnchor"], "2026-08-08");
+
+        let acknowledgements = batch
+            .snapshots()
+            .iter()
+            .map(|snapshot| {
+                acknowledgement(
+                    snapshot,
+                    AcknowledgementOutcome::Committed,
+                    snapshot.revision,
+                )
+            })
+            .collect::<Vec<_>>();
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(&transaction, &batch, &acknowledgements).unwrap();
+        transaction.commit().unwrap();
+        let (stored_activated_at, profile_backfill_completed) = connection
+            .query_row(
+                "SELECT activated_at, profile_backfill_completed
+                 FROM usage_sync_generation_activations
+                 WHERE active_generation = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            u64::try_from(stored_activated_at).unwrap(),
+            offset_date_time_millis(now()).unwrap()
+        );
+        assert_eq!(profile_backfill_completed, 1);
+        drop(connection);
+
+        let mut connection = database.connect();
+        assert!(!generation_one_profile_backfill_is_pending(&connection).unwrap());
+
+        let transaction = connection.transaction().unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), next_day).unwrap();
+        transaction.commit().unwrap();
+        assert!(
+            load_next_pending_usage_batch(
+                &connection,
+                1,
+                next_day,
+                &BTreeSet::from([CodingProvider::Codex]),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn completed_profile_backfill_releases_a_later_current_day_retry() {
+        let mut connection = connection();
+        let unavailable = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let anchor = now().date();
+        let history = [ProviderDailyUsage {
+            provider: CodingProvider::Codex,
+            day: anchor - Duration::days(1),
+            total: total(UsageEvidenceBasis::ProviderReported, 10, NOW, None),
+            correction: None,
+        }];
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &unavailable, now(), now()).unwrap();
+        queue_profile_backfill(&transaction, 1, &history, anchor, now()).unwrap();
+        transaction.commit().unwrap();
+
+        let next_day = now() + Duration::days(1);
+        let next_state = state_with_totals(
+            total(
+                UsageEvidenceBasis::ProviderReported,
+                20,
+                "2026-08-09T12:34:56Z",
+                None,
+            ),
+            UsageTotal::Unavailable,
+        );
+        let transaction = connection.transaction().unwrap();
+        let updates = queue_usage_for_commit(
+            &transaction,
+            1,
+            &next_state,
+            next_day,
+            &BTreeSet::from([CodingProvider::Codex]),
+            UsageQueueRequest::Refresh(&UsageSyncCorrections::default()),
+        )
+        .unwrap();
+        assert!(matches!(
+            updates.as_slice(),
+            [QueueUpdate::Stored { revision: 1, .. }]
+        ));
+        transaction.commit().unwrap();
+
+        let retry_day = next_day + Duration::days(1);
+        let profile_batch = load_next_pending_usage_batch(
+            &connection,
+            1,
+            retry_day,
+            &BTreeSet::from([CodingProvider::Codex]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(profile_batch.snapshots().len(), 1);
+        assert_eq!(profile_batch.snapshots()[0].ranking_day, "2026-08-07");
+        let acknowledgements = profile_batch
+            .snapshots()
+            .iter()
+            .map(|snapshot| {
+                acknowledgement(
+                    snapshot,
+                    AcknowledgementOutcome::Committed,
+                    snapshot.revision,
+                )
+            })
+            .collect::<Vec<_>>();
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(&transaction, &profile_batch, &acknowledgements).unwrap();
+        transaction.commit().unwrap();
+
+        let late_revision = ProviderDailyUsage {
+            provider: CodingProvider::Codex,
+            day: next_day.date(),
+            total: total(
+                UsageEvidenceBasis::ProviderReported,
+                25,
+                "2026-08-10T12:34:56Z",
+                None,
+            ),
+            correction: None,
+        };
+        let transaction = connection.transaction().unwrap();
+        assert!(
+            queue_retained_history_corrections(
+                &transaction,
+                1,
+                std::slice::from_ref(&late_revision),
+                retry_day,
+                &BTreeSet::from([CodingProvider::Codex]),
+            )
+            .unwrap()
+            .is_empty()
+        );
+        transaction.commit().unwrap();
+
+        let delayed = load_next_pending_usage_batch(
+            &connection,
+            1,
+            retry_day,
+            &BTreeSet::from([CodingProvider::Codex]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(delayed.snapshots().len(), 1);
+        assert_eq!(delayed.snapshots()[0].ranking_day, "2026-08-09");
+        assert_eq!(delayed.snapshots()[0].revision, 1);
+        assert!(
+            delayed
+                .mutation_args(INSTALLATION_CREDENTIAL, retry_day)
+                .is_ok()
+        );
+        let acknowledgement =
+            acknowledgement(&delayed.snapshots()[0], AcknowledgementOutcome::Conflict, 1);
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(&transaction, &delayed, &[acknowledgement]).unwrap();
+        transaction.commit().unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        assert!(matches!(
+            queue_retained_history_corrections(
+                &transaction,
+                1,
+                &[late_revision],
+                retry_day,
+                &BTreeSet::from([CodingProvider::Codex]),
+            )
+            .unwrap()
+            .as_slice(),
+            [QueueUpdate::Stored { revision: 2, .. }]
+        ));
+        transaction.commit().unwrap();
+    }
+
+    #[test]
+    fn empty_profile_backfill_retries_until_the_usage_mutation_is_acknowledged() {
+        let mut connection = connection();
+        let state = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+        queue_profile_backfill(&transaction, 1, &[], now().date(), now()).unwrap();
+        transaction.commit().unwrap();
+
+        let batch = load_next_pending_usage_batch(&connection, 1, now(), &BTreeSet::new())
+            .unwrap()
+            .unwrap();
+        assert!(batch.is_empty_profile_backfill());
+        assert!(!batch.has_usage_snapshots());
+        assert!(batch.requires_usage_mutation());
+        let value =
+            serde_json::to_value(batch.mutation_args(INSTALLATION_CREDENTIAL, now()).unwrap())
+                .unwrap();
+        assert_eq!(value["profileBackfillAnchor"], "2026-08-08");
+        assert_eq!(value["snapshots"], json!([]));
+
+        // A settings-only response did not run dailyUsage. The caller must
+        // keep the marker and must not call the usage acknowledgement path.
+        assert!(
+            load_next_pending_usage_batch(&connection, 1, now(), &BTreeSet::new())
+                .unwrap()
+                .unwrap()
+                .is_empty_profile_backfill()
+        );
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &batch, &[]).unwrap(),
+            0
+        );
+        transaction.commit().unwrap();
+        assert!(
+            load_next_pending_usage_batch(&connection, 1, now(), &BTreeSet::new())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn empty_profile_backfill_rejects_a_future_anchor() {
+        let batch = PendingUsageBatch {
+            active_mac_generation: 1,
+            provider_settings: None,
+            snapshots: Vec::new(),
+            transfer_day_carryover: None,
+            profile_backfill_anchor: Some("2026-08-09".to_owned()),
+            retained_history: false,
+        };
+
+        assert!(matches!(
+            batch.mutation_args(INSTALLATION_CREDENTIAL, now()),
+            Err(UsageSyncError::INVALID_VALUE)
+        ));
+    }
+
+    #[test]
+    fn historical_corrections_keep_one_latest_revision_per_provider_day() {
+        let mut connection = connection();
+        let state = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let day = now().date() - Duration::days(1);
+        let initial = ProviderDailyUsage {
+            provider: CodingProvider::Claude,
+            day,
+            total: total(UsageEvidenceBasis::LocallyDerived, 100, NOW, None),
+            correction: None,
+        };
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+        queue_profile_backfill(&transaction, 1, &[initial], now().date(), now()).unwrap();
+        transaction.commit().unwrap();
+        let first = load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+            .unwrap()
+            .unwrap();
+        let acknowledgement =
+            acknowledgement(&first.snapshots()[0], AcknowledgementOutcome::Committed, 1);
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(&transaction, &first, &[acknowledgement]).unwrap();
+        transaction.commit().unwrap();
+
+        let corrected = ProviderDailyUsage {
+            provider: CodingProvider::Claude,
+            day,
+            total: total(
+                UsageEvidenceBasis::LocallyDerived,
+                80,
+                "2026-08-08T12:34:57Z",
+                None,
+            ),
+            correction: Some(ProviderCorrection::ParserCorrection { source_revision: 7 }),
+        };
+        let transaction = connection.transaction().unwrap();
+        let updates = queue_retained_history_corrections(
+            &transaction,
+            1,
+            &[corrected],
+            now(),
+            &enabled_providers(),
+        )
+        .unwrap();
+        assert!(matches!(
+            updates.as_slice(),
+            [QueueUpdate::Stored { revision: 2, .. }]
+        ));
+        transaction.commit().unwrap();
+
+        let batch = load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch.snapshots().len(), 1);
+        assert_eq!(batch.snapshots()[0].revision, 2);
+        assert_eq!(
+            batch.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ParserCorrection)
+        );
+        assert!(batch.mutation_args(INSTALLATION_CREDENTIAL, now()).is_ok());
+
+        let unproved = ProviderDailyUsage {
+            provider: CodingProvider::Claude,
+            day,
+            total: total(
+                UsageEvidenceBasis::LocallyDerived,
+                60,
+                "2026-08-08T12:34:58Z",
+                None,
+            ),
+            correction: None,
+        };
+        let transaction = connection.transaction().unwrap();
+        assert!(matches!(
+            queue_retained_history_corrections(
+                &transaction,
+                1,
+                &[unproved],
+                now(),
+                &enabled_providers(),
+            )
+            .unwrap()
+            .as_slice(),
+            [QueueUpdate::Stale { revision: 2, .. }]
+        ));
+    }
+
+    #[test]
+    fn same_claude_correction_source_does_not_create_a_second_audit() {
+        let mut connection = connection();
+        let state = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let day = now().date() - Duration::days(1);
+        let initial = ProviderDailyUsage {
+            provider: CodingProvider::Claude,
+            day,
+            total: total(UsageEvidenceBasis::LocallyDerived, 100, NOW, None),
+            correction: None,
+        };
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+        queue_profile_backfill(&transaction, 1, &[initial], now().date(), now()).unwrap();
+        transaction.commit().unwrap();
+        let initial_batch =
+            load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+                .unwrap()
+                .unwrap();
+        let initial_ack = acknowledgement(
+            &initial_batch.snapshots()[0],
+            AcknowledgementOutcome::Committed,
+            1,
+        );
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(&transaction, &initial_batch, &[initial_ack]).unwrap();
+        transaction.commit().unwrap();
+
+        let corrected = |tokens, observed_at| ProviderDailyUsage {
+            provider: CodingProvider::Claude,
+            day,
+            total: total(
+                UsageEvidenceBasis::LocallyDerived,
+                tokens,
+                observed_at,
+                None,
+            ),
+            correction: Some(ProviderCorrection::ParserCorrection { source_revision: 7 }),
+        };
+        let transaction = connection.transaction().unwrap();
+        queue_retained_history_corrections(
+            &transaction,
+            1,
+            &[corrected(80, "2026-08-08T12:34:57Z")],
+            now(),
+            &enabled_providers(),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        let correction_batch =
+            load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+                .unwrap()
+                .unwrap();
+        assert_eq!(correction_batch.snapshots()[0].correction_revision, Some(2));
+        let correction_ack = acknowledgement(
+            &correction_batch.snapshots()[0],
+            AcknowledgementOutcome::Committed,
+            2,
+        );
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(&transaction, &correction_batch, &[correction_ack]).unwrap();
+        transaction.commit().unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        queue_retained_history_corrections(
+            &transaction,
+            1,
+            &[corrected(90, "2026-08-08T12:34:58Z")],
+            now(),
+            &enabled_providers(),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        let continuation =
+            load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+                .unwrap()
+                .unwrap();
+        assert_eq!(continuation.snapshots()[0].revision, 3);
+        assert_eq!(continuation.snapshots()[0].correction_reason, None);
+        assert_eq!(continuation.snapshots()[0].correction_revision, None);
+    }
+
+    #[test]
+    fn terminal_profile_conflict_completes_and_a_new_local_revision_recovers() {
+        let mut connection = connection();
+        let state = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let day = now().date() - Duration::days(1);
+        let initial = ProviderDailyUsage {
+            provider: CodingProvider::Claude,
+            day,
+            total: total(UsageEvidenceBasis::LocallyDerived, 100, NOW, None),
+            correction: None,
+        };
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+        queue_profile_backfill(&transaction, 1, &[initial], now().date(), now()).unwrap();
+        transaction.commit().unwrap();
+        let batch = load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+            .unwrap()
+            .unwrap();
+        let conflict = acknowledgement(&batch.snapshots()[0], AcknowledgementOutcome::Conflict, 1);
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(&transaction, &batch, &[conflict]).unwrap();
+        transaction.commit().unwrap();
+        assert!(
+            load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+                .unwrap()
+                .is_none()
+        );
+
+        let correction = ProviderDailyUsage {
+            provider: CodingProvider::Claude,
+            day,
+            total: total(
+                UsageEvidenceBasis::LocallyDerived,
+                80,
+                "2026-08-08T12:34:57Z",
+                None,
+            ),
+            correction: Some(ProviderCorrection::ParserCorrection { source_revision: 8 }),
+        };
+        let transaction = connection.transaction().unwrap();
+        queue_retained_history_corrections(
+            &transaction,
+            1,
+            &[correction],
+            now(),
+            &enabled_providers(),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        let recovered = load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.snapshots()[0].revision, 2);
+        assert_eq!(recovered.snapshots()[0].observed_tokens, 80);
+    }
+
+    #[test]
+    fn retained_correction_accepts_the_bounded_prior_codex_pricing_basis() {
+        let mut connection = connection();
+        let state = state_with_totals(UsageTotal::Unavailable, UsageTotal::Unavailable);
+        let day = now().date() - Duration::days(1);
+        let initial = ProviderDailyUsage {
+            provider: CodingProvider::Codex,
+            day,
+            total: total(
+                UsageEvidenceBasis::ProviderReported,
+                100,
+                NOW,
+                Some((
+                    1.0,
+                    "openai-standard-2026-08-06-v1",
+                    ApiEquivalentCostQuality::Reconciled,
+                    None,
+                )),
+            ),
+            correction: None,
+        };
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+        queue_profile_backfill(&transaction, 1, &[initial], now().date(), now()).unwrap();
+        transaction.commit().unwrap();
+        let batch = load_next_pending_usage_batch(&connection, 1, now(), &enabled_providers())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            batch.snapshots()[0]
+                .api_equivalent_cost
+                .as_ref()
+                .unwrap()
+                .pricing_basis,
+            "openai-standard-2026-08-06-v1"
+        );
     }
 
     #[test]
@@ -3737,6 +5261,41 @@ mod tests {
             Some(CorrectionReason::ProviderReplacement)
         );
         assert_eq!(pending.snapshots()[0].correction_revision, Some(2));
+    }
+
+    #[test]
+    fn provider_owned_evidence_rejects_higher_and_lower_local_replacements() {
+        for local_tokens in [80, 120] {
+            let mut connection = connection();
+            let transaction = connection.transaction().unwrap();
+            queue_daily_aggregate(
+                &transaction,
+                1,
+                aggregate(CodingProvider::Codex, 100, 1_000),
+            )
+            .unwrap();
+            transaction.commit().unwrap();
+
+            let transaction = connection.transaction().unwrap();
+            let mut local = aggregate(CodingProvider::Codex, local_tokens, 2_000);
+            local.evidence_basis = SyncEvidenceBasis::LocallyDerived;
+            assert_eq!(
+                queue_daily_aggregate(&transaction, 1, local).unwrap(),
+                QueueUpdate::Stale {
+                    provider: CodingProvider::Codex,
+                    revision: 1,
+                }
+            );
+            transaction.commit().unwrap();
+
+            let pending = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+            assert_eq!(pending.snapshots()[0].revision, 1);
+            assert_eq!(pending.snapshots()[0].observed_tokens, 100);
+            assert_eq!(
+                pending.snapshots()[0].evidence_basis,
+                SyncEvidenceBasis::ProviderReported
+            );
+        }
     }
 
     #[test]
@@ -4168,7 +5727,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_revision_stale_requeues_both_providers_at_the_next_revision() {
+    fn equal_revision_stale_resolves_both_submitted_provider_days() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
         for provider in [CodingProvider::Codex, CodingProvider::Claude] {
@@ -4189,13 +5748,35 @@ mod tests {
         );
         transaction.commit().unwrap();
 
-        let pending = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
-        assert!(
-            pending
-                .snapshots()
-                .iter()
-                .all(|snapshot| { snapshot.revision == 2 && snapshot.observed_tokens == 10 })
+        assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn equal_revision_stale_resolves_a_rejected_higher_revision_local_row() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        let mut first = aggregate(CodingProvider::Codex, 10, 1_000);
+        first.evidence_basis = SyncEvidenceBasis::LocallyDerived;
+        queue_daily_aggregate(&transaction, 1, first).unwrap();
+        transaction.commit().unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        let mut replacement = aggregate(CodingProvider::Codex, 20, 2_000);
+        replacement.evidence_basis = SyncEvidenceBasis::LocallyDerived;
+        queue_daily_aggregate(&transaction, 1, replacement).unwrap();
+        transaction.commit().unwrap();
+        let sent = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        assert_eq!(sent.snapshots()[0].revision, 2);
+        let stale = acknowledgement(&sent.snapshots()[0], AcknowledgementOutcome::Stale, 2);
+
+        let transaction = connection.transaction().unwrap();
+        assert_eq!(
+            apply_usage_acknowledgements(&transaction, &sent, &[stale]).unwrap(),
+            1
         );
+        transaction.commit().unwrap();
+
+        assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
     }
 
     #[test]
@@ -4584,7 +6165,7 @@ mod tests {
         drop(connection);
 
         let mut connection = database.connect();
-        let pending = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+        let pending = load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
             .unwrap()
             .unwrap();
         assert_eq!(pending.snapshots().len(), 1);
@@ -4611,7 +6192,7 @@ mod tests {
         );
         transaction.commit().unwrap();
         assert!(
-            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
                 .unwrap()
                 .is_none()
         );
@@ -4659,7 +6240,7 @@ mod tests {
         transaction.commit().unwrap();
 
         assert!(
-            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
                 .unwrap()
                 .is_none()
         );
@@ -4707,7 +6288,7 @@ mod tests {
         .unwrap();
         transaction.commit().unwrap();
 
-        let sent = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+        let sent = load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
             .unwrap()
             .unwrap();
         assert_eq!(sent.snapshots().len(), 1);
@@ -4728,7 +6309,7 @@ mod tests {
 
         let connection = database.connect();
         assert!(
-            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
                 .unwrap()
                 .is_none()
         );
@@ -4774,7 +6355,7 @@ mod tests {
             .unwrap();
         transaction.commit().unwrap();
 
-        let sent = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+        let sent = load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
             .unwrap()
             .unwrap();
         assert_eq!(sent.snapshots().len(), 1);
@@ -4795,7 +6376,7 @@ mod tests {
 
         let connection = database.connect();
         assert!(
-            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
                 .unwrap()
                 .is_none()
         );
@@ -4843,7 +6424,7 @@ mod tests {
             .unwrap();
         transaction.commit().unwrap();
 
-        let sent = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+        let sent = load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
             .unwrap()
             .unwrap();
         assert_eq!(sent.snapshots().len(), 2);
@@ -4865,7 +6446,7 @@ mod tests {
         drop(connection);
 
         let mut connection = database.connect();
-        let retry = load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+        let retry = load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
             .unwrap()
             .unwrap();
         assert_eq!(retry.snapshots().len(), 2);
@@ -4904,7 +6485,7 @@ mod tests {
         );
         transaction.commit().unwrap();
         assert!(
-            load_current_pending_usage_batch(&connection, 2, next_day, &enabled)
+            load_next_pending_usage_batch(&connection, 2, next_day, &enabled)
                 .unwrap()
                 .is_none()
         );
@@ -5128,13 +6709,13 @@ mod tests {
             parse_provider_settings_acknowledgement(br#"{"revision":1,"outcome":"conflict"}"#),
             Err(UsageSyncError::INVALID_RESPONSE)
         );
+        assert_eq!(parse_usage_acknowledgements(br#"[]"#).unwrap(), []);
 
         for invalid in [
             br#"[{"provider":"codex","rankingDay":"2026-08-08","revision":1,"outcome":"committed","detail":"private"}]"#.as_slice(),
             br#"[{"provider":"hostile","rankingDay":"2026-08-08","revision":1,"outcome":"committed"}]"#.as_slice(),
             br#"[{"provider":"codex","rankingDay":"2026-08-08","revision":1,"outcome":"accepted"}]"#.as_slice(),
             br#"[{"provider":"codex","rankingDay":"2026-02-30","revision":1,"outcome":"committed"}]"#.as_slice(),
-            br#"[]"#.as_slice(),
         ] {
             assert_eq!(
                 parse_usage_acknowledgements(invalid),
@@ -5198,6 +6779,8 @@ mod tests {
                 None,
             )],
             transfer_day_carryover: None,
+            profile_backfill_anchor: None,
+            retained_history: false,
         };
         assert!(batch.mutation_args(INSTALLATION_CREDENTIAL, now()).is_ok());
         assert!(matches!(

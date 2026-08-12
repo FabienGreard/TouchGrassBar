@@ -49,9 +49,17 @@ export type ScoreWindow = Infer<typeof scoreWindowValidator>;
 export type ApiEquivalentCost = Infer<typeof apiEquivalentCostValueValidator>;
 export type UsageSnapshot = Infer<typeof usageSnapshotValidator>;
 
-const PRICING_BASIS_BY_PROVIDER: Record<Provider, string> = {
-  claude: "anthropic-standard-2026-08-07-v1",
-  codex: "openai-api-2026-08-09-v3",
+// Keep a bounded catalog of bases that retained Daily Usage can still cite.
+// Remove an old basis only after no retained provider-day can reference it.
+const APPROVED_PRICING_BASES_BY_PROVIDER: Record<
+  Provider,
+  readonly string[]
+> = {
+  claude: ["anthropic-standard-2026-08-07-v1"],
+  codex: [
+    "openai-api-2026-08-09-v3",
+    "openai-standard-2026-08-06-v1",
+  ],
 };
 
 export const WINDOWS: readonly ScoreWindow[] = [1, 7, 30];
@@ -65,6 +73,7 @@ export function assertUsageSnapshot(
   snapshot: UsageSnapshot,
   currentRankingDay = rankingDayAt(),
   now = Date.now(),
+  observationMayFollowRankingDay = false,
 ) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshot.rankingDay)) {
     throw new Error("rankingDay must be a UTC date in YYYY-MM-DD form");
@@ -109,9 +118,9 @@ export function assertUsageSnapshot(
   const rankingDayEnd = rankingDayStart + 24 * 60 * 60 * 1_000;
   if (
     snapshot.observedAt < rankingDayStart ||
-    snapshot.observedAt >= rankingDayEnd
+    (!observationMayFollowRankingDay && snapshot.observedAt >= rankingDayEnd)
   ) {
-    throw new Error("observedAt must be within the current UTC Ranking Day");
+    throw new Error("observedAt is outside the approved UTC Ranking Day policy");
   }
   if (snapshot.observedAt > now + MAX_OBSERVED_AT_FUTURE_SKEW_MS) {
     throw new Error("observedAt exceeds the allowed clock-skew window");
@@ -128,7 +137,11 @@ export function assertUsageSnapshot(
   ) {
     throw new Error("pricingBasis must be a bounded catalog identifier");
   }
-  if (cost.pricingBasis !== PRICING_BASIS_BY_PROVIDER[snapshot.provider]) {
+  if (
+    !APPROVED_PRICING_BASES_BY_PROVIDER[snapshot.provider].includes(
+      cost.pricingBasis,
+    )
+  ) {
     throw new Error("pricingBasis is not approved for this provider");
   }
   if (

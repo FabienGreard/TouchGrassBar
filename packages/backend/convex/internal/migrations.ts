@@ -16,3 +16,12 @@ export const backfillDoomerboard = migrations.define({
     });
   },
 });
+
+export const backfillDeviceUsageCompletion = migrations.define({
+  table: "devices",
+  migrateOne: async (ctx, device) => {
+    if (device.usageBackfillCompletedAt === undefined) {
+      await ctx.db.patch(device._id, { usageBackfillCompletedAt: null });
+    }
+  },
+});
