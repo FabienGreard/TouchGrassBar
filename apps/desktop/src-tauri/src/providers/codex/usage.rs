@@ -3715,16 +3715,27 @@ fn reset_file(connection: &Connection, path: &str) -> Result<(), ()> {
         .map_err(|_| ())
 }
 
-fn commit_file_progress(
-    connection: &Connection,
-    path: &str,
-    cursor: &FileCursor,
+struct FileProgressCommit {
     turn_days: BTreeSet<(String, Date)>,
     rows: BTreeMap<ModelDayKey, ModelDayDelta>,
     snapshots: Vec<TokenSnapshot>,
     replace_existing_usage: bool,
     detail_cutoff: Date,
+}
+
+fn commit_file_progress(
+    connection: &Connection,
+    path: &str,
+    cursor: &FileCursor,
+    commit: FileProgressCommit,
 ) -> Result<(), ()> {
+    let FileProgressCommit {
+        turn_days,
+        rows,
+        snapshots,
+        replace_existing_usage,
+        detail_cutoff,
+    } = commit;
     let manifest = pricing_manifest();
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
     transaction
@@ -4802,11 +4813,13 @@ fn index_file(
         connection,
         &path_value,
         &cursor,
-        turn_ids,
-        rows,
-        snapshots,
-        replace_existing_usage,
-        context.detail_cutoff,
+        FileProgressCommit {
+            turn_days: turn_ids,
+            rows,
+            snapshots,
+            replace_existing_usage,
+            detail_cutoff: context.detail_cutoff,
+        },
     )?;
     Ok(cursor.completion_state.is_terminal() || is_deferred)
 }
