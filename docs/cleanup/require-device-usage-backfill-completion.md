@@ -2,8 +2,7 @@
 
 - **Status:** planned
 - **Owner issue:** [#27](https://github.com/FabienGreard/TouchGrassBar/issues/27)
-- **Implementation:** [issue #27](https://github.com/FabienGreard/TouchGrassBar/issues/27)
-  pending an exact commit link in this change
+- **Implementation:** [commit bbf56f18](https://github.com/FabienGreard/TouchGrassBar/commit/bbf56f18e8a74f6dd0e9ccaffdb071871d6d9ea3)
 
 ## Scope
 
