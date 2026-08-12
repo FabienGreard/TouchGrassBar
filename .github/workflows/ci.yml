@@ -31,6 +31,9 @@ jobs:
         run: bun scripts/generate-database-fixtures.ts --check
       - name: Run repository quality
         run: bun run quality:code
+      - if: ${{ always() }}
+        name: Write Vitest summary
+        run: bun scripts/write-vitest-summary.ts
 
   native:
     name: Native app
@@ -60,12 +63,18 @@ jobs:
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Rust lints
         run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
-      - if: github.event_name == 'push'
-        name: Install workspace dependencies
+      - name: Install workspace dependencies
         run: bun install --frozen-lockfile
+      - name: macOS runner integration test
+        env:
+          TOUCHGRASS_VITEST_SUITE_ID: macos
+        run: bun scripts/run-vitest.ts apps/desktop/src/dev/signed-macos-runner.test.ts
       - name: Unsigned app smoke bundle
         if: github.event_name == 'push'
         run: bun run --cwd apps/desktop tauri build --bundles app
+      - if: ${{ always() }}
+        name: Write Vitest summary
+        run: bun scripts/write-vitest-summary.ts
 
   required:
     name: Bun and Rust quality
