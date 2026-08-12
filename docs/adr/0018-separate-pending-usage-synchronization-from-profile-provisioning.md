@@ -77,8 +77,8 @@ revision. A stale zero-token carryover is complete because the server has a
 newer historical revision. The Module removes it. A stale non-zero segment
 rebases and keeps its carryover tag. The Module sends no other historical row.
 It sends the transfer-day carryover before current-day usage. Issue #27 can
-expand the day policy to the approved current day and previous twenty-nine UTC
-days at Profile creation without a change to the external Interface.
+expand the day policy at Profile creation. It can include the approved current
+day and previous twenty-nine UTC days. The external Interface does not change.
 
 ## Dependency seams
 
