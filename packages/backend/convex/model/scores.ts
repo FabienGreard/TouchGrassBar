@@ -71,6 +71,9 @@ export function calculateScore(
       hasUnpricedTokens ||= row.observedTokens > 0;
       continue;
     }
+    if (row.observedTokens === 0) {
+      continue;
+    }
     hasPricedEvidence = true;
     costMicros = checkedAdd(costMicros, cost.micros, "API-equivalent cost");
     pricingBases.add(cost.pricingBasis);

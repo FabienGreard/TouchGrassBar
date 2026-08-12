@@ -139,4 +139,36 @@ describe("cost and ranking independence", () => {
       },
     ]);
   });
+
+  test("zero-token cost does not price unpriced positive usage", () => {
+    const score = calculateScore(
+      [
+        {
+          apiEquivalentCost: null,
+          observedTokens: 100,
+          provider: "codex",
+          rankingDay: "2026-08-06",
+        },
+        {
+          apiEquivalentCost: {
+            coveragePercent: null,
+            micros: 0,
+            pricingBasis: "anthropic-standard-2026-08-07-v1",
+            quality: "reconciled" as const,
+          },
+          observedTokens: 0,
+          provider: "claude",
+          rankingDay: "2026-08-06",
+        },
+      ],
+      "combined",
+      1,
+      "2026-08-06",
+    );
+
+    expect(score).toEqual({
+      apiEquivalentCost: null,
+      tokenScore: 100,
+    });
+  });
 });
