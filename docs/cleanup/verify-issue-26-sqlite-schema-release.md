@@ -3,7 +3,8 @@
 - **Status:** planned
 - **Owner issue:** [#73](https://github.com/FabienGreard/TouchGrassBar/issues/73)
 - **Implementation:** [PR #65](https://github.com/FabienGreard/TouchGrassBar/pull/65),
-  [PR #77](https://github.com/FabienGreard/TouchGrassBar/pull/77), and
+  [PR #77](https://github.com/FabienGreard/TouchGrassBar/pull/77),
+  [PR #78](https://github.com/FabienGreard/TouchGrassBar/pull/78), and
   [commit bbf56f18](https://github.com/FabienGreard/TouchGrassBar/commit/bbf56f18e8a74f6dd0e9ccaffdb071871d6d9ea3)
 
 ## Scope
