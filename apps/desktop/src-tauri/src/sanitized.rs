@@ -34,22 +34,23 @@ use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update
 #[cfg(test)]
 use crate::usage_sync::{
     DailyUsageAggregate, ProviderSettingsAcknowledgement, SyncCoverage, SyncEvidenceBasis,
-    UsageSyncAcknowledgement, queue_daily_aggregate,
+    UsageSyncAcknowledgement, generation_one_profile_backfill_is_pending, queue_daily_aggregate,
 };
 use crate::usage_sync::{
-    PendingUsageBatch, QueueState, QueueUpdate, UsageSyncAcknowledgements, UsageSyncAttemptResult,
-    UsageSyncCorrections, activate_generation, apply_provider_settings_acknowledgement,
-    apply_usage_acknowledgements, capture_generation_baselines,
-    has_current_terminal_usage_conflict, install_usage_sync_schema,
-    load_active_usage_sync_generation, load_current_pending_usage_batch,
-    load_usage_sync_generation_state, mark_generation_authority_rejected, queue_current_utc_day,
-    queue_current_utc_day_with_corrections, queue_provider_settings, stage_usage_sync_corrections,
+    PendingUsageBatch, QueueState, QueueUpdate, UsageQueueRequest, UsageSyncAcknowledgements,
+    UsageSyncAttemptResult, UsageSyncCorrections, activate_generation,
+    apply_provider_settings_acknowledgement, apply_usage_acknowledgements,
+    capture_generation_baselines, has_current_terminal_usage_conflict, install_usage_sync_schema,
+    load_active_usage_sync_generation, load_next_pending_usage_batch,
+    load_usage_sync_generation_state, mark_generation_authority_rejected,
+    migrate_usage_sync_schema_from_v6, queue_provider_settings, queue_usage_for_commit,
+    stage_usage_sync_corrections,
 };
 
 pub const CONTRACT_VERSION: u8 = 4;
 pub const PANEL_ADD_TOKENMAXXER_EVENT: &str = "panel-add-tokenmaxxer-requested";
 pub const REVISION_NOTICE_EVENT: &str = "sanitized-desktop-state-revision";
-pub(crate) const READ_MODEL_SCHEMA_VERSION: i64 = 6;
+pub(crate) const READ_MODEL_SCHEMA_VERSION: i64 = 7;
 pub(crate) const READ_MODEL_SCHEMA_MODULE: &str = "sanitized-desktop-state";
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -939,6 +940,32 @@ impl SqliteReadModelStore {
             normalize_legacy_sync_state(&mut snapshot);
             validate_snapshot(&snapshot)?;
             (snapshot, revision)
+        } else if version == 6 {
+            let (schema_version, contract_version, revision, snapshot_json) = connection
+                .query_row(
+                    "SELECT schema_version, contract_version, revision, snapshot_json
+                     FROM sanitized_desktop_state WHERE singleton = 1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, u8>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+            if schema_version != version || contract_version != CONTRACT_VERSION {
+                return Err("native state persistence unavailable");
+            }
+            let snapshot: SanitizedDesktopStateV3 = serde_json::from_str(&snapshot_json)
+                .map_err(|_| "native state persistence unavailable")?;
+            validate_snapshot(&snapshot)?;
+            if snapshot.revision != revision {
+                return Err("native state persistence unavailable");
+            }
+            (snapshot, revision)
         } else {
             (initial.clone(), initial.revision.clone())
         };
@@ -963,7 +990,7 @@ impl SqliteReadModelStore {
                  );
                  CREATE TABLE sanitized_desktop_state (
                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   schema_version INTEGER NOT NULL CHECK (schema_version = 6),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 7),
                    contract_version INTEGER NOT NULL CHECK (contract_version = 4),
                    revision TEXT NOT NULL CHECK (
                      length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
@@ -998,8 +1025,13 @@ impl SqliteReadModelStore {
                 params![READ_MODEL_SCHEMA_MODULE, READ_MODEL_SCHEMA_VERSION],
             )
             .map_err(|_| "native state persistence unavailable")?;
-        install_usage_sync_schema(&transaction)
-            .map_err(|_| "native state persistence unavailable")?;
+        if version == 6 {
+            migrate_usage_sync_schema_from_v6(&transaction)
+                .map_err(|_| "native state persistence unavailable")?;
+        } else {
+            install_usage_sync_schema(&transaction)
+                .map_err(|_| "native state persistence unavailable")?;
+        }
         transaction
             .commit()
             .map_err(|_| "native state persistence unavailable")
@@ -1049,7 +1081,7 @@ impl SqliteReadModelStore {
         let pending_before = self
             .active_mac_generation
             .map(|generation| {
-                load_current_pending_usage_batch(
+                load_next_pending_usage_batch(
                     &transaction,
                     generation,
                     now,
@@ -1068,13 +1100,13 @@ impl SqliteReadModelStore {
                             queue_provider_settings(&transaction, generation, enabled_providers)
                                 .map_err(|_| "native state persistence unavailable")?;
                     }
-                    let updates = queue_current_utc_day_with_corrections(
+                    let updates = queue_usage_for_commit(
                         &transaction,
                         generation,
                         state,
                         now,
-                        &corrections,
                         enabled_providers,
+                        UsageQueueRequest::Refresh(&corrections),
                     )
                     .map_err(|_| "native state persistence unavailable")?;
                     pending_usage_changed |= updates.iter().any(|update| {
@@ -1112,9 +1144,16 @@ impl SqliteReadModelStore {
                     queue_provider_settings(&transaction, generation, enabled_providers)
                         .map_err(|_| "native state persistence unavailable")?;
                 state.sync.status = SyncStatus::Pending;
-                let updates =
-                    queue_current_utc_day(&transaction, generation, state, now, enabled_providers)
-                        .map_err(|_| "native state persistence unavailable")?;
+                let anchor_day = activated_at.to_offset(time::UtcOffset::UTC).date();
+                let updates = queue_usage_for_commit(
+                    &transaction,
+                    generation,
+                    state,
+                    now,
+                    enabled_providers,
+                    UsageQueueRequest::ProfileActivation { anchor_day },
+                )
+                .map_err(|_| "native state persistence unavailable")?;
                 apply_queue_status(
                     &transaction,
                     generation,
@@ -1137,7 +1176,14 @@ impl SqliteReadModelStore {
                     acknowledgements.provider_settings.as_ref(),
                 )
                 .map_err(|_| "native state persistence unavailable")?;
-                if !acknowledgements.usage.is_empty() {
+                if !acknowledgements.usage.is_empty() && !acknowledgements.usage_mutation_completed
+                {
+                    return Err("native state persistence unavailable");
+                }
+                if !acknowledgements.usage.is_empty()
+                    || (batch.is_empty_profile_backfill()
+                        && acknowledgements.usage_mutation_completed)
+                {
                     apply_usage_acknowledgements(&transaction, batch, &acknowledgements.usage)
                         .map_err(|_| "native state persistence unavailable")?;
                 } else if batch.has_usage_snapshots()
@@ -1162,41 +1208,20 @@ impl SqliteReadModelStore {
                 )
                 .map_err(|_| "native state persistence unavailable")?;
                 pending_usage_changed |= has_stale;
-                if acknowledgements.usage.is_empty() {
-                    state.sync.status = if has_terminal_conflict {
-                        if state.sync.last_successful_at.is_some() {
-                            SyncStatus::Stale
-                        } else {
-                            SyncStatus::Unavailable
-                        }
-                    } else {
-                        sync_status_from_last_successful_day(state, now)
-                    };
-                } else {
-                    if acknowledgements.usage.iter().any(|acknowledgement| {
-                        acknowledgement.outcome
-                            != crate::usage_sync::AcknowledgementOutcome::Conflict
-                    }) {
-                        state.sync.last_successful_at = Some(format_time(now));
-                    }
-                    state.sync.status =
-                        if !batch.is_for_current_utc_day(now) || has_stale || has_terminal_conflict
-                        {
-                            if state.sync.last_successful_at.is_some() {
-                                SyncStatus::Stale
-                            } else {
-                                SyncStatus::Unavailable
-                            }
-                        } else {
-                            SyncStatus::Synced
-                        };
-                }
-                let updates = queue_current_utc_day(
+                update_sync_status_after_acknowledgement(
+                    state,
+                    batch.has_successful_current_day_acknowledgement(&acknowledgements.usage, now),
+                    has_terminal_conflict,
+                    now,
+                );
+                let generation = batch.active_mac_generation();
+                let updates = queue_usage_for_commit(
                     &transaction,
-                    batch.active_mac_generation(),
+                    generation,
                     state,
                     now,
                     enabled_providers,
+                    UsageQueueRequest::AfterAcknowledgement,
                 )
                 .map_err(|_| "native state persistence unavailable")?;
                 pending_usage_changed |= updates.iter().any(|update| {
@@ -1210,7 +1235,7 @@ impl SqliteReadModelStore {
                 });
                 apply_queue_status(
                     &transaction,
-                    batch.active_mac_generation(),
+                    generation,
                     state,
                     now,
                     &updates,
@@ -1247,7 +1272,7 @@ impl SqliteReadModelStore {
         let pending_after = self
             .active_mac_generation
             .map(|generation| {
-                load_current_pending_usage_batch(&transaction, generation, now, enabled_providers)
+                load_next_pending_usage_batch(&transaction, generation, now, enabled_providers)
             })
             .transpose()
             .map_err(|_| "native state persistence unavailable")?
@@ -1269,7 +1294,7 @@ impl SqliteReadModelStore {
         if self.active_mac_generation != Some(active_mac_generation) {
             return Ok(None);
         }
-        load_current_pending_usage_batch(
+        load_next_pending_usage_batch(
             &self.connection,
             active_mac_generation,
             now,
@@ -1337,6 +1362,26 @@ fn sync_status_from_last_successful_day(
     }
 }
 
+fn update_sync_status_after_acknowledgement(
+    state: &mut SanitizedDesktopStateV3,
+    acknowledged_current_day: bool,
+    has_current_terminal_conflict: bool,
+    now: OffsetDateTime,
+) {
+    if acknowledged_current_day {
+        state.sync.last_successful_at = Some(format_time(now));
+    }
+    state.sync.status = if has_current_terminal_conflict {
+        if state.sync.last_successful_at.is_some() {
+            SyncStatus::Stale
+        } else {
+            SyncStatus::Unavailable
+        }
+    } else {
+        sync_status_from_last_successful_day(state, now)
+    };
+}
+
 fn apply_queue_status(
     transaction: &Transaction<'_>,
     active_mac_generation: u64,
@@ -1358,14 +1403,10 @@ fn apply_queue_status(
         return Ok(());
     }
 
-    let pending = load_current_pending_usage_batch(
-        transaction,
-        active_mac_generation,
-        now,
-        enabled_providers,
-    )
-    .map_err(|_| "native state persistence unavailable")?
-    .is_some();
+    let pending =
+        load_next_pending_usage_batch(transaction, active_mac_generation, now, enabled_providers)
+            .map_err(|_| "native state persistence unavailable")?
+            .is_some();
     if pending {
         if !matches!(
             state.sync.status,
@@ -3069,6 +3110,7 @@ impl NativeCore {
                     }
                 }),
                 usage: acknowledgements.to_vec(),
+                usage_mutation_completed: batch.requires_usage_mutation(),
             }),
         )
     }
@@ -3321,7 +3363,7 @@ fn read_model_backup_is_valid(
         1 => 1,
         2 => 2,
         3..=5 => 3,
-        6 => i64::from(CONTRACT_VERSION),
+        6..=7 => i64::from(CONTRACT_VERSION),
         _ => return Ok(false),
     };
     Ok(stored_versions == (source_version, expected_contract_version))
@@ -4421,6 +4463,32 @@ mod tests {
         state.sync.status = SyncStatus::Offline;
         state.sync.last_successful_at = None;
         assert!(validate_snapshot(&state).is_ok());
+    }
+
+    #[test]
+    fn historical_acknowledgement_preserves_a_current_day_success_status() {
+        let now = test_time();
+        let mut state = observed_state(now, 42);
+        state.sync.last_successful_at = Some(format_time(now));
+        state.sync.status = SyncStatus::Pending;
+
+        update_sync_status_after_acknowledgement(&mut state, false, false, now);
+
+        assert_eq!(state.sync.status, SyncStatus::Synced);
+        assert_eq!(state.sync.last_successful_at, Some(format_time(now)));
+    }
+
+    #[test]
+    fn historical_acknowledgement_does_not_invent_a_current_day_success() {
+        let now = test_time();
+        let mut state = observed_state(now, 42);
+        state.sync.last_successful_at = None;
+        state.sync.status = SyncStatus::Pending;
+
+        update_sync_status_after_acknowledgement(&mut state, false, false, now);
+
+        assert_eq!(state.sync.status, SyncStatus::Unavailable);
+        assert_eq!(state.sync.last_successful_at, None);
     }
 
     #[test]
@@ -5874,7 +5942,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_provider_is_excluded_before_activation_and_delivery() {
+    fn profile_backfill_is_stable_across_provider_toggles() {
         let database = TestDatabase::new();
         let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
         let policy = Arc::new(ClaudeTogglePolicy {
@@ -5910,6 +5978,7 @@ mod tests {
         core.activate_usage_sync_generation(1).unwrap();
 
         let before_activation = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        let initial_profile_snapshots = before_activation.snapshots().to_vec();
         assert_eq!(
             before_activation
                 .provider_settings()
@@ -5923,7 +5992,7 @@ mod tests {
                 .iter()
                 .map(|snapshot| snapshot.provider)
                 .collect::<Vec<_>>(),
-            vec![CodingProvider::Codex]
+            vec![CodingProvider::Claude, CodingProvider::Codex]
         );
         assert!(matches!(
             core.inner
@@ -5942,6 +6011,7 @@ mod tests {
             .unwrap();
         let enabled = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(enabled.snapshots().len(), 2);
+        assert_eq!(enabled.snapshots(), initial_profile_snapshots);
         assert_eq!(enabled.provider_settings().unwrap().revision(), 2);
         assert_eq!(
             enabled.provider_settings().unwrap().enabled_providers(),
@@ -5953,6 +6023,7 @@ mod tests {
             .unwrap();
         let before_delivery = core.pending_usage_sync_batch(1).unwrap().unwrap();
         assert_eq!(before_delivery.provider_settings().unwrap().revision(), 3);
+        assert_eq!(before_delivery.snapshots(), initial_profile_snapshots);
         assert_eq!(
             before_delivery
                 .provider_settings()
@@ -5966,7 +6037,7 @@ mod tests {
                 .iter()
                 .map(|snapshot| snapshot.provider)
                 .collect::<Vec<_>>(),
-            vec![CodingProvider::Codex]
+            vec![CodingProvider::Claude, CodingProvider::Codex]
         );
     }
 
@@ -6001,6 +6072,7 @@ mod tests {
                     outcome: crate::usage_sync::AcknowledgementOutcome::Stale,
                 }),
                 usage: Vec::new(),
+                usage_mutation_completed: false,
             }),
         )
         .unwrap();
@@ -6012,6 +6084,66 @@ mod tests {
             sent.snapshots()[0].revision
         );
         assert_eq!(requests.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn empty_profile_backfill_waits_when_stale_settings_skip_daily_usage() {
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let sent = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert!(sent.is_empty_profile_backfill());
+        let settings_revision = sent.provider_settings().unwrap().revision();
+
+        core.finish_usage_sync_attempt(
+            &sent,
+            UsageSyncAttemptResult::Committed(UsageSyncAcknowledgements {
+                provider_settings: Some(ProviderSettingsAcknowledgement {
+                    revision: settings_revision + 2,
+                    outcome: crate::usage_sync::AcknowledgementOutcome::Stale,
+                }),
+                usage: Vec::new(),
+                usage_mutation_completed: false,
+            }),
+        )
+        .unwrap();
+
+        let retry = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert!(retry.is_empty_profile_backfill());
+        assert!(retry.requires_usage_mutation());
+        core.finish_usage_sync_attempt(
+            &retry,
+            UsageSyncAttemptResult::Committed(UsageSyncAcknowledgements {
+                provider_settings: retry.provider_settings().map(|settings| {
+                    ProviderSettingsAcknowledgement {
+                        revision: settings.revision(),
+                        outcome: crate::usage_sync::AcknowledgementOutcome::Committed,
+                    }
+                }),
+                usage: Vec::new(),
+                usage_mutation_completed: true,
+            }),
+        )
+        .unwrap();
+
+        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
+        core.shutdown();
+        drop(core);
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(test_time())),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        assert_eq!(restored.active_usage_sync_generation().unwrap(), Some(1));
+        restored.activate_usage_sync_generation(1).unwrap();
+        assert!(restored.pending_usage_sync_batch(1).unwrap().is_none());
     }
 
     #[test]
@@ -6447,7 +6579,9 @@ mod tests {
         core.acknowledge_usage_sync(&sent, &[acknowledgement])
             .unwrap();
 
-        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Stale);
+        let panel = core.panel_state().unwrap();
+        assert_eq!(panel.sync.status, SyncStatus::Unavailable);
+        assert_eq!(panel.sync.last_successful_at, None);
         assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
         assert!(matches!(
             &*core.inner.store.lock().unwrap(),
@@ -6456,7 +6590,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_prior_day_batch_does_not_leave_the_new_day_pending() {
+    fn deferred_profile_correction_remains_pending_after_the_new_day_starts() {
         use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
 
         let before_midnight = OffsetDateTime::parse("2026-08-08T23:59:59Z", &Rfc3339).unwrap();
@@ -6490,11 +6624,19 @@ mod tests {
         clock.advance(Duration::from_secs(2));
         core.mark_usage_sync_pending().unwrap();
 
-        assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
-        assert_eq!(
-            core.panel_state().unwrap().sync.status,
-            SyncStatus::Unavailable
+        let correction = core.pending_usage_sync_batch(1).unwrap().unwrap();
+        assert_eq!(correction.snapshots().len(), 1);
+        assert_eq!(correction.snapshots()[0].ranking_day, "2026-08-08");
+        assert_eq!(correction.snapshots()[0].revision, 2);
+        assert!(
+            correction
+                .mutation_args(
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    clock.now(),
+                )
+                .is_ok()
         );
+        assert_eq!(core.panel_state().unwrap().sync.status, SyncStatus::Pending);
         let old_rows: i64 = match &*core.inner.store.lock().unwrap() {
             ReadModelStore::Persistent(store) => store
                 .connection
@@ -7691,6 +7833,144 @@ mod tests {
             )
             .unwrap();
         assert_eq!(backup_versions, (5, 3));
+    }
+
+    #[test]
+    fn migrates_v6_profile_completion_state_without_losing_usage_sync_rows() {
+        let database = TestDatabase::new();
+        let initial = observed_state(test_time(), 42);
+        let (store, _) = SqliteReadModelStore::open(&database.0, &initial).unwrap();
+        drop(store);
+
+        let mut connection = Connection::open(&database.0).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute_batch(
+                "INSERT INTO usage_sync_generations(active_generation, queue_state)
+                   VALUES(1, 'active');
+                 INSERT INTO usage_sync_daily_aggregates(
+                   active_generation, provider, ranking_day, revision, aggregate_json
+                 ) VALUES(1, 'codex', '2026-08-08', 2, '{}');
+                 INSERT INTO usage_sync_generation_baselines(
+                   active_generation, provider, ranking_day, aggregate_json
+                 ) VALUES(1, 'codex', '2026-08-08', '{}');
+                 INSERT INTO usage_sync_generation_activations(
+                   active_generation, ranking_day, activated_at
+                 ) VALUES(1, '2026-08-08', 1786147200000);
+                 INSERT INTO usage_sync_latest_outbox(
+                   active_generation, provider, ranking_day, revision, snapshot_json,
+                   correction_reason, correction_revision, queue_state
+                 ) VALUES(
+                   1, 'codex', '2026-08-08', 2, '{}',
+                   'parser-correction', 2, 'active'
+                 );
+                 INSERT INTO usage_sync_transfer_day_carryovers(
+                   active_generation, provider, ranking_day, carryover_kind
+                 ) VALUES(1, 'codex', '2026-08-08', 'pending-segment');
+                 INSERT INTO usage_sync_terminal_conflicts(
+                   active_generation, provider, ranking_day, revision
+                 ) VALUES(1, 'codex', '2026-08-08', 1);
+                 INSERT INTO usage_sync_provider_settings_outbox(
+                   active_generation, revision, codex_enabled, claude_enabled, delivery_state
+                 ) VALUES(1, 2, 1, 0, 'pending');
+                 INSERT INTO usage_sync_correction_lineage(
+                   provider, ranking_day, source_revision, reason, consumed_generation
+                 ) VALUES('codex', '2026-08-08', 2, 'parser-correction', 1);",
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 ALTER TABLE usage_sync_generation_activations
+                   RENAME TO usage_sync_generation_activations_v7;
+                 CREATE TABLE usage_sync_generation_activations (
+                   active_generation INTEGER PRIMARY KEY,
+                   ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
+                   activated_at INTEGER NOT NULL
+                     CHECK(activated_at >= 0 AND activated_at <= 9007199254740991),
+                   FOREIGN KEY(active_generation)
+                     REFERENCES usage_sync_generations(active_generation)
+                 ) STRICT;
+                 INSERT INTO usage_sync_generation_activations(
+                   active_generation, ranking_day, activated_at
+                 ) SELECT active_generation, ranking_day, activated_at
+                   FROM usage_sync_generation_activations_v7;
+                 DROP TABLE usage_sync_generation_activations_v7;
+                 ALTER TABLE sanitized_desktop_state
+                   RENAME TO sanitized_desktop_state_v7;
+                 CREATE TABLE sanitized_desktop_state (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   schema_version INTEGER NOT NULL CHECK (schema_version = 6),
+                   contract_version INTEGER NOT NULL CHECK (contract_version = 4),
+                   revision TEXT NOT NULL CHECK (
+                     length(revision) > 0 AND revision NOT GLOB '*[^0-9]*'
+                   ),
+                   snapshot_json TEXT NOT NULL
+                 );
+                 INSERT INTO sanitized_desktop_state(
+                   singleton, schema_version, contract_version, revision, snapshot_json
+                 ) SELECT singleton, 6, contract_version, revision, snapshot_json
+                   FROM sanitized_desktop_state_v7;
+                 DROP TABLE sanitized_desktop_state_v7;
+                 UPDATE touchgrassbar_schema_versions SET version = 6
+                 WHERE module = 'sanitized-desktop-state';
+                 PRAGMA journal_mode = DELETE;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let (store, migrated) = SqliteReadModelStore::open(&database.0, &initial).unwrap();
+        assert_eq!(migrated, initial);
+        drop(store);
+        let connection = Connection::open(&database.0).unwrap();
+        assert_eq!(read_model_schema_version(&connection).unwrap(), 7);
+        let retained_tables = [
+            "usage_sync_generations",
+            "usage_sync_daily_aggregates",
+            "usage_sync_generation_baselines",
+            "usage_sync_generation_activations",
+            "usage_sync_latest_outbox",
+            "usage_sync_transfer_day_carryovers",
+            "usage_sync_terminal_conflicts",
+            "usage_sync_provider_settings_outbox",
+            "usage_sync_correction_lineage",
+        ];
+        for table in retained_tables {
+            assert_eq!(
+                connection
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                1,
+                "{table}"
+            );
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT activated_at, profile_backfill_completed
+                     FROM usage_sync_generation_activations WHERE active_generation = 1",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .unwrap(),
+            (1_786_147_200_000, 0)
+        );
+        assert!(generation_one_profile_backfill_is_pending(&connection).unwrap());
+        assert!(read_model_backup_path(&database.0, 6).is_file());
+        drop(connection);
+
+        let before = fs::read(&database.0).unwrap();
+        let (store, reopened) = SqliteReadModelStore::open(&database.0, &initial).unwrap();
+        assert_eq!(reopened, initial);
+        drop(store);
+        assert_eq!(fs::read(&database.0).unwrap(), before);
     }
 
     #[test]

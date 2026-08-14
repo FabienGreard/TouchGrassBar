@@ -16,6 +16,8 @@ pub(crate) struct DailyCostEvidence {
     pub(crate) complete: bool,
     pub(crate) observed_through: Option<OffsetDateTime>,
     pub(crate) priced_observed_through: Option<OffsetDateTime>,
+    /// The effective-dated pricing catalog that priced this UTC day.
+    pub(crate) pricing_basis: Option<String>,
 }
 
 impl Default for DailyCostEvidence {
@@ -28,6 +30,7 @@ impl Default for DailyCostEvidence {
             complete: true,
             observed_through: None,
             priced_observed_through: None,
+            pricing_basis: None,
         }
     }
 }
@@ -59,6 +62,56 @@ struct CostProjection {
     usd: f64,
     quality: ApiEquivalentCostQuality,
     coverage_percent: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RetainedCostProjection {
+    pub(crate) amount: f64,
+    pub(crate) quality: Option<ApiEquivalentCostQuality>,
+    pub(crate) coverage_percent: Option<f64>,
+}
+
+/// Scale a retained cost when a newer cumulative token total has no cost.
+///
+/// `amount` can use any non-negative unit. Callers can use USD or integer-like
+/// micros because the projection only applies a ratio.
+pub(crate) fn project_retained_cost(
+    previous_amount: f64,
+    previous_observed_tokens: u64,
+    previous_quality: Option<ApiEquivalentCostQuality>,
+    previous_coverage_percent: Option<f64>,
+    observed_tokens: u64,
+) -> Option<RetainedCostProjection> {
+    if !previous_amount.is_finite() || previous_amount < 0.0 {
+        return None;
+    }
+    if observed_tokens == previous_observed_tokens {
+        return Some(RetainedCostProjection {
+            amount: previous_amount,
+            quality: previous_quality,
+            coverage_percent: previous_coverage_percent,
+        });
+    }
+    if previous_observed_tokens == 0 || observed_tokens == 0 {
+        return None;
+    }
+    let previous_coverage = match previous_quality {
+        Some(ApiEquivalentCostQuality::Modeled) => previous_coverage_percent.unwrap_or(0.0),
+        Some(ApiEquivalentCostQuality::Reconciled | ApiEquivalentCostQuality::LocalOnly) => 100.0,
+        None => return None,
+    };
+    let amount = previous_amount * (observed_tokens as f64 / previous_observed_tokens as f64);
+    if !amount.is_finite() {
+        return None;
+    }
+    Some(RetainedCostProjection {
+        amount,
+        quality: Some(ApiEquivalentCostQuality::Modeled),
+        coverage_percent: Some(
+            (previous_observed_tokens as f64 * previous_coverage / observed_tokens as f64)
+                .clamp(0.0, 100.0),
+        ),
+    })
 }
 
 pub(crate) fn period_days(today: Date, length: i64, offset: i64) -> impl Iterator<Item = Date> {
@@ -392,6 +445,93 @@ pub(crate) fn calculate_usage_periods(
         seven_days: project_period(evidence, now, 7),
         thirty_days: project_period(evidence, now, 30),
     }
+}
+
+/// Project sparse, sanitized UTC-day facts without deriving them from rolling totals.
+///
+/// Provider-owned evidence wins for one provider and day. Local evidence can
+/// still price the provider-owned token count, but the two token counts are
+/// never added together.
+pub(crate) fn calculate_daily_usage_aggregates(
+    evidence: &ProviderUsageEvidence,
+    observed_at_fallback: OffsetDateTime,
+    anchor_day: Date,
+    length: i64,
+) -> BTreeMap<Date, UsageTotal> {
+    period_days(anchor_day, length, 0)
+        .filter_map(|day| {
+            let local_usage = evidence.local_usage_evidence.get(&day);
+            let local_cost = evidence.local_cost_evidence.get(&day);
+            let provider_tokens = evidence
+                .provider_reported_tokens
+                .as_ref()
+                .and_then(|daily| daily.get(&day).copied());
+            let (observed_tokens, evidence_basis, coverage, observed_at, cost) =
+                if let Some(observed_tokens) = provider_tokens {
+                    let observed_at = evidence.provider_observed_at?;
+                    let cost = evidence
+                        .local_evidence_available
+                        .then(|| {
+                            provider_reported_cost(
+                                evidence.provider_reported_tokens.as_ref()?,
+                                std::iter::once(day),
+                                &evidence.local_cost_evidence,
+                                observed_at,
+                            )
+                        })
+                        .flatten();
+                    (
+                        observed_tokens,
+                        UsageEvidenceBasis::ProviderReported,
+                        UsageCoverage::Complete,
+                        observed_at,
+                        cost,
+                    )
+                } else {
+                    let local_usage = local_usage?;
+                    if !evidence.local_evidence_available {
+                        return None;
+                    }
+                    let observed_at = local_usage
+                        .observed_through
+                        .or(evidence.local_observed_at)
+                        .unwrap_or(observed_at_fallback);
+                    (
+                        local_usage.observed_tokens,
+                        UsageEvidenceBasis::LocallyDerived,
+                        local_usage.coverage,
+                        observed_at,
+                        locally_derived_cost(
+                            &evidence.local_cost_evidence,
+                            std::iter::once(day),
+                            local_usage.observed_tokens,
+                        ),
+                    )
+                };
+            let observed_at = observed_at.format(&Rfc3339).ok()?;
+            let pricing_basis = local_cost.and_then(|detail| detail.pricing_basis.clone());
+            // A day can only retain a numeric cost with that day's exact
+            // effective-dated catalog. A current provider-wide basis cannot
+            // relabel an older stored cost.
+            let cost = cost.filter(|_| pricing_basis.is_some());
+            Some((
+                day,
+                UsageTotal::Current {
+                    evidence_basis,
+                    coverage,
+                    observed_at,
+                    observed_tokens,
+                    api_equivalent_cost_usd: cost.map(|projection| projection.usd),
+                    trend_percent: None,
+                    trend_previous_tokens: None,
+                    api_equivalent_cost_basis: cost.and(pricing_basis),
+                    api_equivalent_cost_quality: cost.map(|projection| projection.quality),
+                    api_equivalent_cost_coverage_percent: cost
+                        .and_then(|projection| projection.coverage_percent),
+                },
+            ))
+        })
+        .collect()
 }
 
 fn scan_status(statuses: impl Iterator<Item = UsageScanStatus>) -> UsageScanStatus {
@@ -852,42 +992,19 @@ fn preserve_cost_if_missing(current: &mut UsageTotal, previous: &UsageTotal) {
             api_equivalent_cost_coverage_percent,
             ..
         } if api_equivalent_cost_usd.is_none() => {
-            let same_total = *observed_tokens == previous.observed_tokens;
-            let scaled = if same_total {
-                previous.usd
-            } else if previous.observed_tokens > 0 && *observed_tokens > 0 {
-                previous.usd * (*observed_tokens as f64 / previous.observed_tokens as f64)
-            } else {
+            let Some(projection) = project_retained_cost(
+                previous.usd,
+                previous.observed_tokens,
+                previous.quality,
+                previous.coverage_percent,
+                *observed_tokens,
+            ) else {
                 return;
             };
-            if !scaled.is_finite() {
-                return;
-            }
-            let (quality, coverage_percent) = if same_total {
-                (previous.quality, previous.coverage_percent)
-            } else {
-                let previous_coverage = match previous.quality {
-                    Some(ApiEquivalentCostQuality::Modeled) => {
-                        previous.coverage_percent.unwrap_or(0.0)
-                    }
-                    Some(
-                        ApiEquivalentCostQuality::Reconciled | ApiEquivalentCostQuality::LocalOnly,
-                    ) => 100.0,
-                    None => return,
-                };
-                (
-                    Some(ApiEquivalentCostQuality::Modeled),
-                    Some(
-                        (previous.observed_tokens as f64 * previous_coverage
-                            / *observed_tokens as f64)
-                            .clamp(0.0, 100.0),
-                    ),
-                )
-            };
-            *api_equivalent_cost_usd = Some(scaled);
+            *api_equivalent_cost_usd = Some(projection.amount);
             *api_equivalent_cost_basis = previous.basis;
-            *api_equivalent_cost_quality = quality;
-            *api_equivalent_cost_coverage_percent = coverage_percent;
+            *api_equivalent_cost_quality = projection.quality;
+            *api_equivalent_cost_coverage_percent = projection.coverage_percent;
         }
         UsageTotal::Unavailable | UsageTotal::Current { .. } | UsageTotal::Stale { .. } => {}
     }
@@ -926,7 +1043,139 @@ mod tests {
             complete: true,
             observed_through: Some(now - Duration::minutes(1)),
             priced_observed_through: Some(now - Duration::minutes(1)),
+            pricing_basis: Some("fixture-v1".to_owned()),
         }
+    }
+
+    #[test]
+    fn thirty_day_daily_aggregates_keep_sparse_days_and_use_one_source() {
+        let now = now();
+        let today = now.date();
+        let historical_fetch = now + Duration::minutes(2);
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(BTreeMap::from([
+                (today, 40),
+                (today - Duration::days(1), 80),
+                (today - Duration::days(30), 9_999),
+            ])),
+            provider_observed_at: Some(historical_fetch),
+            local_usage_evidence: BTreeMap::from([
+                (
+                    today - Duration::days(1),
+                    usage_detail(now, 20, UsageCoverage::Partial),
+                ),
+                (
+                    today - Duration::days(29),
+                    usage_detail(now, 10, UsageCoverage::Partial),
+                ),
+                (
+                    today - Duration::days(30),
+                    usage_detail(now, 10, UsageCoverage::Complete),
+                ),
+            ]),
+            local_cost_evidence: BTreeMap::from([
+                (today - Duration::days(1), priced_detail(now, 20, 2.0)),
+                (today - Duration::days(29), priced_detail(now, 10, 1.0)),
+            ]),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: Some("fixture-v1".to_owned()),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+        };
+
+        let daily = calculate_daily_usage_aggregates(&evidence, now, today, 30);
+
+        assert_eq!(daily.len(), 3);
+        assert!(!daily.contains_key(&(today - Duration::days(30))));
+        let UsageTotal::Current {
+            evidence_basis,
+            coverage,
+            observed_at,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            ..
+        } = &daily[&(today - Duration::days(1))]
+        else {
+            panic!("the historical provider day must be available");
+        };
+        assert_eq!(*evidence_basis, UsageEvidenceBasis::ProviderReported);
+        assert_eq!(*coverage, UsageCoverage::Complete);
+        assert_eq!(*observed_tokens, 80);
+        assert_eq!(observed_at, "2026-08-06T12:02:00Z");
+        assert_eq!(*api_equivalent_cost_usd, Some(8.0));
+        assert_eq!(api_equivalent_cost_basis.as_deref(), Some("fixture-v1"));
+
+        let UsageTotal::Current {
+            evidence_basis,
+            coverage,
+            observed_tokens,
+            ..
+        } = &daily[&(today - Duration::days(29))]
+        else {
+            panic!("the sparse local day must be available");
+        };
+        assert_eq!(*evidence_basis, UsageEvidenceBasis::LocallyDerived);
+        assert_eq!(*coverage, UsageCoverage::Partial);
+        assert_eq!(*observed_tokens, 10);
+    }
+
+    #[test]
+    fn daily_cost_requires_that_days_exact_pricing_basis() {
+        let now = now();
+        let today = now.date();
+        let mut cost = priced_detail(now, 100, 2.0);
+        cost.pricing_basis = None;
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(BTreeMap::from([(today, 100)])),
+            provider_observed_at: Some(now),
+            local_usage_evidence: BTreeMap::new(),
+            local_cost_evidence: BTreeMap::from([(today, cost)]),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: Some("new-current-catalog-must-not-relabel-old-day".to_owned()),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+        };
+
+        let daily = calculate_daily_usage_aggregates(&evidence, now, today, 1);
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            ..
+        } = &daily[&today]
+        else {
+            panic!("daily usage must remain available");
+        };
+        assert_eq!(*api_equivalent_cost_usd, None);
+        assert_eq!(*api_equivalent_cost_basis, None);
+        assert_eq!(*api_equivalent_cost_quality, None);
+        assert_eq!(*api_equivalent_cost_coverage_percent, None);
+    }
+
+    #[test]
+    fn retained_cost_projection_scales_amount_and_coverage() {
+        assert_eq!(
+            project_retained_cost(
+                1_000_000.0,
+                100,
+                Some(ApiEquivalentCostQuality::Reconciled),
+                None,
+                125,
+            ),
+            Some(RetainedCostProjection {
+                amount: 1_250_000.0,
+                quality: Some(ApiEquivalentCostQuality::Modeled),
+                coverage_percent: Some(80.0),
+            })
+        );
     }
 
     fn usage_detail(
@@ -1312,6 +1561,7 @@ mod tests {
                     complete: false,
                     observed_through: Some(now - Duration::minutes(1)),
                     priced_observed_through: None,
+                    pricing_basis: None,
                 },
             )]),
             local_evidence_available: true,
@@ -1360,6 +1610,7 @@ mod tests {
                         complete: false,
                         observed_through: Some(now - Duration::minutes(1)),
                         priced_observed_through: None,
+                        pricing_basis: None,
                     },
                 ),
             ]),
@@ -1419,6 +1670,7 @@ mod tests {
                         complete: false,
                         observed_through: Some(now - Duration::minutes(1)),
                         priced_observed_through: None,
+                        pricing_basis: None,
                     },
                 ),
             ]),
@@ -1468,6 +1720,7 @@ mod tests {
                     complete: false,
                     observed_through: Some(now),
                     priced_observed_through: Some(now),
+                    pricing_basis: Some("fixture-v1".to_owned()),
                 },
             )]),
             local_evidence_available: true,

@@ -264,12 +264,19 @@ pub(super) fn validate_coordinator_backup(path: &Path) -> Result<(), DatabaseOpe
         read_version_rows(&connection).map_err(|_| DatabaseOpenError::MigrationFailed {
             stage: "validate-backup-source",
         })?;
-    let known_source = (0..DATABASE_FORMAT_VERSION).contains(&format_version)
+    let complete = format_version == DATABASE_FORMAT_VERSION
+        && MODULES.iter().all(|(module, current)| {
+            versions
+                .iter()
+                .any(|(stored_module, stored)| stored_module == module && stored == current)
+        })
+        && versions.len() == MODULES.len();
+    let known_source = (0..=DATABASE_FORMAT_VERSION).contains(&format_version)
+        && !complete
         && versions.iter().all(|(module, version)| {
-            module != COORDINATOR_SCHEMA_MODULE
-                && MODULES
-                    .iter()
-                    .any(|(known, current)| module == known && *version >= 1 && version <= current)
+            MODULES
+                .iter()
+                .any(|(known, current)| module == known && *version >= 1 && version <= current)
         });
     if !known_source {
         return Err(DatabaseOpenError::MigrationFailed {

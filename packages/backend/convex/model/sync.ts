@@ -8,6 +8,7 @@ import { calculateScore, recomputeScores } from "./scores";
 import {
   assertUsageSnapshot,
   rankingDayAt,
+  subtractRankingDays,
   type Provider,
   type UsageSnapshot,
 } from "./values";
@@ -39,6 +40,8 @@ type CorrectionLineage = {
 // One initial generation plus the transfer policy limit of three per hour.
 const MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY = 73;
 const MAX_TRANSFER_DAY_CARRYOVERS = 2;
+const PROFILE_BACKFILL_DAYS = 30;
+const RETAINED_USAGE_DAYS = 60;
 
 async function upsertDailyUsage(
   ctx: MutationCtx,
@@ -91,9 +94,35 @@ async function upsertDailyUsage(
   });
 }
 
-function assertBatchSize(snapshots: UsageSnapshot[]) {
-  if (snapshots.length === 0 || snapshots.length > 62) {
+function assertBatchSize(
+  snapshots: UsageSnapshot[],
+  profileBackfillAnchor: string | null,
+) {
+  if (profileBackfillAnchor !== null && snapshots.length > 60) {
+    throw new Error(
+      "a Profile backfill must contain at most 60 Daily Usage Snapshots",
+    );
+  }
+  if (
+    snapshots.length > 62 ||
+    (snapshots.length === 0 && profileBackfillAnchor === null)
+  ) {
     throw new Error("sync must contain between 1 and 62 Daily Usage Snapshots");
+  }
+}
+
+function assertProfileBackfillMarker(
+  device: Doc<"devices">,
+  profileBackfillAnchor: string | null,
+) {
+  if (profileBackfillAnchor === null) return;
+  if (device.generation !== 1) {
+    throw new Error("only the first Active Mac can complete a Profile backfill");
+  }
+  if (profileBackfillAnchor !== rankingDayAt(device.createdAt)) {
+    throw new Error(
+      "Profile backfill anchor must match the Active Mac creation UTC day",
+    );
   }
 }
 
@@ -155,12 +184,44 @@ function validateBatch(
   device: Doc<"devices">,
   today: string,
   now: number,
+  profileBackfillAnchor: string | null,
 ) {
   const keys = new Set<string>();
   let transferDayCarryovers = 0;
+  let profileBackfillSnapshots = 0;
+  const firstProfileBackfillDay =
+    profileBackfillAnchor === null
+      ? null
+      : subtractRankingDays(profileBackfillAnchor, PROFILE_BACKFILL_DAYS - 1);
   for (const snapshot of snapshots) {
+    if (
+      profileBackfillAnchor !== null &&
+      firstProfileBackfillDay !== null &&
+      (snapshot.rankingDay < firstProfileBackfillDay ||
+        snapshot.rankingDay > profileBackfillAnchor)
+    ) {
+      throw new Error(
+        "a marked Profile backfill snapshot is outside the Profile window",
+      );
+    }
     if (snapshot.rankingDay === today) {
       assertUsageSnapshot(snapshot, today, now);
+    } else if (device.generation === 1) {
+      const firstRetainedDay = subtractRankingDays(
+        today,
+        RETAINED_USAGE_DAYS - 1,
+      );
+      if (
+        snapshot.rankingDay < firstRetainedDay ||
+        snapshot.rankingDay >= today
+      ) {
+        throw new Error("historical snapshot is outside the retained UTC window");
+      }
+      assertUsageSnapshot(snapshot, snapshot.rankingDay, now, true);
+      profileBackfillSnapshots += 1;
+      if (profileBackfillSnapshots > 60) {
+        throw new Error("sync contains too many Profile backfill snapshots");
+      }
     } else {
       assertTransferDayCarryover(snapshot, device, today, now);
       transferDayCarryovers += 1;
@@ -173,6 +234,62 @@ function validateBatch(
       throw new Error("sync must contain at most one snapshot per provider and Ranking Day");
     }
     keys.add(key);
+  }
+}
+
+function assertHistoricalAdmission(
+  plans: SnapshotPlan[],
+  device: Doc<"devices">,
+  today: string,
+  profileBackfillAnchor: string | null,
+) {
+  if (device.generation !== 1) return;
+  const backfillIsComplete =
+    typeof device.usageBackfillCompletedAt === "number";
+  const anchorDay = rankingDayAt(device.createdAt);
+  const firstBackfillDay = subtractRankingDays(
+    anchorDay,
+    PROFILE_BACKFILL_DAYS - 1,
+  );
+  for (const plan of plans) {
+    if (plan.snapshot.rankingDay === today) continue;
+    if (
+      !backfillIsComplete &&
+      !plan.existing &&
+      profileBackfillAnchor === null
+    ) {
+      throw new Error(
+        "new Profile history requires an explicit backfill completion marker",
+      );
+    }
+    if (backfillIsComplete && !plan.existing) {
+      if (plan.snapshot.rankingDay <= anchorDay) {
+        throw new Error(
+          "a completed Profile backfill keeps original-window missing days closed",
+        );
+      }
+      const rankingDayStart = Date.parse(
+        `${plan.snapshot.rankingDay}T00:00:00.000Z`,
+      );
+      const rankingDayEnd = rankingDayStart + 24 * 60 * 60 * 1_000;
+      if (
+        plan.snapshot.observedAt < rankingDayStart ||
+        plan.snapshot.observedAt >= rankingDayEnd
+      ) {
+        throw new Error(
+          "a delayed post-anchor snapshot must use in-day observation evidence",
+        );
+      }
+      continue;
+    }
+    if (!plan.existing) {
+      if (
+        plan.snapshot.rankingDay < firstBackfillDay ||
+        plan.snapshot.rankingDay > anchorDay
+      ) {
+        throw new Error("new historical usage is outside the Profile window");
+      }
+    }
   }
 }
 
@@ -379,6 +496,23 @@ async function planSnapshots(
       });
       continue;
     }
+    if (
+      existing?.evidenceBasis === "provider-reported" &&
+      snapshot.evidenceBasis === "locally-derived"
+    ) {
+      plans.push({
+        acknowledgement: {
+          outcome: "stale",
+          provider: snapshot.provider,
+          rankingDay: snapshot.rankingDay,
+          revision: snapshot.revision,
+        },
+        correctionAudit: null,
+        existing,
+        snapshot,
+      });
+      continue;
+    }
     const correctionAudit = planCorrectionLineage(existing, snapshot);
     plans.push({
       acknowledgement: {
@@ -455,23 +589,26 @@ export async function applyUsageSnapshots(
   installationCredential: string,
   activeMacGeneration: number,
   snapshots: UsageSnapshot[],
+  profileBackfillAnchor: string | null,
 ) {
   const now = Date.now();
   const today = rankingDayAt(now);
-  assertBatchSize(snapshots);
+  assertBatchSize(snapshots, profileBackfillAnchor);
   const { device, tokenmaxxer } = await requireActiveDevice(
     ctx,
     authUser,
     installationCredential,
     activeMacGeneration,
   );
+  assertProfileBackfillMarker(device, profileBackfillAnchor);
   await rateLimiter.limit(ctx, "syncDailyUsage", {
-    count: snapshots.length,
+    count: Math.max(snapshots.length, 1),
     key: `${tokenmaxxer._id}:${device._id}:${activeMacGeneration}`,
     throws: true,
   });
-  validateBatch(snapshots, device, today, now);
+  validateBatch(snapshots, device, today, now, profileBackfillAnchor);
   const plans = await planSnapshots(ctx, device._id, snapshots);
+  assertHistoricalAdmission(plans, device, today, profileBackfillAnchor);
   const committed = plans.filter(
     ({ acknowledgement }) => acknowledgement.outcome === "committed",
   );
@@ -481,7 +618,7 @@ export async function applyUsageSnapshots(
       tokenmaxxer._id,
       device._id,
       plan,
-      plan.snapshot.rankingDay !== today,
+      device.generation > 1 && plan.snapshot.rankingDay !== today,
     );
   }
   if (committed.length > 0) {
@@ -489,6 +626,13 @@ export async function applyUsageSnapshots(
     await ctx.db.patch(device._id, { lastSeenAt: syncedAt });
     await ctx.db.patch(tokenmaxxer._id, { lastSyncedAt: syncedAt });
     await recomputeScores(ctx, tokenmaxxer._id, today);
+  }
+  if (
+    device.generation === 1 &&
+    typeof device.usageBackfillCompletedAt !== "number" &&
+    profileBackfillAnchor !== null
+  ) {
+    await ctx.db.patch(device._id, { usageBackfillCompletedAt: Date.now() });
   }
   return plans.map(({ acknowledgement }) => acknowledgement);
 }

@@ -54,6 +54,7 @@ export const dailyUsage = mutation({
   args: {
     activeMacGeneration: v.number(),
     installationCredential: v.string(),
+    profileBackfillAnchor: v.union(v.string(), v.null()),
     snapshots: v.array(usageSnapshotValidator),
   },
   returns: v.array(acknowledgement),
@@ -65,6 +66,7 @@ export const dailyUsage = mutation({
       args.installationCredential,
       args.activeMacGeneration,
       args.snapshots,
+      args.profileBackfillAnchor,
     );
   },
 });

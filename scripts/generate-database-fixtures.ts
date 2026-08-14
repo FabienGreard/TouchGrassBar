@@ -30,6 +30,7 @@ type FixtureDefinition = {
   revision: string;
   lifecycleVersion: 4 | 5;
   updateStateVersion: 1 | 2 | 3;
+  codexUsageIndexVersion: 2 | 6 | 7;
   hasClaudeUsageIndex: boolean;
   hasTopModelUsage: boolean;
   hasExplicitVersions: boolean;
@@ -44,8 +45,8 @@ type FixtureManifestEntry = {
   sourceSchema: {
     databaseFormat: number;
     lifecycle: number;
-    sanitizedDesktopState: 4 | 5 | 6;
-    codexUsageIndex: 2 | 3 | 6;
+    sanitizedDesktopState: 4 | 5 | 6 | 7;
+    codexUsageIndex: 2 | 3 | 6 | 7;
     claudeUsageIndex: 3 | 4 | 7 | null;
     updateState: 1 | 2 | 3;
     databaseCoordinator: 1 | null;
@@ -108,6 +109,7 @@ const definitions: FixtureDefinition[] = [
     revision: "303",
     lifecycleVersion: 4,
     updateStateVersion: 1,
+    codexUsageIndexVersion: 2,
     hasClaudeUsageIndex: false,
     hasTopModelUsage: false,
     hasExplicitVersions: false,
@@ -119,6 +121,7 @@ const definitions: FixtureDefinition[] = [
     revision: "304",
     lifecycleVersion: 4,
     updateStateVersion: 1,
+    codexUsageIndexVersion: 2,
     hasClaudeUsageIndex: false,
     hasTopModelUsage: false,
     hasExplicitVersions: false,
@@ -130,6 +133,7 @@ const definitions: FixtureDefinition[] = [
     revision: "305",
     lifecycleVersion: 4,
     updateStateVersion: 1,
+    codexUsageIndexVersion: 2,
     hasClaudeUsageIndex: false,
     hasTopModelUsage: false,
     hasExplicitVersions: false,
@@ -141,6 +145,7 @@ const definitions: FixtureDefinition[] = [
     revision: "306",
     lifecycleVersion: 4,
     updateStateVersion: 2,
+    codexUsageIndexVersion: 2,
     hasClaudeUsageIndex: false,
     hasTopModelUsage: false,
     hasExplicitVersions: false,
@@ -152,6 +157,7 @@ const definitions: FixtureDefinition[] = [
     revision: "307",
     lifecycleVersion: 5,
     updateStateVersion: 2,
+    codexUsageIndexVersion: 2,
     hasClaudeUsageIndex: true,
     hasTopModelUsage: true,
     hasExplicitVersions: false,
@@ -163,33 +169,50 @@ const definitions: FixtureDefinition[] = [
     revision: "308",
     lifecycleVersion: 5,
     updateStateVersion: 2,
+    codexUsageIndexVersion: 2,
     hasClaudeUsageIndex: true,
     hasTopModelUsage: true,
     hasExplicitVersions: false,
   },
   {
     tag: "v0.0.9",
-    sourceCommit: "candidate",
-    releaseStatus: "candidate",
+    sourceCommit: "d01e60e067dc1202f45908851fc271ac78b5e5df",
+    releaseStatus: "official",
     revision: "309",
     lifecycleVersion: 5,
     updateStateVersion: 3,
+    codexUsageIndexVersion: 6,
+    hasClaudeUsageIndex: true,
+    hasTopModelUsage: true,
+    hasExplicitVersions: true,
+  },
+  {
+    tag: "v0.0.10",
+    sourceCommit: "candidate",
+    releaseStatus: "candidate",
+    revision: "310",
+    lifecycleVersion: 5,
+    updateStateVersion: 3,
+    codexUsageIndexVersion: 7,
     hasClaudeUsageIndex: true,
     hasTopModelUsage: true,
     hasExplicitVersions: true,
   },
 ];
 
-function readModelVersion(definition: FixtureDefinition): 4 | 6 {
-  return definition.hasExplicitVersions ? 6 : 4;
+function readModelVersion(definition: FixtureDefinition): 4 | 6 | 7 {
+  if (!definition.hasExplicitVersions) {
+    return 4;
+  }
+  return definition.codexUsageIndexVersion >= 7 ? 7 : 6;
 }
 
 function readModelContractVersion(definition: FixtureDefinition): 3 | 4 {
   return definition.hasExplicitVersions ? 4 : 3;
 }
 
-function codexUsageVersion(definition: FixtureDefinition): 2 | 6 {
-  return definition.hasExplicitVersions ? 6 : 2;
+function codexUsageVersion(definition: FixtureDefinition): 2 | 6 | 7 {
+  return definition.codexUsageIndexVersion;
 }
 
 function claudeUsageVersion(definition: FixtureDefinition): 3 | 7 | null {
@@ -499,12 +522,20 @@ function createCodexUsageSchema(
     ? `,
       pricing_mode TEXT NOT NULL CHECK(pricing_mode IN ('standard', 'fast'))`
     : "";
+  const fileTurnDayColumn =
+    definition.codexUsageIndexVersion >= 7
+      ? ",\n        day TEXT NOT NULL"
+      : "";
+  const fileTurnPrimaryKey =
+    definition.codexUsageIndexVersion >= 7
+      ? "PRIMARY KEY (path, turn_id, day)"
+      : "PRIMARY KEY (path, turn_id)";
   const currentCodexObjects = definition.hasExplicitVersions
     ? `
       CREATE TABLE codex_usage_file_turns (
         path TEXT NOT NULL,
-        turn_id TEXT NOT NULL,
-        PRIMARY KEY (path, turn_id),
+        turn_id TEXT NOT NULL${fileTurnDayColumn},
+        ${fileTurnPrimaryKey},
         FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
       );
       CREATE TABLE codex_usage_fast_turns (
@@ -894,7 +925,18 @@ function createClaudeUsageSchema(
     );
 }
 
-function createUsageSyncSchema(database: Database): void {
+function createUsageSyncSchema(
+  database: Database,
+  definition: FixtureDefinition,
+): void {
+  const profileCompletionColumn =
+    readModelVersion(definition) >= 7
+      ? `,
+      profile_backfill_completed INTEGER NOT NULL DEFAULT 0 CHECK(
+        profile_backfill_completed IN (0, 1)
+        AND (profile_backfill_completed = 0 OR active_generation = 1)
+      )`
+      : "";
   database.exec(`
     CREATE TABLE usage_sync_generations (
       active_generation INTEGER PRIMARY KEY,
@@ -926,7 +968,7 @@ function createUsageSyncSchema(database: Database): void {
       active_generation INTEGER PRIMARY KEY,
       ranking_day TEXT NOT NULL CHECK(length(ranking_day) = 10),
       activated_at INTEGER NOT NULL
-        CHECK(activated_at >= 0 AND activated_at <= 9007199254740991),
+        CHECK(activated_at >= 0 AND activated_at <= 9007199254740991)${profileCompletionColumn},
       FOREIGN KEY(active_generation)
         REFERENCES usage_sync_generations(active_generation)
     ) STRICT;
@@ -1235,6 +1277,45 @@ function validateFixtureContents(
         "usage_sync_terminal_conflicts",
         "usage_sync_transfer_day_carryovers",
       );
+      const fileTurnColumns = stringRows(
+        database,
+        `SELECT name FROM pragma_table_info('codex_usage_file_turns')
+         ORDER BY cid`,
+      );
+      const expectedFileTurnColumns =
+        definition.codexUsageIndexVersion >= 7
+          ? ["path", "turn_id", "day"]
+          : ["path", "turn_id"];
+      if (
+        JSON.stringify(fileTurnColumns) !==
+        JSON.stringify(expectedFileTurnColumns)
+      ) {
+        throw new Error(
+          `The Codex file-turn shape is wrong for ${definition.tag}.`,
+        );
+      }
+      const activationColumns = stringRows(
+        database,
+        `SELECT name FROM pragma_table_info('usage_sync_generation_activations')
+         ORDER BY cid`,
+      );
+      const expectedActivationColumns =
+        readModelVersion(definition) >= 7
+          ? [
+              "active_generation",
+              "ranking_day",
+              "activated_at",
+              "profile_backfill_completed",
+            ]
+          : ["active_generation", "ranking_day", "activated_at"];
+      if (
+        JSON.stringify(activationColumns) !==
+        JSON.stringify(expectedActivationColumns)
+      ) {
+        throw new Error(
+          `The usage activation shape is wrong for ${definition.tag}.`,
+        );
+      }
     }
     expectedTables.sort();
     if (JSON.stringify(tables) !== JSON.stringify(expectedTables)) {
@@ -1513,7 +1594,7 @@ async function writeFixture(
     createLifecycleSchema(database, definition);
     createReadModelSchema(database, definition);
     if (definition.hasExplicitVersions) {
-      createUsageSyncSchema(database);
+      createUsageSyncSchema(database, definition);
     }
     createCodexUsageSchema(database, definition);
     if (definition.hasClaudeUsageIndex) {

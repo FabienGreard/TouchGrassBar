@@ -94,6 +94,7 @@ export async function claimActiveDevice(
       installationCredentialDigest: installationCredentialDigestValue,
       lastSeenAt: Date.now(),
       tokenmaxxerId,
+      usageBackfillCompletedAt: null,
     });
     await ctx.db.patch(tokenmaxxerId, { activeDeviceId: deviceId });
     const device = await ctx.db.get(deviceId);

@@ -18,9 +18,9 @@ use std::{
 use crate::sanitized::{
     Clock, ProviderPresentation, ProviderSnapshot, RefreshAttempt, RefreshFailure, RefreshTrigger,
     SanitizedDesktopStateV3, SnapshotRefreshAdapter, SnapshotRefreshOutcome,
-    SnapshotRefreshProgress, TopModelUsage, UsagePeriods,
+    SnapshotRefreshProgress, TopModelUsage, UsagePeriods, UsageTotal,
 };
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 
 pub use registry::{CodingProvider, ProviderPresenceStatus};
 pub(crate) use registry::{PROVIDER_REGISTRY, detect_provider_presence, provider_descriptor};
@@ -64,6 +64,59 @@ pub(crate) fn all_providers_enabled_policy() -> Arc<dyn ProviderEnablementPolicy
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProviderCorrection {
     ParserCorrection { source_revision: u64 },
+}
+
+/// One sanitized provider-day fact that is safe to copy into the sync ledger.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProviderDailyUsage {
+    pub(crate) provider: CodingProvider,
+    pub(crate) day: Date,
+    pub(crate) total: UsageTotal,
+    pub(crate) correction: Option<ProviderCorrection>,
+}
+
+/// Load sparse daily facts from the provider-owned local indexes.
+///
+/// This function does not expose paths, sessions, messages, models, or raw
+/// provider responses. The returned rows contain only the public daily
+/// aggregate contract.
+pub(crate) fn load_daily_usage_history(
+    connection: &rusqlite::Connection,
+    now: OffsetDateTime,
+    anchor_day: Date,
+    length: i64,
+) -> Result<Vec<ProviderDailyUsage>, ()> {
+    let mut daily = Vec::new();
+    match codex::usage_index_schema_version(connection)? {
+        0 => {}
+        CODEX_USAGE_SCHEMA_VERSION => daily.extend(
+            codex::load_daily_usage_history(connection, now, anchor_day, length)?
+                .into_iter()
+                .map(|(day, total)| ProviderDailyUsage {
+                    provider: CodingProvider::Codex,
+                    day,
+                    total,
+                    correction: None,
+                }),
+        ),
+        _ => return Err(()),
+    }
+    match claude::usage_index_schema_version(connection)? {
+        0 => {}
+        CLAUDE_USAGE_SCHEMA_VERSION => daily.extend(
+            claude::load_daily_usage_history(connection, now, anchor_day, length)?
+                .into_iter()
+                .map(|(day, total, correction)| ProviderDailyUsage {
+                    provider: CodingProvider::Claude,
+                    day,
+                    total,
+                    correction,
+                }),
+        ),
+        _ => return Err(()),
+    }
+    daily.sort_by_key(|aggregate| (aggregate.day, aggregate.provider));
+    Ok(daily)
 }
 
 /// Sanitized output from one deep provider adapter.

@@ -22,10 +22,10 @@ use crate::{
 const CURRENT_DATABASE_FORMAT: i64 = 7;
 const CURRENT_MODULE_VERSIONS: &[(&str, i64)] = &[
     ("claude-usage-index", 7),
-    ("codex-usage-index", 6),
+    ("codex-usage-index", 7),
     ("database-coordinator", 1),
     ("desktop-lifecycle", 5),
-    ("sanitized-desktop-state", 6),
+    ("sanitized-desktop-state", 7),
     ("update-state", 3),
 ];
 const CURRENT_TABLES: &[&str] = &[
@@ -76,8 +76,16 @@ struct ReleaseFixture {
     database: String,
     sha256: String,
     release_status: String,
+    source_schema: SourceSchema,
     source_features: SourceFeatures,
     expected_state: ExpectedState,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceSchema {
+    database_format: i64,
+    codex_usage_index: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,7 +268,7 @@ fn every_release_fixture_upgrades_and_reopens_without_loss() {
         );
         assert_no_sidecars(&source, &fixture.tag);
         assert_fixture_is_private(&source, &fixture.tag);
-        if fixture.release_status == "official" {
+        if fixture.source_schema.database_format < 7 {
             assert_no_usage_sync_tables(&source, &fixture.tag);
         }
 
@@ -407,7 +415,7 @@ fn assert_provider_facts_preserved(
             fixture.tag,
             expected.table
         );
-        if fixture.release_status == "official"
+        if fixture.source_schema.codex_usage_index < 6
             && matches!(
                 expected.table.as_str(),
                 "codex_usage_file_days" | "codex_usage_file_model_days" | "codex_usage_files"
@@ -760,7 +768,7 @@ fn assert_expected_state(state: &LogicalState, fixture: &ReleaseFixture) {
         )
     });
     assert_eq!(state.top_model_usage, expected_top_model, "{}", fixture.tag);
-    let expected_codex_usage = if fixture.release_status == "candidate" {
+    let expected_codex_usage = if fixture.source_schema.codex_usage_index >= 6 {
         fixture.expected_state.usage.codex.as_slice()
     } else {
         &[]

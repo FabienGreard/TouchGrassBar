@@ -678,6 +678,11 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                   OR observed_tokens < 0 OR priced_tokens < 0 OR cost_usd < 0
                   OR complete NOT IN (0, 1)
              ) OR EXISTS(
+               SELECT 1 FROM codex_usage_file_turns
+               WHERE strftime('%Y-%m-%d', day, '+0 days') IS NULL
+                  OR strftime('%Y-%m-%d', day, '+0 days') != day
+                  OR length(day) != 10
+             ) OR EXISTS(
                SELECT 1 FROM codex_usage_files
                WHERE (deferred_until_day IS NOT NULL AND (
                         strftime('%Y-%m-%d', deferred_until_day, '+0 days') IS NULL
@@ -778,18 +783,26 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
             "SELECT (
                SELECT COUNT(*) > 1 FROM usage_sync_generations
                WHERE queue_state IN ('active', 'blocked')
+             ) OR EXISTS(
+               SELECT 1 FROM usage_sync_generation_activations
+               WHERE profile_backfill_completed NOT IN (0, 1)
+                  OR (profile_backfill_completed = 1 AND active_generation != 1)
              )",
         ),
         (
             "usage-retention",
             "SELECT
                COALESCE((
-                 SELECT julianday(MAX(day)) - julianday(MIN(day)) > 29
+                 SELECT julianday(MAX(day)) - julianday(MIN(day)) > 59
                  FROM codex_usage_file_days
                ), 0)
                OR COALESCE((
-                 SELECT julianday(MAX(day)) - julianday(MIN(day)) > 29
+               SELECT julianday(MAX(day)) - julianday(MIN(day)) > 29
                  FROM codex_usage_file_model_days
+               ), 0)
+               OR COALESCE((
+                 SELECT julianday(MAX(day)) - julianday(MIN(day)) > 29
+                 FROM codex_usage_file_turns
                ), 0)
                OR COALESCE((
                  SELECT julianday(MAX(day)) - julianday(MIN(day)) > 59

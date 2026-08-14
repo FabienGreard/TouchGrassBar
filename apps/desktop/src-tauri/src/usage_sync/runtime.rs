@@ -840,6 +840,7 @@ mod tests {
                     }
                 }),
                 usage,
+                usage_mutation_completed: batch.requires_usage_mutation(),
             })
         }
     }
@@ -881,6 +882,7 @@ mod tests {
                     }
                 }),
                 usage,
+                usage_mutation_completed: batch.requires_usage_mutation(),
             })
         }
     }
@@ -915,6 +917,7 @@ mod tests {
                     }
                 }),
                 usage,
+                usage_mutation_completed: batch.requires_usage_mutation(),
             })
         }
     }

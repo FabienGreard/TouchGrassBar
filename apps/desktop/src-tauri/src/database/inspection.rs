@@ -103,15 +103,12 @@ pub(super) fn inspect_source(path: &Path) -> Result<SourceInspection, DatabaseOp
                     .any(|(stored_module, stored)| stored_module == module && stored == current)
             })
             && versions.len() == MODULES.len();
-        if !complete {
-            return Err(DatabaseOpenError::InvariantFailed {
-                invariant: "ready-version-vector",
+        if complete {
+            return Ok(SourceInspection {
+                has_content: true,
+                needs_migration: false,
             });
         }
-        return Ok(SourceInspection {
-            has_content: true,
-            needs_migration: false,
-        });
     }
 
     Ok(SourceInspection {
@@ -152,7 +149,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         }
     })?;
     let has_read_model = table_exists(connection, "sanitized_desktop_state")?;
-    if !matches!(read_model_version, 0 | 4 | 5 | 6)
+    if !matches!(read_model_version, 0 | 4 | 5 | 6 | 7)
         || (read_model_version == 0 && has_read_model)
         || (read_model_version > 0 && !has_read_model)
     {
@@ -175,7 +172,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         "codex_usage_file_days",
     ];
     let codex_table_count = count_tables(connection, &codex_tables)?;
-    if !matches!(codex_version, 0 | 2 | 3 | 6)
+    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7)
         || (codex_version == 0 && codex_table_count != 0)
         || (codex_version >= 2 && codex_table_count != codex_tables.len())
     {
@@ -308,6 +305,9 @@ fn inspect_known_table_columns(
         "previous_reasoning_output",
         "previous_total",
     ];
+    const LEGACY_CODEX_FILE_TURN_COLUMNS: &[&str] = &["path", "turn_id"];
+    const LEGACY_USAGE_SYNC_ACTIVATION_COLUMNS: &[&str] =
+        &["active_generation", "ranking_day", "activated_at"];
     const LEGACY_CLAUDE_DAILY_COLUMNS: &[&str] = &[
         "day",
         "observed_tokens",
@@ -331,11 +331,13 @@ fn inspect_known_table_columns(
         ) {
             continue;
         }
-        let expected = match (*table, versions.codex, versions.claude) {
-            ("codex_usage_file_model_days", 2 | 3, _) => LEGACY_CODEX_MODEL_DAY_COLUMNS,
-            ("codex_usage_files", 2 | 3, _) => LEGACY_CODEX_FILE_COLUMNS,
-            ("claude_usage_daily", _, 3 | 4) => LEGACY_CLAUDE_DAILY_COLUMNS,
-            ("claude_usage_message_supersedes", _, 3 | 4) => LEGACY_CLAUDE_SUPERSEDES_COLUMNS,
+        let expected = match (*table, versions.read_model, versions.codex, versions.claude) {
+            ("usage_sync_generation_activations", 6, _, _) => LEGACY_USAGE_SYNC_ACTIVATION_COLUMNS,
+            ("codex_usage_file_model_days", _, 2 | 3, _) => LEGACY_CODEX_MODEL_DAY_COLUMNS,
+            ("codex_usage_files", _, 2 | 3, _) => LEGACY_CODEX_FILE_COLUMNS,
+            ("codex_usage_file_turns", _, 6, _) => LEGACY_CODEX_FILE_TURN_COLUMNS,
+            ("claude_usage_daily", _, _, 3 | 4) => LEGACY_CLAUDE_DAILY_COLUMNS,
+            ("claude_usage_message_supersedes", _, _, 3 | 4) => LEGACY_CLAUDE_SUPERSEDES_COLUMNS,
             _ => expected,
         };
         if table_exists(connection, table)? && !object_has_columns(connection, table, expected)? {
@@ -596,6 +598,10 @@ fn inspect_known_object_definitions(
                 5 => definition.contains("check(schema_version=5)"),
                 6 => {
                     definition.contains("check(schema_version=6)")
+                        && definition.contains("check(contract_version=4)")
+                }
+                7 => {
+                    definition.contains("check(schema_version=7)")
                         && definition.contains("check(contract_version=4)")
                 }
                 _ => false,

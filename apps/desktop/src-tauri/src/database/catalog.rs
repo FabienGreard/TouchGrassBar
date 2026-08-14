@@ -287,6 +287,12 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
     ),
     concat!(
+        "createtablecodex_usage_file_turns(",
+        "pathtextnotnull,turn_idtextnotnull,daytextnotnull,",
+        "primarykey(path,turn_id,day),",
+        "foreignkey(path)referencescodex_usage_files(path)ondeletecascade)"
+    ),
+    concat!(
         "createtablecodex_usage_files(",
         "pathtextprimarykeynotnull,file_identitytextnotnull,size_bytesintegernotnull,",
         "modified_nsintegernotnull,parsed_offsetintegernotnull,parsed_prefix_anchortext,",
@@ -359,6 +365,15 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "createtablesanitized_desktop_state(",
         "singletonintegerprimarykeycheck(singleton=1),",
         "schema_versionintegernotnullcheck(schema_version=6),",
+        "contract_versionintegernotnullcheck(contract_version=4),",
+        "revisiontextnotnullcheck(",
+        "length(revision)>0andrevisionnotglob'*[^0-9]*'),",
+        "snapshot_jsontextnotnull)"
+    ),
+    concat!(
+        "createtablesanitized_desktop_state(",
+        "singletonintegerprimarykeycheck(singleton=1),",
+        "schema_versionintegernotnullcheck(schema_version=7),",
         "contract_versionintegernotnullcheck(contract_version=4),",
         "revisiontextnotnullcheck(",
         "length(revision)>0andrevisionnotglob'*[^0-9]*'),",
@@ -487,6 +502,18 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "referencesusage_sync_generations(active_generation))strict"
     ),
     concat!(
+        "createtableusage_sync_generation_activations(",
+        "active_generationintegerprimarykey,",
+        "ranking_daytextnotnullcheck(length(ranking_day)=10),",
+        "activated_atintegernotnullcheck(",
+        "activated_at>=0andactivated_at<=9007199254740991),",
+        "profile_backfill_completedintegernotnulldefault0check(",
+        "profile_backfill_completedin(0,1)and(",
+        "profile_backfill_completed=0oractive_generation=1)),",
+        "foreignkey(active_generation)",
+        "referencesusage_sync_generations(active_generation))strict"
+    ),
+    concat!(
         "createtableusage_sync_generation_baselines(",
         "active_generationintegernotnull,",
         "providertextnotnullcheck(providerin('codex','claude')),",
@@ -579,7 +606,7 @@ pub(super) const PRIMARY_KEYS: &[(&str, &[&str])] = &[
             "pricing_mode",
         ],
     ),
-    ("codex_usage_file_turns", &["path", "turn_id"]),
+    ("codex_usage_file_turns", &["path", "turn_id", "day"]),
     ("codex_usage_files", &["path"]),
     ("codex_usage_index_meta", &["key"]),
     ("codex_usage_token_snapshots", &["path", "record_ordinal"]),
@@ -721,6 +748,11 @@ pub(super) const COLUMN_DEFAULTS: &[(&str, &str, &str)] = &[
     ("codex_usage_files", "snapshot_timestamp_regressed", "0"),
     ("codex_usage_files", "usage_excluded", "0"),
     ("lifecycle_state", "recovery_disclosure_pending", "0"),
+    (
+        "usage_sync_generation_activations",
+        "profile_backfill_completed",
+        "0",
+    ),
     (
         "touchgrassbar_update_state_v3",
         "automatic_checks_enabled",
@@ -950,7 +982,7 @@ pub(super) const TABLE_CHECKS: &[(&str, &[&str])] = &[
         "sanitized_desktop_state",
         &[
             "check(singleton=1)",
-            "check(schema_version=6)",
+            "check(schema_version=7)",
             "check(contract_version=4)",
             "check(length(revision)>0andrevisionnotglob'*[^0-9]*')",
         ],
@@ -995,6 +1027,10 @@ pub(super) const TABLE_CHECKS: &[(&str, &[&str])] = &[
         &[
             "check(length(ranking_day)=10)",
             "check(activated_at>=0andactivated_at<=9007199254740991)",
+            concat!(
+                "check(profile_backfill_completedin(0,1)and(",
+                "profile_backfill_completed=0oractive_generation=1))"
+            ),
         ],
     ),
     (
@@ -1172,7 +1208,7 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "observed_through",
         ],
     ),
-    ("codex_usage_file_turns", &["path", "turn_id"]),
+    ("codex_usage_file_turns", &["path", "turn_id", "day"]),
     (
         "codex_usage_files",
         &[
@@ -1306,7 +1342,12 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
     ),
     (
         "usage_sync_generation_activations",
-        &["active_generation", "ranking_day", "activated_at"],
+        &[
+            "active_generation",
+            "ranking_day",
+            "activated_at",
+            "profile_backfill_completed",
+        ],
     ),
     (
         "usage_sync_generation_baselines",

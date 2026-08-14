@@ -1,4 +1,4 @@
-//! Protected transport for current-day Daily Usage Aggregate synchronization.
+//! Protected transport for bounded Daily Usage Snapshot synchronization.
 
 use std::{collections::BTreeMap, io::Read, time::Duration};
 
@@ -224,28 +224,30 @@ async fn send_authenticated_mutations(
         return UsageSyncTransportOutcome::Committed(UsageSyncAcknowledgements {
             provider_settings,
             usage: Vec::new(),
+            usage_mutation_completed: false,
         });
     }
 
-    let usage = if let Some(usage_args) = args.usage {
+    let (usage, usage_mutation_completed) = if let Some(usage_args) = args.usage {
         let result = match client.mutation(DAILY_USAGE_MUTATION, usage_args).await {
             Ok(result) => result,
             Err(_) => return UsageSyncTransportOutcome::Offline,
         };
         match classify_usage_result(result) {
-            ParsedMutation::Value(acknowledgements) => acknowledgements,
+            ParsedMutation::Value(acknowledgements) => (acknowledgements, true),
             ParsedMutation::AuthorityRejected => {
                 return UsageSyncTransportOutcome::AuthorityRejected;
             }
             ParsedMutation::Deferred => return UsageSyncTransportOutcome::Deferred,
         }
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
 
     UsageSyncTransportOutcome::Committed(UsageSyncAcknowledgements {
         provider_settings,
         usage,
+        usage_mutation_completed,
     })
 }
 
@@ -265,7 +267,7 @@ fn mutation_arguments(
             Ok(args)
         })
         .transpose()?;
-    let usage = if batch.has_usage_snapshots() {
+    let usage = if batch.requires_usage_mutation() {
         let allowed = batch
             .mutation_args(installation_credential, now)
             .map_err(|_| ())?;
@@ -560,6 +562,7 @@ mod tests {
             json!({
                 "activeMacGeneration": 4.0,
                 "installationCredential": INSTALLATION_CREDENTIAL,
+                "profileBackfillAnchor": null,
                 "snapshots": [
                     {
                         "apiEquivalentCost": null,
@@ -619,6 +622,7 @@ mod tests {
             json!({
                 "activeMacGeneration": 4.0,
                 "installationCredential": INSTALLATION_CREDENTIAL,
+                "profileBackfillAnchor": null,
                 "snapshots": [
                     {
                         "apiEquivalentCost": null,
