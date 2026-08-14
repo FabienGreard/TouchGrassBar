@@ -172,7 +172,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         "codex_usage_file_days",
     ];
     let codex_table_count = count_tables(connection, &codex_tables)?;
-    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7)
+    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7 | 8)
         || (codex_version == 0 && codex_table_count != 0)
         || (codex_version >= 2 && codex_table_count != codex_tables.len())
     {
@@ -306,6 +306,8 @@ fn inspect_known_table_columns(
         "previous_total",
     ];
     const LEGACY_CODEX_FILE_TURN_COLUMNS: &[&str] = &["path", "turn_id"];
+    const LEGACY_CODEX_ACCOUNT_DAY_COLUMNS: &[&str] = &["day", "tokens"];
+    const LEGACY_CODEX_ACCOUNT_META_COLUMNS: &[&str] = &["singleton", "observed_at"];
     const LEGACY_USAGE_SYNC_ACTIVATION_COLUMNS: &[&str] =
         &["active_generation", "ranking_day", "activated_at"];
     const LEGACY_CLAUDE_DAILY_COLUMNS: &[&str] = &[
@@ -336,6 +338,8 @@ fn inspect_known_table_columns(
             ("codex_usage_file_model_days", _, 2 | 3, _) => LEGACY_CODEX_MODEL_DAY_COLUMNS,
             ("codex_usage_files", _, 2 | 3, _) => LEGACY_CODEX_FILE_COLUMNS,
             ("codex_usage_file_turns", _, 6, _) => LEGACY_CODEX_FILE_TURN_COLUMNS,
+            ("codex_account_usage_days", _, 2 | 3 | 6 | 7, _) => LEGACY_CODEX_ACCOUNT_DAY_COLUMNS,
+            ("codex_account_usage_meta", _, 2 | 3 | 6 | 7, _) => LEGACY_CODEX_ACCOUNT_META_COLUMNS,
             ("claude_usage_daily", _, _, 3 | 4) => LEGACY_CLAUDE_DAILY_COLUMNS,
             ("claude_usage_message_supersedes", _, _, 3 | 4) => LEGACY_CLAUDE_SUPERSEDES_COLUMNS,
             _ => expected,
@@ -604,6 +608,16 @@ fn inspect_known_object_definitions(
                     definition.contains("check(schema_version=7)")
                         && definition.contains("check(contract_version=4)")
                 }
+                _ => false,
+            },
+            ("table", "codex_account_usage_days") => match versions.codex {
+                2 | 3 | 6 | 7 => !definition.contains("observed_attextnotnull"),
+                8 => definition.contains("observed_attextnotnull"),
+                _ => false,
+            },
+            ("table", "codex_account_usage_meta") => match versions.codex {
+                2 | 3 | 6 | 7 => definition.contains("observed_attextnotnull"),
+                8 => definition.contains("refreshed_attextnotnull"),
                 _ => false,
             },
             ("table", "touchgrassbar_update_state") => match versions.update {

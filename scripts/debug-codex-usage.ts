@@ -68,11 +68,15 @@ function requestedOptions() {
 function seedDebugDatabase(liveDatabase: string) {
   if (existsSync(debugDatabase) || !existsSync(liveDatabase)) return;
   mkdirSync(debugDirectory, { recursive: true });
-  const backup = spawnSync("sqlite3", [liveDatabase, `.backup '${debugDatabase}'`], {
-    cwd: workspaceRoot,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const backup = spawnSync(
+    "sqlite3",
+    [liveDatabase, `.backup '${debugDatabase}'`],
+    {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   if (backup.status !== 0) {
     throw new Error("The private SQLite debug snapshot could not be created.");
   }
@@ -80,6 +84,39 @@ function seedDebugDatabase(liveDatabase: string) {
 
 function sqliteLiteral(value: string) {
   return `'${value.replaceAll("'", "''")}'`;
+}
+
+const currentAccountCacheSchema = [
+  "DROP TABLE IF EXISTS codex_account_usage_days;",
+  "DROP TABLE IF EXISTS codex_account_usage_meta;",
+  "CREATE TABLE codex_account_usage_meta (singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1), refreshed_at TEXT NOT NULL);",
+  "CREATE TABLE codex_account_usage_days (day TEXT PRIMARY KEY NOT NULL, tokens INTEGER NOT NULL, observed_at TEXT NOT NULL);",
+];
+
+function accountCacheShape(database: string) {
+  const result = spawnSync(
+    "sqlite3",
+    [
+      database,
+      [
+        "SELECT group_concat(name, ',') FROM pragma_table_info('codex_account_usage_days');",
+        "SELECT group_concat(name, ',') FROM pragma_table_info('codex_account_usage_meta');",
+      ].join(" "),
+    ],
+    { cwd: workspaceRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (result.status !== 0) return null;
+  const [dayColumns, metaColumns] = result.stdout.trim().split("\n");
+  if (
+    dayColumns === "day,tokens,observed_at" &&
+    metaColumns === "singleton,refreshed_at"
+  ) {
+    return "current";
+  }
+  if (dayColumns === "day,tokens" && metaColumns === "singleton,observed_at") {
+    return "legacy";
+  }
+  return null;
 }
 
 function refreshAccountCache(liveDatabase: string) {
@@ -90,27 +127,19 @@ function refreshAccountCache(liveDatabase: string) {
     return;
   }
   mkdirSync(debugDirectory, { recursive: true });
-  const sourceTables = spawnSync(
-    "sqlite3",
-    [
-      liveDatabase,
-      "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('codex_account_usage_meta', 'codex_account_usage_days');",
-    ],
-    { cwd: workspaceRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-  );
-  if (sourceTables.status !== 0 || sourceTables.stdout.trim() !== "2") {
+  const sourceShape = accountCacheShape(liveDatabase);
+  if (sourceShape === null) {
     const clear = spawnSync(
       "sqlite3",
       [
         debugDatabase,
-        [
-          "CREATE TABLE IF NOT EXISTS codex_account_usage_meta (singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1), observed_at TEXT NOT NULL);",
-          "CREATE TABLE IF NOT EXISTS codex_account_usage_days (day TEXT PRIMARY KEY NOT NULL, tokens INTEGER NOT NULL);",
-          "DELETE FROM codex_account_usage_days;",
-          "DELETE FROM codex_account_usage_meta;",
-        ].join(" "),
+        ["BEGIN IMMEDIATE;", ...currentAccountCacheSchema, "COMMIT;"].join(" "),
       ],
-      { cwd: workspaceRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
     if (clear.status !== 0) {
       throw new Error("The private account usage cache could not be cleared.");
@@ -120,19 +149,24 @@ function refreshAccountCache(liveDatabase: string) {
     );
     return;
   }
+  const copyAccountDays =
+    sourceShape === "current"
+      ? "INSERT INTO codex_account_usage_days(day, tokens, observed_at) SELECT day, tokens, observed_at FROM live.codex_account_usage_days;"
+      : "INSERT INTO codex_account_usage_days(day, tokens, observed_at) SELECT day, tokens, (SELECT observed_at FROM live.codex_account_usage_meta WHERE singleton = 1) FROM live.codex_account_usage_days;";
+  const copyAccountMeta =
+    sourceShape === "current"
+      ? "INSERT INTO codex_account_usage_meta(singleton, refreshed_at) SELECT singleton, refreshed_at FROM live.codex_account_usage_meta;"
+      : "INSERT INTO codex_account_usage_meta(singleton, refreshed_at) SELECT singleton, observed_at FROM live.codex_account_usage_meta;";
   const refresh = spawnSync(
     "sqlite3",
     [
       debugDatabase,
       [
-        "CREATE TABLE IF NOT EXISTS codex_account_usage_meta (singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1), observed_at TEXT NOT NULL);",
-        "CREATE TABLE IF NOT EXISTS codex_account_usage_days (day TEXT PRIMARY KEY NOT NULL, tokens INTEGER NOT NULL);",
         `ATTACH DATABASE ${sqliteLiteral(liveDatabase)} AS live;`,
         "BEGIN IMMEDIATE;",
-        "DELETE FROM codex_account_usage_days;",
-        "INSERT INTO codex_account_usage_days(day, tokens) SELECT day, tokens FROM live.codex_account_usage_days;",
-        "DELETE FROM codex_account_usage_meta;",
-        "INSERT INTO codex_account_usage_meta(singleton, observed_at) SELECT singleton, observed_at FROM live.codex_account_usage_meta;",
+        ...currentAccountCacheSchema,
+        copyAccountDays,
+        copyAccountMeta,
         "COMMIT;",
         "DETACH DATABASE live;",
       ].join(" "),

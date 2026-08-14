@@ -660,6 +660,16 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                WHERE strftime('%Y-%m-%d', day, '+0 days') IS NULL
                   OR strftime('%Y-%m-%d', day, '+0 days') != day
                   OR length(day) != 10 OR tokens < 0
+                  OR julianday(observed_at) IS NULL
+             ) OR EXISTS(
+               SELECT 1 FROM codex_account_usage_meta
+               WHERE julianday(refreshed_at) IS NULL
+             ) OR EXISTS(
+               SELECT 1
+               FROM codex_account_usage_days AS account_day
+               LEFT JOIN codex_account_usage_meta AS account_meta
+                 ON account_meta.singleton = 1
+               WHERE account_meta.singleton IS NULL
              ) OR EXISTS(
                SELECT 1 FROM codex_usage_file_model_days
                WHERE strftime('%Y-%m-%d', day, '+0 days') IS NULL
@@ -793,6 +803,10 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
             "usage-retention",
             "SELECT
                COALESCE((
+                 SELECT julianday(MAX(day)) - julianday(MIN(day)) > 59
+                 FROM codex_account_usage_days
+               ), 0)
+               OR COALESCE((
                  SELECT julianday(MAX(day)) - julianday(MIN(day)) > 59
                  FROM codex_usage_file_days
                ), 0)

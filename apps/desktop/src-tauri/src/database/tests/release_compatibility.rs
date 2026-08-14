@@ -22,7 +22,7 @@ use crate::{
 const CURRENT_DATABASE_FORMAT: i64 = 7;
 const CURRENT_MODULE_VERSIONS: &[(&str, i64)] = &[
     ("claude-usage-index", 7),
-    ("codex-usage-index", 7),
+    ("codex-usage-index", 8),
     ("database-coordinator", 1),
     ("desktop-lifecycle", 5),
     ("sanitized-desktop-state", 7),
@@ -429,6 +429,18 @@ fn assert_provider_facts_preserved(
             );
             continue;
         }
+        if fixture.source_schema.codex_usage_index < 8
+            && expected.table == "codex_account_usage_meta"
+        {
+            let actual = provider_table_facts(
+                &connection,
+                &expected.table,
+                vec!["singleton".to_owned(), "refreshed_at".to_owned()],
+            );
+            assert_eq!(actual.row_count, expected.row_count, "{}", fixture.tag);
+            assert_eq!(actual.rows, expected.rows, "{}", fixture.tag);
+            continue;
+        }
         let actual = provider_table_facts(&connection, &expected.table, expected.columns.clone());
         assert_eq!(
             actual.row_count, expected.row_count,
@@ -440,6 +452,22 @@ fn assert_provider_facts_preserved(
             "{} changed {} durable facts",
             fixture.tag, expected.table
         );
+        if fixture.source_schema.codex_usage_index < 8
+            && expected.table == "codex_account_usage_days"
+        {
+            let timestamp_mismatches = connection
+                .query_row(
+                    "SELECT COUNT(*)
+                     FROM codex_account_usage_days AS account_day
+                     JOIN codex_account_usage_meta AS account_meta
+                       ON account_meta.singleton = 1
+                     WHERE account_day.observed_at != account_meta.refreshed_at",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count migrated account timestamp mismatches");
+            assert_eq!(timestamp_mismatches, 0, "{}", fixture.tag);
+        }
     }
 
     for table in current_tables {

@@ -46,6 +46,7 @@ pub(crate) struct DailyUsageEvidence {
 pub(crate) struct ProviderUsageEvidence {
     pub(crate) provider_reported_tokens: Option<BTreeMap<Date, u64>>,
     pub(crate) provider_observed_at: Option<OffsetDateTime>,
+    pub(crate) provider_observed_at_by_day: BTreeMap<Date, OffsetDateTime>,
     pub(crate) local_usage_evidence: BTreeMap<Date, DailyUsageEvidence>,
     pub(crate) local_cost_evidence: BTreeMap<Date, DailyCostEvidence>,
     pub(crate) local_evidence_available: bool,
@@ -62,6 +63,25 @@ struct CostProjection {
     usd: f64,
     quality: ApiEquivalentCostQuality,
     coverage_percent: Option<f64>,
+}
+
+#[derive(Clone, Copy)]
+struct SelectedUsageDay {
+    observed_tokens: u64,
+    evidence_basis: UsageEvidenceBasis,
+    coverage: UsageCoverage,
+    observed_at: OffsetDateTime,
+}
+
+struct SelectedUsagePeriod {
+    observed_tokens: u64,
+    provider_tokens: u64,
+    local_tokens: u64,
+    evidence_basis: UsageEvidenceBasis,
+    coverage: UsageCoverage,
+    observed_at: OffsetDateTime,
+    provider_days: Vec<Date>,
+    local_days: Vec<Date>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,65 +150,122 @@ fn trend_percent(current: u64, previous: u64) -> Option<f64> {
     trend.is_finite().then_some(trend)
 }
 
-fn observed_period_sum(
-    mut days: impl Iterator<Item = Date>,
-    mut tokens_for_day: impl FnMut(Date) -> Option<u64>,
-) -> Option<u64> {
-    let mut observed_day = false;
-    let total = days.try_fold(0_u64, |total, day| {
-        let observed_tokens = tokens_for_day(day);
-        let tokens = observed_tokens.unwrap_or(0);
-        observed_day |= observed_tokens.is_some();
-        total.checked_add(tokens)
-    })?;
-    observed_day.then_some(total)
+fn provider_observed_at_for_day(
+    evidence: &ProviderUsageEvidence,
+    day: Date,
+) -> Option<OffsetDateTime> {
+    evidence
+        .provider_observed_at_by_day
+        .get(&day)
+        .copied()
+        .or(evidence.provider_observed_at)
 }
 
-fn selected_source_previous_tokens(
+fn select_usage_day(
     evidence: &ProviderUsageEvidence,
-    evidence_basis: UsageEvidenceBasis,
-    today: Date,
-    length: i64,
-) -> Option<u64> {
-    match evidence_basis {
-        UsageEvidenceBasis::ProviderReported => {
-            let provider_previous = evidence
-                .provider_reported_tokens
-                .as_ref()
-                .and_then(|daily| {
-                    observed_period_sum(period_days(today, length, length), |day| {
-                        daily.get(&day).copied()
-                    })
-                });
-            provider_previous.or_else(|| {
-                if length != 1 || !evidence.local_evidence_available {
-                    return None;
-                }
-                observed_period_sum(period_days(today, length, length), |day| {
-                    evidence
-                        .local_usage_evidence
-                        .get(&day)
-                        .map(|detail| detail.observed_tokens)
-                })
-            })
-        }
-        UsageEvidenceBasis::LocallyDerived => {
-            observed_period_sum(period_days(today, length, length), |day| {
-                evidence
-                    .local_usage_evidence
-                    .get(&day)
-                    .map(|detail| detail.observed_tokens)
-            })
-        }
-        UsageEvidenceBasis::Mixed => None,
+    day: Date,
+    observed_at_fallback: OffsetDateTime,
+) -> Option<SelectedUsageDay> {
+    if let Some((observed_tokens, observed_at)) = evidence
+        .provider_reported_tokens
+        .as_ref()
+        .and_then(|daily| daily.get(&day).copied())
+        .zip(provider_observed_at_for_day(evidence, day))
+    {
+        return Some(SelectedUsageDay {
+            observed_tokens,
+            evidence_basis: UsageEvidenceBasis::ProviderReported,
+            coverage: UsageCoverage::Complete,
+            observed_at,
+        });
     }
+    if !evidence.local_evidence_available {
+        return None;
+    }
+    let local = evidence.local_usage_evidence.get(&day)?;
+    Some(SelectedUsageDay {
+        observed_tokens: local.observed_tokens,
+        evidence_basis: UsageEvidenceBasis::LocallyDerived,
+        coverage: local.coverage,
+        observed_at: local
+            .observed_through
+            .or(evidence.local_observed_at)
+            .unwrap_or(observed_at_fallback),
+    })
+}
+
+fn select_usage_period(
+    evidence: &ProviderUsageEvidence,
+    days: impl Iterator<Item = Date>,
+    observed_at_fallback: OffsetDateTime,
+) -> Option<SelectedUsagePeriod> {
+    let mut expected_days = 0_usize;
+    let mut selected_days = 0_usize;
+    let mut observed_tokens = 0_u64;
+    let mut provider_tokens = 0_u64;
+    let mut local_tokens = 0_u64;
+    let mut complete = true;
+    let mut observed_at = None;
+    let mut provider_days = Vec::new();
+    let mut local_days = Vec::new();
+
+    for day in days {
+        expected_days = expected_days.checked_add(1)?;
+        let Some(selected) = select_usage_day(evidence, day, observed_at_fallback) else {
+            complete = false;
+            continue;
+        };
+        selected_days = selected_days.checked_add(1)?;
+        observed_tokens = observed_tokens.checked_add(selected.observed_tokens)?;
+        complete &= selected.coverage == UsageCoverage::Complete;
+        observed_at = Some(
+            observed_at.map_or(selected.observed_at, |current: OffsetDateTime| {
+                current.min(selected.observed_at)
+            }),
+        );
+        match selected.evidence_basis {
+            UsageEvidenceBasis::ProviderReported => {
+                provider_tokens = provider_tokens.checked_add(selected.observed_tokens)?;
+                provider_days.push(day);
+            }
+            UsageEvidenceBasis::LocallyDerived => {
+                local_tokens = local_tokens.checked_add(selected.observed_tokens)?;
+                local_days.push(day);
+            }
+            UsageEvidenceBasis::Mixed => return None,
+        }
+    }
+    if selected_days == 0 {
+        return None;
+    }
+    complete &= selected_days == expected_days;
+    let evidence_basis = match (provider_days.is_empty(), local_days.is_empty()) {
+        (false, true) => UsageEvidenceBasis::ProviderReported,
+        (true, false) => UsageEvidenceBasis::LocallyDerived,
+        (false, false) => UsageEvidenceBasis::Mixed,
+        (true, true) => return None,
+    };
+    Some(SelectedUsagePeriod {
+        observed_tokens,
+        provider_tokens,
+        local_tokens,
+        evidence_basis,
+        coverage: if complete {
+            UsageCoverage::Complete
+        } else {
+            UsageCoverage::Partial
+        },
+        observed_at: observed_at?,
+        provider_days,
+        local_days,
+    })
 }
 
 fn provider_reported_cost(
     provider_tokens: &BTreeMap<Date, u64>,
     days: impl Iterator<Item = Date>,
     local: &BTreeMap<Date, DailyCostEvidence>,
-    provider_observed_at: OffsetDateTime,
+    mut observed_at_for_day: impl FnMut(Date) -> Option<OffsetDateTime>,
 ) -> Option<CostProjection> {
     let mut usd = 0.0;
     let mut covered_tokens = 0_u64;
@@ -200,6 +277,7 @@ fn provider_reported_cost(
     for (day, provider_tokens) in
         days.filter_map(|day| provider_tokens.get(&day).map(|tokens| (day, *tokens)))
     {
+        let provider_observed_at = observed_at_for_day(day)?;
         total_tokens = total_tokens.checked_add(provider_tokens)?;
         if provider_tokens == 0 {
             modeled |= local
@@ -310,119 +388,125 @@ fn locally_derived_cost(
     })
 }
 
+fn combine_selected_period_cost(
+    total_tokens: u64,
+    parts: [(u64, Option<CostProjection>); 2],
+) -> Option<CostProjection> {
+    let mut usd = 0.0;
+    let mut covered_tokens = 0.0;
+    let mut quality = None;
+    let mut has_unpriced_tokens = false;
+    for (tokens, projection) in parts {
+        let Some(projection) = projection else {
+            has_unpriced_tokens |= tokens > 0;
+            continue;
+        };
+        usd += projection.usd;
+        covered_tokens += match projection.quality {
+            ApiEquivalentCostQuality::Modeled => {
+                projection.coverage_percent.unwrap_or(0.0) * tokens as f64 / 100.0
+            }
+            ApiEquivalentCostQuality::Reconciled | ApiEquivalentCostQuality::LocalOnly => {
+                tokens as f64
+            }
+        };
+        quality = Some(match quality {
+            Some(current) => weakest_cost_quality(current, projection.quality),
+            None => projection.quality,
+        });
+    }
+    if !usd.is_finite() {
+        return None;
+    }
+    let mut quality = quality?;
+    if has_unpriced_tokens {
+        quality = ApiEquivalentCostQuality::Modeled;
+    }
+    Some(CostProjection {
+        usd,
+        quality,
+        coverage_percent: (quality == ApiEquivalentCostQuality::Modeled).then(|| {
+            if total_tokens == 0 {
+                100.0
+            } else {
+                ((covered_tokens / total_tokens as f64) * 100.0).clamp(0.0, 100.0)
+            }
+        }),
+    })
+}
+
+fn selected_period_cost(
+    evidence: &ProviderUsageEvidence,
+    selected: &SelectedUsagePeriod,
+) -> Option<CostProjection> {
+    let provider_cost = (!selected.provider_days.is_empty())
+        .then(|| {
+            evidence
+                .local_evidence_available
+                .then(|| {
+                    provider_reported_cost(
+                        evidence.provider_reported_tokens.as_ref()?,
+                        selected.provider_days.iter().copied(),
+                        &evidence.local_cost_evidence,
+                        |day| provider_observed_at_for_day(evidence, day),
+                    )
+                })
+                .flatten()
+        })
+        .flatten();
+    let local_cost = (!selected.local_days.is_empty())
+        .then(|| {
+            locally_derived_cost(
+                &evidence.local_cost_evidence,
+                selected.local_days.iter().copied(),
+                selected.local_tokens,
+            )
+        })
+        .flatten();
+
+    match selected.evidence_basis {
+        UsageEvidenceBasis::ProviderReported => provider_cost,
+        UsageEvidenceBasis::LocallyDerived => local_cost,
+        UsageEvidenceBasis::Mixed => combine_selected_period_cost(
+            selected.observed_tokens,
+            [
+                (selected.provider_tokens, provider_cost),
+                (selected.local_tokens, local_cost),
+            ],
+        ),
+    }
+}
+
 fn project_period(
     evidence: &ProviderUsageEvidence,
     now: OffsetDateTime,
     length: i64,
 ) -> UsageTotal {
     let today = now.to_offset(UtcOffset::UTC).date();
-    let provider_period = evidence
-        .provider_reported_tokens
-        .as_ref()
-        .and_then(|provider_tokens| {
-            let observed_days = period_days(today, length, 0)
-                .filter(|day| provider_tokens.contains_key(day))
-                .count();
-            (observed_days > 0).then_some((provider_tokens, observed_days))
-        });
-    let (tokens, evidence_basis, coverage, observed_at, cost) =
-        if let Some((provider_tokens, observed_days)) = provider_period {
-            let expected = usize::try_from(length).unwrap_or(usize::MAX);
-            let Some(tokens) = checked_sum(
-                period_days(today, length, 0).filter_map(|day| provider_tokens.get(&day)),
-            ) else {
-                return UsageTotal::Unavailable;
-            };
-            let Some(observed_at) = evidence.provider_observed_at else {
-                return UsageTotal::Unavailable;
-            };
-            (
-                tokens,
-                UsageEvidenceBasis::ProviderReported,
-                if observed_days == expected {
-                    UsageCoverage::Complete
-                } else {
-                    UsageCoverage::Partial
-                },
-                observed_at,
-                evidence
-                    .local_evidence_available
-                    .then(|| {
-                        provider_reported_cost(
-                            provider_tokens,
-                            period_days(today, length, 0),
-                            &evidence.local_cost_evidence,
-                            observed_at,
-                        )
-                    })
-                    .flatten(),
-            )
-        } else if evidence.local_evidence_available {
-            let observed_days = period_days(today, length, 0)
-                .filter(|day| evidence.local_usage_evidence.contains_key(day))
-                .count();
-            let Some(tokens) = checked_sum(period_days(today, length, 0).filter_map(|day| {
-                evidence
-                    .local_usage_evidence
-                    .get(&day)
-                    .map(|detail| &detail.observed_tokens)
-            })) else {
-                return UsageTotal::Unavailable;
-            };
-            if observed_days == 0 {
-                return UsageTotal::Unavailable;
-            }
-            let expected = usize::try_from(length).unwrap_or(usize::MAX);
-            let coverage = if observed_days == expected
-                && period_days(today, length, 0).all(|day| {
-                    evidence
-                        .local_usage_evidence
-                        .get(&day)
-                        .is_some_and(|detail| detail.coverage == UsageCoverage::Complete)
-                }) {
-                UsageCoverage::Complete
-            } else {
-                UsageCoverage::Partial
-            };
-            let observed_at = evidence
-                .local_observed_at
-                .or_else(|| {
-                    period_days(today, length, 0)
-                        .filter_map(|day| {
-                            evidence
-                                .local_usage_evidence
-                                .get(&day)
-                                .and_then(|detail| detail.observed_through)
-                        })
-                        .max()
-                })
-                .unwrap_or(now);
-            (
-                tokens,
-                UsageEvidenceBasis::LocallyDerived,
-                coverage,
-                observed_at,
-                locally_derived_cost(
-                    &evidence.local_cost_evidence,
-                    period_days(today, length, 0),
-                    tokens,
-                ),
-            )
-        } else {
-            return UsageTotal::Unavailable;
-        };
-
-    let trend_previous_tokens =
-        selected_source_previous_tokens(evidence, evidence_basis, today, length);
-    let trend = trend_previous_tokens.and_then(|previous| trend_percent(tokens, previous));
-    let observed_at = observed_at
+    let Some(selected) = select_usage_period(evidence, period_days(today, length, 0), now) else {
+        return UsageTotal::Unavailable;
+    };
+    let cost = selected_period_cost(evidence, &selected);
+    let trend_previous_tokens = (selected.coverage == UsageCoverage::Complete
+        && selected.evidence_basis != UsageEvidenceBasis::Mixed)
+        .then(|| select_usage_period(evidence, period_days(today, length, length), now))
+        .flatten()
+        .filter(|previous| {
+            previous.coverage == UsageCoverage::Complete
+                && previous.evidence_basis != UsageEvidenceBasis::Mixed
+        })
+        .map(|previous| previous.observed_tokens);
+    let trend = trend_previous_tokens
+        .and_then(|previous| trend_percent(selected.observed_tokens, previous));
+    let observed_at = selected
+        .observed_at
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned());
     UsageTotal::Current {
-        evidence_basis,
-        coverage,
+        evidence_basis: selected.evidence_basis,
+        coverage: selected.coverage,
         observed_at,
-        observed_tokens: tokens,
+        observed_tokens: selected.observed_tokens,
         api_equivalent_cost_usd: cost.map(|cost| cost.usd),
         trend_percent: trend,
         trend_previous_tokens,
@@ -460,55 +544,28 @@ pub(crate) fn calculate_daily_usage_aggregates(
 ) -> BTreeMap<Date, UsageTotal> {
     period_days(anchor_day, length, 0)
         .filter_map(|day| {
-            let local_usage = evidence.local_usage_evidence.get(&day);
             let local_cost = evidence.local_cost_evidence.get(&day);
-            let provider_tokens = evidence
-                .provider_reported_tokens
-                .as_ref()
-                .and_then(|daily| daily.get(&day).copied());
-            let (observed_tokens, evidence_basis, coverage, observed_at, cost) =
-                if let Some(observed_tokens) = provider_tokens {
-                    let observed_at = evidence.provider_observed_at?;
-                    let cost = evidence
-                        .local_evidence_available
-                        .then(|| {
-                            provider_reported_cost(
-                                evidence.provider_reported_tokens.as_ref()?,
-                                std::iter::once(day),
-                                &evidence.local_cost_evidence,
-                                observed_at,
-                            )
-                        })
-                        .flatten();
-                    (
-                        observed_tokens,
-                        UsageEvidenceBasis::ProviderReported,
-                        UsageCoverage::Complete,
-                        observed_at,
-                        cost,
-                    )
-                } else {
-                    let local_usage = local_usage?;
-                    if !evidence.local_evidence_available {
-                        return None;
-                    }
-                    let observed_at = local_usage
-                        .observed_through
-                        .or(evidence.local_observed_at)
-                        .unwrap_or(observed_at_fallback);
-                    (
-                        local_usage.observed_tokens,
-                        UsageEvidenceBasis::LocallyDerived,
-                        local_usage.coverage,
-                        observed_at,
-                        locally_derived_cost(
-                            &evidence.local_cost_evidence,
+            let selected = select_usage_day(evidence, day, observed_at_fallback)?;
+            let cost = match selected.evidence_basis {
+                UsageEvidenceBasis::ProviderReported => evidence
+                    .local_evidence_available
+                    .then(|| {
+                        provider_reported_cost(
+                            evidence.provider_reported_tokens.as_ref()?,
                             std::iter::once(day),
-                            local_usage.observed_tokens,
-                        ),
-                    )
-                };
-            let observed_at = observed_at.format(&Rfc3339).ok()?;
+                            &evidence.local_cost_evidence,
+                            |day| provider_observed_at_for_day(evidence, day),
+                        )
+                    })
+                    .flatten(),
+                UsageEvidenceBasis::LocallyDerived => locally_derived_cost(
+                    &evidence.local_cost_evidence,
+                    std::iter::once(day),
+                    selected.observed_tokens,
+                ),
+                UsageEvidenceBasis::Mixed => None,
+            };
+            let observed_at = selected.observed_at.format(&Rfc3339).ok()?;
             let pricing_basis = local_cost.and_then(|detail| detail.pricing_basis.clone());
             // A day can only retain a numeric cost with that day's exact
             // effective-dated catalog. A current provider-wide basis cannot
@@ -517,10 +574,10 @@ pub(crate) fn calculate_daily_usage_aggregates(
             Some((
                 day,
                 UsageTotal::Current {
-                    evidence_basis,
-                    coverage,
+                    evidence_basis: selected.evidence_basis,
+                    coverage: selected.coverage,
                     observed_at,
-                    observed_tokens,
+                    observed_tokens: selected.observed_tokens,
                     api_equivalent_cost_usd: cost.map(|projection| projection.usd),
                     trend_percent: None,
                     trend_previous_tokens: None,
@@ -1059,6 +1116,7 @@ mod tests {
                 (today - Duration::days(30), 9_999),
             ])),
             provider_observed_at: Some(historical_fetch),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::from([
                 (
                     today - Duration::days(1),
@@ -1132,6 +1190,7 @@ mod tests {
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: Some(BTreeMap::from([(today, 100)])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::new(),
             local_cost_evidence: BTreeMap::from([(today, cost)]),
             local_evidence_available: true,
@@ -1191,11 +1250,12 @@ mod tests {
     }
 
     #[test]
-    fn local_period_is_used_when_provider_has_no_bucket_for_that_period() {
+    fn missing_provider_today_uses_local_and_the_larger_period_is_mixed() {
         let now = now();
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: Some(BTreeMap::from([(now.date() - Duration::days(1), 900)])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::from([(
                 now.date(),
                 usage_detail(now, 100, UsageCoverage::Partial),
@@ -1232,16 +1292,32 @@ mod tests {
         );
 
         let UsageTotal::Current {
-            observed_tokens, ..
+            evidence_basis,
+            coverage,
+            observed_tokens,
+            api_equivalent_cost_usd,
+            api_equivalent_cost_quality,
+            api_equivalent_cost_coverage_percent,
+            trend_percent,
+            ..
         } = periods.seven_days
         else {
-            panic!("provider-reported seven-day usage must remain available");
+            panic!("mixed seven-day usage must remain available");
         };
-        assert_eq!(observed_tokens, 900);
+        assert_eq!(evidence_basis, UsageEvidenceBasis::Mixed);
+        assert_eq!(coverage, UsageCoverage::Partial);
+        assert_eq!(observed_tokens, 1_000);
+        assert_eq!(api_equivalent_cost_usd, Some(2.0));
+        assert_eq!(
+            api_equivalent_cost_quality,
+            Some(ApiEquivalentCostQuality::Modeled)
+        );
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(10.0));
+        assert_eq!(trend_percent, None);
     }
 
     #[test]
-    fn sparse_provider_windows_still_report_token_trends() {
+    fn sparse_provider_windows_omit_token_trends() {
         let now = now();
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: Some(BTreeMap::from([
@@ -1253,6 +1329,7 @@ mod tests {
                 (now.date() - Duration::days(40), 100),
             ])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::new(),
             local_cost_evidence: BTreeMap::new(),
             local_evidence_available: false,
@@ -1274,24 +1351,25 @@ mod tests {
             panic!("seven-day provider usage must remain available");
         };
         assert_eq!(coverage, UsageCoverage::Partial);
-        assert_eq!(trend_percent, Some(100.0));
+        assert_eq!(trend_percent, None);
 
         let UsageTotal::Current { trend_percent, .. } = periods.thirty_days else {
             panic!("30-day provider usage must remain available");
         };
-        assert_eq!(trend_percent, Some(200.0));
+        assert_eq!(trend_percent, None);
     }
 
     #[test]
     fn provider_today_uses_local_previous_day_when_account_bucket_is_missing() {
         let now = now();
-        let evidence = ProviderUsageEvidence {
+        let mut evidence = ProviderUsageEvidence {
             provider_reported_tokens: Some(BTreeMap::from([(now.date(), 200)])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::from([
                 (
                     now.date() - Duration::days(1),
-                    usage_detail(now, 100, UsageCoverage::Partial),
+                    usage_detail(now, 100, UsageCoverage::Complete),
                 ),
                 (
                     now.date() - Duration::days(7),
@@ -1324,6 +1402,17 @@ mod tests {
         assert_eq!(trend_previous_tokens, Some(100));
         assert_eq!(trend_percent, Some(100.0));
 
+        evidence
+            .local_usage_evidence
+            .get_mut(&(now.date() - Duration::days(1)))
+            .unwrap()
+            .coverage = UsageCoverage::Partial;
+        let periods_with_partial_previous = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current { trend_percent, .. } = periods_with_partial_previous.today else {
+            panic!("provider Today usage must remain available");
+        };
+        assert_eq!(trend_percent, None);
+
         let UsageTotal::Current { trend_percent, .. } = periods.seven_days else {
             panic!("provider 7-day usage must remain available");
         };
@@ -1336,11 +1425,12 @@ mod tests {
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: Some(BTreeMap::from([(now.date() - Duration::days(2), 900)])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::from([
-                (now.date(), usage_detail(now, 100, UsageCoverage::Partial)),
+                (now.date(), usage_detail(now, 100, UsageCoverage::Complete)),
                 (
                     now.date() - Duration::days(1),
-                    usage_detail(now, 200, UsageCoverage::Partial),
+                    usage_detail(now, 200, UsageCoverage::Complete),
                 ),
             ]),
             local_cost_evidence: BTreeMap::from([
@@ -1388,6 +1478,7 @@ mod tests {
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: None,
             provider_observed_at: None,
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence,
             local_cost_evidence: BTreeMap::new(),
             local_evidence_available: true,
@@ -1435,6 +1526,7 @@ mod tests {
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: None,
             provider_observed_at: None,
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence,
             local_cost_evidence,
             local_evidence_available: true,
@@ -1476,6 +1568,7 @@ mod tests {
                 (local_calendar_day, 900),
             ])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::new(),
             local_cost_evidence: BTreeMap::new(),
             local_evidence_available: false,
@@ -1508,6 +1601,7 @@ mod tests {
                 (missing_day, 300),
             ])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::new(),
             local_cost_evidence: BTreeMap::from([(covered_day, priced_detail(now, 100, 2.0))]),
             local_evidence_available: true,
@@ -1550,6 +1644,7 @@ mod tests {
                 (missing_day, 300),
             ])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::new(),
             local_cost_evidence: BTreeMap::from([(
                 covered_day,
@@ -1597,6 +1692,7 @@ mod tests {
                 (unknown_price_day, 300),
             ])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::new(),
             local_cost_evidence: BTreeMap::from([
                 (priced_day, priced_detail(now, 100, 2.0)),
@@ -1651,6 +1747,7 @@ mod tests {
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: None,
             provider_observed_at: None,
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::from([
                 (priced_day, usage_detail(now, 100, UsageCoverage::Partial)),
                 (
@@ -1707,9 +1804,13 @@ mod tests {
     fn provider_reported_tokens_are_not_added_to_local_tokens() {
         let now = now();
         let evidence = ProviderUsageEvidence {
-            provider_reported_tokens: Some(BTreeMap::from([(now.date(), 100)])),
+            provider_reported_tokens: Some(BTreeMap::from([(now.date(), 0)])),
             provider_observed_at: Some(now),
-            local_usage_evidence: BTreeMap::new(),
+            provider_observed_at_by_day: BTreeMap::new(),
+            local_usage_evidence: BTreeMap::from([(
+                now.date(),
+                usage_detail(now, 40, UsageCoverage::Complete),
+            )]),
             local_cost_evidence: BTreeMap::from([(
                 now.date(),
                 DailyCostEvidence {
@@ -1734,6 +1835,7 @@ mod tests {
 
         let periods = calculate_usage_periods(&evidence, now);
         let UsageTotal::Current {
+            evidence_basis,
             observed_tokens,
             api_equivalent_cost_usd,
             api_equivalent_cost_quality,
@@ -1743,13 +1845,14 @@ mod tests {
         else {
             panic!("today must be available");
         };
-        assert_eq!(observed_tokens, 100);
-        assert_eq!(api_equivalent_cost_usd, Some(5.0));
+        assert_eq!(evidence_basis, UsageEvidenceBasis::ProviderReported);
+        assert_eq!(observed_tokens, 0);
+        assert_eq!(api_equivalent_cost_usd, Some(0.0));
         assert_eq!(
             api_equivalent_cost_quality,
             Some(ApiEquivalentCostQuality::Modeled)
         );
-        assert_eq!(api_equivalent_cost_coverage_percent, Some(40.0));
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
     }
 
     #[test]
@@ -1761,6 +1864,7 @@ mod tests {
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: Some(BTreeMap::from([(now.date(), provider_tokens)])),
             provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
             local_usage_evidence: BTreeMap::from([(
                 now.date(),
                 usage_detail(now, local_tokens, UsageCoverage::Complete),

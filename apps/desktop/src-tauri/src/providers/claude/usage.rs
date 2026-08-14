@@ -549,6 +549,7 @@ fn provider_usage_evidence(
     ProviderUsageEvidence {
         provider_reported_tokens: None,
         provider_observed_at: None,
+        provider_observed_at_by_day: BTreeMap::new(),
         local_usage_evidence: local.map_or_else(BTreeMap::new, |local| local.daily_usage.clone()),
         local_cost_evidence: local.map_or_else(BTreeMap::new, |local| local.daily_cost.clone()),
         local_evidence_available: local.is_some(),
