@@ -108,7 +108,6 @@ describe("panel sync status", () => {
     ["stale", "Synchronization is delayed"],
     ["offline", "Synchronization is offline"],
     ["authority-rejected", "Mac authorization is required"],
-    ["unavailable", "Synchronization is unavailable"],
   ] as const)(
     "reports the loaded %s detail outside the headline",
     (status, detail) => {
@@ -152,9 +151,12 @@ describe("panel sync status", () => {
     expect(renderHeader({ error: true, state: null })).toContain(
       ">Sync unavailable</small>",
     );
-    expect(
-      renderHeader({ error: true, state: stateWithSync("unavailable") }),
-    ).toContain('>Live<span class="sr-only">. Synchronization is unavailable');
+    const loaded = renderHeader({
+      error: true,
+      state: stateWithSync("unavailable"),
+    });
+    expect(loaded).toContain(">Live</small>");
+    expect(loaded).not.toContain("Synchronization is unavailable");
   });
 
   test("uses refresh copy for the broad provider action", () => {
