@@ -1012,7 +1012,7 @@ enum RawEventPayload {
     },
     TokenCount {
         #[serde(default)]
-        info: Option<RawTokenInfo>,
+        info: Option<Box<RawTokenInfo>>,
         #[serde(default, alias = "turnId")]
         turn_id: Option<String>,
         #[serde(default)]
