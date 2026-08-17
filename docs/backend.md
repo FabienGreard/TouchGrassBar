@@ -100,7 +100,10 @@ Doomerboards use the composite Aggregate key `[-TokenScore, TouchGrass ID]`.
 Ascending Aggregate pagination therefore returns the highest score first and
 uses TouchGrass ID as the deterministic tie break. The current Global query is
 fixed to the Combined 1-day Board Key, requires the live Profile, and returns
-at most 100 public rows. It accepts no client identity.
+at most 100 public rows. It accepts no client identity. The native caller sends
+its validated UTC Ranking Day, which keeps the cached query stable within a day
+and changes its argument at rollover. Ordered pagination skips stale rows until
+it fills the requested current-day page or reaches the index end.
 
 `publicUsages` and `doomerboard` have one write path: every insert,
 replacement, or deletion changes both within the same mutation. A bounded,

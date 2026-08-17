@@ -10,6 +10,7 @@ use std::{
 use convex::{ConvexClient, FunctionResult, Value};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 use crate::profile::{
@@ -152,7 +153,12 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
                         .await
                         .map_err(|_| TransportError::Unavailable)?;
                     client.set_auth(Some(jwt.as_str().to_owned())).await;
-                    let result = client.query(CURRENT_GLOBAL_QUERY, BTreeMap::new()).await;
+                    let result = client
+                        .query(
+                            CURRENT_GLOBAL_QUERY,
+                            current_global_arguments(OffsetDateTime::now_utc()),
+                        )
+                        .await;
                     client.set_auth(None).await;
                     result.map_err(|_| TransportError::Unavailable)
                 })
@@ -169,6 +175,13 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
             }
         }
     }
+}
+
+fn current_global_arguments(now: OffsetDateTime) -> BTreeMap<String, Value> {
+    BTreeMap::from([(
+        "rankingDay".to_owned(),
+        Value::String(now.date().to_string()),
+    )])
 }
 
 #[derive(Deserialize)]
@@ -407,6 +420,19 @@ mod tests {
         assert_eq!(parsed[0].api_equivalent_cost_usd, Some(12.5));
         assert_eq!(parsed[1].rank, 1);
         assert_eq!(parsed[2].rank, 3);
+    }
+
+    #[test]
+    fn current_query_uses_the_native_utc_ranking_day() {
+        let now =
+            OffsetDateTime::from_unix_timestamp(1_775_819_696).expect("valid fixture timestamp");
+        assert_eq!(
+            current_global_arguments(now),
+            BTreeMap::from([(
+                "rankingDay".to_owned(),
+                Value::String("2026-04-10".to_owned()),
+            )]),
+        );
     }
 
     #[test]

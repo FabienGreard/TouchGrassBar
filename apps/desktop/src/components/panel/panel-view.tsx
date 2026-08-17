@@ -96,33 +96,29 @@ function PanelView({
 
         {!state ? (
           <LoadingPanel loading={!error} />
-        ) : expanded ? (
-          <Doomerboard
-            currentProfile={currentProfile}
-            expanded
-            onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
-            onExpandedChange={onExpandedChange}
-            providers={visibleProviders}
-            rows={doomerboardRows}
-            tokenmaxxerRows={tokenmaxxerRows}
-          />
         ) : (
           <>
-            <div>
-              {visibleProviders.map((provider) => (
-                <ProviderCard
-                  key={provider.provider}
-                  presentation={provider}
+            {expanded ? null : (
+              <>
+                <div>
+                  {visibleProviders.map((provider) => (
+                    <ProviderCard
+                      key={provider.provider}
+                      presentation={provider}
+                    />
+                  ))}
+                </div>
+                <UsageOverview
+                  presentation={usagePresentation}
+                  topModelUsage={state.topModelUsage}
+                  usage={state.combinedUsage}
                 />
-              ))}
-            </div>
-            <UsageOverview
-              presentation={usagePresentation}
-              topModelUsage={state.topModelUsage}
-              usage={state.combinedUsage}
-            />
+              </>
+            )}
             <Doomerboard
               currentProfile={currentProfile}
+              expanded={expanded}
+              key="doomerboard"
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
               onExpandedChange={onExpandedChange}
               providers={visibleProviders}

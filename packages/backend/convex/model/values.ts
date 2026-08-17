@@ -75,15 +75,7 @@ export function assertUsageSnapshot(
   now = Date.now(),
   observationMayFollowRankingDay = false,
 ) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshot.rankingDay)) {
-    throw new Error("rankingDay must be a UTC date in YYYY-MM-DD form");
-  }
-  const canonicalDay = new Date(`${snapshot.rankingDay}T00:00:00.000Z`)
-    .toISOString()
-    .slice(0, 10);
-  if (canonicalDay !== snapshot.rankingDay) {
-    throw new Error("rankingDay is not a real UTC calendar day");
-  }
+  assertRankingDay(snapshot.rankingDay);
   if (snapshot.rankingDay !== currentRankingDay) {
     throw new Error("rankingDay must be the current UTC Ranking Day");
   }
@@ -163,6 +155,18 @@ export function assertUsageSnapshot(
     }
   } else if (cost.coveragePercent !== null) {
     throw new Error("fixed-quality cost must not include coveragePercent");
+  }
+}
+
+export function assertRankingDay(rankingDay: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(rankingDay)) {
+    throw new Error("rankingDay must be a UTC date in YYYY-MM-DD form");
+  }
+  const canonicalDay = new Date(`${rankingDay}T00:00:00.000Z`)
+    .toISOString()
+    .slice(0, 10);
+  if (canonicalDay !== rankingDay) {
+    throw new Error("rankingDay is not a real UTC calendar day");
   }
 }
 

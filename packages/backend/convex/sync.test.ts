@@ -1206,78 +1206,86 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
   };
   const expected = Array.from({ length: 105 }, (_, index) => ({
     displayName: `Tokenmaxxer ${index}`,
-    tokenScore: 1_000_000 - Math.floor(index / 3),
+    tokenScore: 500_000 - Math.floor(index / 3),
     touchGrassId: publicIdFor(104 - index),
   })).sort(
     (left, right) =>
       right.tokenScore - left.tokenScore ||
       left.touchGrassId.localeCompare(right.touchGrassId),
   );
+  const staleRows = Array.from({ length: 205 }, (_, index) => ({
+    displayName: `Stale Tokenmaxxer ${index}`,
+    tokenScore: 1_000_000 - index,
+    touchGrassId: publicIdFor(309 - index),
+  }));
 
-  await t.run(async (ctx) => {
-    for (const row of expected) {
-      const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
-        authSubject: `seed-${row.touchGrassId}`,
-        createdAt: NOW.getTime(),
-        displayName: row.displayName,
-        publicId: row.touchGrassId,
-      });
-      const publicUsageId = await ctx.db.insert("publicUsages", {
-        apiEquivalentCost: null,
-        boardKey: "tokens-v1:combined:1d",
-        computedAt: NOW.getTime(),
-        displayName: row.displayName,
-        scope: "combined",
-        tokenmaxxerId,
-        tokenScore: row.tokenScore,
-        touchGrassId: row.touchGrassId,
-        windowDays: 1,
-      });
-      await doomerboard.insert(ctx, {
-        id: publicUsageId,
-        key: doomerboardKey(row.tokenScore, row.touchGrassId),
-        namespace: "tokens-v1:combined:1d",
+  async function seedRows(
+    rows: typeof expected,
+    computedAt: number,
+  ) {
+    for (let offset = 0; offset < rows.length; offset += 50) {
+      await t.run(async (ctx) => {
+        for (const row of rows.slice(offset, offset + 50)) {
+          const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+            authSubject: `seed-${row.touchGrassId}`,
+            createdAt: NOW.getTime(),
+            displayName: row.displayName,
+            publicId: row.touchGrassId,
+          });
+          const publicUsageId = await ctx.db.insert("publicUsages", {
+            apiEquivalentCost: null,
+            boardKey: "tokens-v1:combined:1d",
+            computedAt,
+            displayName: row.displayName,
+            scope: "combined",
+            tokenmaxxerId,
+            tokenScore: row.tokenScore,
+            touchGrassId: row.touchGrassId,
+            windowDays: 1,
+          });
+          await doomerboard.insert(ctx, {
+            id: publicUsageId,
+            key: doomerboardKey(row.tokenScore, row.touchGrassId),
+            namespace: "tokens-v1:combined:1d",
+          });
+        }
       });
     }
-    const staleScore = (
-      await ctx.db
-        .query("publicUsages")
-        .withIndex("by_board_key", (q) =>
-          q.eq("boardKey", "tokens-v1:combined:1d"),
-        )
-        .take(200)
-    ).find((row) => row.touchGrassId === expected[0]?.touchGrassId);
-    if (!staleScore) throw new Error("stale score fixture missing");
-    await ctx.db.patch(staleScore._id, {
-      computedAt: NOW.getTime() - 24 * 60 * 60 * 1_000,
-    });
-  });
+  }
+  await seedRows(staleRows, NOW.getTime() - 24 * 60 * 60 * 1_000);
+  await seedRows(expected, NOW.getTime());
 
   await expect(
-    t.query(api.doomerboards.currentGlobal, { limit: 10 }),
+    t.query(api.doomerboards.currentGlobal, {
+      limit: 10,
+      rankingDay: TODAY,
+    }),
   ).rejects.toThrow("authority-rejected");
   await expect(
     authenticated.query(api.doomerboards.currentGlobal, {
       limit: 10,
+      rankingDay: TODAY,
       tokenmaxxerId: "hostile-client-identity",
     } as never),
   ).rejects.toThrow();
+  await expect(
+    authenticated.query(api.doomerboards.currentGlobal, {
+      rankingDay: "2026-02-30",
+    }),
+  ).rejects.toThrow("rankingDay is not a real UTC calendar day");
 
   const defaultPage = await authenticated.query(
     api.doomerboards.currentGlobal,
-    {},
+    { rankingDay: TODAY },
   );
   const cappedPage = await authenticated.query(
     api.doomerboards.currentGlobal,
-    { limit: 500 },
+    { limit: 500, rankingDay: TODAY },
   );
   expect(defaultPage).toHaveLength(50);
   expect(cappedPage).toHaveLength(100);
-  const currentExpected = expected.filter(
-    (row) => row.touchGrassId !== expected[0]?.touchGrassId,
-  );
   expect(cappedPage).toEqual(
-    currentExpected.slice(0, 100).map((row, _index, rows) => ({
+    expected.slice(0, 100).map((row, _index, rows) => ({
       apiEquivalentCost: null,
       displayName: row.displayName,
       rank:

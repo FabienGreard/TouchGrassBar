@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 
+import type { Doc } from "./_generated/dataModel";
 import { query, type QueryCtx } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { doomerboard } from "./model/doomerboard";
@@ -7,6 +8,7 @@ import { rejectAuthority } from "./model/authority";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
   apiEquivalentCostValidator,
+  assertRankingDay,
   boardKey,
   rankingDayAt,
   scoreScopeValidator,
@@ -68,28 +70,43 @@ async function globalRows(
 ) {
   await requireDoomerboardProfile(ctx);
   const limit = Math.min(Math.max(Math.floor(requestedLimit ?? 50), 1), 100);
-  const { page } = await doomerboard.paginate(ctx, {
-    namespace: boardKey(scope, windowDays),
-    order: "asc",
-    pageSize: requiredComputedRankingDay
-      ? Math.min(limit * 2, 200)
-      : limit,
-  });
-  const rows = await Promise.all(page.map((item) => ctx.db.get(item.id)));
-  const currentRows = rows.filter(
-    (row): row is Exclude<typeof row, null> =>
-      row !== null &&
-      (requiredComputedRankingDay === undefined ||
-        rankingDayAt(row.computedAt) === requiredComputedRankingDay),
-  );
-  return rankRows(currentRows).slice(0, limit);
+  const rows: Doc<"publicUsages">[] = [];
+  let cursor: string | undefined;
+  let isDone = false;
+  while (rows.length < limit && !isDone) {
+    const page = await doomerboard.paginate(ctx, {
+      ...(cursor === undefined ? {} : { cursor }),
+      namespace: boardKey(scope, windowDays),
+      order: "asc",
+      pageSize: limit,
+    });
+    const candidates = await Promise.all(
+      page.page.map((item) => ctx.db.get(item.id)),
+    );
+    rows.push(
+      ...candidates.filter(
+        (row): row is Exclude<typeof row, null> =>
+          row !== null &&
+          (requiredComputedRankingDay === undefined ||
+            rankingDayAt(row.computedAt) === requiredComputedRankingDay),
+      ),
+    );
+    cursor = page.cursor;
+    isDone = page.isDone;
+  }
+  return rankRows(rows).slice(0, limit);
 }
 
 export const currentGlobal = query({
-  args: { limit: v.optional(v.number()) },
+  args: {
+    limit: v.optional(v.number()),
+    rankingDay: v.string(),
+  },
   returns: v.array(doomerboardRow),
-  handler: (ctx, args) =>
-    globalRows(ctx, "combined", 1, args.limit, rankingDayAt()),
+  handler: (ctx, args) => {
+    assertRankingDay(args.rankingDay);
+    return globalRows(ctx, "combined", 1, args.limit, args.rankingDay);
+  },
 });
 
 export const global = query({
