@@ -1190,6 +1190,37 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   ]);
 });
 
+test("Display Name changes immediately update Public Usage projections", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [usageSnapshot()],
+  });
+
+  await authenticated.mutation(api.tokenmaxxers.updateDisplayName, {
+    displayName: "Updated Fabien",
+  });
+
+  const publicUsages = await t.run(async (ctx) =>
+    ctx.db.query("publicUsages").collect(),
+  );
+  expect(publicUsages).toHaveLength(9);
+  expect(publicUsages.every((row) => row.displayName === "Updated Fabien")).toBe(
+    true,
+  );
+  await expect(
+    authenticated.query(api.doomerboards.global, {
+      limit: 10,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).resolves.toMatchObject([{ displayName: "Updated Fabien" }]);
+});
+
 test("the current Global Doomerboard is authenticated, current, bounded, deterministic, and public-only", async () => {
   const t = testBackend();
   const credential = installationCredential("A");

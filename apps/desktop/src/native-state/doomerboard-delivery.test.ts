@@ -107,4 +107,35 @@ describe("Tauri Doomerboard adapter", () => {
     expect(stopRevision).toHaveBeenCalledOnce();
     expect(stopFocus).toHaveBeenCalledOnce();
   });
+
+  test("refreshes at UTC rollover and cancels the next rollover on cleanup", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-17T23:59:59.900Z"));
+    try {
+      const stopRevision = vi.fn();
+      const stopFocus = vi.fn();
+      const bindings: TauriDoomerboardBindings = {
+        invoke: vi.fn(async () => readyView),
+        listen: vi.fn(async () => stopRevision),
+        onFocusChanged: vi.fn(async () => stopFocus),
+      };
+      const receive = vi.fn();
+      const adapter = createTauriDoomerboardAdapter(bindings);
+      const subscription = await adapter.subscribe(receive);
+      if (!subscription.ok) throw new Error("expected connected adapter");
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(receive).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(receive).toHaveBeenCalledOnce();
+
+      subscription.value();
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+      expect(receive).toHaveBeenCalledOnce();
+      expect(stopRevision).toHaveBeenCalledOnce();
+      expect(stopFocus).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

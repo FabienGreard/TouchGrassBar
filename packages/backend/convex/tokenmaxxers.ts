@@ -85,7 +85,16 @@ export const updateDisplayName = mutation({
       throw new Error("TouchGrass Profile not found");
     }
     const displayName = cleanDisplayName(args.displayName);
+    const publicUsages = await ctx.db
+      .query("publicUsages")
+      .withIndex("by_tokenmaxxer_id", (q) =>
+        q.eq("tokenmaxxerId", tokenmaxxer._id),
+      )
+      .take(20);
     await ctx.db.patch(tokenmaxxer._id, { displayName });
+    for (const publicUsage of publicUsages) {
+      await ctx.db.patch(publicUsage._id, { displayName });
+    }
     return { displayName, touchGrassId: tokenmaxxer.publicId };
   },
 });
