@@ -62,7 +62,7 @@ function syncPresentation(
     offline: "Synchronization is offline",
     stale: "Synchronization is delayed",
     synced: undefined,
-    unavailable: "Synchronization is unavailable",
+    unavailable: undefined,
   } satisfies Record<Exclude<PanelSyncStatus, "pending">, string | undefined>;
 
   return { detailLabel: detailLabel[status], label: "Live", status };

@@ -224,9 +224,19 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "daytextprimarykeynotnull,tokensintegernotnull)"
     ),
     concat!(
+        "createtablecodex_account_usage_days(",
+        "daytextprimarykeynotnull,tokensintegernotnull,",
+        "observed_attextnotnull)"
+    ),
+    concat!(
         "createtablecodex_account_usage_meta(",
         "singletonintegerprimarykeynotnullcheck(singleton=1),",
         "observed_attextnotnull)"
+    ),
+    concat!(
+        "createtablecodex_account_usage_meta(",
+        "singletonintegerprimarykeynotnullcheck(singleton=1),",
+        "refreshed_attextnotnull)"
     ),
     concat!(
         "createtablecodex_usage_file_days(",
@@ -1170,8 +1180,11 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "parser_version",
         ],
     ),
-    ("codex_account_usage_days", &["day", "tokens"]),
-    ("codex_account_usage_meta", &["singleton", "observed_at"]),
+    (
+        "codex_account_usage_days",
+        &["day", "tokens", "observed_at"],
+    ),
+    ("codex_account_usage_meta", &["singleton", "refreshed_at"]),
     ("codex_usage_fast_turns", &["turn_id", "model"]),
     (
         "codex_usage_file_days",

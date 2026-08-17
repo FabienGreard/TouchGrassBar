@@ -20,8 +20,8 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use self::usage::{
     AccountUsageObservation, CachedAccountUsageObservation, load_cached_account_usage,
-    parse_account_usage, project_usage_periods_with_account_time, scan_local_usage,
-    store_cached_account_usage,
+    merge_cached_account_usage, parse_account_usage, project_usage_periods_with_account_time,
+    scan_local_usage, store_cached_account_usage,
 };
 use super::{ProviderObservation, ProviderObservationAdapter};
 use crate::daily_usage_aggregate::preserve_best_known_costs;
@@ -529,10 +529,12 @@ impl CodexProviderObservationAdapter {
                     "account_refresh_completed days={} cache_stored={stored}",
                     observation.day_count()
                 ));
-                Some(CachedAccountUsageObservation {
-                    observation,
-                    observed_at,
-                })
+                let merged = merge_cached_account_usage(cached, observation, observed_at);
+                if stored {
+                    load_cached_account_usage(self.database_path.as_deref()).or(Some(merged))
+                } else {
+                    Some(merged)
+                }
             }
             Err(_) => {
                 debug_usage_event(&format!(
@@ -561,6 +563,7 @@ impl CodexProviderObservationAdapter {
             local_usage.as_ref(),
             observed_at,
             account.map_or(observed_at, |cached| cached.observed_at),
+            account.map(|cached| &cached.observed_at_by_day),
         );
         let previous = usage.clone();
         *usage = preserve_best_known_costs(projected, &previous);
@@ -1124,6 +1127,7 @@ mod tests {
         .unwrap();
         let fresh = CachedAccountUsageObservation {
             observation,
+            observed_at_by_day: BTreeMap::new(),
             observed_at: now - Duration::minutes(29),
         };
         let expired = CachedAccountUsageObservation {

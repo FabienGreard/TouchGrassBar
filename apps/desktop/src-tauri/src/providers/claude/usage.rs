@@ -549,6 +549,7 @@ fn provider_usage_evidence(
     ProviderUsageEvidence {
         provider_reported_tokens: None,
         provider_observed_at: None,
+        provider_observed_at_by_day: BTreeMap::new(),
         local_usage_evidence: local.map_or_else(BTreeMap::new, |local| local.daily_usage.clone()),
         local_cost_evidence: local.map_or_else(BTreeMap::new, |local| local.daily_cost.clone()),
         local_evidence_available: local.is_some(),
@@ -4494,7 +4495,7 @@ mod tests {
     }
 
     #[test]
-    fn index_retains_sixty_days_for_the_previous_thirty_day_trend() {
+    fn index_retains_sixty_days_without_reporting_a_partial_trend() {
         let fixture = FixtureRoot::new();
         let config = fixture.config();
         write_transcript(
@@ -4517,6 +4518,10 @@ mod tests {
 
         let local = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
             .expect("60-day token history must index");
+        assert_eq!(
+            local.daily_usage[&(now().date() - Duration::days(30))].observed_tokens,
+            100
+        );
         let periods = project_usage_periods(Some(&local), now());
         let UsageTotal::Current {
             observed_tokens,
@@ -4528,8 +4533,8 @@ mod tests {
             panic!("30-day usage must be available");
         };
         assert_eq!(observed_tokens, 200);
-        assert_eq!(trend_previous_tokens, Some(100));
-        assert_eq!(trend_percent, Some(100.0));
+        assert_eq!(trend_previous_tokens, None);
+        assert_eq!(trend_percent, None);
     }
 
     #[test]

@@ -42,7 +42,7 @@ A point-in-time collection of a coding provider's Quota Lanes. It can be initial
 _Avoid_: Usage aggregate, balance
 
 **Usage Evidence Basis**:
-Whether Observed Usage is `provider-reported` or `locally-derived`, or `mixed` for a Combined provider scope. This describes the selected source, independently of coverage or freshness.
+Whether one selected daily value is `provider-reported` or `locally-derived`. A period is `mixed` when its selected Ranking Days use both bases, including within one Coding Provider. This describes the selected source, independently of coverage or freshness.
 _Avoid_: Accurate, estimated, quota
 
 **Usage Coverage**:
@@ -54,15 +54,15 @@ For the current Ranking Day, whether Observed Usage is `current`, `stale`, or `u
 _Avoid_: Coverage, evidence basis, corrected
 
 **Observed Usage**:
-Coding-provider consumption selected from exactly one source for one provider and Ranking Day. Provider-reported usage takes precedence when available; locally derived usage is a fallback or cost-detail source and is never added to the provider total.
+Coding-provider consumption selected from exactly one source for one provider and Ranking Day. Provider-reported usage takes precedence for that day. If the provider has no bucket for the day, valid locally derived usage can be selected as a fallback. The two sources are never added for the same day. If neither source has valid evidence, usage is unavailable. An omitted provider bucket is not proof of zero usage.
 _Avoid_: Quota usage, billed usage, exact usage
 
 **Observed Tokens**:
-Token throughput counted under provider-specific rules without double-counting overlapping fields. Codex provider daily totals are used directly; its local cumulative fallback does not add cached-input or reasoning breakdowns again. Claude totals input, cache-creation input, cache-read input, and output while treating thinking as part of output. Provider-specific differences in tokenization and reporting remain part of the number.
+Token throughput counted under provider-specific rules without double-counting overlapping fields. Codex provider daily totals are used directly when present. Its local cumulative data supplies a fallback for a missing provider day and supplies pricing and model evidence. The local calculation does not add cached-input or reasoning subsets again. Claude totals input, cache-creation input, cache-read input, and output while treating thinking as part of output. Provider-specific differences in tokenization and reporting remain part of the number.
 _Avoid_: Billed tokens, normalized tokens, productivity
 
 **Usage Trend**:
-The percentage change in Observed Tokens between one displayed period and the equal period immediately before it. The comparison uses the same selected usage source as the displayed total. Within a provider window that contains reported buckets, an omitted sparse day counts as zero. The previous period must contain at least one observed bucket and a non-zero token total. A Combined Usage Trend is weighted by each contributing provider's previous Observed Tokens. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
+The percentage change in Observed Tokens between one displayed period and the equal period immediately before it. Both periods use the same per-Ranking-Day source-selection rule. An omitted provider bucket can use valid local evidence; it does not count as zero. A trend is unavailable when either period is mixed or partial. The previous period must contain at least one observed bucket and a non-zero token total. A Combined Usage Trend is weighted by each contributing provider's previous Observed Tokens. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
 _Avoid_: Cost trend, spend change, price change
 
 **Token Score**:
@@ -78,7 +78,7 @@ A summary of Observed Usage for one Coding Provider, one Tokenmaxxer, and one Ra
 _Avoid_: Raw usage, usage log
 
 **Usage Snapshot**:
-A cumulative Daily Usage Aggregate sent by the Active Mac with a monotonically increasing revision. Equal or older revisions are ignored. A higher revision may correct a synchronized Ranking Day, but a decrease requires an explicit provider replacement or parser correction; a missing local record never subtracts usage. “Corrected” describes the audited change, not a lasting public status.
+A cumulative Daily Usage Aggregate sent by the Active Mac with a monotonically increasing revision. Equal or older revisions are ignored. A higher revision may correct a synchronized Ranking Day, but a decrease requires an explicit provider replacement or parser correction; a missing local record never subtracts usage. Provider-reported usage that arrives later replaces a locally derived value for the same Ranking Day, even when the provider total is lower. “Corrected” describes the audited change, not a lasting public status.
 _Avoid_: Token increment, usage event, raw observation
 
 **Pending Usage Snapshot**:

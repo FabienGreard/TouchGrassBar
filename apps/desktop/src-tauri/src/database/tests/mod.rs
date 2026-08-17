@@ -92,7 +92,7 @@ fn prepares_one_complete_versioned_database() {
         versions,
         vec![
             ("claude-usage-index".to_owned(), 7),
-            ("codex-usage-index".to_owned(), 7),
+            ("codex-usage-index".to_owned(), 8),
             ("database-coordinator".to_owned(), 1),
             ("desktop-lifecycle".to_owned(), 5),
             ("sanitized-desktop-state".to_owned(), 7),
@@ -139,6 +139,16 @@ fn coordinator_upgrades_the_codex_v6_file_turn_shape_with_daily_references() {
              VALUES('private-turn', 'gpt-5.6-sol');
              INSERT INTO codex_usage_file_turns(path, turn_id)
              VALUES('private-rollout', 'private-turn');
+             DROP TABLE codex_account_usage_days;
+             CREATE TABLE codex_account_usage_days (
+               day TEXT PRIMARY KEY NOT NULL,
+               tokens INTEGER NOT NULL
+             );
+             DROP TABLE codex_account_usage_meta;
+             CREATE TABLE codex_account_usage_meta (
+               singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+               observed_at TEXT NOT NULL
+             );
              UPDATE touchgrassbar_schema_versions SET version = 6
              WHERE module = 'codex-usage-index';
              PRAGMA journal_mode = DELETE;",
@@ -197,6 +207,87 @@ fn coordinator_upgrades_the_codex_v6_file_turn_shape_with_daily_references() {
     );
     verify_invariants(&connection).expect("verify upgraded database");
     assert!(coordinator_backup_path(&database.0).is_file());
+}
+
+#[test]
+fn coordinator_upgrades_the_codex_v7_account_cache_without_rebuilding_rollouts() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare current database");
+    let connection = Connection::open(&database.0).expect("open current database");
+    connection
+        .execute_batch(
+            "INSERT INTO codex_account_usage_meta(singleton, refreshed_at)
+               VALUES(1, '2026-08-14T20:00:00Z');
+             INSERT INTO codex_account_usage_days(day, tokens, observed_at)
+               VALUES('2026-08-14', 123, '2026-08-14T20:00:00Z');
+             INSERT INTO codex_usage_files(
+               path, file_identity, size_bytes, modified_ns, parsed_offset,
+               parser_version, completion_state, schema_supported
+             ) VALUES('private-rollout', '1:2', 10, 20, 10, 16, 'complete', 1);
+             INSERT INTO codex_usage_index_meta(key, value)
+               VALUES('pricing_complete_fingerprint', 'retained-sentinel');
+             ALTER TABLE codex_account_usage_days
+               RENAME TO codex_account_usage_days_v8;
+             CREATE TABLE codex_account_usage_days (
+               day TEXT PRIMARY KEY NOT NULL,
+               tokens INTEGER NOT NULL
+             );
+             INSERT INTO codex_account_usage_days(day, tokens)
+               SELECT day, tokens FROM codex_account_usage_days_v8;
+             DROP TABLE codex_account_usage_days_v8;
+             ALTER TABLE codex_account_usage_meta
+               RENAME TO codex_account_usage_meta_v8;
+             CREATE TABLE codex_account_usage_meta (
+               singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+               observed_at TEXT NOT NULL
+             );
+             INSERT INTO codex_account_usage_meta(singleton, observed_at)
+               SELECT singleton, refreshed_at FROM codex_account_usage_meta_v8;
+             DROP TABLE codex_account_usage_meta_v8;
+             UPDATE touchgrassbar_schema_versions SET version = 7
+             WHERE module = 'codex-usage-index';
+             PRAGMA journal_mode = DELETE;",
+        )
+        .expect("make a known Codex v7 source");
+    drop(connection);
+
+    prepare(&database.0).expect("upgrade the Codex v7 source");
+
+    let connection = Connection::open(&database.0).expect("open upgraded database");
+    assert_eq!(
+        providers::codex_usage_schema_version(&connection).expect("Codex schema version"),
+        providers::CODEX_USAGE_SCHEMA_VERSION
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT tokens, observed_at FROM codex_account_usage_days
+                 WHERE day = '2026-08-14'",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("read migrated account day"),
+        (123, "2026-08-14T20:00:00Z".to_owned())
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM codex_usage_files", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count retained rollout rows"),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM codex_usage_index_meta
+                 WHERE key = 'pricing_complete_fingerprint'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("read retained rollout metadata"),
+        "retained-sentinel"
+    );
 }
 
 #[test]
@@ -947,9 +1038,11 @@ fn rejects_non_calendar_ranking_days() {
     prepare(&database.0).expect("prepare database");
     Connection::open(&database.0)
         .expect("open database")
-        .execute(
-            "INSERT INTO codex_account_usage_days(day, tokens) VALUES('2026-02-30', 1)",
-            [],
+        .execute_batch(
+            "INSERT INTO codex_account_usage_meta(singleton, refreshed_at)
+             VALUES(1, '2026-02-28T00:00:00Z');
+             INSERT INTO codex_account_usage_days(day, tokens, observed_at)
+             VALUES('2026-02-30', 1, '2026-02-28T00:00:00Z');",
         )
         .expect("write invalid day");
 

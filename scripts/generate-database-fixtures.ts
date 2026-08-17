@@ -30,7 +30,7 @@ type FixtureDefinition = {
   revision: string;
   lifecycleVersion: 4 | 5;
   updateStateVersion: 1 | 2 | 3;
-  codexUsageIndexVersion: 2 | 6 | 7;
+  codexUsageIndexVersion: 2 | 6 | 7 | 8;
   hasClaudeUsageIndex: boolean;
   hasTopModelUsage: boolean;
   hasExplicitVersions: boolean;
@@ -46,7 +46,7 @@ type FixtureManifestEntry = {
     databaseFormat: number;
     lifecycle: number;
     sanitizedDesktopState: 4 | 5 | 6 | 7;
-    codexUsageIndex: 2 | 3 | 6 | 7;
+    codexUsageIndex: 2 | 3 | 6 | 7 | 8;
     claudeUsageIndex: 3 | 4 | 7 | null;
     updateState: 1 | 2 | 3;
     databaseCoordinator: 1 | null;
@@ -193,7 +193,7 @@ const definitions: FixtureDefinition[] = [
     revision: "310",
     lifecycleVersion: 5,
     updateStateVersion: 3,
-    codexUsageIndexVersion: 7,
+    codexUsageIndexVersion: 8,
     hasClaudeUsageIndex: true,
     hasTopModelUsage: true,
     hasExplicitVersions: true,
@@ -211,7 +211,7 @@ function readModelContractVersion(definition: FixtureDefinition): 3 | 4 {
   return definition.hasExplicitVersions ? 4 : 3;
 }
 
-function codexUsageVersion(definition: FixtureDefinition): 2 | 6 | 7 {
+function codexUsageVersion(definition: FixtureDefinition): 2 | 6 | 7 | 8 {
   return definition.codexUsageIndexVersion;
 }
 
@@ -489,6 +489,12 @@ function createCodexUsageSchema(
   database: Database,
   definition: FixtureDefinition,
 ): void {
+  const accountMetaTimestampColumn =
+    definition.codexUsageIndexVersion >= 8 ? "refreshed_at" : "observed_at";
+  const accountDayTimestampColumn =
+    definition.codexUsageIndexVersion >= 8
+      ? ",\n      observed_at TEXT NOT NULL"
+      : "";
   const activeTurnColumn = definition.hasExplicitVersions
     ? ",\n      active_turn_id TEXT"
     : "";
@@ -570,11 +576,11 @@ function createCodexUsageSchema(
     );
     CREATE TABLE codex_account_usage_meta (
       singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
-      observed_at TEXT NOT NULL
+      ${accountMetaTimestampColumn} TEXT NOT NULL
     );
     CREATE TABLE codex_account_usage_days (
       day TEXT PRIMARY KEY NOT NULL,
-      tokens INTEGER NOT NULL
+      tokens INTEGER NOT NULL${accountDayTimestampColumn}
     );
     CREATE TABLE codex_usage_files (
       path TEXT PRIMARY KEY NOT NULL,
@@ -673,7 +679,7 @@ function createCodexUsageSchema(
     );
   database
     .query(
-      `INSERT INTO codex_account_usage_meta(singleton, observed_at)
+      `INSERT INTO codex_account_usage_meta(singleton, ${accountMetaTimestampColumn})
        VALUES (1, ?1)`,
     )
     .run(generatedAt);
@@ -698,7 +704,10 @@ function createCodexUsageSchema(
      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)`,
   );
   const accountDay = database.query(
-    `INSERT INTO codex_account_usage_days(day, tokens) VALUES (?1, ?2)`,
+    definition.codexUsageIndexVersion >= 8
+      ? `INSERT INTO codex_account_usage_days(day, tokens, observed_at)
+         VALUES (?1, ?2, ?3)`
+      : `INSERT INTO codex_account_usage_days(day, tokens) VALUES (?1, ?2)`,
   );
   for (const fact of codexUsageFacts(definition)) {
     modelDay.run(
@@ -723,7 +732,11 @@ function createCodexUsageSchema(
       `${fact.day}T23:59:59Z`,
       fact.pricingFingerprint,
     );
-    accountDay.run(fact.day, fact.observedTokens + 100);
+    if (definition.codexUsageIndexVersion >= 8) {
+      accountDay.run(fact.day, fact.observedTokens + 100, generatedAt);
+    } else {
+      accountDay.run(fact.day, fact.observedTokens + 100);
+    }
   }
 }
 
@@ -1292,6 +1305,40 @@ function validateFixtureContents(
       ) {
         throw new Error(
           `The Codex file-turn shape is wrong for ${definition.tag}.`,
+        );
+      }
+      const accountDayColumns = stringRows(
+        database,
+        `SELECT name FROM pragma_table_info('codex_account_usage_days')
+         ORDER BY cid`,
+      );
+      const expectedAccountDayColumns =
+        definition.codexUsageIndexVersion >= 8
+          ? ["day", "tokens", "observed_at"]
+          : ["day", "tokens"];
+      if (
+        JSON.stringify(accountDayColumns) !==
+        JSON.stringify(expectedAccountDayColumns)
+      ) {
+        throw new Error(
+          `The Codex account-day shape is wrong for ${definition.tag}.`,
+        );
+      }
+      const accountMetaColumns = stringRows(
+        database,
+        `SELECT name FROM pragma_table_info('codex_account_usage_meta')
+         ORDER BY cid`,
+      );
+      const expectedAccountMetaColumns =
+        definition.codexUsageIndexVersion >= 8
+          ? ["singleton", "refreshed_at"]
+          : ["singleton", "observed_at"];
+      if (
+        JSON.stringify(accountMetaColumns) !==
+        JSON.stringify(expectedAccountMetaColumns)
+      ) {
+        throw new Error(
+          `The Codex account-meta shape is wrong for ${definition.tag}.`,
         );
       }
       const activationColumns = stringRows(

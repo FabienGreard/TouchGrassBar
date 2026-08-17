@@ -496,14 +496,14 @@
     {
       "tag": "v0.0.10",
       "database": "v0.0.10/touchgrassbar.sqlite3",
-      "sha256": "3007655ccf2b527a7f7d32182cc93f2c2429e48d6f44fa2d0db58ebb3de32a85",
+      "sha256": "c03f5d1dafce7b86ac39e2d06a5053b0fcfcbfb271c7631d50cb83db1c8de992",
       "sourceCommit": "candidate",
       "releaseStatus": "candidate",
       "sourceSchema": {
         "databaseFormat": 7,
         "lifecycle": 5,
         "sanitizedDesktopState": 7,
-        "codexUsageIndex": 7,
+        "codexUsageIndex": 8,
         "claudeUsageIndex": 7,
         "updateState": 3,
         "databaseCoordinator": 1
