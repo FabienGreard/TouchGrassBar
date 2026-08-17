@@ -2205,6 +2205,40 @@ test("score recomputation ignores more than 1000 old rows", async () => {
   }
 });
 
+test("daily score recomputation drains past the first 200 Tokenmaxxers", async () => {
+  const t = testBackend();
+  const tokenmaxxerIds = await t.run(async (ctx) => {
+    const ids = [];
+    for (let index = 0; index < 201; index += 1) {
+      ids.push(
+        await ctx.db.insert("tokenmaxxers", {
+          authSubject: `rollover-${index}`,
+          createdAt: NOW.getTime(),
+          displayName: `Tokenmaxxer ${index}`,
+          lastSyncedAt: NOW.getTime(),
+          publicId: `TG-${String(index).padStart(6, "0")}`,
+        }),
+      );
+    }
+    return ids;
+  });
+
+  await t.mutation(internal.internal.recompute.scheduleRecentlyActive, {});
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const finalTokenmaxxerId = tokenmaxxerIds.at(-1);
+  if (!finalTokenmaxxerId) throw new Error("Tokenmaxxer fixture missing");
+  const finalScores = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicUsages")
+      .withIndex("by_tokenmaxxer_id", (q) =>
+        q.eq("tokenmaxxerId", finalTokenmaxxerId),
+      )
+      .take(9),
+  );
+  expect(finalScores).toHaveLength(9);
+});
+
 test("a mismatched live session cannot create or change Active Mac authority", async () => {
   const t = testBackend();
   const aliceCredential = installationCredential("A");

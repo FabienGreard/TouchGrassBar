@@ -719,6 +719,16 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|>)/);
   });
 
+  test("reports when a ready Global board has no synchronized scores", () => {
+    const markup = renderToStaticMarkup(
+      <Doomerboard currentProfile={currentProfile} rows={[]} />,
+    );
+
+    expect(markup).toContain('aria-label="Doomerboard unavailable"');
+    expect(markup).toContain("Profile and synchronized scores are not ready.");
+    expect(markup).not.toContain('data-doomerboard-scroll=""');
+  });
+
   test("offers a populated fake Tokenmaxxers development mockup", () => {
     const markup = renderToStaticMarkup(
       <Doomerboard

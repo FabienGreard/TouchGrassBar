@@ -103,6 +103,7 @@ function Doomerboard({
     provider === "combined";
   const tokenmaxxersEmpty =
     audience === "mine" && tokenmaxxerRows === undefined;
+  const globalRowsEmpty = globalRowsMatchSelection && rows.length === 0;
   return (
     <section
       aria-label={
@@ -110,9 +111,11 @@ function Doomerboard({
           ? "My Tokenmaxxers rankings"
           : tokenmaxxersEmpty
             ? "My Tokenmaxxers empty"
-            : globalRowsMatchSelection
-              ? "Doomerboard rankings"
-              : "Doomerboard unavailable"
+            : globalRowsEmpty
+              ? "Doomerboard unavailable"
+              : globalRowsMatchSelection
+                ? "Doomerboard rankings"
+                : "Doomerboard unavailable"
       }
       className="pb-2"
       data-expanded={expanded}
@@ -158,6 +161,8 @@ function Doomerboard({
           />
         ) : tokenmaxxersEmpty ? (
           <TokenmaxxersEmpty onAddTokenmaxxer={onAddTokenmaxxer} />
+        ) : globalRowsEmpty ? (
+          <DoomerboardUnavailable />
         ) : globalRowsMatchSelection ? (
           <DoomerboardRankings
             rows={rows}
