@@ -2239,6 +2239,61 @@ test("daily score recomputation drains past the first 200 Tokenmaxxers", async (
   expect(finalScores).toHaveLength(9);
 });
 
+test("a delayed daily recomputation uses its execution Ranking Day", async () => {
+  const t = testBackend();
+  const beforeMidnight = new Date("2026-08-08T23:59:59.900Z");
+  const afterMidnight = new Date("2026-08-09T00:00:00.100Z");
+  const tokenmaxxerId = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("tokenmaxxers", {
+      authSubject: "delayed-rollover",
+      createdAt: beforeMidnight.getTime(),
+      displayName: "Delayed Tokenmaxxer",
+      lastSyncedAt: beforeMidnight.getTime(),
+      publicId: "TG-DELAY2",
+    });
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCost: null,
+      observedTokens: 100,
+      provider: "codex",
+      rankingDay: "2026-08-08",
+      tokenmaxxerId: id,
+      updatedAt: beforeMidnight.getTime(),
+    });
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCost: null,
+      observedTokens: 200,
+      provider: "codex",
+      rankingDay: "2026-08-09",
+      tokenmaxxerId: id,
+      updatedAt: afterMidnight.getTime(),
+    });
+    return id;
+  });
+
+  vi.setSystemTime(beforeMidnight);
+  await t.mutation(internal.internal.recompute.scheduleRecentlyActive, {});
+  vi.setSystemTime(afterMidnight);
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const currentScore = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicUsages")
+      .withIndex(
+        "by_tokenmaxxer_id_and_scope_and_window_days",
+        (q) =>
+          q
+            .eq("tokenmaxxerId", tokenmaxxerId)
+            .eq("scope", "combined")
+            .eq("windowDays", 1),
+      )
+      .unique(),
+  );
+  expect(currentScore).toMatchObject({
+    computedAt: afterMidnight.getTime(),
+    tokenScore: 200,
+  });
+});
+
 test("a mismatched live session cannot create or change Active Mac authority", async () => {
   const t = testBackend();
   const aliceCredential = installationCredential("A");

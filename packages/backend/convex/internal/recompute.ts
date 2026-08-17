@@ -4,20 +4,15 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { internalMutation } from "../_generated/server";
 import { recomputeScores } from "../model/scores";
-import { assertRankingDay, rankingDayAt } from "../model/values";
+import { rankingDayAt } from "../model/values";
 
 const RECOMPUTE_PAGE_SIZE = 100;
 
 export const one = internalMutation({
-  args: {
-    rankingDay: v.optional(v.string()),
-    tokenmaxxerId: v.id("tokenmaxxers"),
-  },
+  args: { tokenmaxxerId: v.id("tokenmaxxers") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const rankingDay = args.rankingDay ?? rankingDayAt();
-    assertRankingDay(rankingDay);
-    await recomputeScores(ctx, args.tokenmaxxerId, rankingDay);
+    await recomputeScores(ctx, args.tokenmaxxerId, rankingDayAt());
     return null;
   },
 });
@@ -37,7 +32,6 @@ export const scheduleRecentlyActive = internalMutation({
           maximumRowsRead: RECOMPUTE_PAGE_SIZE,
           numItems: RECOMPUTE_PAGE_SIZE,
         },
-        rankingDay: rankingDayAt(),
       },
     );
     return null;
@@ -48,11 +42,9 @@ export const scheduleRecentlyActivePage = internalMutation({
   args: {
     activeSince: v.number(),
     paginationOpts: paginationOptsValidator,
-    rankingDay: v.string(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    assertRankingDay(args.rankingDay);
     const page = await ctx.db
       .query("tokenmaxxers")
       .withIndex("by_last_synced_at", (q) =>
@@ -62,7 +54,6 @@ export const scheduleRecentlyActivePage = internalMutation({
     await Promise.all(
       page.page.map((tokenmaxxer) =>
         ctx.scheduler.runAfter(0, internal.internal.recompute.one, {
-          rankingDay: args.rankingDay,
           tokenmaxxerId: tokenmaxxer._id,
         }),
       ),
@@ -78,7 +69,6 @@ export const scheduleRecentlyActivePage = internalMutation({
             maximumRowsRead: RECOMPUTE_PAGE_SIZE,
             numItems: RECOMPUTE_PAGE_SIZE,
           },
-          rankingDay: args.rankingDay,
         },
       );
     }
