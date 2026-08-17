@@ -64,7 +64,11 @@ export const repairEntry = internalMutation({
       publicScore.scope,
       publicScore.windowDays,
     );
-    if (publicScore.boardKey !== expectedNamespace) return null;
+    if (publicScore.boardKey !== expectedNamespace) {
+      await ctx.db.patch(publicScore._id, {
+        boardKey: expectedNamespace,
+      });
+    }
     await doomerboard.insertIfDoesNotExist(ctx, {
       id: publicScore._id,
       key: doomerboardKey(

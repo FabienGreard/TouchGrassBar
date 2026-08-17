@@ -20,6 +20,8 @@ type TauriDoomerboardBindings = {
   ) => Promise<StopListening>;
 };
 
+const remoteRefreshIntervalMs = 5 * 60 * 1_000;
+
 const defaultBindings: TauriDoomerboardBindings = {
   invoke: (command) => invoke<unknown>(command),
   listen: (event, receive) => listen<unknown>(event, receive),
@@ -69,10 +71,13 @@ function createTauriDoomerboardAdapter(
       let stopRevision: StopListening | null = null;
       let stopFocus: StopListening | null = null;
       let rolloverTimer: ReturnType<typeof setTimeout> | null = null;
+      let remoteRefreshTimer: ReturnType<typeof setInterval> | null = null;
       const stopAll = () => {
         closed = true;
         if (rolloverTimer !== null) clearTimeout(rolloverTimer);
+        if (remoteRefreshTimer !== null) clearInterval(remoteRefreshTimer);
         rolloverTimer = null;
+        remoteRefreshTimer = null;
         stopSafely(stopRevision);
         stopSafely(stopFocus);
         stopRevision = null;
@@ -94,6 +99,9 @@ function createTauriDoomerboardAdapter(
         stopFocus = await bindings.onFocusChanged(({ payload: focused }) => {
           if (!closed && focused) receive();
         });
+        remoteRefreshTimer = setInterval(() => {
+          if (!closed) receive();
+        }, remoteRefreshIntervalMs);
         scheduleRollover();
         return {
           ok: true,

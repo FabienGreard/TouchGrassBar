@@ -138,4 +138,31 @@ describe("Tauri Doomerboard adapter", () => {
       vi.useRealTimers();
     }
   });
+
+  test("polls remote scores and cancels polling on cleanup", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-17T12:00:00.000Z"));
+    try {
+      const bindings: TauriDoomerboardBindings = {
+        invoke: vi.fn(async () => readyView),
+        listen: vi.fn(async () => vi.fn()),
+        onFocusChanged: vi.fn(async () => vi.fn()),
+      };
+      const receive = vi.fn();
+      const adapter = createTauriDoomerboardAdapter(bindings);
+      const subscription = await adapter.subscribe(receive);
+      if (!subscription.ok) throw new Error("expected connected adapter");
+
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1_000 - 1);
+      expect(receive).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(receive).toHaveBeenCalledOnce();
+
+      subscription.value();
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1_000);
+      expect(receive).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -42,10 +42,11 @@ sessions, deployment secrets, or other private identifiers.
 ## Recovery
 
 Stop on an authorization error or unexpected write. Each repair mutation
-deletes only its observed Aggregate entry, reads the current Public Usage, and
-inserts the canonical composite key. The backfill deletes only the matching
-legacy numeric key before it inserts that composite key. Both paths can resume.
-Do not make manual dashboard edits.
+deletes only its observed Aggregate entry, reads the current Public Usage,
+corrects its board key from its scope and window when required, and inserts the
+canonical composite key. The backfill deletes only the matching legacy numeric
+key before it inserts that composite key. Both paths can resume. Do not make
+manual dashboard edits.
 
 ## Cleanup targets
 

@@ -1489,6 +1489,54 @@ test("the read-only Doomerboard invariant detects and verifies an idempotent rep
   });
 });
 
+test("the Doomerboard invariant repairs an invalid Public Usage namespace", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [usageSnapshot()],
+  });
+  const publicUsage = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicUsages")
+      .withIndex("by_board_key", (q) =>
+        q.eq("boardKey", "tokens-v1:combined:1d"),
+      )
+      .unique(),
+  );
+  if (!publicUsage) throw new Error("Public Usage missing");
+  await t.run(async (ctx) => {
+    await ctx.db.patch(publicUsage._id, { boardKey: "invalid-board-key" });
+  });
+
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.check, {}),
+  ).resolves.toMatchObject({
+    extraEntries: 1,
+    invalidEntries: 1,
+    missingEntries: 1,
+  });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.repair, {}),
+  ).resolves.toEqual({ changedEntries: 2 });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.check, {}),
+  ).resolves.toEqual({
+    aggregateEntries: 9,
+    extraEntries: 0,
+    invalidEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+    publicScores: 9,
+  });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.repair, {}),
+  ).resolves.toEqual({ changedEntries: 0 });
+});
+
 test("the device completion migration preserves pending Profile authority", async () => {
   const t = testBackend();
   const credential = installationCredential("A");

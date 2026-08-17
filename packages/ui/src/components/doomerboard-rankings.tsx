@@ -46,6 +46,7 @@ function DoomerboardRankings({
     [3, 2],
   ]);
   const podium = rows
+    .slice(0, 3)
     .filter((row) => row.rank >= 1 && row.rank <= 3)
     .sort(
       (a, b) =>
@@ -53,8 +54,9 @@ function DoomerboardRankings({
           (podiumOrder.get(b.rank) ?? b.rank) ||
         a.touchGrassId.localeCompare(b.touchGrassId),
     );
+  const podiumIds = new Set(podium.map((row) => row.touchGrassId));
   const allLedgerRows = rows
-    .filter((row) => row.rank > 3)
+    .filter((row) => !podiumIds.has(row.touchGrassId))
     .sort(
       (a, b) =>
         a.rank - b.rank || a.touchGrassId.localeCompare(b.touchGrassId),

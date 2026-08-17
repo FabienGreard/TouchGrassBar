@@ -765,12 +765,23 @@ describe("panel states", () => {
         tokenScore: "9.1M",
         touchGrassId: "#TG-CCCCCC",
       },
+      {
+        displayName: "zoe",
+        rank: 3,
+        tokenScore: "9.1M",
+        touchGrassId: "#TG-DDDDDD",
+      },
     ];
     const markup = renderToStaticMarkup(<Doomerboard rows={tiedRows} />);
+    const ledger = markup.slice(
+      markup.indexOf('aria-label="More Doomerboard ranks"'),
+    );
 
     expect(markup).toContain("ada");
     expect(markup).toContain("bea");
     expect(markup).toContain("#TG-AAAAAA");
     expect(markup).toContain("#TG-BBBBBB");
+    expect(ledger).toContain("zoe");
+    expect(ledger).toContain("#TG-DDDDDD");
   });
 });
