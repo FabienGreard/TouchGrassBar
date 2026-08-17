@@ -12,6 +12,9 @@ removes a legacy numeric Aggregate key and inserts the deterministic composite
 `[-TokenScore, TouchGrass ID]` key for each `publicUsages` row. It also adds a
 missing entry. It does not recalculate usage or Token Scores.
 
+Until the backfill and invariant checks complete, the Global Doomerboard keeps
+a bounded read path for both legacy numeric keys and canonical composite keys.
+
 Only an explicitly approved deployment is in scope. PR #65 does not run a
 cloud migration or change a cloud deployment.
 
@@ -49,6 +52,9 @@ Do not make manual dashboard edits.
 - `backfillDoomerboard` in `packages/backend/convex/internal/migrations.ts`;
 - the legacy numeric key type and validator in
   `packages/backend/convex/model/doomerboard.ts`;
+- the bounded legacy numeric-key read path and regression in
+  `packages/backend/convex/doomerboards.ts` and
+  `packages/backend/convex/sync.test.ts`;
 - the legacy numeric-key deletion in
   `packages/backend/convex/model/scores.ts`;
 - `doomerboardInvariantPage.repairEntry` and the `repair` action in

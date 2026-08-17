@@ -1222,6 +1222,7 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
   async function seedRows(
     rows: typeof expected,
     computedAt: number,
+    keyFormat: "canonical" | "legacy" = "canonical",
   ) {
     for (let offset = 0; offset < rows.length; offset += 50) {
       await t.run(async (ctx) => {
@@ -1245,7 +1246,10 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
           });
           await doomerboard.insert(ctx, {
             id: publicUsageId,
-            key: doomerboardKey(row.tokenScore, row.touchGrassId),
+            key:
+              keyFormat === "legacy"
+                ? row.tokenScore
+                : doomerboardKey(row.tokenScore, row.touchGrassId),
             namespace: "tokens-v1:combined:1d",
           });
         }
@@ -1253,7 +1257,8 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
     }
   }
   await seedRows(staleRows, NOW.getTime() - 24 * 60 * 60 * 1_000);
-  await seedRows(expected, NOW.getTime());
+  await seedRows(expected.slice(0, 50), NOW.getTime(), "legacy");
+  await seedRows(expected.slice(50), NOW.getTime());
 
   await expect(
     t.query(api.doomerboards.currentGlobal, {

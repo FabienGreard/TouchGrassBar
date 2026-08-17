@@ -1269,9 +1269,10 @@ pub fn run() {
                 lifecycle.clone(),
             )));
             #[cfg(target_os = "macos")]
-            app.manage(doomerboard::production_runtime(Arc::clone(
-                &profile_coordinator,
-            )));
+            app.manage(doomerboard::production_runtime(
+                Arc::clone(&profile_coordinator),
+                online_gate.clone(),
+            ));
             #[cfg(debug_assertions)]
             let synchronization_environment = if physical_menu_bar_fixture.is_some() {
                 SynchronizationEnvironment::no_io(core.clone(), online_gate.clone())

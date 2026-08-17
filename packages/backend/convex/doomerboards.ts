@@ -3,7 +3,11 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { query, type QueryCtx } from "./_generated/server";
 import { requireAuthUser } from "./auth";
-import { doomerboard } from "./model/doomerboard";
+import {
+  doomerboard,
+  type DoomerboardKey,
+  type LegacyDoomerboardKey,
+} from "./model/doomerboard";
 import { rejectAuthority } from "./model/authority";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
@@ -23,6 +27,26 @@ const doomerboardRow = v.object({
   tokenScore: v.number(),
   touchGrassId: v.string(),
 });
+
+const CURRENT_GLOBAL_SCAN_LIMIT = 640;
+const SCAN_ROWS_PER_KEY_FORMAT = CURRENT_GLOBAL_SCAN_LIMIT / 2;
+const canonicalKeyBounds = {
+  lower: {
+    inclusive: true,
+    key: [-Number.MAX_SAFE_INTEGER, ""] as DoomerboardKey,
+  },
+  upper: {
+    inclusive: true,
+    key: [0, "\uffff"] as DoomerboardKey,
+  },
+};
+const legacyKeyBounds = {
+  lower: { inclusive: true, key: 0 as LegacyDoomerboardKey },
+  upper: {
+    inclusive: true,
+    key: Number.MAX_SAFE_INTEGER as LegacyDoomerboardKey,
+  },
+};
 
 export function rankRows<
   T extends {
@@ -70,31 +94,38 @@ async function globalRows(
 ) {
   await requireDoomerboardProfile(ctx);
   const limit = Math.min(Math.max(Math.floor(requestedLimit ?? 50), 1), 100);
-  const rows: Doc<"publicUsages">[] = [];
-  let cursor: string | undefined;
-  let isDone = false;
-  while (rows.length < limit && !isDone) {
-    const page = await doomerboard.paginate(ctx, {
-      ...(cursor === undefined ? {} : { cursor }),
+  const scanLimit =
+    requiredComputedRankingDay === undefined
+      ? limit
+      : SCAN_ROWS_PER_KEY_FORMAT;
+  const pages = await Promise.all([
+    doomerboard.paginate(ctx, {
+      bounds: canonicalKeyBounds,
       namespace: boardKey(scope, windowDays),
       order: "asc",
-      pageSize: limit,
-    });
-    const candidates = await Promise.all(
-      page.page.map((item) => ctx.db.get(item.id)),
-    );
-    rows.push(
-      ...candidates.filter(
-        (row): row is Exclude<typeof row, null> =>
-          row !== null &&
-          (requiredComputedRankingDay === undefined ||
-            rankingDayAt(row.computedAt) === requiredComputedRankingDay),
-      ),
-    );
-    cursor = page.cursor;
-    isDone = page.isDone;
+      pageSize: scanLimit,
+    }),
+    doomerboard.paginate(ctx, {
+      bounds: legacyKeyBounds,
+      namespace: boardKey(scope, windowDays),
+      order: "desc",
+      pageSize: scanLimit,
+    }),
+  ]);
+  const candidates = await Promise.all(
+    pages.flatMap((page) => page.page).map((item) => ctx.db.get(item.id)),
+  );
+  const rowsById = new Map<Doc<"publicUsages">["_id"], Doc<"publicUsages">>();
+  for (const row of candidates) {
+    if (
+      row !== null &&
+      (requiredComputedRankingDay === undefined ||
+        rankingDayAt(row.computedAt) === requiredComputedRankingDay)
+    ) {
+      rowsById.set(row._id, row);
+    }
   }
-  return rankRows(rows).slice(0, limit);
+  return rankRows([...rowsById.values()]).slice(0, limit);
 }
 
 export const currentGlobal = query({

@@ -16,6 +16,7 @@ use zeroize::Zeroizing;
 use crate::profile::{
     ProfileCoordinator, Secret, is_exact_authority_rejection, valid_touch_grass_id,
 };
+use crate::updater::OnlineFeatureGate;
 
 pub const DOOMERBOARD_CONTRACT_VERSION: u8 = 1;
 const CURRENT_GLOBAL_QUERY: &str = "doomerboards:currentGlobal";
@@ -192,6 +193,7 @@ struct ConvexTokenResponse {
 #[derive(Clone)]
 pub(crate) struct DoomerboardRuntime {
     coordinator: Arc<Mutex<ProfileCoordinator>>,
+    online_gate: OnlineFeatureGate,
     transport: Arc<dyn DoomerboardTransport>,
 }
 
@@ -199,14 +201,19 @@ impl DoomerboardRuntime {
     fn new(
         coordinator: Arc<Mutex<ProfileCoordinator>>,
         transport: Arc<dyn DoomerboardTransport>,
+        online_gate: OnlineFeatureGate,
     ) -> Self {
         Self {
             coordinator,
+            online_gate,
             transport,
         }
     }
 
     pub(crate) fn current_global(&self) -> DoomerboardViewV1 {
+        if self.online_gate.is_paused() {
+            return DoomerboardViewV1::unavailable();
+        }
         let session = match self
             .coordinator
             .lock()
@@ -242,10 +249,12 @@ impl DoomerboardRuntime {
 #[cfg(target_os = "macos")]
 pub(crate) fn production_runtime(
     coordinator: Arc<Mutex<ProfileCoordinator>>,
+    online_gate: OnlineFeatureGate,
 ) -> DoomerboardRuntime {
     DoomerboardRuntime::new(
         coordinator,
         Arc::new(HttpDoomerboardTransport::from_build_configuration()),
+        online_gate,
     )
 }
 
@@ -379,6 +388,25 @@ fn parse_rows(value: Value) -> Result<Vec<DoomerboardRowV1>, TransportError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct CountingTransport {
+        calls: AtomicUsize,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl DoomerboardTransport for CountingTransport {
+        fn current_global(
+            &self,
+            _session: &Secret,
+        ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(Vec::new())
+        }
+    }
 
     fn cost(micros: i64) -> Value {
         Value::Object(BTreeMap::from([
@@ -433,6 +461,22 @@ mod tests {
                 Value::String("2026-04-10".to_owned()),
             )]),
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn paused_online_gate_blocks_profile_and_transport_work() {
+        let transport = Arc::new(CountingTransport::default());
+        let runtime = DoomerboardRuntime::new(
+            Arc::new(Mutex::new(crate::profile::production_coordinator(
+                crate::lifecycle::DesktopLifecycle::unavailable(),
+            ))),
+            transport.clone(),
+            OnlineFeatureGate::paused(),
+        );
+
+        assert_eq!(runtime.current_global(), DoomerboardViewV1::unavailable());
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]
