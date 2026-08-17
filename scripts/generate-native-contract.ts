@@ -24,6 +24,8 @@ type NativeContractExport = {
   bootstrapContractVersion: number;
   bootstrapStateSchema: JsonSchema;
   contractVersion: number;
+  doomerboardContractVersion: number;
+  doomerboardViewSchema: JsonSchema;
   panelAddTokenmaxxerEvent: string;
   refreshReceiptSchema: JsonSchema;
   revisionNoticeEvent: string;
@@ -60,6 +62,7 @@ if ((await process.exited) !== 0)
 
 const schema = contract.stateSchema;
 const bootstrapStateSchema = contract.bootstrapStateSchema;
+const doomerboardViewSchema = contract.doomerboardViewSchema;
 const refreshReceiptSchema = contract.refreshReceiptSchema;
 const revisionNoticeSchema = contract.revisionNoticeSchema;
 const settingsNavigationSchema = contract.settingsNavigationSchema;
@@ -67,6 +70,7 @@ const settingsStateSchema = contract.settingsStateSchema;
 const updateStateSchema = contract.updateStateSchema;
 const definitions = {
   ...(bootstrapStateSchema.$defs ?? {}),
+  ...(doomerboardViewSchema.$defs ?? {}),
   ...(refreshReceiptSchema.$defs ?? {}),
   ...(schema.$defs ?? {}),
   ...(revisionNoticeSchema.$defs ?? {}),
@@ -79,6 +83,41 @@ const schemaName = (name: string) =>
 const refName = (ref: string) => schemaName(ref.split("/").at(-1)!);
 const quoteKey = (key: string) =>
   /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
+
+function pinContractVersion(node: JsonSchema, version: number): JsonSchema {
+  return {
+    ...node,
+    ...(node.properties
+      ? {
+          properties: {
+            ...Object.fromEntries(
+              Object.entries(node.properties).map(([key, value]) => [
+                key,
+                pinContractVersion(value, version),
+              ]),
+            ),
+            ...(node.properties.contractVersion
+              ? { contractVersion: { const: version } }
+              : {}),
+          },
+        }
+      : {}),
+    ...(node.anyOf
+      ? {
+          anyOf: node.anyOf.map((variant) =>
+            pinContractVersion(variant, version),
+          ),
+        }
+      : {}),
+    ...(node.oneOf
+      ? {
+          oneOf: node.oneOf.map((variant) =>
+            pinContractVersion(variant, version),
+          ),
+        }
+      : {}),
+  };
+}
 
 function render(node: JsonSchema, fieldName = ""): string {
   if (node.$ref) return refName(node.$ref);
@@ -94,14 +133,17 @@ function render(node: JsonSchema, fieldName = ""): string {
     const nonNull = node.oneOf.filter((variant) => variant.type !== "null");
     if (nonNull.length === 1 && nonNull.length !== node.oneOf.length)
       return `${render(nonNull[0]!, fieldName)}.nullable()`;
-    const discriminator = node.oneOf
-      .map(
-        (variant) =>
-          Object.entries(variant.properties ?? {}).find(
-            ([, value]) => "const" in value,
-          )?.[0],
-      )
-      .find(Boolean);
+    const discriminator = Object.keys(node.oneOf[0]?.properties ?? {}).find(
+      (candidate) => {
+        const values = node.oneOf!.map(
+          (variant) => variant.properties?.[candidate]?.const,
+        );
+        return (
+          values.every((value) => value !== undefined) &&
+          new Set(values).size === values.length
+        );
+      },
+    );
     const variants = node.oneOf.map((variant) => render(variant)).join(", ");
     return discriminator
       ? `z.discriminatedUnion(${JSON.stringify(discriminator)}, [${variants}])`
@@ -212,6 +254,7 @@ import * as z from "zod";
 
 export const BOOTSTRAP_CONTRACT_VERSION = ${JSON.stringify(contract.bootstrapContractVersion)} as const;
 export const CONTRACT_VERSION = ${JSON.stringify(contract.contractVersion)} as const;
+export const DOOMERBOARD_CONTRACT_VERSION = ${JSON.stringify(contract.doomerboardContractVersion)} as const;
 export const PANEL_ADD_TOKENMAXXER_EVENT = ${JSON.stringify(contract.panelAddTokenmaxxerEvent)} as const;
 export const REVISION_NOTICE_EVENT = ${JSON.stringify(contract.revisionNoticeEvent)} as const;
 export const SETTINGS_CONTRACT_VERSION = ${JSON.stringify(contract.settingsContractVersion)} as const;
@@ -222,6 +265,7 @@ export const UPDATE_STATE_CHANGED_EVENT = ${JSON.stringify(contract.updateStateC
 
 ${ordered.map((name) => `export const ${schemaName(name)} = ${renderDefinition(name, definitions[name]!)};`).join("\n")}
 export const bootstrapStateSchema = ${render({ ...bootstrapStateSchema, properties: { ...bootstrapStateSchema.properties, contractVersion: { const: contract.bootstrapContractVersion } } })};
+export const doomerboardViewSchema = ${render(pinContractVersion(doomerboardViewSchema, contract.doomerboardContractVersion))};
 export const sanitizedDesktopStateSchema = ${render({ ...schema, properties: { ...schema.properties, contractVersion: { const: contract.contractVersion } } })};
 export const refreshReceiptSchema = ${render(refreshReceiptSchema)};
 export const revisionNoticeSchema = ${render(revisionNoticeSchema)};
@@ -231,6 +275,7 @@ export const updateStateSchema = ${render({ ...updateStateSchema, properties: { 
 
 ${ordered.map((name) => `export type ${name} = z.infer<typeof ${schemaName(name)}>;`).join("\n")}
 export type BootstrapState = z.infer<typeof bootstrapStateSchema>;
+export type DoomerboardView = z.infer<typeof doomerboardViewSchema>;
 export type SanitizedDesktopState = z.infer<typeof sanitizedDesktopStateSchema>;
 export type RefreshReceipt = z.infer<typeof refreshReceiptSchema>;
 export type RevisionNotice = z.infer<typeof revisionNoticeSchema>;

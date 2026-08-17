@@ -63,13 +63,13 @@ describe("production landing contract", () => {
       "Usage",
       "Most used",
       "GPT 5.6 Sol",
-      "Leaderboard",
       "Doomerboard",
       "Prompts and provider data stay on your Mac",
       "See who burned the most tokens and who still remembers daylight.",
       "PROMPT ENJOYER",
       "nora",
-      "Friends",
+      "My Tokenmaxxers",
+      "Token Score",
       "Codex and Claude, detected locally on your Mac.",
       "Vibe code alone.",
       "Tokenmaxx together.",
@@ -86,7 +86,6 @@ describe("production landing contract", () => {
     expect(markup).not.toContain("Step 1 of 3");
     expect(markup).not.toContain("Privacy boundary");
     expect(markup).not.toContain("No browser account.");
-    expect(markup).not.toContain("Token Score");
   });
 
   test("marks conversion and outbound links for analytics", () => {

@@ -1,12 +1,14 @@
 import { v } from "convex/values";
 
-import { query } from "./_generated/server";
+import { query, type QueryCtx } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { doomerboard } from "./model/doomerboard";
+import { rejectAuthority } from "./model/authority";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
   apiEquivalentCostValidator,
   boardKey,
+  rankingDayAt,
   scoreScopeValidator,
   scoreWindowValidator,
   type ApiEquivalentCost,
@@ -28,9 +30,14 @@ export function rankRows<
     touchGrassId: string;
   },
 >(rows: T[]) {
+  const orderedRows = [...rows].sort(
+    (left, right) =>
+      right.tokenScore - left.tokenScore ||
+      left.touchGrassId.localeCompare(right.touchGrassId),
+  );
   let rank = 0;
   let previousScore: number | null = null;
-  return rows.map((row, index) => {
+  return orderedRows.map((row, index) => {
     if (row.tokenScore !== previousScore) {
       rank = index + 1;
       previousScore = row.tokenScore;
@@ -45,6 +52,46 @@ export function rankRows<
   });
 }
 
+async function requireDoomerboardProfile(ctx: QueryCtx) {
+  const authUser = await requireAuthUser(ctx);
+  const tokenmaxxer = await tokenmaxxerForAuthUser(ctx, authUser);
+  if (!tokenmaxxer) return rejectAuthority();
+  return tokenmaxxer;
+}
+
+async function globalRows(
+  ctx: QueryCtx,
+  scope: Parameters<typeof boardKey>[0],
+  windowDays: Parameters<typeof boardKey>[1],
+  requestedLimit?: number,
+  requiredComputedRankingDay?: string,
+) {
+  await requireDoomerboardProfile(ctx);
+  const limit = Math.min(Math.max(Math.floor(requestedLimit ?? 50), 1), 100);
+  const { page } = await doomerboard.paginate(ctx, {
+    namespace: boardKey(scope, windowDays),
+    order: "asc",
+    pageSize: requiredComputedRankingDay
+      ? Math.min(limit * 2, 200)
+      : limit,
+  });
+  const rows = await Promise.all(page.map((item) => ctx.db.get(item.id)));
+  const currentRows = rows.filter(
+    (row): row is Exclude<typeof row, null> =>
+      row !== null &&
+      (requiredComputedRankingDay === undefined ||
+        rankingDayAt(row.computedAt) === requiredComputedRankingDay),
+  );
+  return rankRows(currentRows).slice(0, limit);
+}
+
+export const currentGlobal = query({
+  args: { limit: v.optional(v.number()) },
+  returns: v.array(doomerboardRow),
+  handler: (ctx, args) =>
+    globalRows(ctx, "combined", 1, args.limit, rankingDayAt()),
+});
+
 export const global = query({
   args: {
     limit: v.optional(v.number()),
@@ -52,16 +99,8 @@ export const global = query({
     windowDays: scoreWindowValidator,
   },
   returns: v.array(doomerboardRow),
-  handler: async (ctx, args) => {
-    const limit = Math.min(Math.max(Math.floor(args.limit ?? 50), 1), 100);
-    const { page } = await doomerboard.paginate(ctx, {
-      namespace: boardKey(args.scope, args.windowDays),
-      order: "desc",
-      pageSize: limit,
-    });
-    const rows = await Promise.all(page.map((item) => ctx.db.get(item.id)));
-    return rankRows(rows.filter((row) => row !== null));
-  },
+  handler: (ctx, args) =>
+    globalRows(ctx, args.scope, args.windowDays, args.limit),
 });
 
 export const myTokenmaxxers = query({
@@ -87,13 +126,9 @@ export const myTokenmaxxers = query({
         q.eq("boardKey", boardKey(args.scope, args.windowDays)),
       )
       .take(2_000);
-    const rows = candidates
-      .filter((score) => includedIds.has(score.tokenmaxxerId))
-      .sort(
-        (left, right) =>
-          right.tokenScore - left.tokenScore ||
-          left.touchGrassId.localeCompare(right.touchGrassId),
-      );
+    const rows = candidates.filter((score) =>
+      includedIds.has(score.tokenmaxxerId),
+    );
     return rankRows(rows);
   },
 });

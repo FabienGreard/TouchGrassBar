@@ -14,6 +14,7 @@ type DoomerboardRow = {
 type DoomerboardRankingsProps = Omit<ComponentProps<typeof ScrollArea>, "children"> & {
   ledgerLimit?: number | undefined;
   rows: readonly DoomerboardRow[];
+  variant?: "compact" | "expanded" | undefined;
 };
 
 const rankStyles = {
@@ -35,6 +36,7 @@ function DoomerboardRankings({
   className,
   ledgerLimit,
   rows,
+  variant = "compact",
   viewportClassName,
   ...props
 }: DoomerboardRankingsProps) {
@@ -64,9 +66,10 @@ function DoomerboardRankings({
 
   return (
     <ScrollArea
-      aria-label="Leaderboard rankings"
+      aria-label="Doomerboard rankings"
       className={cn("h-full", className)}
       data-doomerboard-scroll=""
+      data-variant={variant}
       viewportClassName={cn(
         "select-none overscroll-contain",
         viewportClassName,
@@ -76,6 +79,7 @@ function DoomerboardRankings({
       <div
         className={cn(
           "grid items-end gap-[5px] px-3.5 pt-[25px] pb-[11px]",
+          variant === "expanded" && "gap-3 px-7 pt-10 pb-5",
           podium.length === 3 && "grid-cols-[1fr_1.12fr_1fr]",
         )}
         style={
@@ -90,7 +94,11 @@ function DoomerboardRankings({
           const style = rankStyles[row.rank as 1 | 2 | 3];
           return (
             <article
-              className={`relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px] ${style.card}`}
+              className={cn(
+                "relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px]",
+                style.card,
+                variant === "expanded" && "min-h-[180px] px-3 py-4",
+              )}
               key={row.touchGrassId}
             >
               <div
@@ -105,7 +113,10 @@ function DoomerboardRankings({
               <small className="mt-0.5 text-[7px] text-pearl-muted">
                 {row.touchGrassId}
               </small>
-              <strong className="mt-[7px] text-[16px]">
+              <span className="mt-[7px] text-[7px] text-pearl-muted">
+                Token Score
+              </span>
+              <strong className="text-[16px]">
                 {row.tokenScore}
               </strong>
             </article>
@@ -114,13 +125,20 @@ function DoomerboardRankings({
       </div>
       {ledger.length > 0 ? (
         <div
-          aria-label="More Leaderboard ranks"
-          className="mx-3.5 border-t border-pearl-line"
+          aria-label="More Doomerboard ranks"
+          className={cn(
+            "mx-3.5 border-t border-pearl-line",
+            variant === "expanded" && "mx-7",
+          )}
           data-slot="doomerboard-ledger"
         >
           {ledger.map((row) => (
             <article
-              className="grid grid-cols-[30px_1fr_70px] items-center border-b border-pearl-line px-2.5 py-[8px] text-pearl-ink last:border-b-0"
+              className={cn(
+                "grid grid-cols-[30px_1fr_70px] items-center border-b border-pearl-line px-2.5 py-[8px] text-pearl-ink last:border-b-0",
+                variant === "expanded" &&
+                  "grid-cols-[42px_1fr_120px] px-4 py-3",
+              )}
               key={row.touchGrassId}
             >
               <strong className="text-pearl-muted">{row.rank}</strong>
@@ -130,7 +148,12 @@ function DoomerboardRankings({
                   {row.touchGrassId}
                 </small>
               </span>
-              <b className="text-right text-[12px]">{row.tokenScore}</b>
+              <span className="text-right">
+                <small className="block text-[7px] text-pearl-muted">
+                  Token Score
+                </small>
+                <b className="text-[12px]">{row.tokenScore}</b>
+              </span>
             </article>
           ))}
         </div>

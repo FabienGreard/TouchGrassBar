@@ -14,6 +14,8 @@ import type * as auth_touchgrassSignup from "../auth/touchgrassSignup.js";
 import type * as crons from "../crons.js";
 import type * as doomerboards from "../doomerboards.js";
 import type * as http from "../http.js";
+import type * as internal_doomerboardInvariant from "../internal/doomerboardInvariant.js";
+import type * as internal_doomerboardInvariantPage from "../internal/doomerboardInvariantPage.js";
 import type * as internal_migrations from "../internal/migrations.js";
 import type * as internal_recompute from "../internal/recompute.js";
 import type * as model_authority from "../model/authority.js";
@@ -39,6 +41,8 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   doomerboards: typeof doomerboards;
   http: typeof http;
+  "internal/doomerboardInvariant": typeof internal_doomerboardInvariant;
+  "internal/doomerboardInvariantPage": typeof internal_doomerboardInvariantPage;
   "internal/migrations": typeof internal_migrations;
   "internal/recompute": typeof internal_recompute;
   "model/authority": typeof model_authority;

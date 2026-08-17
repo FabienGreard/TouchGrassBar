@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::daily_usage_aggregate::combine_usage_periods;
+use crate::doomerboard::{DOOMERBOARD_CONTRACT_VERSION, doomerboard_view_schema};
 use crate::lifecycle::{
     LIFECYCLE_CONTRACT_VERSION, SETTINGS_CONTRACT_VERSION, SETTINGS_NAVIGATION_EVENT,
     SETTINGS_RECOVERY_CLEAR_EVENT, bootstrap_state_schema, settings_navigation_schema,
@@ -3907,6 +3908,8 @@ pub fn native_contract_export() -> Value {
         "bootstrapContractVersion": LIFECYCLE_CONTRACT_VERSION,
         "bootstrapStateSchema": bootstrap_state_schema(),
         "contractVersion": CONTRACT_VERSION,
+        "doomerboardContractVersion": DOOMERBOARD_CONTRACT_VERSION,
+        "doomerboardViewSchema": doomerboard_view_schema(),
         "panelAddTokenmaxxerEvent": PANEL_ADD_TOKENMAXXER_EVENT,
         "refreshReceiptSchema": schema_for!(RefreshReceipt),
         "revisionNoticeEvent": REVISION_NOTICE_EVENT,

@@ -1,4 +1,6 @@
 import {
+  ArrowExpand01Icon,
+  ArrowShrink02Icon,
   Button,
   DoomerboardRankings,
   DoomerboardToolbar,
@@ -24,11 +26,11 @@ function DoomerboardUnavailable({
 }) {
   return (
     <div
-      aria-label="Leaderboard unavailable"
+      aria-label="Doomerboard unavailable"
       className="mx-3.5 flex h-full flex-col items-center justify-center rounded-[12px] border border-dashed border-pearl-line bg-pearl-surface px-6 py-3.5 text-center shadow-surface contrast-more:border-pearl-ink"
     >
       <RankingIcon aria-hidden="true" size={20} />
-      <strong className="mt-1.5 text-[10px]">Leaderboard unavailable</strong>
+      <strong className="mt-1.5 text-[10px]">Doomerboard unavailable</strong>
       <small className="mt-0.5 max-w-[260px] text-[8px] leading-3.5 text-pearl-muted contrast-more:text-pearl-ink">
         {selectionUnavailable
           ? "Scores are unavailable for this selection."
@@ -49,7 +51,7 @@ function TokenmaxxersEmpty({
       className="mx-3.5 flex h-full flex-col items-center justify-center rounded-[12px] border border-dashed border-pearl-line bg-pearl-surface px-6 py-3.5 text-center shadow-surface contrast-more:border-pearl-ink"
     >
       <InviteIcon aria-hidden="true" size={20} />
-      <strong className="mt-1.5 text-[10px]">Your Leaderboard is lonely</strong>
+      <strong className="mt-1.5 text-[10px]">Your Doomerboard is lonely</strong>
       <small className="mt-0.5 max-w-[260px] text-[8px] leading-3.5 text-pearl-muted contrast-more:text-pearl-ink">
         Add Tokenmaxxers by TouchGrass ID to compare scores.
       </small>
@@ -64,15 +66,19 @@ function TokenmaxxersEmpty({
 
 function Doomerboard({
   currentProfile = null,
+  expanded = false,
   initialAudience = "global",
   onAddTokenmaxxer = () => undefined,
+  onExpandedChange = () => undefined,
   providers = emptyProviders,
   rows,
   tokenmaxxerRows,
 }: {
   currentProfile?: DoomerboardCurrentProfile | null | undefined;
+  expanded?: boolean | undefined;
   initialAudience?: DoomerboardAudience | undefined;
   onAddTokenmaxxer?: (() => void) | undefined;
+  onExpandedChange?: ((expanded: boolean) => void) | undefined;
   providers?: readonly DoomerboardProvider[] | undefined;
   rows?: readonly DoomerboardRow[] | undefined;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
@@ -105,12 +111,29 @@ function Doomerboard({
           : tokenmaxxersEmpty
             ? "My Tokenmaxxers empty"
             : globalRowsMatchSelection
-              ? "Leaderboard rankings"
-              : "Leaderboard unavailable"
+              ? "Doomerboard rankings"
+              : "Doomerboard unavailable"
       }
       className="pb-2"
+      data-expanded={expanded}
     >
       <DoomerboardToolbar
+        action={
+          <Button
+            aria-label={expanded ? "Collapse Doomerboard" : "Expand Doomerboard"}
+            onClick={() => onExpandedChange(!expanded)}
+            size="quiet"
+            title={expanded ? "Collapse Doomerboard" : "Expand Doomerboard"}
+            type="button"
+            variant="ghost"
+          >
+            {expanded ? (
+              <ArrowShrink02Icon aria-hidden="true" size={13} />
+            ) : (
+              <ArrowExpand01Icon aria-hidden="true" size={13} />
+            )}
+          </Button>
+        }
         audience={audience}
         copyStatus={copyStatus}
         currentProfile={currentProfile}
@@ -124,13 +147,22 @@ function Doomerboard({
         provider={provider}
         providers={providers}
       />
-      <div className="mt-3 h-[180px]" data-slot="doomerboard-viewport">
+      <div
+        className={expanded ? "mt-3 h-[500px]" : "mt-3 h-[180px]"}
+        data-slot="doomerboard-viewport"
+      >
         {tokenmaxxersMatchSelection ? (
-          <DoomerboardRankings rows={tokenmaxxerRows} />
+          <DoomerboardRankings
+            rows={tokenmaxxerRows}
+            variant={expanded ? "expanded" : "compact"}
+          />
         ) : tokenmaxxersEmpty ? (
           <TokenmaxxersEmpty onAddTokenmaxxer={onAddTokenmaxxer} />
         ) : globalRowsMatchSelection ? (
-          <DoomerboardRankings rows={rows} />
+          <DoomerboardRankings
+            rows={rows}
+            variant={expanded ? "expanded" : "compact"}
+          />
         ) : (
           <DoomerboardUnavailable selectionUnavailable={rows !== undefined} />
         )}

@@ -1,7 +1,7 @@
 import type { GenericId } from "convex/values";
 
 import type { MutationCtx } from "../_generated/server";
-import { doomerboard } from "./doomerboard";
+import { doomerboard, doomerboardKey } from "./doomerboard";
 import {
   SCOPES,
   WINDOWS,
@@ -148,14 +148,22 @@ async function upsertPublicUsage(
       ...values,
       apiEquivalentCost: score.apiEquivalentCost,
     });
-    await doomerboard.replace(
+    await doomerboard.deleteIfExists(ctx, {
+      id: existing._id,
+      key: existing.tokenScore,
+      namespace: existing.boardKey,
+    });
+    await doomerboard.replaceOrInsert(
       ctx,
       {
         id: existing._id,
-        key: existing.tokenScore,
+        key: doomerboardKey(existing.tokenScore, existing.touchGrassId),
         namespace: existing.boardKey,
       },
-      { key: score.tokenScore, namespace },
+      {
+        key: doomerboardKey(score.tokenScore, tokenmaxxer.publicId),
+        namespace,
+      },
     );
     return;
   }
@@ -167,7 +175,7 @@ async function upsertPublicUsage(
   });
   await doomerboard.insert(ctx, {
     id: publicUsageId,
-    key: score.tokenScore,
+    key: doomerboardKey(score.tokenScore, tokenmaxxer.publicId),
     namespace,
   });
 }

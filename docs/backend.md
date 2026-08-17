@@ -96,13 +96,20 @@ such as:
 - `tokens-v1:claude:7d`
 - `tokens-v1:combined:1d`
 
-Doomerboards page this index in descending order. `publicUsages` and
-`doomerboard` have one write path: every insert, replacement, or
-deletion changes both within the same mutation. A read-only invariant check
-proves a one-to-one match of document ID, Board Key, and Token Score. The
-`backfillDoomerboard` migration can repair index divergence without
-recomputing usage or scores. Production dashboard edits to either side are
-prohibited.
+Doomerboards use the composite Aggregate key `[-TokenScore, TouchGrass ID]`.
+Ascending Aggregate pagination therefore returns the highest score first and
+uses TouchGrass ID as the deterministic tie break. The current Global query is
+fixed to the Combined 1-day Board Key, requires the live Profile, and returns
+at most 100 public rows. It accepts no client identity.
+
+`publicUsages` and `doomerboard` have one write path: every insert,
+replacement, or deletion changes both within the same mutation. A bounded,
+read-only invariant check proves a one-to-one match of document ID, Board Key,
+and composite key across all stored namespaces. It returns counts only. The
+paired repair is idempotent and changes only the observed index entry. The
+`backfillDoomerboard` migration repairs legacy numeric keys and missing index
+entries without recomputing usage or scores. Production dashboard edits to
+either side are prohibited.
 
 My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most those 100 indexed edges, performs indexed score lookups, and sorts only that bounded set in memory. It never scans the global score table.
 
@@ -112,7 +119,8 @@ A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer 
 
 The migrations component owns bounded repair work. The
 `backfillDoomerboard` migration is forward-only, resumable, and
-idempotent. It rebuilds only missing index entries from `publicUsages`.
+idempotent. It removes the legacy numeric key and inserts the deterministic
+composite key for each `publicUsages` row.
 The `backfillDeviceUsageCompletion` migration adds an explicit `null` pending
 state to older Device documents before `usageBackfillCompletedAt` becomes a
 required schema field. Missing and `null` use the same fail-closed behavior

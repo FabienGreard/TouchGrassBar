@@ -39,8 +39,10 @@ type PanelViewProps = {
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
   error: boolean;
+  expanded?: boolean | undefined;
   nativeGlass?: boolean;
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
+  onExpandedChange?: ((expanded: boolean) => void) | undefined;
   onRefresh: () => void;
   onSettings: () => void;
   onUpdate?: (() => void) | undefined;
@@ -56,8 +58,10 @@ function PanelView({
   currentProfile,
   doomerboardRows,
   error,
+  expanded = false,
   nativeGlass = false,
   onAddTokenmaxxerOpenChange = () => undefined,
+  onExpandedChange = () => undefined,
   onRefresh,
   onSettings,
   onUpdate = () => undefined,
@@ -72,7 +76,13 @@ function PanelView({
 
   return (
     <>
-      <PanelShell glass={nativeGlass} ref={panelContainerRef}>
+      <PanelShell
+        className={expanded ? "expanded-board-surface w-[620px]" : undefined}
+        data-expanded={expanded}
+        data-glass={nativeGlass && !expanded ? "true" : "false"}
+        glass={nativeGlass && !expanded}
+        ref={panelContainerRef}
+      >
         <PanelHeader
           error={error}
           onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
@@ -86,6 +96,16 @@ function PanelView({
 
         {!state ? (
           <LoadingPanel loading={!error} />
+        ) : expanded ? (
+          <Doomerboard
+            currentProfile={currentProfile}
+            expanded
+            onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
+            onExpandedChange={onExpandedChange}
+            providers={visibleProviders}
+            rows={doomerboardRows}
+            tokenmaxxerRows={tokenmaxxerRows}
+          />
         ) : (
           <>
             <div>
@@ -104,6 +124,7 @@ function PanelView({
             <Doomerboard
               currentProfile={currentProfile}
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
+              onExpandedChange={onExpandedChange}
               providers={visibleProviders}
               rows={doomerboardRows}
               tokenmaxxerRows={tokenmaxxerRows}

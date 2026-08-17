@@ -104,21 +104,21 @@ describe("panel states", () => {
     expect(markup).toMatch(/<img[^>]*brightness-0[^>]*data-slot="brand-mark"/);
     expect(markup.match(/aria-label="Open panel menu"/g)).toHaveLength(1);
     expect(markup).toContain('data-icon-provider="hugeicons"');
-    expect(markup).toContain("Leaderboard unavailable");
+    expect(markup).toContain("Doomerboard unavailable");
     expect(markup).not.toContain("Add by ID");
     expect(markup).toContain('aria-label="Current user profile unavailable"');
     expect(markup).not.toContain("— users");
     expect(markup).toContain('data-slot="doomerboard-viewport"');
     expect(markup).toContain("h-[180px]");
-    expect(markup).toContain("Friends");
+    expect(markup).toContain("My Tokenmaxxers");
     expect(markup).toContain("Global");
     expect(markup).toMatch(
-      /aria-label="Select Leaderboard period"[^>]*>Today<\/button>/,
+      /aria-label="Select Doomerboard period"[^>]*>Today<\/button>/,
     );
     expect(markup).toContain("Combined");
-    expect(markup).toContain('aria-label="Select Leaderboard period"');
-    expect(markup).toContain('aria-label="Select Leaderboard provider"');
-    expect(markup.match(/aria-expanded:bg-pearl-ink\/5/g)).toHaveLength(3);
+    expect(markup).toContain('aria-label="Select Doomerboard period"');
+    expect(markup).toContain('aria-label="Select Doomerboard provider"');
+    expect(markup.match(/aria-expanded:bg-pearl-ink\/5/g)).toHaveLength(4);
     expect(markup.match(/data-slot="metric-gauge"/g)).toHaveLength(3);
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-slot="quota-progress"/g)).toHaveLength(2);
@@ -161,7 +161,7 @@ describe("panel states", () => {
       markup.match(/data-provider-availability="unavailable"/g),
     ).toHaveLength(2);
     expect(markup).not.toContain("1970-01-01");
-    expect(markup).toContain("Leaderboard unavailable");
+    expect(markup).toContain("Doomerboard unavailable");
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-slot="quota-progress"/g)).toHaveLength(2);
     expect(markup).not.toContain('data-slot="skeleton"');
@@ -337,8 +337,36 @@ describe("panel states", () => {
     expect(markup).toContain("data-radix-scroll-area-viewport");
     expect(markup).not.toMatch(/data-doomerboard-scroll=""[^>]*tabindex/);
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
-    expect(markup).not.toContain("Leaderboard unavailable");
-    expect(markup).toContain("Friends");
+    expect(markup).not.toContain("Doomerboard unavailable");
+    expect(markup).toContain("My Tokenmaxxers");
+  });
+
+  test("expands the Doomerboard inside the menu-bar panel", async () => {
+    const currentState = await deliveredBrowserFixture("current");
+    const markup = renderToStaticMarkup(
+      <PanelView
+        currentProfile={currentProfile}
+        doomerboardRows={currentDoomerboardRows}
+        error={false}
+        expanded
+        nativeGlass
+        onExpandedChange={() => undefined}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={currentState}
+      />,
+    );
+
+    expect(markup).toContain('data-expanded="true"');
+    expect(markup).toContain("expanded-board-surface");
+    expect(markup).toContain('aria-label="Collapse Doomerboard"');
+    expect(markup).toContain('data-glass="false"');
+    expect(markup).toContain("Doomerboard");
+    expect(markup).toContain("My Tokenmaxxers");
+    expect(markup).toContain("Token Score");
+    expect(markup).toContain('data-slot="doomerboard-ledger"');
+    expect(markup).not.toContain('data-slot="provider-card"');
   });
 
   test("renders the provider visibility selected by the native snapshot", async () => {
@@ -679,7 +707,7 @@ describe("panel states", () => {
   test("offers an honest invitation state for an empty Tokenmaxxers board", () => {
     const markup = renderToStaticMarkup(<TokenmaxxersEmpty />);
 
-    expect(markup).toContain("Your Leaderboard is lonely");
+    expect(markup).toContain("Your Doomerboard is lonely");
     expect(markup).toContain(
       "Add Tokenmaxxers by TouchGrass ID to compare scores.",
     );

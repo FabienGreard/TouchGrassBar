@@ -1,4 +1,5 @@
 import type { CodingProvider } from "@touchgrass/contracts";
+import type { ReactNode } from "react";
 
 import { Button } from "./button";
 import {
@@ -49,7 +50,7 @@ function QuerySelector({
     <PanelMenu>
       <PanelMenuTrigger asChild>
         <Button
-          aria-label={`Select Leaderboard ${label}`}
+          aria-label={`Select Doomerboard ${label}`}
           size="quiet"
           type="button"
           variant="ghost"
@@ -133,6 +134,7 @@ function CurrentProfileAction({
 }
 
 function DoomerboardToolbar({
+  action,
   audience,
   copyStatus = "idle",
   currentProfile,
@@ -144,6 +146,7 @@ function DoomerboardToolbar({
   provider,
   providers,
 }: {
+  action?: ReactNode;
   audience: DoomerboardAudience;
   copyStatus?: CopyStatus;
   currentProfile: CurrentProfile | null;
@@ -167,7 +170,7 @@ function DoomerboardToolbar({
     <>
       <header className="flex items-center justify-between px-3.5 pt-3">
         <div className="flex min-w-0 items-center gap-1.5">
-          <strong className="shrink-0 text-[10px]">Leaderboard</strong>
+          <strong className="shrink-0 text-[10px]">Doomerboard</strong>
           <CurrentProfileAction
             copyStatus={copyStatus}
             currentProfile={currentProfile}
@@ -188,17 +191,20 @@ function DoomerboardToolbar({
             options={providerOptions}
             value={provider}
           />
+          {action}
         </div>
       </header>
       <div className="mx-3.5 mt-2">
         <SegmentedControl
-          aria-label="Leaderboard audience"
+          aria-label="Doomerboard audience"
           onValueChange={(value) =>
             onAudienceChange(value as DoomerboardAudience)
           }
           value={audience}
         >
-          <SegmentedControlItem value="mine">Friends</SegmentedControlItem>
+          <SegmentedControlItem value="mine">
+            My Tokenmaxxers
+          </SegmentedControlItem>
           <SegmentedControlItem value="global">Global</SegmentedControlItem>
         </SegmentedControl>
       </div>

@@ -2,6 +2,7 @@ mod daily_usage_aggregate;
 mod database;
 #[cfg(debug_assertions)]
 mod dev_instance;
+mod doomerboard;
 pub mod lifecycle;
 mod menu_bar;
 mod network;
@@ -52,6 +53,7 @@ const PANEL_LABEL: &str = "panel";
 const SETTINGS_LABEL: &str = "settings";
 const ONBOARDING_LABEL: &str = "onboarding";
 const PANEL_WIDTH: f64 = 402.0;
+const EXPANDED_PANEL_WIDTH: f64 = 620.0;
 const MIN_PANEL_HEIGHT: f64 = 320.0;
 const MAX_PANEL_HEIGHT: f64 = 720.0;
 
@@ -109,6 +111,7 @@ pub fn run_claude_quota_debug_pass(
 #[derive(Default)]
 struct PanelActionState {
     add_tokenmaxxer_pending: AtomicBool,
+    expanded: AtomicBool,
 }
 
 pub(crate) fn profile_attempt_metric<T, E>(attempt: &Result<T, E>) -> &'static str {
@@ -673,17 +676,90 @@ fn bounded_panel_height(height: f64) -> Result<f64, &'static str> {
     Ok(height.ceil().clamp(MIN_PANEL_HEIGHT, MAX_PANEL_HEIGHT))
 }
 
+fn panel_width(expanded: bool) -> f64 {
+    if expanded {
+        EXPANDED_PANEL_WIDTH
+    } else {
+        PANEL_WIDTH
+    }
+}
+
 fn should_show_bootstrap_on_start(bootstrap_required: bool, launched_in_background: bool) -> bool {
     bootstrap_required && !launched_in_background
 }
 
 #[tauri::command]
-fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
+fn resize_panel(
+    window: WebviewWindow,
+    actions: State<'_, PanelActionState>,
+    height: f64,
+) -> Result<(), String> {
     require_panel(&window)?;
     let bounded_height = bounded_panel_height(height).map_err(str::to_owned)?;
+    let width = panel_width(actions.expanded.load(Ordering::Acquire));
     window
-        .set_size(LogicalSize::new(PANEL_WIDTH, bounded_height))
+        .set_size(LogicalSize::new(width, bounded_height))
         .map_err(|_| "panel unavailable".to_owned())
+}
+
+#[tauri::command]
+fn set_panel_expanded(
+    window: WebviewWindow,
+    app: AppHandle,
+    actions: State<'_, PanelActionState>,
+    expanded: bool,
+) -> Result<(), String> {
+    require_panel(&window)?;
+    let previous_expanded = actions.expanded.load(Ordering::Acquire);
+    let scale_factor = window
+        .scale_factor()
+        .map_err(|_| "panel unavailable".to_owned())?;
+    let current_size = window
+        .outer_size()
+        .map_err(|_| "panel unavailable".to_owned())?;
+    let width = panel_width(expanded);
+    let tray = app
+        .tray_by_id("touchgrassbar")
+        .ok_or_else(|| "panel unavailable".to_owned())?;
+    let tray_rect = tray
+        .rect()
+        .map_err(|_| "panel unavailable".to_owned())?
+        .ok_or_else(|| "panel unavailable".to_owned())?;
+    let tray_frame = frame_for_rect(tray_rect, scale_factor);
+    let monitor =
+        monitor_for_tray(&window, tray_frame).map_err(|_| "panel unavailable".to_owned())?;
+    let expanded_size =
+        PhysicalSize::new((width * scale_factor).round() as u32, current_size.height);
+    window
+        .set_size(LogicalSize::new(
+            width,
+            f64::from(current_size.height) / scale_factor,
+        ))
+        .map_err(|_| "panel unavailable".to_owned())?;
+    if window
+        .set_position(panel_origin(tray_frame, expanded_size, monitor))
+        .is_err()
+    {
+        let _ = window.set_size(LogicalSize::new(
+            panel_width(previous_expanded),
+            f64::from(current_size.height) / scale_factor,
+        ));
+        return Err("panel unavailable".to_owned());
+    }
+    actions.expanded.store(expanded, Ordering::Release);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_global_doomerboard(
+    window: WebviewWindow,
+    runtime: State<'_, doomerboard::DoomerboardRuntime>,
+) -> Result<doomerboard::DoomerboardViewV1, String> {
+    require_panel(&window)?;
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.current_global())
+        .await
+        .map_err(|_| "Doomerboard unavailable".to_owned())
 }
 
 #[tauri::command]
@@ -1075,6 +1151,7 @@ pub fn run() {
             check_for_updates,
             complete_bootstrap,
             get_bootstrap_state,
+            get_global_doomerboard,
             get_sanitized_state,
             get_settings_state,
             get_update_state,
@@ -1091,6 +1168,7 @@ pub fn run() {
             select_settings_section,
             set_automatic_update_checks,
             set_launch_at_login,
+            set_panel_expanded,
             set_provider_enabled,
             update_profile_display_name,
             take_panel_add_tokenmaxxer_request
@@ -1190,6 +1268,10 @@ pub fn run() {
             let profile_coordinator = Arc::new(Mutex::new(profile::production_coordinator(
                 lifecycle.clone(),
             )));
+            #[cfg(target_os = "macos")]
+            app.manage(doomerboard::production_runtime(Arc::clone(
+                &profile_coordinator,
+            )));
             #[cfg(debug_assertions)]
             let synchronization_environment = if physical_menu_bar_fixture.is_some() {
                 SynchronizationEnvironment::no_io(core.clone(), online_gate.clone())
@@ -1211,7 +1293,7 @@ pub fn run() {
                 lifecycle,
                 app.handle().clone(),
                 online_gate,
-                profile_coordinator,
+                Arc::clone(&profile_coordinator),
                 usage_sync.clone(),
             )?;
             profile_runtime.trigger();
@@ -1692,5 +1774,27 @@ mod tests {
         assert_eq!(bounded_panel_height(900.0), Ok(MAX_PANEL_HEIGHT));
         assert_eq!(bounded_panel_height(f64::NAN), Err("invalid panel height"));
         assert_eq!(bounded_panel_height(0.0), Err("invalid panel height"));
+    }
+
+    #[test]
+    fn expands_the_same_panel_while_it_stays_centered_on_the_tray() {
+        assert_eq!(panel_width(false), PANEL_WIDTH);
+        assert_eq!(panel_width(true), EXPANDED_PANEL_WIDTH);
+        let origin = panel_origin(
+            Frame {
+                x: 900.0,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+            },
+            PhysicalSize::new(EXPANDED_PANEL_WIDTH as u32, 640),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 1728.0,
+                height: 1117.0,
+            },
+        );
+        assert_eq!(origin, PhysicalPosition::new(602, 30));
     }
 }
