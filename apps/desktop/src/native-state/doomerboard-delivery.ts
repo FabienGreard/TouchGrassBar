@@ -39,6 +39,7 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
   let readInFlight: Promise<void> | null = null;
   let readRequested = false;
   let query = defaultDoomerboardQuery;
+  let viewQuery: DoomerboardQuery | null = null;
   const listeners = new Set<() => void>();
 
   const publish = (next: DoomerboardDeliverySnapshot) => {
@@ -46,10 +47,16 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
     for (const listener of listeners) listener();
   };
 
+  const publishFailure = (requestedQuery: DoomerboardQuery) => {
+    publish({
+      phase: "degraded",
+      view: viewQuery !== null && sameQuery(viewQuery, requestedQuery) ? current.view : null,
+    });
+  };
+
   const read = (nextQuery = query) => {
     if (!sameQuery(query, nextQuery)) {
       query = nextQuery;
-      publish({ phase: "loading", view: null });
     }
     readRequested = true;
     if (readInFlight !== null) return readInFlight;
@@ -64,17 +71,26 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
             continue;
           }
           if (!outcome.ok) {
-            publish({ ...current, phase: "degraded" });
+            publishFailure(requestedQuery);
             continue;
           }
           const parsed = doomerboardViewSchema.safeParse(outcome.value);
           if (!parsed.success) {
-            publish({ ...current, phase: "degraded" });
+            publishFailure(requestedQuery);
             continue;
           }
+          if (parsed.data.status === "unavailable") {
+            publishFailure(requestedQuery);
+            continue;
+          }
+          viewQuery = requestedQuery;
           publish({ phase: "ready", view: parsed.data });
         } catch {
-          publish({ ...current, phase: "degraded" });
+          if (!sameQuery(requestedQuery, query)) {
+            readRequested = true;
+            continue;
+          }
+          publishFailure(requestedQuery);
         }
       }
     })().finally(() => {

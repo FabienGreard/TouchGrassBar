@@ -141,7 +141,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   const currentProfile =
     presentation.currentProfile === undefined ? nativeProfile : presentation.currentProfile;
   const nativeDoomerboardRows =
-    doomerboardView.phase === "ready" && doomerboardView.view?.status === "ready"
+    doomerboardView.view?.status === "ready"
       ? doomerboardView.view.rows.map((row) => {
           const presentedRow: NonNullable<PanelViewProps["doomerboardRows"]>[number] = {
             displayName: row.displayName,
