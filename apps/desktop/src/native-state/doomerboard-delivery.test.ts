@@ -155,6 +155,71 @@ describe("Doomerboard delivery", () => {
       view: null,
     });
   });
+
+  test("keeps ready rows when the same query becomes unavailable", async () => {
+    const native = port();
+    native.read = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true as const, value: readyView })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        value: { contractVersion: 1, status: "unavailable" },
+      });
+    const delivery = createDoomerboardDelivery(native);
+    await delivery.activate();
+
+    await delivery.read();
+
+    expect(delivery.getSnapshot()).toEqual({
+      phase: "degraded",
+      view: readyView,
+    });
+  });
+
+  test("ignores a failed superseded query while the latest selection loads", async () => {
+    let rejectSuperseded!: (reason: Error) => void;
+    let finishLatest!: () => void;
+    const native = port();
+    native.read = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true as const, value: readyView })
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectSuperseded = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishLatest = () =>
+              resolve({ ok: true as const, value: selectedView });
+          }),
+      );
+    const delivery = createDoomerboardDelivery(native);
+    await delivery.activate();
+
+    const superseded = delivery.select({
+      audience: "global",
+      scope: "codex",
+      windowDays: 7,
+    });
+    const latest = delivery.select({
+      audience: "global",
+      scope: "claude",
+      windowDays: 30,
+    });
+    rejectSuperseded(new Error("superseded read failed"));
+    await vi.waitFor(() => expect(native.read).toHaveBeenCalledTimes(3));
+
+    expect(delivery.getSnapshot()).toEqual({ phase: "ready", view: readyView });
+    finishLatest();
+    await Promise.all([superseded, latest]);
+    expect(delivery.getSnapshot()).toEqual({
+      phase: "ready",
+      view: selectedView,
+    });
+  });
 });
 
 describe("Tauri Doomerboard adapter", () => {

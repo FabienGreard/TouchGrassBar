@@ -82,9 +82,17 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
             publishFailure(requestedQuery);
             continue;
           }
+          if (parsed.data.status === "unavailable") {
+            publishFailure(requestedQuery);
+            continue;
+          }
           viewQuery = requestedQuery;
           publish({ phase: "ready", view: parsed.data });
         } catch {
+          if (!sameQuery(requestedQuery, query)) {
+            readRequested = true;
+            continue;
+          }
           publishFailure(requestedQuery);
         }
       }
