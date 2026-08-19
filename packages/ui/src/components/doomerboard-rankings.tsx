@@ -14,7 +14,6 @@ type DoomerboardRow = {
 type DoomerboardRankingsProps = Omit<ComponentProps<typeof ScrollArea>, "children"> & {
   ledgerLimit?: number | undefined;
   rows: readonly DoomerboardRow[];
-  variant?: "compact" | "expanded" | undefined;
 };
 
 const rankStyles = {
@@ -36,7 +35,6 @@ function DoomerboardRankings({
   className,
   ledgerLimit,
   rows,
-  variant = "compact",
   viewportClassName,
   ...props
 }: DoomerboardRankingsProps) {
@@ -71,7 +69,6 @@ function DoomerboardRankings({
       aria-label="Leaderboard rankings"
       className={cn("h-full", className)}
       data-doomerboard-scroll=""
-      data-variant={variant}
       viewportClassName={cn(
         "select-none overscroll-contain",
         viewportClassName,
@@ -81,7 +78,6 @@ function DoomerboardRankings({
       <div
         className={cn(
           "grid items-end gap-[5px] px-3.5 pt-[25px] pb-[11px]",
-          variant === "expanded" && "gap-3 px-7 pt-10 pb-5",
           podium.length === 3 && "grid-cols-[1fr_1.12fr_1fr]",
         )}
         style={
@@ -99,7 +95,6 @@ function DoomerboardRankings({
               className={cn(
                 "relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px]",
                 style.card,
-                variant === "expanded" && "min-h-[180px] px-3 py-4",
               )}
               key={row.touchGrassId}
             >
@@ -125,19 +120,12 @@ function DoomerboardRankings({
       {ledger.length > 0 ? (
         <div
           aria-label="More Leaderboard ranks"
-          className={cn(
-            "mx-3.5 border-t border-pearl-line",
-            variant === "expanded" && "mx-7",
-          )}
+          className="mx-3.5 border-t border-pearl-line"
           data-slot="doomerboard-ledger"
         >
           {ledger.map((row) => (
             <article
-              className={cn(
-                "grid grid-cols-[30px_1fr_70px] items-center border-b border-pearl-line px-2.5 py-[8px] text-pearl-ink last:border-b-0",
-                variant === "expanded" &&
-                  "grid-cols-[42px_1fr_120px] px-4 py-3",
-              )}
+              className="grid grid-cols-[30px_1fr_70px] items-center border-b border-pearl-line px-2.5 py-[8px] text-pearl-ink last:border-b-0"
               key={row.touchGrassId}
             >
               <strong className="text-pearl-muted">{row.rank}</strong>

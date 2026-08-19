@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import {
   createDoomerboardDelivery,
+  defaultDoomerboardQuery,
   type DoomerboardPort,
 } from "@/native-state/doomerboard-delivery";
 import {
@@ -71,6 +72,23 @@ describe("Doomerboard delivery", () => {
     await delivery.read();
     expect(delivery.getSnapshot()).toEqual({ phase: "degraded", view: null });
   });
+
+  test("reads each selected audience, provider, and period", async () => {
+    const native = port();
+    const delivery = createDoomerboardDelivery(native);
+    await delivery.activate();
+
+    const query = {
+      audience: "mine",
+      scope: "claude",
+      windowDays: 30,
+    } as const;
+    await delivery.select(query);
+
+    expect(native.read).toHaveBeenNthCalledWith(1, defaultDoomerboardQuery);
+    expect(native.read).toHaveBeenNthCalledWith(2, query);
+    expect(delivery.getSnapshot()).toEqual({ phase: "ready", view: readyView });
+  });
 });
 
 describe("Tauri Doomerboard adapter", () => {
@@ -94,9 +112,18 @@ describe("Tauri Doomerboard adapter", () => {
     const receive = vi.fn();
     const adapter = createTauriDoomerboardAdapter(bindings);
 
-    expect(await adapter.read()).toEqual({ ok: true, value: readyView });
+    expect(await adapter.read(defaultDoomerboardQuery)).toEqual({
+      ok: true,
+      value: readyView,
+    });
     const subscription = await adapter.subscribe(receive);
-    expect(bindings.invoke).toHaveBeenCalledWith("get_global_doomerboard");
+    expect(bindings.invoke).toHaveBeenCalledWith("get_doomerboard", {
+      query: {
+        audience: "global",
+        scope: "combined",
+        windowDays: 1,
+      },
+    });
     expect(subscription.ok).toBe(true);
     revision();
     focus({ payload: false });

@@ -1234,6 +1234,62 @@ test("Display Name changes immediately update Public Usage projections", async (
   ).resolves.toMatchObject([{ displayName: "Updated Fabien" }]);
 });
 
+test("the current Global Doomerboard selects its provider and period", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [
+      usageSnapshot({ observedTokens: 100, provider: "codex" }),
+      usageSnapshot({ observedTokens: 250, provider: "claude" }),
+    ],
+  });
+
+  await expect(
+    authenticated.query(api.doomerboards.currentGlobal, {
+      rankingDay: TODAY,
+      scope: "claude",
+      windowDays: 7,
+    }),
+  ).resolves.toMatchObject([{ tokenScore: 250 }]);
+});
+
+test("the current Friends Doomerboard selects its provider and period", async () => {
+  const t = testBackend();
+  const owner = await createProfile(t, installationCredential("A"), "Owner");
+  const friendCredential = installationCredential("B");
+  const friend = await createProfile(t, friendCredential, "Friend");
+  await friend.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: friendCredential,
+    snapshots: [
+      usageSnapshot({ observedTokens: 100, provider: "codex" }),
+      usageSnapshot({ observedTokens: 250, provider: "claude" }),
+    ],
+  });
+  await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: friend.touchGrassId,
+  });
+
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+      rankingDay: TODAY,
+      scope: "claude",
+      windowDays: 30,
+    }),
+  ).resolves.toMatchObject([
+    {
+      displayName: "Friend",
+      tokenScore: 250,
+      touchGrassId: friend.touchGrassId,
+    },
+  ]);
+});
+
 test("the current Global Doomerboard is authenticated, current, bounded, deterministic, and public-only", async () => {
   const t = testBackend();
   const credential = installationCredential("A");

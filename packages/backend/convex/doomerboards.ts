@@ -169,11 +169,19 @@ export const currentGlobal = query({
   args: {
     limit: v.optional(v.number()),
     rankingDay: v.string(),
+    scope: v.optional(scoreScopeValidator),
+    windowDays: v.optional(scoreWindowValidator),
   },
   returns: v.array(doomerboardRow),
   handler: (ctx, args) => {
     assertRankingDay(args.rankingDay);
-    return globalRows(ctx, "combined", 1, args.limit, args.rankingDay);
+    return globalRows(
+      ctx,
+      args.scope ?? "combined",
+      args.windowDays ?? 1,
+      args.limit,
+      args.rankingDay,
+    );
   },
 });
 
@@ -188,32 +196,65 @@ export const global = query({
     globalRows(ctx, args.scope, args.windowDays, args.limit),
 });
 
+async function myTokenmaxxerRows(
+  ctx: QueryCtx,
+  scope: Parameters<typeof boardKey>[0],
+  windowDays: Parameters<typeof boardKey>[1],
+  requiredComputedRankingDay?: string,
+) {
+  const authUser = await requireAuthUser(ctx);
+  const owner = await tokenmaxxerForAuthUser(ctx, authUser);
+  if (!owner) return [];
+  const added = await ctx.db
+    .query("addedTokenmaxxers")
+    .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))
+    .take(100);
+  const candidates = await Promise.all(
+    added.map((edge) =>
+      ctx.db
+        .query("publicUsages")
+        .withIndex("by_tokenmaxxer_id_and_scope_and_window_days", (q) =>
+          q
+            .eq("tokenmaxxerId", edge.addedId)
+            .eq("scope", scope)
+            .eq("windowDays", windowDays),
+        )
+        .unique(),
+    ),
+  );
+  const rows = candidates.filter(
+    (row): row is Doc<"publicUsages"> =>
+      row !== null &&
+      (requiredComputedRankingDay === undefined ||
+        rankingDayAt(row.computedAt) === requiredComputedRankingDay),
+  );
+  return rankRows(rows);
+}
+
+export const currentMyTokenmaxxers = query({
+  args: {
+    rankingDay: v.string(),
+    scope: scoreScopeValidator,
+    windowDays: scoreWindowValidator,
+  },
+  returns: v.array(doomerboardRow),
+  handler: (ctx, args) => {
+    assertRankingDay(args.rankingDay);
+    return myTokenmaxxerRows(
+      ctx,
+      args.scope,
+      args.windowDays,
+      args.rankingDay,
+    );
+  },
+});
+
 export const myTokenmaxxers = query({
   args: {
     scope: scoreScopeValidator,
     windowDays: scoreWindowValidator,
   },
   returns: v.array(doomerboardRow),
-  handler: async (ctx, args) => {
-    const authUser = await requireAuthUser(ctx);
-    const owner = await tokenmaxxerForAuthUser(ctx, authUser);
-    if (!owner) {
-      return [];
-    }
-    const added = await ctx.db
-      .query("addedTokenmaxxers")
-      .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))
-      .take(500);
-    const includedIds = new Set(added.map((edge) => edge.addedId));
-    const candidates = await ctx.db
-      .query("publicUsages")
-      .withIndex("by_board_key", (q) =>
-        q.eq("boardKey", boardKey(args.scope, args.windowDays)),
-      )
-      .take(2_000);
-    const rows = candidates.filter((score) =>
-      includedIds.has(score.tokenmaxxerId),
-    );
-    return rankRows(rows);
-  },
+  handler: (ctx, args) =>
+    myTokenmaxxerRows(ctx, args.scope, args.windowDays),
 });

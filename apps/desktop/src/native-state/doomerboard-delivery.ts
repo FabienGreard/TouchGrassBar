@@ -7,8 +7,20 @@ type DoomerboardPortOutcome<Value> =
   | { ok: true; value: Value }
   | { fault: { code: "doomerboard-unavailable" }; ok: false };
 
+type DoomerboardQuery = {
+  audience: "global" | "mine";
+  scope: "claude" | "codex" | "combined";
+  windowDays: 1 | 7 | 30;
+};
+
+const defaultDoomerboardQuery: DoomerboardQuery = {
+  audience: "global",
+  scope: "combined",
+  windowDays: 1,
+};
+
 type DoomerboardPort = {
-  read: () => Promise<DoomerboardPortOutcome<unknown>>;
+  read: (query: DoomerboardQuery) => Promise<DoomerboardPortOutcome<unknown>>;
   subscribe: (
     receive: () => void,
   ) => Promise<DoomerboardPortOutcome<() => void>>;
@@ -19,6 +31,11 @@ type DoomerboardDeliverySnapshot = {
   view: DoomerboardView | null;
 };
 
+const sameQuery = (left: DoomerboardQuery, right: DoomerboardQuery) =>
+  left.audience === right.audience &&
+  left.scope === right.scope &&
+  left.windowDays === right.windowDays;
+
 function createDoomerboardDelivery(port: DoomerboardPort) {
   let current: DoomerboardDeliverySnapshot = {
     phase: "loading",
@@ -26,6 +43,7 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
   };
   let readInFlight: Promise<void> | null = null;
   let readRequested = false;
+  let query = defaultDoomerboardQuery;
   const listeners = new Set<() => void>();
 
   const publish = (next: DoomerboardDeliverySnapshot) => {
@@ -33,14 +51,23 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
     for (const listener of listeners) listener();
   };
 
-  const read = () => {
+  const read = (nextQuery = query) => {
+    if (!sameQuery(query, nextQuery)) {
+      query = nextQuery;
+      publish({ phase: "loading", view: null });
+    }
     readRequested = true;
     if (readInFlight !== null) return readInFlight;
     readInFlight = (async () => {
       while (readRequested) {
         readRequested = false;
+        const requestedQuery = query;
         try {
-          const outcome = await port.read();
+          const outcome = await port.read(requestedQuery);
+          if (!sameQuery(requestedQuery, query)) {
+            readRequested = true;
+            continue;
+          }
           if (!outcome.ok) {
             publish({ ...current, phase: "degraded" });
             continue;
@@ -78,6 +105,10 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
     },
     getSnapshot: () => current,
     read,
+    select: (nextQuery: DoomerboardQuery) =>
+      sameQuery(query, nextQuery)
+        ? (readInFlight ?? Promise.resolve())
+        : read(nextQuery),
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -85,9 +116,10 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
   };
 }
 
-export { createDoomerboardDelivery };
+export { createDoomerboardDelivery, defaultDoomerboardQuery };
 export type {
   DoomerboardDeliverySnapshot,
   DoomerboardPort,
   DoomerboardPortOutcome,
+  DoomerboardQuery,
 };

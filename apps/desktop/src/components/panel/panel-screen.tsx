@@ -4,7 +4,10 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tokenmaxxer";
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
-import { createDoomerboardDelivery } from "@/native-state/doomerboard-delivery";
+import {
+  createDoomerboardDelivery,
+  defaultDoomerboardQuery,
+} from "@/native-state/doomerboard-delivery";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 import { createTauriDoomerboardAdapter } from "@/native-state/tauri-doomerboard-adapter";
 import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
@@ -36,7 +39,9 @@ function PanelScreen({
   stateDelivery,
 }: PanelScreenProps) {
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
-  const [expanded, setExpanded] = useState(false);
+  const [doomerboardSelection, setDoomerboardSelection] = useState(
+    defaultDoomerboardQuery,
+  );
   const [doomerboard] = useState(() =>
     createDoomerboardDelivery(createTauriDoomerboardAdapter()),
   );
@@ -86,6 +91,11 @@ function PanelScreen({
       stop();
     };
   }, [doomerboard, hasNativeRuntime]);
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return;
+    void doomerboard.select(doomerboardSelection);
+  }, [doomerboard, doomerboardSelection, hasNativeRuntime]);
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
@@ -181,22 +191,16 @@ function PanelScreen({
       addTokenmaxxerOpen={addTokenmaxxerOpen}
       currentProfile={currentProfile}
       doomerboardRows={
-        presentation.doomerboardRows ?? nativeDoomerboardRows
+        presentation.doomerboardRows ??
+        (doomerboardSelection.audience === "global"
+          ? nativeDoomerboardRows
+          : undefined)
       }
+      doomerboardSelection={doomerboardSelection}
       error={deliveryView.phase === "degraded"}
-      expanded={expanded}
       nativeGlass
       onAddTokenmaxxerOpenChange={setAddTokenmaxxerOpen}
-      onExpandedChange={(nextExpanded) => {
-        setExpanded(nextExpanded);
-        if (!hasNativeRuntime) return;
-        void invoke("set_panel_expanded", { expanded: nextExpanded }).catch(
-          () =>
-            setExpanded((current) =>
-              current === nextExpanded ? !nextExpanded : current,
-            ),
-        );
-      }}
+      onDoomerboardSelectionChange={setDoomerboardSelection}
       onRefresh={() => {
         void stateDelivery.requestRefresh();
       }}
@@ -216,7 +220,12 @@ function PanelScreen({
       }
       refreshing={deliveryView.refreshing}
       state={deliveryView.snapshot}
-      tokenmaxxerRows={presentation.tokenmaxxerRows}
+      tokenmaxxerRows={
+        presentation.tokenmaxxerRows ??
+        (doomerboardSelection.audience === "mine"
+          ? nativeDoomerboardRows
+          : undefined)
+      }
       updateState={updateState}
       usagePresentation={presentation.usagePresentation}
     />

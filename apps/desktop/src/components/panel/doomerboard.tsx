@@ -1,6 +1,4 @@
 import {
-  ArrowExpand01Icon,
-  ArrowShrink02Icon,
   Button,
   DoomerboardRankings,
   DoomerboardToolbar,
@@ -13,9 +11,12 @@ import type {
   DoomerboardProvider,
   DoomerboardRow,
 } from "@touchgrass/ui";
-import { useState } from "react";
 
 import { useCopyText } from "@/components/use-copy-text";
+import {
+  defaultDoomerboardQuery,
+  type DoomerboardQuery,
+} from "@/native-state/doomerboard-delivery";
 
 const emptyProviders: readonly DoomerboardProvider[] = [];
 
@@ -66,110 +67,98 @@ function TokenmaxxersEmpty({
 
 function Doomerboard({
   currentProfile = null,
-  expanded = false,
-  initialAudience = "global",
   onAddTokenmaxxer = () => undefined,
-  onExpandedChange = () => undefined,
+  onSelectionChange = () => undefined,
   providers = emptyProviders,
   rows,
+  selection = defaultDoomerboardQuery,
   tokenmaxxerRows,
 }: {
   currentProfile?: DoomerboardCurrentProfile | null | undefined;
-  expanded?: boolean | undefined;
-  initialAudience?: DoomerboardAudience | undefined;
   onAddTokenmaxxer?: (() => void) | undefined;
-  onExpandedChange?: ((expanded: boolean) => void) | undefined;
+  onSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
   providers?: readonly DoomerboardProvider[] | undefined;
   rows?: readonly DoomerboardRow[] | undefined;
+  selection?: DoomerboardQuery | undefined;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
 }) {
-  const [audience, setAudience] =
-    useState<DoomerboardAudience>(initialAudience);
-  const [period, setPeriod] = useState("today");
-  const [provider, setProvider] = useState("combined");
   const currentProfileText = currentProfile
     ? `${currentProfile.displayName}${currentProfile.touchGrassId}`
     : "";
   const { copyStatus, copyText } = useCopyText(currentProfileText);
-  const globalRowsMatchSelection =
-    rows !== undefined &&
-    audience === "global" &&
-    period === "today" &&
-    provider === "combined";
-  const tokenmaxxersMatchSelection =
-    tokenmaxxerRows !== undefined &&
-    audience === "mine" &&
-    period === "today" &&
-    provider === "combined";
-  const tokenmaxxersEmpty =
-    audience === "mine" && tokenmaxxerRows === undefined;
-  const globalRowsEmpty = globalRowsMatchSelection && rows.length === 0;
+  const selectedRows =
+    selection.audience === "global" ? rows : tokenmaxxerRows;
+  const rowsEmpty = selectedRows !== undefined && selectedRows.length === 0;
+  const period =
+    selection.windowDays === 1
+      ? "today"
+      : selection.windowDays === 7
+        ? "week"
+        : "month";
+  const updateAudience = (audience: DoomerboardAudience) =>
+    onSelectionChange({ ...selection, audience });
+  const updatePeriod = (nextPeriod: string) => {
+    const windowDays =
+      nextPeriod === "today"
+        ? 1
+        : nextPeriod === "week"
+          ? 7
+          : nextPeriod === "month"
+            ? 30
+            : null;
+    if (windowDays === null) return;
+    onSelectionChange({ ...selection, windowDays });
+  };
+  const updateProvider = (scope: string) => {
+    if (scope !== "claude" && scope !== "codex" && scope !== "combined") {
+      return;
+    }
+    onSelectionChange({ ...selection, scope });
+  };
   return (
     <section
       aria-label={
-        tokenmaxxersMatchSelection
-          ? "My Tokenmaxxers rankings"
-          : tokenmaxxersEmpty
+        selection.audience === "mine"
+          ? rowsEmpty
             ? "My Tokenmaxxers empty"
-            : globalRowsEmpty
-              ? "Leaderboard unavailable"
-              : globalRowsMatchSelection
-                ? "Leaderboard rankings"
-                : "Leaderboard unavailable"
+            : selectedRows !== undefined
+              ? "My Tokenmaxxers rankings"
+              : "Leaderboard unavailable"
+          : rowsEmpty
+            ? "Leaderboard unavailable"
+            : selectedRows !== undefined
+              ? "Leaderboard rankings"
+              : "Leaderboard unavailable"
       }
       className="pb-2"
-      data-expanded={expanded}
     >
       <DoomerboardToolbar
-        action={
-          <Button
-            aria-label={expanded ? "Collapse Leaderboard" : "Expand Leaderboard"}
-            onClick={() => onExpandedChange(!expanded)}
-            size="quiet"
-            title={expanded ? "Collapse Leaderboard" : "Expand Leaderboard"}
-            type="button"
-            variant="ghost"
-          >
-            {expanded ? (
-              <ArrowShrink02Icon aria-hidden="true" size={13} />
-            ) : (
-              <ArrowExpand01Icon aria-hidden="true" size={13} />
-            )}
-          </Button>
-        }
-        audience={audience}
+        audience={selection.audience}
         copyStatus={copyStatus}
         currentProfile={currentProfile}
-        onAudienceChange={setAudience}
+        onAudienceChange={updateAudience}
         onCopyCurrentProfile={
           currentProfile ? () => void copyText() : undefined
         }
-        onPeriodChange={setPeriod}
-        onProviderChange={setProvider}
+        onPeriodChange={updatePeriod}
+        onProviderChange={updateProvider}
         period={period}
-        provider={provider}
+        provider={selection.scope}
         providers={providers}
       />
-      <div
-        className={expanded ? "mt-3 h-[500px]" : "mt-3 h-[180px]"}
-        data-slot="doomerboard-viewport"
-      >
-        {tokenmaxxersMatchSelection ? (
-          <DoomerboardRankings
-            rows={tokenmaxxerRows}
-            variant={expanded ? "expanded" : "compact"}
-          />
-        ) : tokenmaxxersEmpty ? (
+      <div className="mt-3 h-[180px]" data-slot="doomerboard-viewport">
+        {selection.audience === "mine" && rowsEmpty ? (
           <TokenmaxxersEmpty onAddTokenmaxxer={onAddTokenmaxxer} />
-        ) : globalRowsEmpty ? (
+        ) : selection.audience === "global" && rowsEmpty ? (
           <DoomerboardUnavailable />
-        ) : globalRowsMatchSelection ? (
-          <DoomerboardRankings
-            rows={rows}
-            variant={expanded ? "expanded" : "compact"}
-          />
+        ) : selectedRows !== undefined ? (
+          <DoomerboardRankings rows={selectedRows} />
         ) : (
-          <DoomerboardUnavailable selectionUnavailable={rows !== undefined} />
+          <DoomerboardUnavailable
+            selectionUnavailable={
+              rows !== undefined || tokenmaxxerRows !== undefined
+            }
+          />
         )}
       </div>
     </section>

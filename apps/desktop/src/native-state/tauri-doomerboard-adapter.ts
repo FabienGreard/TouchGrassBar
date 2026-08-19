@@ -10,7 +10,7 @@ import type {
 
 type StopListening = () => void;
 type TauriDoomerboardBindings = {
-  invoke: (command: string) => Promise<unknown>;
+  invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
   listen: (
     event: string,
     receive: (event: { payload: unknown }) => void,
@@ -23,7 +23,7 @@ type TauriDoomerboardBindings = {
 const remoteRefreshIntervalMs = 5 * 60 * 1_000;
 
 const defaultBindings: TauriDoomerboardBindings = {
-  invoke: (command) => invoke<unknown>(command),
+  invoke: (command, args) => invoke<unknown>(command, args),
   listen: (event, receive) => listen<unknown>(event, receive),
   onFocusChanged: (receive) => getCurrentWindow().onFocusChanged(receive),
 };
@@ -56,11 +56,11 @@ function createTauriDoomerboardAdapter(
   bindings: TauriDoomerboardBindings = defaultBindings,
 ): DoomerboardPort {
   return {
-    read: async () => {
+    read: async (query) => {
       try {
         return {
           ok: true,
-          value: await bindings.invoke("get_global_doomerboard"),
+          value: await bindings.invoke("get_doomerboard", { query }),
         };
       } catch {
         return unavailable();

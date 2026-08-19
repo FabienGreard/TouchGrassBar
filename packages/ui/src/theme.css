@@ -238,17 +238,6 @@
   transform-origin: 4px 4px;
 }
 
-.expanded-board-surface {
-  background:
-    radial-gradient(circle at 88% 0%, #d879461f, transparent 38%),
-    radial-gradient(circle at 10% 8%, #aefb6517, transparent 32%),
-    linear-gradient(145deg, #fffaf0, #f2ead9);
-}
-
-.expanded-board-surface > header {
-  background: linear-gradient(180deg, #fffaf0f5, #f6e9d1cc);
-}
-
 .menu-bar-app-target {
   background: rgb(255 255 255 / 18%);
 }

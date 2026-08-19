@@ -1,5 +1,4 @@
 import type { CodingProvider } from "@touchgrass/contracts";
-import type { ReactNode } from "react";
 
 import { Button } from "./button";
 import {
@@ -134,7 +133,6 @@ function CurrentProfileAction({
 }
 
 function DoomerboardToolbar({
-  action,
   audience,
   copyStatus = "idle",
   currentProfile,
@@ -146,7 +144,6 @@ function DoomerboardToolbar({
   provider,
   providers,
 }: {
-  action?: ReactNode;
   audience: DoomerboardAudience;
   copyStatus?: CopyStatus;
   currentProfile: CurrentProfile | null;
@@ -191,7 +188,6 @@ function DoomerboardToolbar({
             options={providerOptions}
             value={provider}
           />
-          {action}
         </div>
       </header>
       <div className="mx-3.5 mt-2">

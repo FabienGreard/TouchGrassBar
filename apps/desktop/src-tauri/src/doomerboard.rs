@@ -20,12 +20,52 @@ use crate::updater::OnlineFeatureGate;
 
 pub const DOOMERBOARD_CONTRACT_VERSION: u8 = 1;
 const CURRENT_GLOBAL_QUERY: &str = "doomerboards:currentGlobal";
+const CURRENT_MY_TOKENMAXXERS_QUERY: &str = "doomerboards:currentMyTokenmaxxers";
 const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const MAX_ROWS: usize = 100;
 const MAX_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_JWT_BYTES: usize = 8 * 1_024;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum DoomerboardAudienceV1 {
+    Global,
+    Mine,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum DoomerboardScopeV1 {
+    Claude,
+    Codex,
+    Combined,
+}
+
+impl DoomerboardScopeV1 {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Combined => "combined",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DoomerboardQueryV1 {
+    audience: DoomerboardAudienceV1,
+    scope: DoomerboardScopeV1,
+    window_days: u8,
+}
+
+impl DoomerboardQueryV1 {
+    fn is_valid(self) -> bool {
+        matches!(self.window_days, 1 | 7 | 30)
+    }
+}
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -84,7 +124,11 @@ enum TransportError {
 }
 
 trait DoomerboardTransport: Send + Sync {
-    fn current_global(&self, session: &Secret) -> Result<Vec<DoomerboardRowV1>, TransportError>;
+    fn read(
+        &self,
+        session: &Secret,
+        query: DoomerboardQueryV1,
+    ) -> Result<Vec<DoomerboardRowV1>, TransportError>;
 }
 
 #[derive(Clone)]
@@ -140,7 +184,11 @@ impl HttpDoomerboardTransport {
 }
 
 impl DoomerboardTransport for HttpDoomerboardTransport {
-    fn current_global(&self, session: &Secret) -> Result<Vec<DoomerboardRowV1>, TransportError> {
+    fn read(
+        &self,
+        session: &Secret,
+        query: DoomerboardQueryV1,
+    ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
         let convex_url = self
             .convex_url
             .ok_or(TransportError::Unavailable)?
@@ -156,8 +204,8 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
                     client.set_auth(Some(jwt.as_str().to_owned())).await;
                     let result = client
                         .query(
-                            CURRENT_GLOBAL_QUERY,
-                            current_global_arguments(OffsetDateTime::now_utc()),
+                            doomerboard_query_name(query),
+                            doomerboard_query_arguments(query, OffsetDateTime::now_utc()),
                         )
                         .await;
                     client.set_auth(None).await;
@@ -178,11 +226,31 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
     }
 }
 
-fn current_global_arguments(now: OffsetDateTime) -> BTreeMap<String, Value> {
-    BTreeMap::from([(
-        "rankingDay".to_owned(),
-        Value::String(now.date().to_string()),
-    )])
+fn doomerboard_query_name(query: DoomerboardQueryV1) -> &'static str {
+    match query.audience {
+        DoomerboardAudienceV1::Global => CURRENT_GLOBAL_QUERY,
+        DoomerboardAudienceV1::Mine => CURRENT_MY_TOKENMAXXERS_QUERY,
+    }
+}
+
+fn doomerboard_query_arguments(
+    query: DoomerboardQueryV1,
+    now: OffsetDateTime,
+) -> BTreeMap<String, Value> {
+    BTreeMap::from([
+        (
+            "rankingDay".to_owned(),
+            Value::String(now.date().to_string()),
+        ),
+        (
+            "scope".to_owned(),
+            Value::String(query.scope.as_str().to_owned()),
+        ),
+        (
+            "windowDays".to_owned(),
+            Value::Int64(i64::from(query.window_days)),
+        ),
+    ])
 }
 
 #[derive(Deserialize)]
@@ -210,8 +278,8 @@ impl DoomerboardRuntime {
         }
     }
 
-    pub(crate) fn current_global(&self) -> DoomerboardViewV1 {
-        if self.online_gate.is_paused() {
+    pub(crate) fn read(&self, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
+        if self.online_gate.is_paused() || !query.is_valid() {
             return DoomerboardViewV1::unavailable();
         }
         let session = match self
@@ -224,7 +292,7 @@ impl DoomerboardRuntime {
             Some(credentials) => credentials.session,
             None => return DoomerboardViewV1::unavailable(),
         };
-        match self.transport.current_global(&session) {
+        match self.transport.read(&session, query) {
             Ok(rows) => DoomerboardViewV1::ready(rows),
             Err(TransportError::AuthorityRejected) => {
                 let refreshed = self
@@ -235,7 +303,7 @@ impl DoomerboardRuntime {
                     .flatten();
                 match refreshed
                     .as_ref()
-                    .and_then(|fresh| self.transport.current_global(fresh).ok())
+                    .and_then(|fresh| self.transport.read(fresh, query).ok())
                 {
                     Some(rows) => DoomerboardViewV1::ready(rows),
                     None => DoomerboardViewV1::unavailable(),
@@ -399,9 +467,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     impl DoomerboardTransport for CountingTransport {
-        fn current_global(
+        fn read(
             &self,
             _session: &Secret,
+            _query: DoomerboardQueryV1,
         ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
@@ -436,6 +505,18 @@ mod tests {
         ]))
     }
 
+    fn query(
+        audience: DoomerboardAudienceV1,
+        scope: DoomerboardScopeV1,
+        window_days: u8,
+    ) -> DoomerboardQueryV1 {
+        DoomerboardQueryV1 {
+            audience,
+            scope,
+            window_days,
+        }
+    }
+
     #[test]
     fn accepts_only_ordered_bounded_public_rows() {
         let parsed = parse_rows(Value::Array(vec![
@@ -451,15 +532,24 @@ mod tests {
     }
 
     #[test]
-    fn current_query_uses_the_native_utc_ranking_day() {
+    fn selected_query_uses_the_native_utc_day_provider_and_period() {
         let now =
             OffsetDateTime::from_unix_timestamp(1_775_819_696).expect("valid fixture timestamp");
+        let selected = query(DoomerboardAudienceV1::Mine, DoomerboardScopeV1::Claude, 30);
         assert_eq!(
-            current_global_arguments(now),
-            BTreeMap::from([(
-                "rankingDay".to_owned(),
-                Value::String("2026-04-10".to_owned()),
-            )]),
+            doomerboard_query_name(selected),
+            CURRENT_MY_TOKENMAXXERS_QUERY
+        );
+        assert_eq!(
+            doomerboard_query_arguments(selected, now),
+            BTreeMap::from([
+                (
+                    "rankingDay".to_owned(),
+                    Value::String("2026-04-10".to_owned()),
+                ),
+                ("scope".to_owned(), Value::String("claude".to_owned()),),
+                ("windowDays".to_owned(), Value::Int64(30)),
+            ]),
         );
     }
 
@@ -475,7 +565,14 @@ mod tests {
             OnlineFeatureGate::paused(),
         );
 
-        assert_eq!(runtime.current_global(), DoomerboardViewV1::unavailable());
+        assert_eq!(
+            runtime.read(query(
+                DoomerboardAudienceV1::Global,
+                DoomerboardScopeV1::Combined,
+                1,
+            )),
+            DoomerboardViewV1::unavailable()
+        );
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
     }
 

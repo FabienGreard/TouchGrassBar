@@ -118,7 +118,7 @@ describe("panel states", () => {
     expect(markup).toContain("Combined");
     expect(markup).toContain('aria-label="Select Leaderboard period"');
     expect(markup).toContain('aria-label="Select Leaderboard provider"');
-    expect(markup.match(/aria-expanded:bg-pearl-ink\/5/g)).toHaveLength(4);
+    expect(markup.match(/aria-expanded:bg-pearl-ink\/5/g)).toHaveLength(3);
     expect(markup.match(/data-slot="metric-gauge"/g)).toHaveLength(3);
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-slot="quota-progress"/g)).toHaveLength(2);
@@ -338,34 +338,9 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/data-doomerboard-scroll=""[^>]*tabindex/);
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
     expect(markup).not.toContain("Leaderboard unavailable");
+    expect(markup).not.toContain("Expand Leaderboard");
+    expect(markup).not.toContain("Collapse Leaderboard");
     expect(markup).toContain("Friends");
-  });
-
-  test("expands the Leaderboard inside the menu-bar panel", async () => {
-    const currentState = await deliveredBrowserFixture("current");
-    const markup = renderToStaticMarkup(
-      <PanelView
-        currentProfile={currentProfile}
-        doomerboardRows={currentDoomerboardRows}
-        error={false}
-        expanded
-        nativeGlass
-        onExpandedChange={() => undefined}
-        onRefresh={() => undefined}
-        onSettings={() => undefined}
-        refreshing={false}
-        state={currentState}
-      />,
-    );
-
-    expect(markup).toContain('data-expanded="true"');
-    expect(markup).toContain("expanded-board-surface");
-    expect(markup).toContain('aria-label="Collapse Leaderboard"');
-    expect(markup).toContain('data-glass="false"');
-    expect(markup).toContain("Leaderboard");
-    expect(markup).toContain("Friends");
-    expect(markup).toContain('data-slot="doomerboard-ledger"');
-    expect(markup).not.toContain('data-slot="provider-card"');
   });
 
   test("renders the provider visibility selected by the native snapshot", async () => {
@@ -728,12 +703,60 @@ describe("panel states", () => {
     expect(markup).not.toContain('data-doomerboard-scroll=""');
   });
 
+  test("renders supplied rows for every Leaderboard selection", () => {
+    for (const [selection, providerLabel, periodLabel, boardLabel] of [
+      [
+        { audience: "global", scope: "codex", windowDays: 7 },
+        "Codex",
+        "7 days",
+        "Leaderboard rankings",
+      ],
+      [
+        { audience: "global", scope: "claude", windowDays: 30 },
+        "Claude",
+        "30 days",
+        "Leaderboard rankings",
+      ],
+      [
+        { audience: "mine", scope: "combined", windowDays: 1 },
+        "Combined",
+        "Today",
+        "My Tokenmaxxers rankings",
+      ],
+    ] as const) {
+      const markup = renderToStaticMarkup(
+        <Doomerboard
+          providers={[
+            { displayName: "Codex", provider: "codex" },
+            { displayName: "Claude", provider: "claude" },
+          ]}
+          rows={currentDoomerboardRows}
+          selection={selection}
+          tokenmaxxerRows={myTokenmaxxerRows}
+        />,
+      );
+
+      expect(markup).toContain(`aria-label="${boardLabel}"`);
+      expect(markup).toMatch(
+        new RegExp(
+          `aria-label="Select Leaderboard provider"[^>]*>${providerLabel}</button>`,
+        ),
+      );
+      expect(markup).toMatch(
+        new RegExp(
+          `aria-label="Select Leaderboard period"[^>]*>${periodLabel}</button>`,
+        ),
+      );
+      expect(markup).not.toContain("Scores are unavailable for this selection.");
+    }
+  });
+
   test("offers a populated fake Tokenmaxxers development mockup", () => {
     const markup = renderToStaticMarkup(
       <Doomerboard
         currentProfile={currentProfile}
-        initialAudience="mine"
         rows={currentDoomerboardRows}
+        selection={{ audience: "mine", scope: "combined", windowDays: 1 }}
         tokenmaxxerRows={myTokenmaxxerRows}
       />,
     );
