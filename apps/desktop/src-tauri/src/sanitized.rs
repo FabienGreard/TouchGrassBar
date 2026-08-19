@@ -45,7 +45,7 @@ use crate::usage_sync::{
     load_active_usage_sync_generation, load_next_pending_usage_batch,
     load_usage_sync_generation_state, mark_generation_authority_rejected,
     migrate_usage_sync_schema_from_v6, queue_provider_settings, queue_usage_for_commit,
-    stage_usage_sync_corrections,
+    replace_profile_generation, stage_usage_sync_corrections,
 };
 
 pub const CONTRACT_VERSION: u8 = 4;
@@ -791,6 +791,10 @@ enum UsageSyncCommit<'a> {
         activated_at: OffsetDateTime,
         generation: u64,
     },
+    ReplaceAuthority {
+        activated_at: OffsetDateTime,
+        generation: u64,
+    },
     Acknowledge {
         acknowledgements: &'a UsageSyncAcknowledgements,
         batch: &'a PendingUsageBatch,
@@ -1137,6 +1141,38 @@ impl SqliteReadModelStore {
                 generation,
             } => {
                 activate_generation(&transaction, generation)
+                    .map_err(|_| "native state persistence unavailable")?;
+                capture_generation_baselines(&transaction, generation, state, activated_at, now)
+                    .map_err(|_| "native state persistence unavailable")?;
+                self.active_mac_generation = Some(generation);
+                pending_usage_changed |=
+                    queue_provider_settings(&transaction, generation, enabled_providers)
+                        .map_err(|_| "native state persistence unavailable")?;
+                state.sync.status = SyncStatus::Pending;
+                let anchor_day = activated_at.to_offset(time::UtcOffset::UTC).date();
+                let updates = queue_usage_for_commit(
+                    &transaction,
+                    generation,
+                    state,
+                    now,
+                    enabled_providers,
+                    UsageQueueRequest::ProfileActivation { anchor_day },
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+                apply_queue_status(
+                    &transaction,
+                    generation,
+                    state,
+                    now,
+                    &updates,
+                    enabled_providers,
+                )?;
+            }
+            UsageSyncCommit::ReplaceAuthority {
+                activated_at,
+                generation,
+            } => {
+                replace_profile_generation(&transaction, generation)
                     .map_err(|_| "native state persistence unavailable")?;
                 capture_generation_baselines(&transaction, generation, state, activated_at, now)
                     .map_err(|_| "native state persistence unavailable")?;
@@ -2960,6 +2996,35 @@ impl NativeCore {
         drop(store);
         if let Some(notice) = notice {
             self.inner.subscribers.publish(notice);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn replace_usage_sync_authority(
+        &self,
+        active_mac_generation: u64,
+        active_mac_activated_at: u64,
+    ) -> Result<(), &'static str> {
+        let activated_at = active_mac_activation_time(active_mac_activated_at)?;
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let outcome = self.inner.projection.commit_usage_sync(
+            &mut store,
+            self.inner.clock.now(),
+            UsageSyncCommit::ReplaceAuthority {
+                activated_at,
+                generation: active_mac_generation,
+            },
+        )?;
+        drop(store);
+        if let Some(notice) = outcome.notice {
+            self.inner.subscribers.publish(notice);
+        }
+        if outcome.pending_usage_changed {
+            self.inner.usage_sync_requests.request();
         }
         Ok(())
     }

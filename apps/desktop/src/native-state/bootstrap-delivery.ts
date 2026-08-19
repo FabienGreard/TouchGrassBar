@@ -14,7 +14,7 @@ type BootstrapPort = {
   complete: (displayName: string) => Promise<BootstrapPortOutcome<unknown>>;
   hide: () => Promise<BootstrapPortOutcome<void>>;
   read: () => Promise<BootstrapPortOutcome<unknown>>;
-  recoverProfile: () => Promise<BootstrapPortOutcome<void>>;
+  recoverProfile: () => Promise<BootstrapPortOutcome<boolean>>;
 };
 
 type BootstrapDeliverySnapshot = {
@@ -105,6 +105,10 @@ function createBootstrapDelivery(port: BootstrapPort) {
         if (!recovered.ok) {
           publish({ ...current, phase: "degraded", submitting: false });
           return false;
+        }
+        if (!recovered.value) {
+          publish({ ...current, submitting: false });
+          return true;
         }
         const state = await port.read();
         if (!state.ok || !accept(state.value)) return false;

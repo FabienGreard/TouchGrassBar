@@ -384,15 +384,28 @@ impl ProfileRuntime {
         let Some(_attempt) = self.admission.try_start(None) else {
             return Err("Profile recovery unavailable".to_owned());
         };
+        let previous_touch_grass_id = self.lifecycle.ready_touch_grass_id();
         let recovered = self
             .coordinator
             .lock()
             .map_err(|_| "Profile recovery unavailable".to_owned())?
             .recover_profile(touch_grass_id, recovery_key)
             .map_err(|_| "Profile recovery unavailable".to_owned())?;
-        self.usage_sync
-            .install_authority(recovered.activation)
-            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        let recovered_touch_grass_id = match &recovered.profile {
+            SanitizedProfileOutcome::Ready { touch_grass_id, .. } => touch_grass_id,
+            SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
+                return Err("Profile recovery unavailable".to_owned());
+            }
+        };
+        let replaces_profile = previous_touch_grass_id
+            .as_deref()
+            .is_some_and(|previous| previous != recovered_touch_grass_id);
+        if replaces_profile {
+            self.usage_sync.replace_authority(recovered.activation)
+        } else {
+            self.usage_sync.install_authority(recovered.activation)
+        }
+        .map_err(|_| "Profile recovery unavailable".to_owned())?;
         self.core
             .set_profile_outcome(recovered.profile)
             .map_err(|_| "Profile recovery unavailable".to_owned())?;
@@ -906,20 +919,21 @@ async fn complete_bootstrap(
 async fn recover_profile(
     window: WebviewWindow,
     profile_runtime: State<'_, ProfileRuntime>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     require_settings_or_onboarding(&window)?;
     let Some(credentials) = recovery_sheet::request(&window)
         .await
         .map_err(str::to_owned)?
     else {
-        return Ok(());
+        return Ok(false);
     };
     let runtime = profile_runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         runtime.recover_profile(&credentials.touch_grass_id, &credentials.recovery_key)
     })
     .await
-    .map_err(|_| "Profile recovery unavailable".to_owned())?
+    .map_err(|_| "Profile recovery unavailable".to_owned())??;
+    Ok(true)
 }
 
 fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {

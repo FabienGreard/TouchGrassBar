@@ -4,8 +4,11 @@ import { internal } from "../_generated/api";
 import { internalMutation, type MutationCtx } from "../_generated/server";
 import { installationCredentialDigest } from "../model/profile";
 import { rateLimiter } from "../model/rateLimits";
+import { freezeTransferDayUsage } from "../model/sync";
+import { rankingDayAt } from "../model/values";
 
 const RECOVERY_ATTEMPT_LIFETIME_MS = 5 * 60 * 1_000;
+const RECOVERY_COMMIT_GRACE_MS = 60 * 1_000;
 const MAX_SAFE_GENERATION = Number.MAX_SAFE_INTEGER;
 
 const recoveryCommitResult = v.object({
@@ -61,6 +64,39 @@ export const prepareRecoveryAttempt = internalMutation({
     const existing = await recoveryAttemptByDigest(ctx, args.attemptDigest);
     if (existing) {
       if (
+        existing.status === "committed" &&
+        tokenmaxxer.recoveryAttemptId === existing._id
+      ) {
+        const expiresAt = Date.now() + RECOVERY_ATTEMPT_LIFETIME_MS;
+        await ctx.db.patch(existing._id, { expiresAt });
+        await ctx.scheduler.runAt(
+          expiresAt,
+          internal.auth.profileRecovery.expireRecoveryAttempt,
+          { recoveryAttemptId: existing._id },
+        );
+        return {
+          expectedGeneration: existing.expectedGeneration,
+          expiresAt,
+        };
+      }
+      if (
+        ((existing.status === "prepared" &&
+          existing.expiresAt <= Date.now()) ||
+          (existing.status === "committing" &&
+            tokenmaxxer.recoveryAttemptId === existing._id)) &&
+        existing.expectedDeviceId === activeDevice._id &&
+        existing.expectedGeneration === activeDevice.generation
+      ) {
+        const expiresAt = Date.now() + RECOVERY_ATTEMPT_LIFETIME_MS;
+        await ctx.db.patch(existing._id, { expiresAt });
+        await ctx.scheduler.runAt(
+          expiresAt,
+          internal.auth.profileRecovery.expireRecoveryAttempt,
+          { recoveryAttemptId: existing._id },
+        );
+        return { expectedGeneration: existing.expectedGeneration, expiresAt };
+      }
+      if (
         existing.tokenmaxxerId !== tokenmaxxer._id ||
         existing.expectedDeviceId !== activeDevice._id ||
         existing.expectedGeneration !== activeDevice.generation ||
@@ -94,7 +130,12 @@ export const prepareRecoveryAttempt = internalMutation({
 });
 
 export const claimRecoveryAttempt = internalMutation({
-  args: { attemptDigest: v.string(), authSubject: v.string() },
+  args: {
+    attemptDigest: v.string(),
+    authSubject: v.string(),
+    installationCredentialDigest: v.string(),
+    replacementRecoveryKeyDigest: v.string(),
+  },
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
@@ -108,7 +149,13 @@ export const claimRecoveryAttempt = internalMutation({
       return false;
     }
     if (attempt.status === "committed") {
-      return tokenmaxxer.recoveryAttemptId === attempt._id;
+      return (
+        tokenmaxxer.recoveryAttemptId === attempt._id &&
+        attempt.installationCredentialDigest ===
+          args.installationCredentialDigest &&
+        attempt.replacementRecoveryKeyDigest ===
+          args.replacementRecoveryKeyDigest
+      );
     }
     if (
       attempt.expiresAt <= Date.now() ||
@@ -125,7 +172,14 @@ export const claimRecoveryAttempt = internalMutation({
       return false;
     }
     if (tokenmaxxer.recoveryAttemptId) {
-      if (tokenmaxxer.recoveryAttemptId === attempt._id) return true;
+      if (tokenmaxxer.recoveryAttemptId === attempt._id) {
+        return (
+          attempt.installationCredentialDigest ===
+            args.installationCredentialDigest &&
+          attempt.replacementRecoveryKeyDigest ===
+            args.replacementRecoveryKeyDigest
+        );
+      }
       const previousAttempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
       if (
         !previousAttempt ||
@@ -139,7 +193,11 @@ export const claimRecoveryAttempt = internalMutation({
       key: String(tokenmaxxer._id),
       throws: true,
     });
-    await ctx.db.patch(attempt._id, { status: "committing" });
+    await ctx.db.patch(attempt._id, {
+      installationCredentialDigest: args.installationCredentialDigest,
+      replacementRecoveryKeyDigest: args.replacementRecoveryKeyDigest,
+      status: "committing",
+    });
     await ctx.db.patch(tokenmaxxer._id, { recoveryAttemptId: attempt._id });
     return true;
   },
@@ -159,7 +217,9 @@ export const commitRecoveryAttempt = internalMutation({
     if (
       !tokenmaxxer ||
       tokenmaxxer.authSubject !== args.authSubject ||
-      tokenmaxxer.recoveryAttemptId !== attempt._id
+      tokenmaxxer.recoveryAttemptId !== attempt._id ||
+      attempt.installationCredentialDigest !==
+        (await installationCredentialDigest(args.installationCredential))
     ) {
       return null;
     }
@@ -205,6 +265,13 @@ export const commitRecoveryAttempt = internalMutation({
       usageBackfillCompletedAt: null,
     });
     await ctx.db.patch(oldDevice._id, { revokedAt: activatedAt });
+    const transferDay = rankingDayAt(activatedAt);
+    await freezeTransferDayUsage(
+      ctx,
+      tokenmaxxer._id,
+      oldDevice._id,
+      transferDay,
+    );
     await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: newDeviceId });
     await ctx.db.patch(attempt._id, {
       activatedAt,
@@ -226,14 +293,26 @@ export const expireRecoveryAttempt = internalMutation({
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const attempt = await ctx.db.get(args.recoveryAttemptId);
-    if (!attempt || attempt.status !== "prepared") return null;
-    if (attempt.expiresAt > Date.now()) {
+    if (!attempt || attempt.status === "committed") return null;
+    const removeAt =
+      attempt.status === "committing"
+        ? attempt.expiresAt + RECOVERY_COMMIT_GRACE_MS
+        : attempt.expiresAt;
+    if (removeAt > Date.now()) {
       await ctx.scheduler.runAt(
-        attempt.expiresAt,
+        removeAt,
         internal.auth.profileRecovery.expireRecoveryAttempt,
         args,
       );
       return null;
+    }
+    if (attempt.status === "committing") {
+      const tokenmaxxer = await ctx.db.get(attempt.tokenmaxxerId);
+      if (tokenmaxxer?.recoveryAttemptId === attempt._id) {
+        await ctx.db.patch(tokenmaxxer._id, {
+          recoveryAttemptId: undefined,
+        });
+      }
     }
     await ctx.db.delete(attempt._id);
     return null;

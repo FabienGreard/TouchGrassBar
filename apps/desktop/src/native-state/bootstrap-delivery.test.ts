@@ -29,7 +29,7 @@ function port(): BootstrapPort {
     read: vi.fn(async () => ({ ok: true as const, value: bootstrapState })),
     recoverProfile: vi.fn(async () => ({
       ok: true as const,
-      value: undefined,
+      value: true,
     })),
   };
 }
@@ -139,5 +139,24 @@ describe("bootstrap delivery", () => {
     expect(await delivery.recoverProfile()).toBe(true);
     expect(native.recoverProfile).toHaveBeenCalledWith();
     expect(native.hide).toHaveBeenCalledOnce();
+  });
+
+  test("keeps onboarding unchanged when the recovery sheet is canceled", async () => {
+    const native = port();
+    native.recoverProfile = vi.fn(async () => ({
+      ok: true as const,
+      value: false,
+    }));
+    const delivery = createBootstrapDelivery(native);
+    await delivery.read();
+
+    expect(await delivery.recoverProfile()).toBe(true);
+    expect(native.read).toHaveBeenCalledOnce();
+    expect(native.hide).not.toHaveBeenCalled();
+    expect(delivery.getSnapshot()).toEqual({
+      phase: "ready",
+      snapshot: bootstrapState,
+      submitting: false,
+    });
   });
 });

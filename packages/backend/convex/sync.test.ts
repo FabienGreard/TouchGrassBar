@@ -1815,6 +1815,11 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
   expect(stored.usageBuckets).toHaveLength(4);
   expect(
     stored.usageBuckets
+      .filter((row) => row.observedTokens === 50 || row.observedTokens === 75)
+      .every((row) => row.coverage === "partial"),
+  ).toBe(true);
+  expect(
+    stored.usageBuckets
       .filter((row) => row.provider === "codex")
       .map((row) => row.observedTokens)
       .sort((left, right) => left - right),

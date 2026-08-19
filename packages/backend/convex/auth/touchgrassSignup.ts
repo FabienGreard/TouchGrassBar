@@ -10,6 +10,7 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { internalMutation } from "../_generated/server";
+import { installationCredentialDigest } from "../model/profile";
 
 const PREPARATION_LIFETIME_MS = 120_000;
 const ATTEMPT_ID_PATTERN =
@@ -53,6 +54,8 @@ export type TouchGrassPolicyPort = {
   claimRecoveryAttempt: (args: {
     attemptDigest: string;
     authSubject: string;
+    installationCredentialDigest: string;
+    replacementRecoveryKeyDigest: string;
   }) => Promise<boolean>;
   commitRecoveryAttempt: (args: {
     attemptDigest: string;
@@ -395,6 +398,10 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
         async (ctx) => {
           const touchGrassId = stringField(ctx.body, "touchGrassId");
           const recoveryKey = stringField(ctx.body, "recoveryKey");
+          const replacementRecoveryKey = stringField(
+            ctx.body,
+            "replacementRecoveryKey",
+          );
           const attemptId = stringField(ctx.body, "attemptId");
           const ipAddress = await requestIpAddress(policy);
           const keys = await failedCredentialKeys(
@@ -412,6 +419,8 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             PUBLIC_ID_PATTERN.test(touchGrassId) &&
             recoveryKey !== null &&
             RECOVERY_KEY_PATTERN.test(recoveryKey) &&
+            replacementRecoveryKey !== null &&
+            RECOVERY_KEY_PATTERN.test(replacementRecoveryKey) &&
             attemptId !== null &&
             ATTEMPT_ID_PATTERN.test(attemptId);
           const user = recoveryUser(
@@ -433,14 +442,26 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                 })
               : null,
           );
-          const credentialIsValid =
+          const primaryCredentialIsValid =
             recoveryKey !== null &&
             typeof account?.password === "string" &&
             (await ctx.context.password.verify({
               hash: account.password,
               password: recoveryKey,
             }));
-          if (!credentialIsValid || !user || !touchGrassId || !attemptId) {
+          const replacementCredentialIsValid =
+            replacementRecoveryKey !== null &&
+            typeof account?.password === "string" &&
+            (await ctx.context.password.verify({
+              hash: account.password,
+              password: replacementRecoveryKey,
+            }));
+          if (
+            (!primaryCredentialIsValid && !replacementCredentialIsValid) ||
+            !user ||
+            !touchGrassId ||
+            !attemptId
+          ) {
             if (!account?.password) {
               await ctx.context.password.hash(
                 recoveryKey ?? "invalid-recovery-credential",
@@ -478,7 +499,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             touchGrassId,
             version: 1,
           });
-          return ctx.json({ recoveryProof });
+          return ctx.json({ expiresAt: prepared.expiresAt, recoveryProof });
         },
       ),
       commitTouchGrassRecovery: createAuthEndpoint(
@@ -577,6 +598,10 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
           const claimed = await policy.claimRecoveryAttempt({
             attemptDigest,
             authSubject: user.id,
+            installationCredentialDigest: await installationCredentialDigest(
+              installationCredential,
+            ),
+            replacementRecoveryKeyDigest: await sha256Digest(newRecoveryKey),
           });
           if (!claimed) {
             await policy.finalizeCredentialAttempt({
@@ -584,19 +609,6 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               reservationId,
             });
             return rejectRecoveryCredential();
-          }
-          if (!replacementKeyIsCurrent) {
-            const password = await ctx.context.password.hash(newRecoveryKey);
-            await ctx.context.internalAdapter.updateAccount(account.id, {
-              password,
-            });
-          }
-          await ctx.context.internalAdapter.deleteUserSessions(user.id);
-          const session = await ctx.context.internalAdapter.createSession(user.id);
-          if (!session) {
-            throw new APIError("INTERNAL_SERVER_ERROR", {
-              message: "Profile recovery is unavailable.",
-            });
           }
           const committed = await policy.commitRecoveryAttempt({
             attemptDigest,
@@ -610,12 +622,19 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             });
             return rejectRecoveryCredential();
           }
+          if (!replacementKeyIsCurrent) {
+            const password = await ctx.context.password.hash(newRecoveryKey);
+            await ctx.context.internalAdapter.updateAccount(account.id, {
+              password,
+            });
+          }
+          await ctx.context.internalAdapter.deleteUserSessions(user.id);
           const finalized = await policy.finalizeCredentialAttempt({
             outcome: "success",
             reservationId,
           });
           if (!finalized) rejectRateLimitedCredential();
-          return ctx.json({ ...committed, token: session.token });
+          return ctx.json(committed);
         },
       ),
     },

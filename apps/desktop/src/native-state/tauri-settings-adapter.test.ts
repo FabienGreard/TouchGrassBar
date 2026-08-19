@@ -15,7 +15,11 @@ describe("Tauri Settings adapter", () => {
     >();
     const bindings: TauriSettingsBindings = {
       invoke: vi.fn(async (command) =>
-        command === "reveal_recovery_key" ? fakeRecoveryKey : { command },
+        command === "reveal_recovery_key"
+          ? fakeRecoveryKey
+          : command === "recover_profile"
+            ? true
+            : { command },
       ),
       listen: vi.fn(async (event, receive) => {
         listeners.set(event, receive);
@@ -154,5 +158,14 @@ describe("Tauri Settings adapter", () => {
       fault: { code: "recovery-key-unavailable" },
       ok: false,
     });
+  });
+
+  test("preserves the native recovery cancellation result", async () => {
+    const adapter = createTauriSettingsAdapter({
+      invoke: vi.fn(async () => false),
+      listen: vi.fn(async () => () => undefined),
+    });
+
+    expect(await adapter.recoverProfile()).toEqual({ ok: true, value: false });
   });
 });

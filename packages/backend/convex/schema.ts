@@ -56,7 +56,9 @@ export default defineSchema({
     expectedDeviceId: v.id("devices"),
     expectedGeneration: v.number(),
     expiresAt: v.number(),
+    installationCredentialDigest: v.optional(v.string()),
     newDeviceId: v.optional(v.id("devices")),
+    replacementRecoveryKeyDigest: v.optional(v.string()),
     status: v.union(
       v.literal("prepared"),
       v.literal("committing"),

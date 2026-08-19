@@ -61,7 +61,13 @@ function createTauriBootstrapAdapter(
         "recover_profile",
         "profile-recovery-unavailable",
       );
-      return outcome.ok ? { ok: true, value: undefined } : outcome;
+      if (!outcome.ok || typeof outcome.value !== "boolean") {
+        return {
+          fault: { code: "profile-recovery-unavailable" },
+          ok: false,
+        };
+      }
+      return { ok: true, value: outcome.value };
     },
   };
 }

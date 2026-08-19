@@ -43,6 +43,7 @@ pub(crate) enum UsageSyncAttemptResult {
 /// Profile or network access.
 trait PendingUsageSnapshotState: Send + Sync {
     fn install_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str>;
+    fn replace_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str>;
 
     fn prepare(
         &self,
@@ -74,6 +75,11 @@ impl PendingUsageSnapshotState for NativePendingUsageSnapshotState {
     fn install_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str> {
         self.core
             .install_usage_sync_authority(activation.generation, activation.activated_at)
+    }
+
+    fn replace_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str> {
+        self.core
+            .replace_usage_sync_authority(activation.generation, activation.activated_at)
     }
 
     fn prepare(
@@ -206,6 +212,14 @@ impl PendingUsageSynchronization {
         activation: ActiveMacActivation,
     ) -> Result<(), &'static str> {
         self.inner.environment.state.install_authority(activation)
+    }
+
+    /// Replace local synchronization authority after a different Profile is recovered.
+    pub(crate) fn replace_authority(
+        &self,
+        activation: ActiveMacActivation,
+    ) -> Result<(), &'static str> {
+        self.inner.environment.state.replace_authority(activation)
     }
 
     /// Close admission and wait a bounded time for the active pass.

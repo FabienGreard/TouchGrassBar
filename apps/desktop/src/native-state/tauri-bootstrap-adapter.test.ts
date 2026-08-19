@@ -8,7 +8,9 @@ import {
 describe("Tauri bootstrap adapter", () => {
   test("uses the closed bootstrap commands and exact completion payload", async () => {
     const bindings: TauriBootstrapBindings = {
-      invoke: vi.fn(async (command) => ({ command })),
+      invoke: vi.fn(async (command) =>
+        command === "recover_profile" ? true : { command },
+      ),
     };
     const adapter = createTauriBootstrapAdapter(bindings);
 
@@ -58,5 +60,13 @@ describe("Tauri bootstrap adapter", () => {
       fault: { code: "surface-unavailable" },
       ok: false,
     });
+  });
+
+  test("preserves the native recovery cancellation result", async () => {
+    const adapter = createTauriBootstrapAdapter({
+      invoke: vi.fn(async () => false),
+    });
+
+    expect(await adapter.recoverProfile()).toEqual({ ok: true, value: false });
   });
 });

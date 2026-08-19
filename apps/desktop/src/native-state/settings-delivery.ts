@@ -25,7 +25,7 @@ type SettingsPortOutcome<Value> =
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
-  recoverProfile: () => Promise<SettingsPortOutcome<void>>;
+  recoverProfile: () => Promise<SettingsPortOutcome<boolean>>;
   revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
   selectSection: (section: SettingsSection) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
@@ -243,6 +243,7 @@ function createSettingsDelivery(port: SettingsPort) {
           publish({ ...current, phase: "degraded", recoveryFailed: true });
           return false;
         }
+        if (!recovered.value) return true;
         const state = await port.read();
         const accepted = state.ok && accept(state.value);
         if (!accepted) publish({ ...current, recoveryFailed: true });

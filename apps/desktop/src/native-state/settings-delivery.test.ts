@@ -46,7 +46,7 @@ function port(): SettingsPort & {
     read: vi.fn(async () => ({ ok: true as const, value: settingsState })),
     recoverProfile: vi.fn(async () => ({
       ok: true as const,
-      value: undefined,
+      value: true,
     })),
     revealRecoveryKey: vi.fn(async () => ({
       ok: true as const,
@@ -127,6 +127,23 @@ describe("Settings delivery", () => {
     expect(delivery.getSnapshot()).toMatchObject({
       phase: "degraded",
       recoveryFailed: true,
+    });
+  });
+
+  test("keeps Settings unchanged when the recovery sheet is canceled", async () => {
+    const native = port();
+    native.recoverProfile = vi.fn(async () => ({
+      ok: true as const,
+      value: false,
+    }));
+    const delivery = createSettingsDelivery(native);
+    await delivery.read();
+
+    expect(await delivery.recoverProfile()).toBe(true);
+    expect(native.read).toHaveBeenCalledOnce();
+    expect(delivery.getSnapshot()).toMatchObject({
+      phase: "ready",
+      recoveryFailed: false,
     });
   });
 
