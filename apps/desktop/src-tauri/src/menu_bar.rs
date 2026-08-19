@@ -1,6 +1,4 @@
-use crate::quota_headroom::{
-    HeadroomCompleteness, HeadroomFreshness, OverallQuotaHeadroom, RevisionedOverallQuotaHeadroom,
-};
+use crate::quota_headroom::{OverallQuotaHeadroom, RevisionedOverallQuotaHeadroom};
 
 const COMPACT_APP_BAR_MARK: &[u8] =
     include_bytes!("../../../../packages/ui/src/assets/brand/grass-glyph-white.png");
@@ -12,16 +10,12 @@ const METER_TOP: u32 = 264;
 const METER_WIDTH: u32 = 332;
 const METER_HEIGHT: u32 = 48;
 const TRACK_ALPHA: u8 = 96;
-const SEGMENT_BRIGHT_WIDTH: u32 = 12;
-const SEGMENT_STRIDE: u32 = 20;
-const NARROW_SEGMENT_BRIGHT_HALF_HEIGHT: u32 = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MenuBarVisibleState {
     MarkOnly,
     Meter {
         fill_width: u32,
-        segmented: bool,
         rounded_percent: u8,
     },
 }
@@ -75,9 +69,7 @@ impl From<RevisionedOverallQuotaHeadroom> for MenuBarPresentation {
 impl MenuBarVisibleState {
     pub(crate) fn from_headroom(headroom: OverallQuotaHeadroom) -> Self {
         let OverallQuotaHeadroom::Calculated {
-            remaining_percent,
-            freshness,
-            completeness,
+            remaining_percent, ..
         } = headroom
         else {
             return Self::MarkOnly;
@@ -85,8 +77,6 @@ impl MenuBarVisibleState {
         let remaining_percent = remaining_percent.clamp(0.0, 100.0);
         Self::Meter {
             fill_width: ((remaining_percent / 100.0) * f64::from(METER_WIDTH)).round() as u32,
-            segmented: freshness == HeadroomFreshness::Stale
-                || completeness == HeadroomCompleteness::Incomplete,
             rounded_percent: remaining_percent.round() as u8,
         }
     }
@@ -114,15 +104,10 @@ impl MenuBarVisibleState {
                 .copy_from_slice(&mark.rgba()[source_start..source_end]);
         }
 
-        if let Self::Meter {
-            fill_width,
-            segmented,
-            ..
-        } = self
-        {
+        if let Self::Meter { fill_width, .. } = self {
             for y in METER_TOP..METER_TOP + METER_HEIGHT {
                 for offset in 0..METER_WIDTH {
-                    let alpha = meter_alpha(offset, y - METER_TOP, *fill_width, *segmented);
+                    let alpha = meter_alpha(offset, y - METER_TOP, *fill_width);
                     let pixel = ((y * CANVAS_WIDTH + METER_LEFT + offset) * 4) as usize;
                     rgba[pixel..pixel + 4].copy_from_slice(&[255, 255, 255, alpha]);
                 }
@@ -175,7 +160,7 @@ pub(crate) fn apply_to_tray<R: tauri::Runtime>(
     .map_err(|_| "menu-bar item unavailable")?
 }
 
-fn meter_alpha(offset: u32, y_offset: u32, fill_width: u32, segmented: bool) -> u8 {
+fn meter_alpha(offset: u32, y_offset: u32, fill_width: u32) -> u8 {
     if !pill_contains_pixel(METER_WIDTH, METER_HEIGHT, offset, y_offset) {
         return 0;
     }
@@ -183,25 +168,7 @@ fn meter_alpha(offset: u32, y_offset: u32, fill_width: u32, segmented: bool) -> 
     if !pill_contains_pixel(fill_width, METER_HEIGHT, offset, y_offset) {
         return TRACK_ALPHA;
     }
-    if !segmented {
-        return u8::MAX;
-    }
-    if fill_width <= SEGMENT_BRIGHT_WIDTH {
-        let center = METER_HEIGHT / 2;
-        return if y_offset >= center - NARROW_SEGMENT_BRIGHT_HALF_HEIGHT
-            && y_offset < center + NARROW_SEGMENT_BRIGHT_HALF_HEIGHT
-        {
-            u8::MAX
-        } else {
-            TRACK_ALPHA
-        };
-    }
-    let distance_from_end = fill_width - offset - 1;
-    if distance_from_end % SEGMENT_STRIDE < SEGMENT_BRIGHT_WIDTH {
-        u8::MAX
-    } else {
-        TRACK_ALPHA
-    }
+    u8::MAX
 }
 
 fn pill_contains_pixel(width: u32, height: u32, x: u32, y: u32) -> bool {
@@ -243,7 +210,6 @@ enum PhysicalFixtureMode {
     CurrentZero,
     CurrentThirtyFour,
     CurrentOneHundred,
-    SegmentedThirtyFour,
     Sequence,
 }
 
@@ -284,7 +250,6 @@ impl PhysicalMenuBarFixture {
             "current-0" => PhysicalFixtureMode::CurrentZero,
             "current-34" => PhysicalFixtureMode::CurrentThirtyFour,
             "current-100" => PhysicalFixtureMode::CurrentOneHundred,
-            "segmented-34" => PhysicalFixtureMode::SegmentedThirtyFour,
             "sequence" => PhysicalFixtureMode::Sequence,
             _ => return None,
         };
@@ -297,26 +262,9 @@ impl PhysicalMenuBarFixture {
     pub(crate) fn visible(&self) -> MenuBarVisibleState {
         match self.mode {
             PhysicalFixtureMode::Unavailable => MenuBarVisibleState::MarkOnly,
-            PhysicalFixtureMode::CurrentZero => physical_meter(
-                0.0,
-                HeadroomFreshness::Current,
-                HeadroomCompleteness::Complete,
-            ),
-            PhysicalFixtureMode::CurrentThirtyFour => physical_meter(
-                34.0,
-                HeadroomFreshness::Current,
-                HeadroomCompleteness::Complete,
-            ),
-            PhysicalFixtureMode::CurrentOneHundred => physical_meter(
-                100.0,
-                HeadroomFreshness::Current,
-                HeadroomCompleteness::Complete,
-            ),
-            PhysicalFixtureMode::SegmentedThirtyFour => physical_meter(
-                34.0,
-                HeadroomFreshness::Stale,
-                HeadroomCompleteness::Incomplete,
-            ),
+            PhysicalFixtureMode::CurrentZero => physical_meter(0.0),
+            PhysicalFixtureMode::CurrentThirtyFour => physical_meter(34.0),
+            PhysicalFixtureMode::CurrentOneHundred => physical_meter(100.0),
             PhysicalFixtureMode::Sequence => {
                 let index = self
                     .sequence_index
@@ -349,40 +297,20 @@ const PHYSICAL_SEQUENCE_LENGTH: usize = 6;
 fn sequence_state(index: usize) -> MenuBarVisibleState {
     match index % PHYSICAL_SEQUENCE_LENGTH {
         0 | 5 => MenuBarVisibleState::MarkOnly,
-        1 => physical_meter(
-            8.0,
-            HeadroomFreshness::Current,
-            HeadroomCompleteness::Incomplete,
-        ),
-        2 => physical_meter(
-            34.0,
-            HeadroomFreshness::Current,
-            HeadroomCompleteness::Complete,
-        ),
-        3 => physical_meter(
-            34.0,
-            HeadroomFreshness::Stale,
-            HeadroomCompleteness::Complete,
-        ),
-        4 => physical_meter(
-            0.0,
-            HeadroomFreshness::Current,
-            HeadroomCompleteness::Complete,
-        ),
+        1 => physical_meter(8.0),
+        2 => physical_meter(34.0),
+        3 => physical_meter(67.0),
+        4 => physical_meter(0.0),
         _ => unreachable!(),
     }
 }
 
 #[cfg(debug_assertions)]
-fn physical_meter(
-    remaining_percent: f64,
-    freshness: HeadroomFreshness,
-    completeness: HeadroomCompleteness,
-) -> MenuBarVisibleState {
+fn physical_meter(remaining_percent: f64) -> MenuBarVisibleState {
     MenuBarVisibleState::from_headroom(OverallQuotaHeadroom::Calculated {
         remaining_percent,
-        freshness,
-        completeness,
+        freshness: crate::quota_headroom::HeadroomFreshness::Current,
+        completeness: crate::quota_headroom::HeadroomCompleteness::Complete,
     })
 }
 
@@ -529,7 +457,7 @@ mod tests {
     }
 
     #[test]
-    fn current_complete_is_continuous_and_stale_or_incomplete_is_segmented() {
+    fn freshness_and_completeness_do_not_change_the_continuous_meter() {
         let current = MenuBarVisibleState::from_headroom(calculated(
             50.0,
             HeadroomFreshness::Current,
@@ -546,101 +474,47 @@ mod tests {
             HeadroomCompleteness::Incomplete,
         ));
 
-        let MenuBarVisibleState::Meter {
-            fill_width: current_width,
-            segmented: false,
-            ..
-        } = current
-        else {
-            panic!("current meter must be continuous");
-        };
-        let MenuBarVisibleState::Meter {
-            fill_width: stale_width,
-            segmented: true,
-            ..
-        } = stale
-        else {
-            panic!("stale meter must be segmented");
-        };
-        let MenuBarVisibleState::Meter {
-            fill_width: incomplete_width,
-            segmented: true,
-            ..
-        } = incomplete
-        else {
-            panic!("incomplete meter must be segmented");
-        };
-        assert_eq!(current_width, stale_width);
-        assert_eq!(current_width, incomplete_width);
+        assert_eq!(current, stale);
+        assert_eq!(current, incomplete);
     }
 
     #[test]
-    fn segmented_texture_has_bright_shape_and_non_color_gaps_with_a_truthful_end() {
-        let state = MenuBarVisibleState::from_headroom(calculated(
-            50.0,
-            HeadroomFreshness::Stale,
-            HeadroomCompleteness::Incomplete,
-        ));
-        let rendered = state.rendered_icon().unwrap();
-        let fill_end = METER_LEFT + METER_WIDTH / 2;
-        let row = (METER_LEFT..fill_end)
-            .map(|x| alpha(&rendered, x, METER_TOP + METER_HEIGHT / 2))
-            .collect::<Vec<_>>();
-
-        assert!(row.contains(&u8::MAX));
-        assert!(row.contains(&TRACK_ALPHA));
-        let middle_y = METER_TOP + METER_HEIGHT / 2;
-        assert_eq!(alpha(&rendered, fill_end - 1, middle_y), u8::MAX);
-        assert_eq!(alpha(&rendered, fill_end, middle_y), TRACK_ALPHA);
-    }
-
-    #[test]
-    fn segmented_eight_percent_keeps_a_visible_gap_and_truthful_end() {
-        let state = MenuBarVisibleState::from_headroom(calculated(
-            8.0,
-            HeadroomFreshness::Current,
-            HeadroomCompleteness::Incomplete,
-        ));
-        let rendered = state.rendered_icon().unwrap();
-        let fill_width = ((8.0 / 100.0) * f64::from(METER_WIDTH)).round() as u32;
-        let row = (METER_LEFT..METER_LEFT + fill_width)
-            .map(|x| alpha(&rendered, x, METER_TOP + METER_HEIGHT / 2))
-            .collect::<Vec<_>>();
-
-        assert!(row.contains(&u8::MAX));
-        assert!(row.contains(&TRACK_ALPHA));
-        let middle_y = METER_TOP + METER_HEIGHT / 2;
-        assert_eq!(
-            alpha(&rendered, METER_LEFT + fill_width - 1, middle_y),
-            u8::MAX
-        );
-    }
-
-    #[test]
-    fn every_narrow_nonzero_segmented_fill_has_a_geometric_gap() {
-        for remaining_percent in [0.2, 1.0, 4.0] {
-            let state = MenuBarVisibleState::from_headroom(calculated(
-                remaining_percent,
+    fn every_nonzero_fill_is_continuous_for_all_data_quality_states() {
+        for (remaining_percent, freshness, completeness) in [
+            (
+                0.2,
+                HeadroomFreshness::Current,
+                HeadroomCompleteness::Complete,
+            ),
+            (
+                1.0,
                 HeadroomFreshness::Stale,
                 HeadroomCompleteness::Complete,
+            ),
+            (
+                4.0,
+                HeadroomFreshness::Current,
+                HeadroomCompleteness::Incomplete,
+            ),
+            (
+                50.0,
+                HeadroomFreshness::Stale,
+                HeadroomCompleteness::Incomplete,
+            ),
+        ] {
+            let state = MenuBarVisibleState::from_headroom(calculated(
+                remaining_percent,
+                freshness,
+                completeness,
             ));
             let rendered = state.rendered_icon().unwrap();
             let fill_width = ((remaining_percent / 100.0) * f64::from(METER_WIDTH)).round() as u32;
             assert!(fill_width > 0);
-            let fill = (METER_TOP..METER_TOP + METER_HEIGHT)
-                .flat_map(|y| {
-                    (METER_LEFT..METER_LEFT + fill_width)
-                        .map(|x| alpha(&rendered, x, y))
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-
-            assert!(fill.contains(&u8::MAX));
-            assert!(fill.contains(&TRACK_ALPHA));
             let middle_y = METER_TOP + METER_HEIGHT / 2;
-            assert_eq!(
-                alpha(&rendered, METER_LEFT + fill_width - 1, middle_y),
-                u8::MAX
+            assert!(
+                (METER_LEFT..METER_LEFT + fill_width)
+                    .all(|x| alpha(&rendered, x, middle_y) == u8::MAX),
+                "the filled center row must not contain gaps"
             );
         }
     }
@@ -723,10 +597,27 @@ mod tests {
                 .unwrap()
         );
 
-        let changed = MenuBarPresentation {
+        let quality_only_change = MenuBarPresentation {
             revision: 3,
             visible: MenuBarVisibleState::from_headroom(calculated(
                 34.0,
+                HeadroomFreshness::Stale,
+                HeadroomCompleteness::Complete,
+            )),
+        };
+        assert!(
+            !delivery
+                .accept(quality_only_change, |_| {
+                    installs += 1;
+                    Ok::<(), ()>(())
+                })
+                .unwrap()
+        );
+
+        let changed = MenuBarPresentation {
+            revision: 4,
+            visible: MenuBarVisibleState::from_headroom(calculated(
+                35.0,
                 HeadroomFreshness::Stale,
                 HeadroomCompleteness::Complete,
             )),
@@ -756,7 +647,6 @@ mod tests {
             "current-0",
             "current-34",
             "current-100",
-            "segmented-34",
             "sequence",
         ] {
             assert!(PhysicalMenuBarFixture::from_value(value).is_some());
@@ -773,7 +663,7 @@ mod tests {
                 "TouchGrassBar",
                 "TouchGrassBar — 8%",
                 "TouchGrassBar — 34%",
-                "TouchGrassBar — 34%",
+                "TouchGrassBar — 67%",
                 "TouchGrassBar — 0%",
                 "TouchGrassBar",
             ]
