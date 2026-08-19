@@ -1,5 +1,5 @@
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle, Input } from "@touchgrass/ui";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   addTokenmaxxerHelpText,
@@ -32,9 +32,12 @@ function AddTokenmaxxerDialog({
   const normalizedId = normalizeTouchGrassId(touchGrassId);
   const valid = validTouchGrassId(normalizedId);
 
+  useEffect(() => {
+    if (!open) setTouchGrassId(defaultTouchGrassId);
+  }, [defaultTouchGrassId, open]);
+
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
-      setTouchGrassId(defaultTouchGrassId);
       onInputChange();
     }
     onOpenChange(nextOpen);

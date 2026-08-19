@@ -27,7 +27,7 @@ const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const MAX_ROWS: usize = 100;
 const MAX_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_JWT_BYTES: usize = 8 * 1_024;
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+const CONVEX_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -158,6 +158,17 @@ enum TransportError {
     Unavailable,
 }
 
+enum ConvexCall {
+    Mutation {
+        arguments: BTreeMap<String, Value>,
+        function_name: &'static str,
+    },
+    Query {
+        arguments: BTreeMap<String, Value>,
+        function_name: &'static str,
+    },
+}
+
 trait DoomerboardTransport: Send + Sync {
     fn add(
         &self,
@@ -222,6 +233,57 @@ impl HttpDoomerboardTransport {
         }
         Ok(Zeroizing::new(response.token))
     }
+
+    fn authenticated_call(
+        &self,
+        session: &Secret,
+        call: ConvexCall,
+    ) -> Result<FunctionResult, TransportError> {
+        let convex_url = self
+            .convex_url
+            .ok_or(TransportError::Unavailable)?
+            .to_owned();
+        let jwt = self.fetch_convex_token(session)?;
+        tokio::runtime::Runtime::new()
+            .map_err(|_| TransportError::Unavailable)?
+            .block_on(async move {
+                tokio::time::timeout(CONVEX_CALL_TIMEOUT, async move {
+                    let mut client = ConvexClient::new(&convex_url)
+                        .await
+                        .map_err(|_| TransportError::Unavailable)?;
+                    client.set_auth(Some(jwt.as_str().to_owned())).await;
+                    let result = match call {
+                        ConvexCall::Mutation {
+                            arguments,
+                            function_name,
+                        } => client.mutation(function_name, arguments).await,
+                        ConvexCall::Query {
+                            arguments,
+                            function_name,
+                        } => client.query(function_name, arguments).await,
+                    };
+                    client.set_auth(None).await;
+                    result.map_err(|_| TransportError::Unavailable)
+                })
+                .await
+                .map_err(|_| TransportError::Unavailable)?
+            })
+    }
+}
+
+fn parse_function_result<T>(
+    result: FunctionResult,
+    parse_value: impl FnOnce(Value) -> Result<T, TransportError>,
+) -> Result<T, TransportError> {
+    match result {
+        FunctionResult::Value(value) => parse_value(value),
+        FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
+            Err(TransportError::AuthorityRejected)
+        }
+        FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
+            Err(TransportError::Unavailable)
+        }
+    }
 }
 
 impl DoomerboardTransport for HttpDoomerboardTransport {
@@ -230,43 +292,16 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
         session: &Secret,
         touch_grass_id: &str,
     ) -> Result<AddTokenmaxxerStatusV1, TransportError> {
-        let convex_url = self
-            .convex_url
-            .ok_or(TransportError::Unavailable)?
-            .to_owned();
-        let jwt = self.fetch_convex_token(session)?;
-        let touch_grass_id = touch_grass_id.to_owned();
-        let result = tokio::runtime::Runtime::new()
-            .map_err(|_| TransportError::Unavailable)?
-            .block_on(async move {
-                tokio::time::timeout(QUERY_TIMEOUT, async move {
-                    let mut client = ConvexClient::new(&convex_url)
-                        .await
-                        .map_err(|_| TransportError::Unavailable)?;
-                    client.set_auth(Some(jwt.as_str().to_owned())).await;
-                    let result = client
-                        .mutation(
-                            ADD_TOKENMAXXER_MUTATION,
-                            add_tokenmaxxer_arguments(&touch_grass_id),
-                        )
-                        .await;
-                    client.set_auth(None).await;
-                    result.map_err(|_| TransportError::Unavailable)
-                })
-                .await
-                .map_err(|_| TransportError::Unavailable)?
-            })?;
-        match result {
-            FunctionResult::Value(value) => {
-                parse_add_tokenmaxxer_status(value).ok_or(TransportError::Unavailable)
-            }
-            FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
-                Err(TransportError::AuthorityRejected)
-            }
-            FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-                Err(TransportError::Unavailable)
-            }
-        }
+        let result = self.authenticated_call(
+            session,
+            ConvexCall::Mutation {
+                arguments: add_tokenmaxxer_arguments(touch_grass_id),
+                function_name: ADD_TOKENMAXXER_MUTATION,
+            },
+        )?;
+        parse_function_result(result, |value| {
+            parse_add_tokenmaxxer_status(value).ok_or(TransportError::Unavailable)
+        })
     }
 
     fn read(
@@ -274,40 +309,14 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
         session: &Secret,
         query: DoomerboardQueryV1,
     ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
-        let convex_url = self
-            .convex_url
-            .ok_or(TransportError::Unavailable)?
-            .to_owned();
-        let jwt = self.fetch_convex_token(session)?;
-        let result = tokio::runtime::Runtime::new()
-            .map_err(|_| TransportError::Unavailable)?
-            .block_on(async move {
-                tokio::time::timeout(QUERY_TIMEOUT, async move {
-                    let mut client = ConvexClient::new(&convex_url)
-                        .await
-                        .map_err(|_| TransportError::Unavailable)?;
-                    client.set_auth(Some(jwt.as_str().to_owned())).await;
-                    let result = client
-                        .query(
-                            doomerboard_query_name(query),
-                            doomerboard_query_arguments(query, OffsetDateTime::now_utc()),
-                        )
-                        .await;
-                    client.set_auth(None).await;
-                    result.map_err(|_| TransportError::Unavailable)
-                })
-                .await
-                .map_err(|_| TransportError::Unavailable)?
-            })?;
-        match result {
-            FunctionResult::Value(value) => parse_selected_rows(query, value),
-            FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
-                Err(TransportError::AuthorityRejected)
-            }
-            FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-                Err(TransportError::Unavailable)
-            }
-        }
+        let result = self.authenticated_call(
+            session,
+            ConvexCall::Query {
+                arguments: doomerboard_query_arguments(query, OffsetDateTime::now_utc()),
+                function_name: doomerboard_query_name(query),
+            },
+        )?;
+        parse_function_result(result, |value| parse_selected_rows(query, value))
     }
 }
 
@@ -370,38 +379,42 @@ impl DoomerboardRuntime {
         }
     }
 
-    pub(crate) fn read(&self, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
-        if self.online_gate.is_paused() || !query.is_valid() {
-            return DoomerboardViewV1::unavailable();
-        }
-        let session = match self
+    fn with_active_session<T>(
+        &self,
+        operation: impl Fn(&Secret) -> Result<T, TransportError>,
+    ) -> Result<T, TransportError> {
+        let session = self
             .coordinator
             .lock()
             .ok()
             .and_then(|coordinator| coordinator.active_sync_credentials().ok())
             .flatten()
-        {
-            Some(credentials) => credentials.session,
-            None => return DoomerboardViewV1::unavailable(),
-        };
-        match self.transport.read(&session, query) {
-            Ok(rows) => DoomerboardViewV1::ready(rows),
+            .map(|credentials| credentials.session)
+            .ok_or(TransportError::Unavailable)?;
+        match operation(&session) {
             Err(TransportError::AuthorityRejected) => {
                 let refreshed = self
                     .coordinator
                     .lock()
                     .ok()
                     .and_then(|coordinator| coordinator.refresh_active_sync_session(&session).ok())
-                    .flatten();
-                match refreshed
-                    .as_ref()
-                    .and_then(|fresh| self.transport.read(fresh, query).ok())
-                {
-                    Some(rows) => DoomerboardViewV1::ready(rows),
-                    None => DoomerboardViewV1::unavailable(),
-                }
+                    .flatten()
+                    .ok_or(TransportError::Unavailable)?;
+                operation(&refreshed)
             }
-            Err(TransportError::Unavailable) => DoomerboardViewV1::unavailable(),
+            result => result,
+        }
+    }
+
+    pub(crate) fn read(&self, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
+        if self.online_gate.is_paused() || !query.is_valid() {
+            return DoomerboardViewV1::unavailable();
+        }
+        match self.with_active_session(|session| self.transport.read(session, query)) {
+            Ok(rows) => DoomerboardViewV1::ready(rows),
+            Err(TransportError::AuthorityRejected | TransportError::Unavailable) => {
+                DoomerboardViewV1::unavailable()
+            }
         }
     }
 
@@ -412,35 +425,13 @@ impl DoomerboardRuntime {
         if self.online_gate.is_paused() {
             return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable);
         }
-        let session = match self
-            .coordinator
-            .lock()
-            .ok()
-            .and_then(|coordinator| coordinator.active_sync_credentials().ok())
-            .flatten()
-        {
-            Some(credentials) => credentials.session,
-            None => return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable),
-        };
-        let status = match self.transport.add(&session, touch_grass_id) {
-            Ok(status) => status,
-            Err(TransportError::AuthorityRejected) => {
-                let refreshed = self
-                    .coordinator
-                    .lock()
-                    .ok()
-                    .and_then(|coordinator| coordinator.refresh_active_sync_session().ok())
-                    .flatten();
-                match refreshed
-                    .as_ref()
-                    .and_then(|fresh| self.transport.add(fresh, touch_grass_id).ok())
-                {
-                    Some(status) => status,
-                    None => AddTokenmaxxerStatusV1::Unavailable,
+        let status =
+            match self.with_active_session(|session| self.transport.add(session, touch_grass_id)) {
+                Ok(status) => status,
+                Err(TransportError::AuthorityRejected | TransportError::Unavailable) => {
+                    AddTokenmaxxerStatusV1::Unavailable
                 }
-            }
-            Err(TransportError::Unavailable) => AddTokenmaxxerStatusV1::Unavailable,
-        };
+            };
         AddTokenmaxxerOutcomeV1::new(status)
     }
 }

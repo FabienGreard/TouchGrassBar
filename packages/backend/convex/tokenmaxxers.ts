@@ -4,6 +4,7 @@ import { mutation, query } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { rejectAuthority } from "./model/authority";
 import { claimActiveDevice, ensureTokenmaxxer, tokenmaxxerForAuthUser } from "./model/profile";
+import { validTouchGrassId } from "./model/touchGrassId";
 import { MAX_SAVED_TOKENMAXXERS } from "./model/values";
 
 const publicTokenmaxxer = v.object({
@@ -24,7 +25,6 @@ const addTokenmaxxerOutcome = v.object({
     v.literal("self"),
   ),
 });
-const TOUCH_GRASS_ID_PATTERN = /^TG-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/;
 
 function cleanDisplayName(displayName: string) {
   const cleaned = displayName.trim();
@@ -35,7 +35,7 @@ function cleanDisplayName(displayName: string) {
 }
 
 function touchGrassIdForAuthUser(user: { username?: unknown }) {
-  if (typeof user.username !== "string" || !TOUCH_GRASS_ID_PATTERN.test(user.username)) {
+  if (typeof user.username !== "string" || !validTouchGrassId(user.username)) {
     return rejectAuthority();
   }
   return user.username;
@@ -126,7 +126,7 @@ export const addToMyTokenmaxxers = mutation({
     if (!owner) {
       return rejectAuthority();
     }
-    if (!TOUCH_GRASS_ID_PATTERN.test(args.touchGrassId)) {
+    if (!validTouchGrassId(args.touchGrassId)) {
       return { status: "invalid" as const };
     }
     const added = await ctx.db
