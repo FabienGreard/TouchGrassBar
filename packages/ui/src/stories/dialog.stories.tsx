@@ -41,9 +41,7 @@ function DialogExample({
         <Button>Open dialog</Button>
       </DialogTrigger>
       <DialogContent container={container} position={position}>
-        <DialogTitle className="m-0 text-[14px] font-bold">
-          Dialog title
-        </DialogTitle>
+        <DialogTitle className="m-0 text-[14px] font-bold">Dialog title</DialogTitle>
         <DialogDescription className="mt-1 mb-0 text-[10px] leading-4 text-pearl-muted">
           Use this space to explain the action and its consequences.
         </DialogDescription>

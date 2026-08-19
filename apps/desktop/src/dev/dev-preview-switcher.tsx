@@ -1,9 +1,5 @@
 import type { SyncStatus } from "@touchgrass/contracts";
-import {
-  ArrowExpand01Icon,
-  ArrowShrink02Icon,
-  GripVerticalIcon,
-} from "@touchgrass/ui";
+import { ArrowExpand01Icon, ArrowShrink02Icon, GripVerticalIcon } from "@touchgrass/ui";
 import { cn } from "@touchgrass/ui/lib/utils";
 import {
   useEffect,
@@ -14,10 +10,7 @@ import {
   type ReactNode,
 } from "react";
 
-import {
-  syncPreviewStatuses,
-  type BrowserFixtureName,
-} from "@/dev/preview-scenario";
+import { syncPreviewStatuses, type BrowserFixtureName } from "@/dev/preview-scenario";
 import {
   codingProviderAccessStates,
   type CodingProviderAccessState,
@@ -62,9 +55,7 @@ function readPreviewPanelState(): PreviewPanelState {
     const position = stored.position;
     if (
       position !== null &&
-      (!position ||
-        !Number.isFinite(position.left) ||
-        !Number.isFinite(position.top))
+      (!position || !Number.isFinite(position.left) || !Number.isFinite(position.top))
     ) {
       return defaultPreviewPanelState;
     }
@@ -74,12 +65,7 @@ function readPreviewPanelState(): PreviewPanelState {
   }
 }
 
-function clampPreviewPanelPosition(
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-) {
+function clampPreviewPanelPosition(left: number, top: number, width: number, height: number) {
   const edge = 8;
   const maximumLeft = Math.max(edge, window.innerWidth - width - edge);
   const maximumTop = Math.max(edge, window.innerHeight - height - edge);
@@ -101,8 +87,7 @@ function FixtureSwitcher({
   style,
   ...props
 }: FixtureSwitcherProps) {
-  const [panelState, setPanelState] =
-    useState<PreviewPanelState>(readPreviewPanelState);
+  const [panelState, setPanelState] = useState<PreviewPanelState>(readPreviewPanelState);
   const panelRef = useRef<HTMLElement>(null);
   const dragRef = useRef<{
     height: number;
@@ -124,10 +109,7 @@ function FixtureSwitcher({
           bounds.width,
           bounds.height,
         );
-        if (
-          position.left === current.position.left &&
-          position.top === current.position.top
-        ) {
+        if (position.left === current.position.left && position.top === current.position.top) {
           return current;
         }
         return { ...current, position };
@@ -144,10 +126,7 @@ function FixtureSwitcher({
 
   useEffect(() => {
     try {
-      window.sessionStorage.setItem(
-        previewPanelStateStorageKey,
-        JSON.stringify(panelState),
-      );
+      window.sessionStorage.setItem(previewPanelStateStorageKey, JSON.stringify(panelState));
     } catch {
       // The development control remains usable when storage is unavailable.
     }
@@ -199,7 +178,7 @@ function FixtureSwitcher({
     <aside
       aria-label="Development preview"
       className={cn(
-        "backdrop-menu-glass fixed right-3 bottom-3 z-50 flex flex-col items-stretch rounded-[10px] border border-pearl-border bg-menu-glass p-1.5 text-pearl-ink shadow-menu-glass",
+        "fixed right-3 bottom-3 z-50 flex flex-col items-stretch rounded-[10px] border border-pearl-border bg-menu-glass p-1.5 text-pearl-ink shadow-menu-glass backdrop-menu-glass",
         panelState.mode === "expanded" ? "min-w-[306px] gap-1.5" : "w-[142px]",
         className,
       )}
@@ -212,7 +191,7 @@ function FixtureSwitcher({
       <div className="flex items-center gap-1">
         <button
           aria-label="Drag development preview"
-          className="flex min-w-0 flex-1 cursor-grab touch-none items-center gap-1 border-0 bg-transparent px-2 py-1 text-left font-mono text-[8px] font-semibold tracking-[0.08em] text-pearl-muted uppercase outline-none active:cursor-grabbing disabled:cursor-default focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="flex min-w-0 flex-1 cursor-grab touch-none items-center gap-1 border-0 bg-transparent px-2 py-1 text-left font-mono text-[8px] font-semibold tracking-[0.08em] text-pearl-muted uppercase outline-none focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing disabled:cursor-default"
           disabled={panelState.mode === "minimized"}
           onPointerCancel={stopDragging}
           onPointerDown={startDragging}
@@ -274,18 +253,13 @@ function PreviewControlRow({
 }: ComponentProps<"div"> & { label: string }) {
   return (
     <div
-      className={cn(
-        "grid grid-cols-[48px_minmax(0,1fr)] items-center gap-2",
-        className,
-      )}
+      className={cn("grid grid-cols-[48px_minmax(0,1fr)] items-center gap-2", className)}
       {...props}
     >
       <small className="px-1 text-[8px] font-semibold tracking-[0.04em] text-pearl-muted uppercase">
         {label}
       </small>
-      <div className="flex min-w-0 flex-wrap items-center justify-end gap-1">
-        {children}
-      </div>
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-1">{children}</div>
     </div>
   );
 }
@@ -303,14 +277,9 @@ function FixtureSwitcherOption({
   fixture,
   syncStatus,
 }: FixtureSwitcherOptionProps) {
-  const syncQuery = syncStatus
-    ? `&syncStatus=${encodeURIComponent(syncStatus)}`
-    : "";
+  const syncQuery = syncStatus ? `&syncStatus=${encodeURIComponent(syncStatus)}` : "";
   return (
-    <PreviewSwitcherOption
-      active={active}
-      href={`?fixture=${fixture}${syncQuery}`}
-    >
+    <PreviewSwitcherOption active={active} href={`?fixture=${fixture}${syncQuery}`}>
       {children}
     </PreviewSwitcherOption>
   );
@@ -322,18 +291,13 @@ type PreviewSwitcherOptionProps = {
   href: string;
 };
 
-function PreviewSwitcherOption({
-  active,
-  children,
-  href,
-}: PreviewSwitcherOptionProps) {
+function PreviewSwitcherOption({ active, children, href }: PreviewSwitcherOptionProps) {
   return (
     <a
       aria-current={active ? "page" : undefined}
       className={cn(
-        "rounded-[7px] px-2 py-1 text-[10px] font-semibold text-pearl-muted outline-none transition-[background-color,color,box-shadow] hover:bg-pearl-ink/5 hover:text-pearl-ink focus-visible:ring-3 focus-visible:ring-ring/50",
-        active &&
-          "bg-action text-accent-foreground shadow-action hover:text-accent-foreground",
+        "rounded-[7px] px-2 py-1 text-[10px] font-semibold text-pearl-muted transition-[background-color,color,box-shadow] outline-none hover:bg-pearl-ink/5 hover:text-pearl-ink focus-visible:ring-3 focus-visible:ring-ring/50",
+        active && "bg-action text-accent-foreground shadow-action hover:text-accent-foreground",
       )}
       href={href}
     >
@@ -357,10 +321,7 @@ function DevFixtureSwitcher({
       data-dev-only="preview-switcher"
       instanceLabel={devInstance?.label}
     >
-      <FixtureOptions
-        activeFixture={activeFixture}
-        activeSyncStatus={activeSyncStatus}
-      />
+      <FixtureOptions activeFixture={activeFixture} activeSyncStatus={activeSyncStatus} />
     </FixtureSwitcher>
   );
 }
@@ -442,9 +403,7 @@ function DevPreviewSwitcher({
       )}`
     : "";
   const onboardingQuery =
-    onboardingCodexPreviewState &&
-    onboardingProviderPreviewState &&
-    onboardingStep
+    onboardingCodexPreviewState && onboardingProviderPreviewState && onboardingStep
       ? `&onboardingStep=${encodeURIComponent(onboardingStep)}&codexState=${encodeURIComponent(onboardingCodexPreviewState)}&providerState=${encodeURIComponent(onboardingProviderPreviewState)}`
       : "";
   const onboardingStateHref = ({
@@ -459,10 +418,7 @@ function DevPreviewSwitcher({
     `?window=onboarding&fixture=${fixture}&onboardingStep=${encodeURIComponent(step)}&codexState=${encodeURIComponent(codexState)}&providerState=${encodeURIComponent(providerState)}&syncStatus=${syncStatus}`;
 
   return (
-    <FixtureSwitcher
-      data-dev-only="preview-switcher"
-      instanceLabel={devInstance?.label}
-    >
+    <FixtureSwitcher data-dev-only="preview-switcher" instanceLabel={devInstance?.label}>
       <PreviewControlRow aria-label="Native surfaces" label="Surface">
         <PreviewSwitcherOption
           active={activeSurface === "panel"}
@@ -485,10 +441,7 @@ function DevPreviewSwitcher({
       </PreviewControlRow>
       {activeSurface === "panel" ? (
         <div className="border-t border-pearl-border/70 pt-1.5">
-          <FixtureOptions
-            activeFixture={activeFixture}
-            activeSyncStatus={activeSyncStatus}
-          />
+          <FixtureOptions activeFixture={activeFixture} activeSyncStatus={activeSyncStatus} />
           <PreviewControlRow aria-label="Sync preview states" label="Sync">
             {syncPreviewStatuses.map((status) => (
               <PreviewSwitcherOption
@@ -523,17 +476,13 @@ function DevPreviewSwitcher({
         </PreviewControlRow>
       ) : null}
       {activeSurface === "settings" && settingsProviderPreviewState ? (
-        <PreviewControlRow
-          aria-label="Claude provider preview states"
-          label="Claude"
-        >
+        <PreviewControlRow aria-label="Claude provider preview states" label="Claude">
           {settingsProviderPreviewStates.map((state) => (
             <PreviewSwitcherOption
               active={
                 state.key === "excluded"
                   ? !settingsProviderEnabled
-                  : settingsProviderEnabled &&
-                    settingsProviderPreviewState === state.key
+                  : settingsProviderEnabled && settingsProviderPreviewState === state.key
               }
               href={`?window=settings&fixture=${fixture}&providerState=${encodeURIComponent(state.key)}&syncStatus=${syncStatus}#settings-providers`}
               key={state.key}
@@ -565,10 +514,7 @@ function DevPreviewSwitcher({
           </PreviewControlRow>
           {onboardingStep === "providers" ? (
             <>
-              <PreviewControlRow
-                aria-label="Codex onboarding states"
-                label="Codex"
-              >
+              <PreviewControlRow aria-label="Codex onboarding states" label="Codex">
                 {providerPreviewStates.map((state) => (
                   <PreviewSwitcherOption
                     active={onboardingCodexPreviewState === state.key}
@@ -579,10 +525,7 @@ function DevPreviewSwitcher({
                   </PreviewSwitcherOption>
                 ))}
               </PreviewControlRow>
-              <PreviewControlRow
-                aria-label="Claude onboarding states"
-                label="Claude"
-              >
+              <PreviewControlRow aria-label="Claude onboarding states" label="Claude">
                 {providerPreviewStates.map((state) => (
                   <PreviewSwitcherOption
                     active={onboardingProviderPreviewState === state.key}
@@ -601,10 +544,5 @@ function DevPreviewSwitcher({
   );
 }
 
-export {
-  DevFixtureSwitcher,
-  DevPreviewSwitcher,
-  FixtureSwitcher,
-  FixtureSwitcherOption,
-};
+export { DevFixtureSwitcher, DevPreviewSwitcher, FixtureSwitcher, FixtureSwitcherOption };
 export type { PreviewSurface };

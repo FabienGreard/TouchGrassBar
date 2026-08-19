@@ -23,11 +23,7 @@ describe("panel Add Tokenmaxxer requests", () => {
     });
 
     pending = true;
-    const unsubscribe = await subscribeToPanelAddTokenmaxxer(
-      receive,
-      listen,
-      takeRequest,
-    );
+    const unsubscribe = await subscribeToPanelAddTokenmaxxer(receive, listen, takeRequest);
     expect(receive).toHaveBeenCalledOnce();
 
     pending = true;
@@ -40,11 +36,7 @@ describe("panel Add Tokenmaxxer requests", () => {
     const failedListen = vi.fn(async () => {
       throw new Error("listener unavailable");
     });
-    const stopFallback = await subscribeToPanelAddTokenmaxxer(
-      receive,
-      failedListen,
-      takeRequest,
-    );
+    const stopFallback = await subscribeToPanelAddTokenmaxxer(receive, failedListen, takeRequest);
     pending = true;
     await vi.advanceTimersByTimeAsync(250);
 

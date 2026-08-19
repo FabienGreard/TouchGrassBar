@@ -30,23 +30,16 @@ const databaseFixtureManifestPath = resolve(
   "manifest.json",
 );
 const governance = JSON.parse(
-  readFileSync(
-    resolve(scriptDirectory, "..", ".github", "release-governance.json"),
-    "utf8",
-  ),
+  readFileSync(resolve(scriptDirectory, "..", ".github", "release-governance.json"), "utf8"),
 ) as {
   environments: {
     "macos-release": { secrets: string[]; variables: string[] };
   };
 };
 const releaseSecrets = governance.environments["macos-release"].secrets;
-const releaseEnvironmentVariables =
-  governance.environments["macos-release"].variables;
+const releaseEnvironmentVariables = governance.environments["macos-release"].variables;
 
-const publicConfigurationNames = [
-  "TAURI_UPDATER_ENDPOINT",
-  "TAURI_UPDATER_PUBLIC_KEY",
-] as const;
+const publicConfigurationNames = ["TAURI_UPDATER_ENDPOINT", "TAURI_UPDATER_PUBLIC_KEY"] as const;
 
 type ProtectedConfigurationName =
   | (typeof releaseSecrets)[number]
@@ -120,8 +113,7 @@ function safeDatabaseFixturePath(tag: string, database: string) {
     !database.includes("\\") &&
     /^[A-Za-z0-9._/-]+$/u.test(database) &&
     components.every(
-      (component) =>
-        component.length > 0 && component !== "." && component !== "..",
+      (component) => component.length > 0 && component !== "." && component !== "..",
     ) &&
     components[0] === tag &&
     database.endsWith(".sqlite3")
@@ -145,15 +137,13 @@ function parseDatabaseFixtureManifest(input: unknown, candidateTag: string) {
   const tags = new Set<string>();
   const databases = new Set<string>();
   const entries = fixtures.map((fixture) => {
-    if (
-      typeof fixture !== "object" ||
-      fixture === null ||
-      Array.isArray(fixture)
-    ) {
+    if (typeof fixture !== "object" || fixture === null || Array.isArray(fixture)) {
       throw new Error("Database fixture manifest entry is invalid.");
     }
-    const { database, releaseStatus, sha256, sourceCommit, tag } =
-      fixture as Record<string, unknown>;
+    const { database, releaseStatus, sha256, sourceCommit, tag } = fixture as Record<
+      string,
+      unknown
+    >;
     if (
       typeof tag !== "string" ||
       typeof database !== "string" ||
@@ -186,9 +176,7 @@ function parseDatabaseFixtureManifest(input: unknown, candidateTag: string) {
     .filter((entry) => entry.releaseStatus === "candidate")
     .map((entry) => entry.tag);
   if (candidateTags.length !== 1 || candidateTags[0] !== candidateTag) {
-    throw new Error(
-      `Database fixture manifest must have only candidate ${candidateTag}.`,
-    );
+    throw new Error(`Database fixture manifest must have only candidate ${candidateTag}.`);
   }
   return entries;
 }
@@ -208,17 +196,11 @@ function assertDatabaseFixtureReleaseSet(
     publishedTags.some((tag) => !stableTagPattern.test(tag)) ||
     JSON.stringify(officialTags) !== JSON.stringify(publishedTags)
   ) {
-    throw new Error(
-      "Official database fixtures do not match published stable GitHub Releases.",
-    );
+    throw new Error("Official database fixtures do not match published stable GitHub Releases.");
   }
-  const candidates = fixtures.filter(
-    (fixture) => fixture.releaseStatus === "candidate",
-  );
+  const candidates = fixtures.filter((fixture) => fixture.releaseStatus === "candidate");
   if (candidates.length !== 1 || candidates[0]?.tag !== candidateTag) {
-    throw new Error(
-      `Database fixture manifest must have only candidate ${candidateTag}.`,
-    );
+    throw new Error(`Database fixture manifest must have only candidate ${candidateTag}.`);
   }
 }
 
@@ -237,15 +219,10 @@ function publishedStableReleaseTags(repository: string) {
   if (result.status !== 0) {
     throw new Error("Published stable GitHub Releases cannot be checked.");
   }
-  return result.stdout
-    .split(/\r?\n/u)
-    .filter((tag) => stableTagPattern.test(tag));
+  return result.stdout.split(/\r?\n/u).filter((tag) => stableTagPattern.test(tag));
 }
 
-function verifyDatabaseFixtureCandidate(
-  tag: string,
-  publishedStableTags?: readonly string[],
-) {
+function verifyDatabaseFixtureCandidate(tag: string, publishedStableTags?: readonly string[]) {
   if (!existsSync(databaseFixtureManifestPath)) {
     throw new Error("Database fixture manifest is absent.");
   }
@@ -271,9 +248,7 @@ function verifyDatabaseFixtureCandidate(
     ) {
       throw new Error("A database compatibility fixture is absent.");
     }
-    const actual = createHash("sha256")
-      .update(readFileSync(databasePath))
-      .digest("hex");
+    const actual = createHash("sha256").update(readFileSync(databasePath)).digest("hex");
     if (actual !== fixture.sha256) {
       throw new Error("A database compatibility fixture checksum is invalid.");
     }
@@ -357,24 +332,14 @@ function createPresenceReceipt({
     throw new Error("Workflow run ID is invalid.");
   }
   if (!validIsoTimestamp(capturedAt)) {
-    throw new Error(
-      "Configuration capture time must be an exact ISO timestamp.",
-    );
+    throw new Error("Configuration capture time must be an exact ISO timestamp.");
   }
 
   const secrets = releaseSecrets.map((name) =>
-    presenceEntry(
-      name,
-      "environment:macos-release",
-      protectedStates[name] === true,
-    ),
+    presenceEntry(name, "environment:macos-release", protectedStates[name] === true),
   );
   const variables = releaseEnvironmentVariables.map((name) =>
-    presenceEntry(
-      name,
-      "environment:macos-release",
-      protectedStates[name] === true,
-    ),
+    presenceEntry(name, "environment:macos-release", protectedStates[name] === true),
   );
   const publicEntries = publicConfigurationNames.map((name) =>
     presenceEntry(name, "repository", publicConfiguration[name] === true),
@@ -469,21 +434,14 @@ function run(executable: string, argumentsList: string[]) {
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
-    throw new Error(
-      `Release source check failed: ${argumentsList[0] ?? executable}.`,
-    );
+    throw new Error(`Release source check failed: ${argumentsList[0] ?? executable}.`);
   }
 }
 
 function sourceIsOnMain(commit: string) {
   const fetched = spawnSync(
     "git",
-    [
-      "fetch",
-      "--no-tags",
-      "origin",
-      "+refs/heads/main:refs/remotes/origin/main",
-    ],
+    ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"],
     { stdio: "ignore" },
   );
   if (fetched.status !== 0) {
@@ -538,9 +496,7 @@ function successfulMainRun(repository: string, commit: string) {
     ciRun.headSha !== commit ||
     typeof ciRun.databaseId !== "number"
   ) {
-    throw new Error(
-      "Release tag commit has no successful exact-head main CI run.",
-    );
+    throw new Error("Release tag commit has no successful exact-head main CI run.");
   }
   return String(ciRun.databaseId);
 }
@@ -548,13 +504,7 @@ function successfulMainRun(repository: string, commit: string) {
 function assertReleaseDoesNotExist(repository: string, tag: string) {
   const result = spawnSync(
     "gh",
-    [
-      "api",
-      "--paginate",
-      `repos/${repository}/releases?per_page=100`,
-      "--jq",
-      ".[].tag_name",
-    ],
+    ["api", "--paginate", `repos/${repository}/releases?per_page=100`, "--jq", ".[].tag_name"],
     { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
   );
   if (result.status !== 0) {
@@ -670,9 +620,7 @@ function writeDatabaseCompatibilityEvidence() {
     `${JSON.stringify(evidence, null, 2)}\n`,
     { encoding: "utf8", mode: 0o644 },
   );
-  console.log(
-    `Database compatibility: PASS (${fixtures.length} release fixtures).`,
-  );
+  console.log(`Database compatibility: PASS (${fixtures.length} release fixtures).`);
 }
 
 function commandLine() {

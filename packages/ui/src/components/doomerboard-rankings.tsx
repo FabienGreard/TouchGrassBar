@@ -48,31 +48,21 @@ function DoomerboardRankings({
     .filter((row) => row.rank >= 1 && row.rank <= 3)
     .sort(
       (a, b) =>
-        (podiumOrder.get(a.rank) ?? a.rank) -
-          (podiumOrder.get(b.rank) ?? b.rank) ||
+        (podiumOrder.get(a.rank) ?? a.rank) - (podiumOrder.get(b.rank) ?? b.rank) ||
         a.touchGrassId.localeCompare(b.touchGrassId),
     );
   const podiumIds = new Set(podium.map((row) => row.touchGrassId));
   const allLedgerRows = rows
     .filter((row) => !podiumIds.has(row.touchGrassId))
-    .sort(
-      (a, b) =>
-        a.rank - b.rank || a.touchGrassId.localeCompare(b.touchGrassId),
-    );
-  const ledger =
-    ledgerLimit === undefined
-      ? allLedgerRows
-      : allLedgerRows.slice(0, ledgerLimit);
+    .sort((a, b) => a.rank - b.rank || a.touchGrassId.localeCompare(b.touchGrassId));
+  const ledger = ledgerLimit === undefined ? allLedgerRows : allLedgerRows.slice(0, ledgerLimit);
 
   return (
     <ScrollArea
       aria-label="Leaderboard rankings"
       className={cn("h-full", className)}
       data-doomerboard-scroll=""
-      viewportClassName={cn(
-        "select-none overscroll-contain",
-        viewportClassName,
-      )}
+      viewportClassName={cn("overscroll-contain select-none", viewportClassName)}
       {...props}
     >
       <div
@@ -107,12 +97,8 @@ function DoomerboardRankings({
                 {row.note}
               </span>
               <b className="mt-auto text-[12px]">{row.displayName}</b>
-              <small className="mt-0.5 text-[7px] text-pearl-muted">
-                {row.touchGrassId}
-              </small>
-              <strong className="mt-[7px] text-[16px]">
-                {row.tokenScore}
-              </strong>
+              <small className="mt-0.5 text-[7px] text-pearl-muted">{row.touchGrassId}</small>
+              <strong className="mt-[7px] text-[16px]">{row.tokenScore}</strong>
             </article>
           );
         })}

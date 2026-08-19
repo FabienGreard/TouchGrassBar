@@ -16,19 +16,11 @@ describe("Tauri bootstrap adapter", () => {
     await adapter.complete("Fabien");
     await adapter.hide();
 
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      1,
-      "get_bootstrap_state",
-      undefined,
-    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(1, "get_bootstrap_state", undefined);
     expect(bindings.invoke).toHaveBeenNthCalledWith(2, "complete_bootstrap", {
       displayName: "Fabien",
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      3,
-      "hide_surface",
-      undefined,
-    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "hide_surface", undefined);
   });
 
   test("contains raw native failures behind bounded fault codes", async () => {

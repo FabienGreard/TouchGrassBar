@@ -86,26 +86,15 @@ function Doomerboard({
     ? `${currentProfile.displayName}${currentProfile.touchGrassId}`
     : "";
   const { copyStatus, copyText } = useCopyText(currentProfileText);
-  const selectedRows =
-    selection.audience === "global" ? rows : tokenmaxxerRows;
+  const selectedRows = selection.audience === "global" ? rows : tokenmaxxerRows;
   const rowsEmpty = selectedRows !== undefined && selectedRows.length === 0;
   const period =
-    selection.windowDays === 1
-      ? "today"
-      : selection.windowDays === 7
-        ? "week"
-        : "month";
+    selection.windowDays === 1 ? "today" : selection.windowDays === 7 ? "week" : "month";
   const updateAudience = (audience: DoomerboardAudience) =>
     onSelectionChange({ ...selection, audience });
   const updatePeriod = (nextPeriod: string) => {
     const windowDays =
-      nextPeriod === "today"
-        ? 1
-        : nextPeriod === "week"
-          ? 7
-          : nextPeriod === "month"
-            ? 30
-            : null;
+      nextPeriod === "today" ? 1 : nextPeriod === "week" ? 7 : nextPeriod === "month" ? 30 : null;
     if (windowDays === null) return;
     onSelectionChange({ ...selection, windowDays });
   };
@@ -137,9 +126,7 @@ function Doomerboard({
         copyStatus={copyStatus}
         currentProfile={currentProfile}
         onAudienceChange={updateAudience}
-        onCopyCurrentProfile={
-          currentProfile ? () => void copyText() : undefined
-        }
+        onCopyCurrentProfile={currentProfile ? () => void copyText() : undefined}
         onPeriodChange={updatePeriod}
         onProviderChange={updateProvider}
         period={period}
@@ -155,9 +142,7 @@ function Doomerboard({
           <DoomerboardRankings rows={selectedRows} />
         ) : (
           <DoomerboardUnavailable
-            selectionUnavailable={
-              rows !== undefined || tokenmaxxerRows !== undefined
-            }
+            selectionUnavailable={rows !== undefined || tokenmaxxerRows !== undefined}
           />
         )}
       </div>

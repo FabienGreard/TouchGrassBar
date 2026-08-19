@@ -10,11 +10,9 @@ import {
   type OnboardingStep,
 } from "@/components/screens/onboarding/onboarding-flow";
 
-type BrowserFixtureName =
-  "current" | "loading" | "stale" | "update" | "unavailable";
+type BrowserFixtureName = "current" | "loading" | "stale" | "update" | "unavailable";
 
-type OnboardingSetupPreviewState =
-  "profile-pending" | "ready" | "required" | "unavailable";
+type OnboardingSetupPreviewState = "profile-pending" | "ready" | "required" | "unavailable";
 type SettingsProfilePreviewState = "profile-pending" | "saved";
 
 const syncPreviewStatuses = [
@@ -57,9 +55,7 @@ function resolveProviderState(
   fallback: CodingProviderAccessState,
 ): CodingProviderAccessState {
   const candidate = params.get(key);
-  return codingProviderAccessStates.some(
-    ({ key: state }) => state === candidate,
-  )
+  return codingProviderAccessStates.some(({ key: state }) => state === candidate)
     ? (candidate as CodingProviderAccessState)
     : fallback;
 }
@@ -71,30 +67,20 @@ function resolveOnboardingStep(params: URLSearchParams): OnboardingStep {
     : "providers";
 }
 
-function resolveOnboardingSetupState(
-  params: URLSearchParams,
-): OnboardingSetupPreviewState {
+function resolveOnboardingSetupState(params: URLSearchParams): OnboardingSetupPreviewState {
   const candidate = params.get("setupState");
-  return candidate === "profile-pending" ||
-    candidate === "required" ||
-    candidate === "unavailable"
+  return candidate === "profile-pending" || candidate === "required" || candidate === "unavailable"
     ? candidate
     : "ready";
 }
 
 function resolveSurface(params: URLSearchParams): DesktopSurface {
   const candidate = params.get("window");
-  return candidate === "settings" || candidate === "onboarding"
-    ? candidate
-    : "panel";
+  return candidate === "settings" || candidate === "onboarding" ? candidate : "panel";
 }
 
-function resolveSettingsProfileState(
-  params: URLSearchParams,
-): SettingsProfilePreviewState {
-  return params.get("profileState") === "profile-pending"
-    ? "profile-pending"
-    : "saved";
+function resolveSettingsProfileState(params: URLSearchParams): SettingsProfilePreviewState {
+  return params.get("profileState") === "profile-pending" ? "profile-pending" : "saved";
 }
 
 function resolveSyncStatus(params: URLSearchParams): SyncStatus {
@@ -110,13 +96,8 @@ function resolveBrowserFixtureName(search: string): BrowserFixtureName {
 
 function resolveDevPreviewScenario(search: string): DevPreviewScenario {
   const params = new URLSearchParams(search);
-  const providerState = resolveProviderState(
-    params,
-    "providerState",
-    "not-installed",
-  );
-  const settingsProviderExcluded =
-    params.get("providerState") === "excluded";
+  const providerState = resolveProviderState(params, "providerState", "not-installed");
+  const settingsProviderExcluded = params.get("providerState") === "excluded";
 
   return {
     fixture: resolveFixture(params),
@@ -134,11 +115,7 @@ function resolveDevPreviewScenario(search: string): DevPreviewScenario {
   };
 }
 
-export {
-  resolveBrowserFixtureName,
-  resolveDevPreviewScenario,
-  syncPreviewStatuses,
-};
+export { resolveBrowserFixtureName, resolveDevPreviewScenario, syncPreviewStatuses };
 export type {
   BrowserFixtureName,
   DevPreviewScenario,

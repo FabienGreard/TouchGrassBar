@@ -1,11 +1,4 @@
-import {
-  Button,
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogTitle,
-  Input,
-} from "@touchgrass/ui";
+import { Button, Dialog, DialogClose, DialogContent, DialogTitle, Input } from "@touchgrass/ui";
 import { useRef, useState } from "react";
 
 import { normalizeTouchGrassId } from "./add-tokenmaxxer";
@@ -49,9 +42,7 @@ function AddTokenmaxxerDialog({
         position={portalContainer ? "container" : "viewport"}
       >
         <div className="relative px-8 text-center">
-          <DialogTitle className="m-0 text-[14px] font-bold">
-            Add a Tokenmaxxer
-          </DialogTitle>
+          <DialogTitle className="m-0 text-[14px] font-bold">Add a Tokenmaxxer</DialogTitle>
           <span className="absolute -top-1 -right-1 text-[16px]">
             <DialogClose asChild>
               <Button

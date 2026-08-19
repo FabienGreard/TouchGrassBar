@@ -31,9 +31,7 @@ function command(executable: string, argumentsList: string[]) {
 }
 
 function parseStableVersion(tag: string): StableVersion | null {
-  const match = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(
-    tag,
-  );
+  const match = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(tag);
   if (!match) return null;
   const [major, minor, patch] = match.slice(1).map(Number);
   if (
@@ -47,11 +45,7 @@ function parseStableVersion(tag: string): StableVersion | null {
 }
 
 function compareVersions(left: StableVersion, right: StableVersion) {
-  return (
-    left.major - right.major ||
-    left.minor - right.minor ||
-    left.patch - right.patch
-  );
+  return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
 }
 
 function latestStableTag(tags: string[]) {
@@ -87,13 +81,7 @@ function parseReleaseArguments(argumentsList: string[]) {
 }
 
 function remoteStableTags() {
-  const output = command("git", [
-    "ls-remote",
-    "--tags",
-    "--refs",
-    "origin",
-    "refs/tags/v*",
-  ]);
+  const output = command("git", ["ls-remote", "--tags", "--refs", "origin", "refs/tags/v*"]);
   return output.split(/\r?\n/u).flatMap((line) => {
     const match = /\srefs\/tags\/(v[^\s]+)$/u.exec(line);
     return match?.[1] ? [match[1]] : [];
@@ -107,12 +95,7 @@ function exactMainCommit() {
   if (command("git", ["branch", "--show-current"]) !== "main") {
     throw new Error("Release requires the main branch.");
   }
-  command("git", [
-    "fetch",
-    "--no-tags",
-    "origin",
-    "+refs/heads/main:refs/remotes/origin/main",
-  ]);
+  command("git", ["fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"]);
   const head = command("git", ["rev-parse", "HEAD"]);
   const remoteMain = command("git", ["rev-parse", "origin/main"]);
   if (head !== remoteMain) {
@@ -184,10 +167,7 @@ function release(argumentsList: string[]) {
   const remoteTags = remoteStableTags();
   const current = latestStableTag(remoteTags);
   const next = bumpStableVersion(current, options.level);
-  verifyDatabaseFixtureCandidate(
-    next,
-    publishedStableReleaseTags(releaseRepository),
-  );
+  verifyDatabaseFixtureCandidate(next, publishedStableReleaseTags(releaseRepository));
   if (remoteTags.includes(next)) {
     throw new Error(`Remote release tag already exists: ${next}.`);
   }
@@ -212,9 +192,4 @@ function release(argumentsList: string[]) {
 
 if (import.meta.main) release(process.argv.slice(2));
 
-export {
-  bumpStableVersion,
-  latestStableTag,
-  parseReleaseArguments,
-  parseStableVersion,
-};
+export { bumpStableVersion, latestStableTag, parseReleaseArguments, parseStableVersion };

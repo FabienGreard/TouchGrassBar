@@ -1,10 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import {
-  assertUsageSnapshot,
-  boardKey,
-  subtractRankingDays,
-} from "../convex/model/values";
+import { assertUsageSnapshot, boardKey, subtractRankingDays } from "../convex/model/values";
 
 describe("ranking invariants", () => {
   test("creates stable namespaced board keys", () => {
@@ -17,18 +13,21 @@ describe("ranking invariants", () => {
 
   test("rejects stale-style invalid revisions", () => {
     expect(() =>
-      assertUsageSnapshot({
-        apiEquivalentCost: null,
-        correctionReason: null,
-        correctionRevision: null,
-        coverage: "complete",
-        evidenceBasis: "locally-derived",
-        observedAt: 0,
-        observedTokens: 1,
-        provider: "codex",
-        rankingDay: "2026-08-03",
-        revision: 0,
-      }, "2026-08-03"),
+      assertUsageSnapshot(
+        {
+          apiEquivalentCost: null,
+          correctionReason: null,
+          correctionRevision: null,
+          coverage: "complete",
+          evidenceBasis: "locally-derived",
+          observedAt: 0,
+          observedTokens: 1,
+          provider: "codex",
+          rankingDay: "2026-08-03",
+          revision: 0,
+        },
+        "2026-08-03",
+      ),
     ).toThrow("revision");
   });
 });

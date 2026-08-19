@@ -86,9 +86,7 @@ function ObservedUsagePreview({
               {metric.trend}
             </MetricCardTrend>
             <MetricCardValue>{metric.value}</MetricCardValue>
-            <MetricCardDetail tone="positive">
-              {metric.detail}
-            </MetricCardDetail>
+            <MetricCardDetail tone="positive">{metric.detail}</MetricCardDetail>
             <MetricCardGauge fill={metric.fill} tone={metric.tone} />
           </MetricCard>
         ))}
@@ -101,10 +99,7 @@ const fillControl = {
   control: { max: 100, min: 0, step: 1, type: "range" },
 } as const;
 
-type MetricCardStoryArgs = Omit<
-  ComponentProps<typeof MetricCardGroup>,
-  "children"
-> &
+type MetricCardStoryArgs = Omit<ComponentProps<typeof MetricCardGroup>, "children"> &
   ObservedUsagePreviewProps;
 
 const meta = {

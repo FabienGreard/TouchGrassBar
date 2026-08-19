@@ -1,7 +1,4 @@
-import {
-  PanelScreen,
-  type PanelPresentation,
-} from "@/components/panel/panel-screen";
+import { PanelScreen, type PanelPresentation } from "@/components/panel/panel-screen";
 import {
   OnboardingScreen,
   type OnboardingScreenProps,

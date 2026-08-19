@@ -6,10 +6,7 @@ import { cn } from "#lib/utils";
 type QuotaProvider = "claude" | "codex";
 type QuotaProgressSize = "primary" | "secondary";
 
-type QuotaProgressProps = Omit<
-  ComponentProps<typeof ProgressPrimitive.Root>,
-  "style" | "value"
-> & {
+type QuotaProgressProps = Omit<ComponentProps<typeof ProgressPrimitive.Root>, "style" | "value"> & {
   provider: QuotaProvider;
   size?: QuotaProgressSize;
   value: number | null;
@@ -20,10 +17,7 @@ function normalizeValue(value: number | null) {
   return Math.max(0, Math.min(100, value));
 }
 
-function quotaStyle(
-  provider: QuotaProvider,
-  value: number | null,
-): CSSProperties {
+function quotaStyle(provider: QuotaProvider, value: number | null): CSSProperties {
   if (value === null) {
     return {
       "--quota-fill": "var(--usage-unavailable)",
@@ -55,9 +49,7 @@ function QuotaProgress({
         className,
       )}
       data-quota-tone={normalizedValue === null ? "unavailable" : provider}
-      data-quota-value={
-        normalizedValue === null ? undefined : Math.round(normalizedValue)
-      }
+      data-quota-value={normalizedValue === null ? undefined : Math.round(normalizedValue)}
       data-size={size}
       data-slot="quota-progress"
       style={quotaStyle(provider, normalizedValue)}

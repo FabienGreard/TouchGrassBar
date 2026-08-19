@@ -28,12 +28,7 @@ describe("browser sanitized desktop state fixtures", () => {
     "projects the $key sync state without changing stale provider data",
     async ({ key }) => {
       const delivery = createSanitizedDesktopStateDelivery(
-        createBrowserSanitizedDesktopStateAdapter(
-          "stale",
-          fixedNow,
-          undefined,
-          key,
-        ),
+        createBrowserSanitizedDesktopStateAdapter("stale", fixedNow, undefined, key),
       );
       const unsubscribe = delivery.subscribe(() => undefined);
 
@@ -42,8 +37,7 @@ describe("browser sanitized desktop state fixtures", () => {
       const snapshot = delivery.getSnapshot().snapshot;
       expect(snapshot?.providers[0]?.usage.today.availability).toBe("stale");
       expect(snapshot?.sync).toEqual({
-        lastSuccessfulAt:
-          key === "synced" || key === "stale" ? fixedNow().toISOString() : null,
+        lastSuccessfulAt: key === "synced" || key === "stale" ? fixedNow().toISOString() : null,
         status: key,
       });
       unsubscribe();
@@ -52,10 +46,7 @@ describe("browser sanitized desktop state fixtures", () => {
 
   test("routes fixtures through the production delivery contract", async () => {
     const delivery = createSanitizedDesktopStateDelivery(
-      createBrowserSanitizedDesktopStateAdapter(
-        "current",
-        fixedNow,
-      ),
+      createBrowserSanitizedDesktopStateAdapter("current", fixedNow),
     );
     const unsubscribe = delivery.subscribe(() => undefined);
 
@@ -67,20 +58,17 @@ describe("browser sanitized desktop state fixtures", () => {
       quota: { availability: "current" },
     });
     expect(
-      delivery
-        .getSnapshot()
-        .snapshot?.providers[1]?.quota.quotaLanes.map((lane) => lane.label),
+      delivery.getSnapshot().snapshot?.providers[1]?.quota.quotaLanes.map((lane) => lane.label),
     ).toEqual(["Weekly limit", "5-hour limit"]);
     unsubscribe();
   });
 
   test("keeps an excluded provider visible with unavailable panel data", async () => {
     const delivery = createSanitizedDesktopStateDelivery(
-      createBrowserSanitizedDesktopStateAdapter(
-        "current",
-        fixedNow,
-        { claude: false, codex: true },
-      ),
+      createBrowserSanitizedDesktopStateAdapter("current", fixedNow, {
+        claude: false,
+        codex: true,
+      }),
     );
     const unsubscribe = delivery.subscribe(() => undefined);
 
@@ -143,9 +131,7 @@ describe("browser sanitized desktop state fixtures", () => {
       quota: { availability: "unavailable", quotaLanes: [] },
       usage: { today: { availability: "unavailable" } },
     });
-    expect(claudeOnly?.combinedUsage.today).toEqual(
-      claudeOnly?.providers[1]?.usage.today,
-    );
+    expect(claudeOnly?.combinedUsage.today).toEqual(claudeOnly?.providers[1]?.usage.today);
     stopBoth();
     stopClaude();
   });

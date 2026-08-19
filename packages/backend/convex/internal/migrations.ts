@@ -17,10 +17,7 @@ export const backfillDoomerboard = migrations.define({
     });
     await doomerboard.insertIfDoesNotExist(ctx, {
       id: publicUsage._id,
-      key: doomerboardKey(
-        publicUsage.tokenScore,
-        publicUsage.touchGrassId,
-      ),
+      key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
       namespace: publicUsage.boardKey,
     });
     await markDoomerboardChanged(ctx);

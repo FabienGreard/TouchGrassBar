@@ -12,12 +12,7 @@ type BrandProps = ComponentProps<"div"> & {
   markProps?: BrandMarkProps;
 };
 
-function BrandMark({
-  className,
-  size = "panel",
-  tone = "ink",
-  ...props
-}: BrandMarkProps) {
+function BrandMark({ className, size = "panel", tone = "ink", ...props }: BrandMarkProps) {
   return (
     <img
       alt=""
@@ -40,16 +35,11 @@ function BrandMark({
 function BrandWordmark({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
-      className={cn(
-        "flex items-baseline whitespace-nowrap tracking-[-0.035em]",
-        className,
-      )}
+      className={cn("flex items-baseline tracking-[-0.035em] whitespace-nowrap", className)}
       data-slot="brand-wordmark"
       {...props}
     >
-      <strong className="text-[12px] font-bold text-pearl-ink">
-        TouchGrass
-      </strong>
+      <strong className="text-[12px] font-bold text-pearl-ink">TouchGrass</strong>
       <strong className="relative text-[12px] font-bold text-pearl-ink after:absolute after:right-0 after:-bottom-0.5 after:left-0 after:h-0.5 after:rounded-full after:bg-primary after:content-['']">
         Bar
       </strong>

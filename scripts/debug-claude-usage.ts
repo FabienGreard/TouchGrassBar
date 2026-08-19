@@ -1,37 +1,16 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  realpathSync,
-  unlinkSync,
-} from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, realpathSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, parse, resolve } from "node:path";
 
 import { resolveDevInstance } from "../apps/desktop/src/dev/dev-instance";
 
 const workspaceRoot = resolve(import.meta.dir, "..");
-const manifestPath = join(
-  workspaceRoot,
-  "apps",
-  "desktop",
-  "src-tauri",
-  "Cargo.toml",
-);
-const targetDirectory = join(
-  workspaceRoot,
-  "apps",
-  "desktop",
-  "src-tauri",
-  "target",
-);
-const debugDirectory = join(
-  targetDirectory,
-  "claude-usage-debug",
-);
+const manifestPath = join(workspaceRoot, "apps", "desktop", "src-tauri", "Cargo.toml");
+const targetDirectory = join(workspaceRoot, "apps", "desktop", "src-tauri", "target");
+const debugDirectory = join(targetDirectory, "claude-usage-debug");
 const debugDatabase = join(debugDirectory, "touchgrassbar.sqlite3");
 const privateIndexFiles = [
   debugDatabase,
@@ -77,9 +56,7 @@ function requestedOptions() {
       continue;
     }
     if (argument !== "--passes" || index + 1 >= argumentsList.length) {
-      throw new Error(
-        "Use: bun debug:claude-usage [--fresh] [--passes <1-100>]",
-      );
+      throw new Error("Use: bun debug:claude-usage [--fresh] [--passes <1-100>]");
     }
     passes = Number(argumentsList[index + 1]);
     index += 1;
@@ -92,9 +69,7 @@ function requestedOptions() {
 
 function claudeConfigRoot(userHome: string) {
   const configured = Bun.env.CLAUDE_CONFIG_DIR;
-  const root = configured
-    ? resolve(userHome, configured)
-    : join(userHome, ".claude");
+  const root = configured ? resolve(userHome, configured) : join(userHome, ".claude");
   if (root === parse(root).root) {
     throw new Error("A safe Claude configuration directory could not be resolved.");
   }
@@ -105,10 +80,7 @@ function optionalMetadata(path: string) {
   try {
     return lstatSync(path);
   } catch (error) {
-    const code =
-      error && typeof error === "object" && "code" in error
-        ? error.code
-        : undefined;
+    const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
     if (code === "ENOENT") return undefined;
     throw new Error("The private SQLite debug path could not be inspected.");
   }
@@ -141,11 +113,7 @@ function ensurePrivateDebugDirectory() {
 }
 
 function requirePrivateIndexFile(path: string, metadata = lstatSync(path)) {
-  if (
-    !metadata.isFile() ||
-    metadata.isSymbolicLink() ||
-    metadata.nlink !== 1
-  ) {
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
     throw new Error("The private SQLite debug index is unsafe.");
   }
 }
@@ -202,14 +170,7 @@ function main() {
   );
   const result = spawnSync(
     "cargo",
-    [
-      "run",
-      "--quiet",
-      "--manifest-path",
-      manifestPath,
-      "--bin",
-      "debug_claude_usage",
-    ],
+    ["run", "--quiet", "--manifest-path", manifestPath, "--bin", "debug_claude_usage"],
     {
       cwd: workspaceRoot,
       env: {
@@ -217,10 +178,7 @@ function main() {
         TOUCHGRASS_CLAUDE_USAGE_CONFIG_ROOT: claudeConfigRoot(userHome),
         TOUCHGRASS_CLAUDE_USAGE_DEBUG_DATABASE: debugDatabase,
         TOUCHGRASS_CLAUDE_USAGE_DEBUG_PASSES: String(options.passes),
-        TOUCHGRASS_CLAUDE_USAGE_PROBE_DIRECTORY: join(
-          applicationSupport,
-          "claude-quota-probe",
-        ),
+        TOUCHGRASS_CLAUDE_USAGE_PROBE_DIRECTORY: join(applicationSupport, "claude-quota-probe"),
       },
       stdio: "inherit",
     },

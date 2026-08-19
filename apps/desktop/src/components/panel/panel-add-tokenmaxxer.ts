@@ -3,15 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import { PANEL_ADD_TOKENMAXXER_EVENT } from "@touchgrass/contracts";
 
 type StopListening = () => void;
-type ListenForAddTokenmaxxer = (
-  event: string,
-  receive: () => void,
-) => Promise<StopListening>;
+type ListenForAddTokenmaxxer = (event: string, receive: () => void) => Promise<StopListening>;
 type TakeAddTokenmaxxerRequest = () => Promise<boolean>;
 
 const noop: StopListening = () => undefined;
-const listenForAddTokenmaxxer: ListenForAddTokenmaxxer = (event, receive) =>
-  listen(event, receive);
+const listenForAddTokenmaxxer: ListenForAddTokenmaxxer = (event, receive) => listen(event, receive);
 const takeAddTokenmaxxerRequest: TakeAddTokenmaxxerRequest = () =>
   invoke("take_panel_add_tokenmaxxer_request");
 

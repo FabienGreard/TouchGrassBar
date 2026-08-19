@@ -5,10 +5,7 @@ import { nativeSheetSurfaceClassName } from "#lib/native-sheet-styles";
 
 type NativeSheetSurfaceProps = ComponentProps<"article">;
 
-function NativeSheetSurface({
-  className,
-  ...props
-}: NativeSheetSurfaceProps) {
+function NativeSheetSurface({ className, ...props }: NativeSheetSurfaceProps) {
   return (
     <article
       className={cn(nativeSheetSurfaceClassName, className)}

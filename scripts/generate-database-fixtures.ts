@@ -1,14 +1,7 @@
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  access,
-  mkdir,
-  readFile,
-  readdir,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 type ReleaseStatus = "official" | "candidate";
@@ -338,18 +331,8 @@ function snapshot(definition: FixtureDefinition): Record<string, unknown> {
       codexToday.observedTokens,
       codexToday.costUsd,
     ),
-    sevenDays: availableTotal(
-      "current",
-      "partial",
-      codexTotal.tokens,
-      codexTotal.cost,
-    ),
-    thirtyDays: availableTotal(
-      "stale",
-      "partial",
-      codexTotal.tokens,
-      codexTotal.cost,
-    ),
+    sevenDays: availableTotal("current", "partial", codexTotal.tokens, codexTotal.cost),
+    thirtyDays: availableTotal("stale", "partial", codexTotal.tokens, codexTotal.cost),
   };
   const topModelUsage = definition.hasTopModelUsage
     ? { model: "GPT 5.2", observedTokens: codexToday.observedTokens }
@@ -400,10 +383,7 @@ function snapshot(definition: FixtureDefinition): Record<string, unknown> {
   return state;
 }
 
-function createLifecycleSchema(
-  database: Database,
-  definition: FixtureDefinition,
-): void {
+function createLifecycleSchema(database: Database, definition: FixtureDefinition): void {
   database.exec(`
     CREATE TABLE lifecycle_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -453,10 +433,7 @@ function createLifecycleSchema(
   database.exec(`PRAGMA user_version = ${definition.lifecycleVersion}`);
 }
 
-function createReadModelSchema(
-  database: Database,
-  definition: FixtureDefinition,
-): void {
+function createReadModelSchema(database: Database, definition: FixtureDefinition): void {
   const schemaVersion = readModelVersion(definition);
   const contractVersion = readModelContractVersion(definition);
   database.exec(`
@@ -476,28 +453,16 @@ function createReadModelSchema(
          singleton, schema_version, contract_version, revision, snapshot_json
        ) VALUES (1, ?1, ?2, ?3, ?4)`,
     )
-    .run(
-      schemaVersion,
-      contractVersion,
-      definition.revision,
-      JSON.stringify(snapshot(definition)),
-    );
+    .run(schemaVersion, contractVersion, definition.revision, JSON.stringify(snapshot(definition)));
   setModuleVersion(database, "sanitized-desktop-state", schemaVersion);
 }
 
-function createCodexUsageSchema(
-  database: Database,
-  definition: FixtureDefinition,
-): void {
+function createCodexUsageSchema(database: Database, definition: FixtureDefinition): void {
   const accountMetaTimestampColumn =
     definition.codexUsageIndexVersion >= 8 ? "refreshed_at" : "observed_at";
   const accountDayTimestampColumn =
-    definition.codexUsageIndexVersion >= 8
-      ? ",\n      observed_at TEXT NOT NULL"
-      : "";
-  const activeTurnColumn = definition.hasExplicitVersions
-    ? ",\n      active_turn_id TEXT"
-    : "";
+    definition.codexUsageIndexVersion >= 8 ? ",\n      observed_at TEXT NOT NULL" : "";
+  const activeTurnColumn = definition.hasExplicitVersions ? ",\n      active_turn_id TEXT" : "";
   const currentFileColumns = definition.hasExplicitVersions
     ? `,
       lineage_mode TEXT NOT NULL DEFAULT 'unknown',
@@ -529,9 +494,7 @@ function createCodexUsageSchema(
       pricing_mode TEXT NOT NULL CHECK(pricing_mode IN ('standard', 'fast'))`
     : "";
   const fileTurnDayColumn =
-    definition.codexUsageIndexVersion >= 7
-      ? ",\n        day TEXT NOT NULL"
-      : "";
+    definition.codexUsageIndexVersion >= 7 ? ",\n        day TEXT NOT NULL" : "";
   const fileTurnPrimaryKey =
     definition.codexUsageIndexVersion >= 7
       ? "PRIMARY KEY (path, turn_id, day)"
@@ -648,19 +611,13 @@ function createCodexUsageSchema(
       WHERE cost_usd IS NULL;
     ${currentCodexObjects}
   `);
-  setModuleVersion(
-    database,
-    "codex-usage-index",
-    codexUsageVersion(definition),
-  );
+  setModuleVersion(database, "codex-usage-index", codexUsageVersion(definition));
 
   const path = `fixture-codex-session-${definition.tag}`;
   const currentFileInsertColumns = definition.hasExplicitVersions
     ? ", lineage_mode, accounting_ready"
     : "";
-  const currentFileInsertValues = definition.hasExplicitVersions
-    ? ", 'root', 1"
-    : "";
+  const currentFileInsertValues = definition.hasExplicitVersions ? ", 'root', 1" : "";
   database
     .query(
       `INSERT INTO codex_usage_files (
@@ -740,10 +697,7 @@ function createCodexUsageSchema(
   }
 }
 
-function createClaudeUsageSchema(
-  database: Database,
-  definition: FixtureDefinition,
-): void {
+function createClaudeUsageSchema(database: Database, definition: FixtureDefinition): void {
   const aggregateAppliedColumn = definition.hasExplicitVersions
     ? `,
       aggregate_applied INTEGER NOT NULL DEFAULT 1
@@ -893,14 +847,11 @@ function createClaudeUsageSchema(
        priced_tokens, cost_usd${
          definition.hasExplicitVersions ? ", cost_modeled" : ""
        }, pricing_basis, pricing_fingerprint
-     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7${
-       definition.hasExplicitVersions ? ", 0" : ""
-     }, ?8, ?9)`,
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7${definition.hasExplicitVersions ? ", 0" : ""}, ?8, ?9)`,
   );
   for (const [index, fact] of facts.entries()) {
     const frameKey = `fixture-claude-frame-${definition.tag}-${index + 1}`;
-    const previousFrame =
-      index === 0 ? null : `fixture-claude-frame-${definition.tag}-${index}`;
+    const previousFrame = index === 0 ? null : `fixture-claude-frame-${definition.tag}-${index}`;
     frame.run(frameKey, fact.day, `${fact.day}T23:59:59Z`);
     message.run(
       frameKey,
@@ -932,16 +883,10 @@ function createClaudeUsageSchema(
          }
        ) VALUES (?1, ?2, 4${definition.hasExplicitVersions ? ", 1" : ""})`,
     )
-    .run(
-      `fixture-claude-frame-${definition.tag}-2`,
-      `fixture-claude-frame-${definition.tag}-1`,
-    );
+    .run(`fixture-claude-frame-${definition.tag}-2`, `fixture-claude-frame-${definition.tag}-1`);
 }
 
-function createUsageSyncSchema(
-  database: Database,
-  definition: FixtureDefinition,
-): void {
+function createUsageSyncSchema(database: Database, definition: FixtureDefinition): void {
   const profileCompletionColumn =
     readModelVersion(definition) >= 7
       ? `,
@@ -1069,10 +1014,7 @@ function createUsageSyncSchema(
   `);
 }
 
-function createUpdateStateSchema(
-  database: Database,
-  definition: FixtureDefinition,
-): void {
+function createUpdateStateSchema(database: Database, definition: FixtureDefinition): void {
   const automaticChecksColumn =
     definition.updateStateVersion >= 2
       ? `automatic_checks_enabled INTEGER NOT NULL DEFAULT 1 CHECK (
@@ -1132,11 +1074,7 @@ function createUpdateStateSchema(
   }
 }
 
-function setModuleVersion(
-  database: Database,
-  module: string,
-  version: number,
-): void {
+function setModuleVersion(database: Database, module: string, version: number): void {
   database
     .query(
       `INSERT INTO touchgrassbar_schema_versions(module, version)
@@ -1155,9 +1093,7 @@ function scalarValue(row: unknown): unknown {
 function checkDatabase(databasePath: string): void {
   const database = new Database(databasePath, { readonly: true, strict: true });
   try {
-    const integrity = scalarValue(
-      database.query("PRAGMA integrity_check").get(),
-    );
+    const integrity = scalarValue(database.query("PRAGMA integrity_check").get());
     if (integrity !== "ok") {
       throw new Error(`Fixture integrity check failed: ${databasePath}`);
     }
@@ -1176,10 +1112,7 @@ function stringRows(database: Database, sql: string): string[] {
     .map((row) => String(scalarValue(row)));
 }
 
-function storedUsageFacts(
-  database: Database,
-  provider: "codex" | "claude",
-): UsageFact[] {
+function storedUsageFacts(database: Database, provider: "codex" | "claude"): UsageFact[] {
   const rows =
     provider === "codex"
       ? database
@@ -1231,12 +1164,8 @@ function validateFixtureContents(
   }
   const database = new Database(databasePath, { readonly: true, strict: true });
   try {
-    const databaseFormat = Number(
-      scalarValue(database.query("PRAGMA user_version").get()),
-    );
-    const expectedDatabaseFormat = definition.hasExplicitVersions
-      ? 7
-      : definition.lifecycleVersion;
+    const databaseFormat = Number(scalarValue(database.query("PRAGMA user_version").get()));
+    const expectedDatabaseFormat = definition.hasExplicitVersions ? 7 : definition.lifecycleVersion;
     if (databaseFormat !== expectedDatabaseFormat) {
       throw new Error(`The database format is wrong for ${definition.tag}.`);
     }
@@ -1296,16 +1225,9 @@ function validateFixtureContents(
          ORDER BY cid`,
       );
       const expectedFileTurnColumns =
-        definition.codexUsageIndexVersion >= 7
-          ? ["path", "turn_id", "day"]
-          : ["path", "turn_id"];
-      if (
-        JSON.stringify(fileTurnColumns) !==
-        JSON.stringify(expectedFileTurnColumns)
-      ) {
-        throw new Error(
-          `The Codex file-turn shape is wrong for ${definition.tag}.`,
-        );
+        definition.codexUsageIndexVersion >= 7 ? ["path", "turn_id", "day"] : ["path", "turn_id"];
+      if (JSON.stringify(fileTurnColumns) !== JSON.stringify(expectedFileTurnColumns)) {
+        throw new Error(`The Codex file-turn shape is wrong for ${definition.tag}.`);
       }
       const accountDayColumns = stringRows(
         database,
@@ -1316,13 +1238,8 @@ function validateFixtureContents(
         definition.codexUsageIndexVersion >= 8
           ? ["day", "tokens", "observed_at"]
           : ["day", "tokens"];
-      if (
-        JSON.stringify(accountDayColumns) !==
-        JSON.stringify(expectedAccountDayColumns)
-      ) {
-        throw new Error(
-          `The Codex account-day shape is wrong for ${definition.tag}.`,
-        );
+      if (JSON.stringify(accountDayColumns) !== JSON.stringify(expectedAccountDayColumns)) {
+        throw new Error(`The Codex account-day shape is wrong for ${definition.tag}.`);
       }
       const accountMetaColumns = stringRows(
         database,
@@ -1333,13 +1250,8 @@ function validateFixtureContents(
         definition.codexUsageIndexVersion >= 8
           ? ["singleton", "refreshed_at"]
           : ["singleton", "observed_at"];
-      if (
-        JSON.stringify(accountMetaColumns) !==
-        JSON.stringify(expectedAccountMetaColumns)
-      ) {
-        throw new Error(
-          `The Codex account-meta shape is wrong for ${definition.tag}.`,
-        );
+      if (JSON.stringify(accountMetaColumns) !== JSON.stringify(expectedAccountMetaColumns)) {
+        throw new Error(`The Codex account-meta shape is wrong for ${definition.tag}.`);
       }
       const activationColumns = stringRows(
         database,
@@ -1348,20 +1260,10 @@ function validateFixtureContents(
       );
       const expectedActivationColumns =
         readModelVersion(definition) >= 7
-          ? [
-              "active_generation",
-              "ranking_day",
-              "activated_at",
-              "profile_backfill_completed",
-            ]
+          ? ["active_generation", "ranking_day", "activated_at", "profile_backfill_completed"]
           : ["active_generation", "ranking_day", "activated_at"];
-      if (
-        JSON.stringify(activationColumns) !==
-        JSON.stringify(expectedActivationColumns)
-      ) {
-        throw new Error(
-          `The usage activation shape is wrong for ${definition.tag}.`,
-        );
+      if (JSON.stringify(activationColumns) !== JSON.stringify(expectedActivationColumns)) {
+        throw new Error(`The usage activation shape is wrong for ${definition.tag}.`);
       }
     }
     expectedTables.sort();
@@ -1373,8 +1275,7 @@ function validateFixtureContents(
       `SELECT name FROM sqlite_schema
        WHERE type = 'view' ORDER BY name`,
     );
-    const expectedViews =
-      definition.updateStateVersion === 3 ? ["touchgrassbar_update_state"] : [];
+    const expectedViews = definition.updateStateVersion === 3 ? ["touchgrassbar_update_state"] : [];
     if (JSON.stringify(views) !== JSON.stringify(expectedViews)) {
       throw new Error(`The view set is wrong for ${definition.tag}.`);
     }
@@ -1384,9 +1285,7 @@ function validateFixtureContents(
        WHERE type = 'trigger' ORDER BY name`,
     );
     if (triggers.length !== 0) {
-      throw new Error(
-        `The update compatibility view is writable for ${definition.tag}.`,
-      );
+      throw new Error(`The update compatibility view is writable for ${definition.tag}.`);
     }
 
     const moduleVersions = database
@@ -1416,12 +1315,8 @@ function validateFixtureContents(
         { module: "update-state", version: 3 },
       );
     }
-    expectedModuleVersions.sort((left, right) =>
-      left.module.localeCompare(right.module),
-    );
-    if (
-      JSON.stringify(moduleVersions) !== JSON.stringify(expectedModuleVersions)
-    ) {
+    expectedModuleVersions.sort((left, right) => left.module.localeCompare(right.module));
+    if (JSON.stringify(moduleVersions) !== JSON.stringify(expectedModuleVersions)) {
       throw new Error(`The module versions are wrong for ${definition.tag}.`);
     }
 
@@ -1446,10 +1341,8 @@ function validateFixtureContents(
       readModel.contract_version !== readModelContractVersion(definition) ||
       readModel.revision !== entry.expectedState.revision ||
       persistedSnapshot.revision !== entry.expectedState.revision ||
-      JSON.stringify(persistedSnapshot.profile) !==
-        JSON.stringify(entry.expectedState.profile) ||
-      Object.hasOwn(persistedSnapshot, "topModelUsage") !==
-        definition.hasTopModelUsage
+      JSON.stringify(persistedSnapshot.profile) !== JSON.stringify(entry.expectedState.profile) ||
+      Object.hasOwn(persistedSnapshot, "topModelUsage") !== definition.hasTopModelUsage
     ) {
       throw new Error(`The read model state is wrong for ${definition.tag}.`);
     }
@@ -1474,17 +1367,12 @@ function validateFixtureContents(
     if (
       !expectedCodexToday ||
       codexPresentation?.usage?.today?.availability !== "current" ||
-      codexPresentation.usage.today.observedTokens !==
-        expectedCodexToday.observedTokens ||
-      codexPresentation.usage.today.apiEquivalentCostUsd !==
-        expectedCodexToday.costUsd ||
-      codexPresentation.usage.today.apiEquivalentCostBasis !==
-        expectedCodexToday.pricingBasis ||
+      codexPresentation.usage.today.observedTokens !== expectedCodexToday.observedTokens ||
+      codexPresentation.usage.today.apiEquivalentCostUsd !== expectedCodexToday.costUsd ||
+      codexPresentation.usage.today.apiEquivalentCostBasis !== expectedCodexToday.pricingBasis ||
       codexPresentation.usage.today.apiEquivalentCostQuality !== "local-only"
     ) {
-      throw new Error(
-        `The visible usage state is wrong for ${definition.tag}.`,
-      );
+      throw new Error(`The visible usage state is wrong for ${definition.tag}.`);
     }
     if (
       JSON.stringify(storedUsageFacts(database, "codex")) !==
@@ -1492,12 +1380,9 @@ function validateFixtureContents(
       (definition.hasClaudeUsageIndex &&
         JSON.stringify(storedUsageFacts(database, "claude")) !==
           JSON.stringify(entry.expectedState.usage.claude)) ||
-      (!definition.hasClaudeUsageIndex &&
-        entry.expectedState.usage.claude.length !== 0)
+      (!definition.hasClaudeUsageIndex && entry.expectedState.usage.claude.length !== 0)
     ) {
-      throw new Error(
-        `The retained usage state is wrong for ${definition.tag}.`,
-      );
+      throw new Error(`The retained usage state is wrong for ${definition.tag}.`);
     }
 
     const updateColumns = stringRows(
@@ -1506,12 +1391,7 @@ function validateFixtureContents(
     );
     const expectedUpdateColumns =
       definition.updateStateVersion === 1
-        ? [
-            "singleton",
-            "last_automatic_check_at",
-            "offered_version",
-            "minimum_required_version",
-          ]
+        ? ["singleton", "last_automatic_check_at", "offered_version", "minimum_required_version"]
         : [
             "singleton",
             "automatic_checks_enabled",
@@ -1519,16 +1399,10 @@ function validateFixtureContents(
             "offered_version",
             "minimum_required_version",
           ];
-    if (
-      JSON.stringify(updateColumns) !== JSON.stringify(expectedUpdateColumns)
-    ) {
-      throw new Error(
-        `The update state columns are wrong for ${definition.tag}.`,
-      );
+    if (JSON.stringify(updateColumns) !== JSON.stringify(expectedUpdateColumns)) {
+      throw new Error(`The update state columns are wrong for ${definition.tag}.`);
     }
-    const hasAutomaticChecks = updateColumns.includes(
-      "automatic_checks_enabled",
-    );
+    const hasAutomaticChecks = updateColumns.includes("automatic_checks_enabled");
     if (hasAutomaticChecks !== definition.updateStateVersion >= 2) {
       throw new Error(`The update state shape is wrong for ${definition.tag}.`);
     }
@@ -1543,15 +1417,11 @@ function validateFixtureContents(
       minimum_required_version: string;
     };
     if (
-      updateState.last_automatic_check_at !==
-        entry.expectedState.lastAutomaticCheckAt ||
+      updateState.last_automatic_check_at !== entry.expectedState.lastAutomaticCheckAt ||
       updateState.offered_version !== entry.expectedState.offeredVersion ||
-      updateState.minimum_required_version !==
-        entry.expectedState.minimumRequiredVersion
+      updateState.minimum_required_version !== entry.expectedState.minimumRequiredVersion
     ) {
-      throw new Error(
-        `The update state values are wrong for ${definition.tag}.`,
-      );
+      throw new Error(`The update state values are wrong for ${definition.tag}.`);
     }
     if (hasAutomaticChecks) {
       const enabled = Number(
@@ -1564,10 +1434,7 @@ function validateFixtureContents(
             .get(),
         ),
       );
-      if (
-        Boolean(enabled) !==
-        entry.expectedState.automaticChecksEnabledAfterUpgrade
-      ) {
+      if (Boolean(enabled) !== entry.expectedState.automaticChecksEnabledAfterUpgrade) {
         throw new Error(`The update setting is wrong for ${definition.tag}.`);
       }
     } else if (!entry.expectedState.automaticChecksEnabledAfterUpgrade) {
@@ -1603,16 +1470,12 @@ function assertSanitizedBytes(bytes: Uint8Array, databasePath: string): void {
   ];
   for (const marker of forbidden) {
     if (content.includes(marker)) {
-      throw new Error(
-        `Fixture contains forbidden private data: ${databasePath}`,
-      );
+      throw new Error(`Fixture contains forbidden private data: ${databasePath}`);
     }
   }
 }
 
-async function writeFixture(
-  definition: FixtureDefinition,
-): Promise<FixtureManifestEntry> {
+async function writeFixture(definition: FixtureDefinition): Promise<FixtureManifestEntry> {
   if (definition.releaseStatus !== "candidate") {
     throw new Error("The generator cannot write an official release fixture.");
   }
@@ -1676,9 +1539,7 @@ async function writeFixture(
     sourceCommit: definition.sourceCommit,
     releaseStatus: definition.releaseStatus,
     sourceSchema: {
-      databaseFormat: definition.hasExplicitVersions
-        ? 7
-        : definition.lifecycleVersion,
+      databaseFormat: definition.hasExplicitVersions ? 7 : definition.lifecycleVersion,
       lifecycle: definition.lifecycleVersion,
       sanitizedDesktopState: readModelVersion(definition),
       codexUsageIndex: codexUsageVersion(definition),
@@ -1714,9 +1575,7 @@ async function writeFixture(
 }
 
 async function readManifest(): Promise<FixtureManifest> {
-  const manifest = JSON.parse(
-    await readFile(manifestPath, "utf8"),
-  ) as FixtureManifest;
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as FixtureManifest;
   if (manifest.formatVersion !== 1 || !Array.isArray(manifest.fixtures)) {
     throw new Error("The fixture manifest format is not supported.");
   }
@@ -1725,11 +1584,9 @@ async function readManifest(): Promise<FixtureManifest> {
 
 function localTagIsAvailable(tag: string): boolean {
   const reference = `refs/tags/${tag}`;
-  const present = spawnSync(
-    "git",
-    ["show-ref", "--verify", "--quiet", reference],
-    { stdio: "ignore" },
-  );
+  const present = spawnSync("git", ["show-ref", "--verify", "--quiet", reference], {
+    stdio: "ignore",
+  });
   if (present.status === 0) return true;
   if (present.status === 1) return false;
   throw new Error(`The source tag cannot be checked for ${tag}.`);
@@ -1740,11 +1597,10 @@ function verifyOfficialSourceTag(entry: FixtureManifestEntry): void {
     return;
   }
   const reference = `refs/tags/${entry.tag}`;
-  const resolved = spawnSync(
-    "git",
-    ["rev-parse", "--verify", `${reference}^{commit}`],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-  );
+  const resolved = spawnSync("git", ["rev-parse", "--verify", `${reference}^{commit}`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
   if (resolved.status !== 0 || resolved.stdout.trim() !== entry.sourceCommit) {
     throw new Error(`The source commit does not match tag ${entry.tag}.`);
   }
@@ -1768,9 +1624,7 @@ async function validateStoredFixture(
 }
 
 function findSingleCandidateDefinition(): FixtureDefinition {
-  const candidates = definitions.filter(
-    (definition) => definition.releaseStatus === "candidate",
-  );
+  const candidates = definitions.filter((definition) => definition.releaseStatus === "candidate");
   const candidate = candidates[0];
   if (candidates.length !== 1 || candidate === undefined) {
     throw new Error("The fixture definitions must have one candidate.");
@@ -1782,12 +1636,8 @@ async function generate(): Promise<void> {
   await mkdir(fixturesRoot, { recursive: true });
   const existing = await readManifest();
   const currentCandidate = findSingleCandidateDefinition();
-  const definitionsByTag = new Map(
-    definitions.map((definition) => [definition.tag, definition]),
-  );
-  const existingByTag = new Map(
-    existing.fixtures.map((entry) => [entry.tag, entry]),
-  );
+  const definitionsByTag = new Map(definitions.map((definition) => [definition.tag, definition]));
+  const existingByTag = new Map(existing.fixtures.map((entry) => [entry.tag, entry]));
   if (
     definitionsByTag.size !== definitions.length ||
     existingByTag.size !== existing.fixtures.length
@@ -1806,9 +1656,7 @@ async function generate(): Promise<void> {
       entry.tag !== currentCandidate.tag &&
       definitionsByTag.get(entry.tag)?.releaseStatus !== "official"
     ) {
-      throw new Error(
-        `Old candidate ${entry.tag} needs an explicit disposition.`,
-      );
+      throw new Error(`Old candidate ${entry.tag} needs an explicit disposition.`);
     }
   }
 
@@ -1851,9 +1699,7 @@ async function validate(): Promise<void> {
   }
   findSingleCandidateDefinition();
   for (const definition of definitions) {
-    const entry = manifest.fixtures.find(
-      (candidate) => candidate.tag === definition.tag,
-    );
+    const entry = manifest.fixtures.find((candidate) => candidate.tag === definition.tag);
     if (entry === undefined) {
       throw new Error(`The fixture manifest is missing ${definition.tag}.`);
     }

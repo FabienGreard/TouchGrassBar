@@ -9,10 +9,7 @@ import { components, internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
 import { env, type ActionCtx } from "./_generated/server";
 import authConfig from "./auth.config";
-import {
-  touchGrassSignup,
-  type TouchGrassPolicyPort,
-} from "./auth/touchgrassSignup";
+import { touchGrassSignup, type TouchGrassPolicyPort } from "./auth/touchgrassSignup";
 import { rejectAuthority } from "./model/authority";
 import { rateLimiter } from "./model/rateLimits";
 
@@ -22,9 +19,7 @@ declare const process: {
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
 
-function actionContext(
-  ctx: GenericCtx<DataModel>,
-): ActionCtx {
+function actionContext(ctx: GenericCtx<DataModel>): ActionCtx {
   if (!("runAction" in ctx)) {
     throw new Error("TouchGrass authentication requires an action context");
   }
@@ -39,35 +34,19 @@ function touchGrassPolicy(
 
   return {
     consumeSignupProof: (args) =>
-      action().runMutation(
-        internal.auth.touchgrassSignup.consumeSignupProof,
-        args,
-      ),
+      action().runMutation(internal.auth.touchgrassSignup.consumeSignupProof, args),
     finalizeCredentialAttempt: (args) =>
-      action().runMutation(
-        internal.auth.credentialAttempts.finalizeCredentialAttempt,
-        args,
-      ),
+      action().runMutation(internal.auth.credentialAttempts.finalizeCredentialAttempt, args),
     issueSignupProof: async (args) => {
-      await action().runMutation(
-        internal.auth.touchgrassSignup.issueSignupProof,
-        args,
-      );
+      await action().runMutation(internal.auth.touchgrassSignup.issueSignupProof, args);
     },
     limitProfilePreparation: async ({ ipKey }) => {
-      const limit = await rateLimiter.limit(
-        action(),
-        "profilePreparationByIp",
-        { key: ipKey },
-      );
+      const limit = await rateLimiter.limit(action(), "profilePreparationByIp", { key: ipKey });
       return limit.ok;
     },
     requestIpAddress,
     reserveCredentialAttempt: (args) =>
-      action().runMutation(
-        internal.auth.credentialAttempts.reserveCredentialAttempt,
-        args,
-      ),
+      action().runMutation(internal.auth.credentialAttempts.reserveCredentialAttempt, args),
   };
 }
 

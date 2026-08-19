@@ -25,15 +25,10 @@ async function packageName(): Promise<string> {
 }
 
 const suiteId =
-  process.env.TOUCHGRASS_VITEST_SUITE_ID ??
-  suiteByPackage[await packageName()] ??
-  "vitest";
+  process.env.TOUCHGRASS_VITEST_SUITE_ID ?? suiteByPackage[await packageName()] ?? "vitest";
 const childEnvironment = { ...process.env };
 
-if (
-  process.env.GITHUB_ACTIONS === "true" &&
-  process.env.GITHUB_STEP_SUMMARY
-) {
+if (process.env.GITHUB_ACTIONS === "true" && process.env.GITHUB_STEP_SUMMARY) {
   const reportDirectory = resolve(import.meta.dir, "..", ".vitest-reports");
   await mkdir(reportDirectory, { recursive: true });
   const reportPath = join(reportDirectory, `${suiteId}.md`);

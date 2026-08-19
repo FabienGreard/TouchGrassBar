@@ -7,9 +7,7 @@ import { useCopyText } from "@/components/use-copy-text";
 type ProfileEditorProps = {
   className?: string;
   displayName: string;
-  onDisplayNameChange?:
-    | ((displayName: string) => boolean | Promise<boolean> | void)
-    | undefined;
+  onDisplayNameChange?: ((displayName: string) => boolean | Promise<boolean> | void) | undefined;
   touchGrassId: string;
 };
 
@@ -19,8 +17,7 @@ function ProfileEditor(props: ProfileEditorProps) {
   const [saveFailed, setSaveFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const { copyStatus, copyText } = useCopyText(props.touchGrassId);
-  const initialLetter =
-    props.displayName.trim().slice(0, 1).toUpperCase() || "?";
+  const initialLetter = props.displayName.trim().slice(0, 1).toUpperCase() || "?";
 
   function beginEditing() {
     setDraftDisplayName(props.displayName);
@@ -36,11 +33,7 @@ function ProfileEditor(props: ProfileEditorProps) {
 
   async function saveDisplayName() {
     const displayName = draftDisplayName.trim();
-    if (
-      !displayName ||
-      displayName.length > 40 ||
-      props.onDisplayNameChange === undefined
-    ) {
+    if (!displayName || displayName.length > 40 || props.onDisplayNameChange === undefined) {
       return;
     }
     if (displayName === props.displayName) {
@@ -128,9 +121,7 @@ function ProfileEditor(props: ProfileEditorProps) {
       className={props.className}
       data-profile-state={saving ? "saving" : "saved"}
       displayName={
-        <strong className="mt-0.5 block truncate text-[13px]">
-          {props.displayName}
-        </strong>
+        <strong className="mt-0.5 block truncate text-[13px]">{props.displayName}</strong>
       }
       displayNameAction={
         props.onDisplayNameChange === undefined ? undefined : (
@@ -170,11 +161,7 @@ function ProfileEditor(props: ProfileEditorProps) {
             className="font-mono text-[8px] text-sheet-ink"
             data-copy-feedback={copyStatus}
           >
-            {copyStatus === "copied"
-              ? "Copied"
-              : copyStatus === "unavailable"
-                ? "Unavailable"
-                : ""}
+            {copyStatus === "copied" ? "Copied" : copyStatus === "unavailable" ? "Unavailable" : ""}
           </span>
         </span>
       }

@@ -4,10 +4,7 @@ import {
   createTauriUpdateAdapter,
   type TauriUpdateBindings,
 } from "@/native-state/tauri-update-adapter";
-import {
-  createUpdateDelivery,
-  type UpdatePort,
-} from "@/native-state/update-delivery";
+import { createUpdateDelivery, type UpdatePort } from "@/native-state/update-delivery";
 
 const idleState = {
   automaticChecksEnabled: true,
@@ -67,9 +64,7 @@ describe("update delivery", () => {
 
   test("queues a follow-up read when a notice arrives during a pending read", async () => {
     const native = port();
-    let completeFirstRead:
-      | ((outcome: { ok: true; value: unknown }) => void)
-      | undefined;
+    let completeFirstRead: ((outcome: { ok: true; value: unknown }) => void) | undefined;
     const firstRead = new Promise<{ ok: true; value: unknown }>((resolve) => {
       completeFirstRead = resolve;
     });
@@ -156,19 +151,11 @@ describe("Tauri update adapter", () => {
     expect(bindings.invoke).toHaveBeenNthCalledWith(3, "install_update");
     expect(bindings.invoke).toHaveBeenNthCalledWith(4, "retry_update");
     expect(bindings.invoke).toHaveBeenNthCalledWith(5, "open_latest_dmg");
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      6,
-      "open_source_repository",
-    );
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      7,
-      "set_automatic_update_checks",
-      { enabled: false },
-    );
-    expect(bindings.listen).toHaveBeenCalledWith(
-      "update-state-changed",
-      receive,
-    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(6, "open_source_repository");
+    expect(bindings.invoke).toHaveBeenNthCalledWith(7, "set_automatic_update_checks", {
+      enabled: false,
+    });
+    expect(bindings.listen).toHaveBeenCalledWith("update-state-changed", receive);
     if (subscription.ok) subscription.value();
     expect(stop).toHaveBeenCalledOnce();
   });

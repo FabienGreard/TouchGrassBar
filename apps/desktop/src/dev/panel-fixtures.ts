@@ -1,7 +1,4 @@
-import type {
-  CurrentProfile,
-  DoomerboardRow,
-} from "@/components/panel/doomerboard";
+import type { CurrentProfile, DoomerboardRow } from "@/components/panel/doomerboard";
 import type { UsagePresentation } from "@/components/panel/usage-overview";
 
 export const currentDoomerboardRows = [

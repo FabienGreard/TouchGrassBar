@@ -6,11 +6,7 @@ type PanelShellProps = ComponentProps<"main"> & {
   glass?: boolean;
 };
 
-function PanelShell({
-  className,
-  glass = false,
-  ...props
-}: PanelShellProps) {
+function PanelShell({ className, glass = false, ...props }: PanelShellProps) {
   return (
     <main
       className={cn(

@@ -10,13 +10,8 @@ const SUBSCRIPTION_SETUP_TIMEOUT_MS = 1_000;
 
 export type TauriSanitizedDesktopStateBindings = {
   invoke: (command: string) => Promise<unknown>;
-  listen: (
-    event: string,
-    receive: (event: { payload: unknown }) => void,
-  ) => Promise<StopListening>;
-  onFocusChanged: (
-    receive: (event: { payload: boolean }) => void,
-  ) => Promise<StopListening>;
+  listen: (event: string, receive: (event: { payload: unknown }) => void) => Promise<StopListening>;
+  onFocusChanged: (receive: (event: { payload: boolean }) => void) => Promise<StopListening>;
 };
 
 const defaultBindings: TauriSanitizedDesktopStateBindings = {
@@ -77,31 +72,24 @@ export function createTauriSanitizedDesktopStateAdapter(
       const stopAll = () => {
         closed = true;
         if (stopFocusChanges !== null) stopSafely(stopFocusChanges);
-        if (stopRevisionNotices !== null)
-          stopSafely(stopRevisionNotices);
+        if (stopRevisionNotices !== null) stopSafely(stopRevisionNotices);
         stopFocusChanges = null;
         stopRevisionNotices = null;
       };
 
       const setup = async () => {
         try {
-          stopRevisionNotices = await bindings.listen(
-            REVISION_NOTICE_EVENT,
-            (event) => {
-              if (!closed)
-                receive({ kind: "revision", notice: event.payload });
-            },
-          );
+          stopRevisionNotices = await bindings.listen(REVISION_NOTICE_EVENT, (event) => {
+            if (!closed) receive({ kind: "revision", notice: event.payload });
+          });
           if (closed) {
             stopAll();
             return invalidationStreamUnavailable();
           }
 
-          stopFocusChanges = await bindings.onFocusChanged(
-            ({ payload: focused }) => {
-              if (!closed && focused) receive({ kind: "surface-resumed" });
-            },
-          );
+          stopFocusChanges = await bindings.onFocusChanged(({ payload: focused }) => {
+            if (!closed && focused) receive({ kind: "surface-resumed" });
+          });
           if (closed) {
             stopAll();
             return invalidationStreamUnavailable();

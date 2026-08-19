@@ -17,9 +17,9 @@ describe("release command", () => {
   });
 
   test("uses the highest stable remote tag", () => {
-    expect(
-      latestStableTag(["v0.9.9", "v1.0.0-beta.1", "v1.0.0", "other"]),
-    ).toMatchObject({ tag: "v1.0.0" });
+    expect(latestStableTag(["v0.9.9", "v1.0.0-beta.1", "v1.0.0", "other"])).toMatchObject({
+      tag: "v1.0.0",
+    });
   });
 
   test("uses preview mode by default", () => {
@@ -40,9 +40,7 @@ describe("release command", () => {
       ["patch", "--unknown"],
       ["patch", "--execute", "--execute"],
     ]) {
-      expect(() => parseReleaseArguments(argumentsList)).toThrow(
-        "Use: bun run release",
-      );
+      expect(() => parseReleaseArguments(argumentsList)).toThrow("Use: bun run release");
     }
   });
 });

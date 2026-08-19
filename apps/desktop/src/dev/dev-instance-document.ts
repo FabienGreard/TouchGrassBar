@@ -1,14 +1,8 @@
 import type { DesktopSurface } from "@/App";
-import {
-  devAccentColors,
-  type DevInstance,
-} from "@/dev/dev-instance";
+import { devAccentColors, type DevInstance } from "@/dev/dev-instance";
 import "@/dev/dev-instance.css";
 
-function applyDevInstanceDocument(
-  instance: DevInstance,
-  surface: DesktopSurface,
-) {
+function applyDevInstanceDocument(instance: DevInstance, surface: DesktopSurface) {
   const surfaceName =
     surface === "panel"
       ? "TouchGrassBar"

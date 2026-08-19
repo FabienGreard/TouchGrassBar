@@ -235,9 +235,7 @@ describe("Settings delivery", () => {
       value: {
         ...settingsState,
         providers: settingsState.providers.map((provider) =>
-          provider.provider === "claude"
-            ? { ...provider, enabled: true }
-            : provider,
+          provider.provider === "claude" ? { ...provider, enabled: true } : provider,
         ),
       },
     });
@@ -280,11 +278,7 @@ describe("Settings delivery", () => {
     const confirmedProviders = (confirmed: "claude" | "codex") => {
       const providers = [];
       for (const provider of bothDisabled.providers) {
-        providers.push(
-          provider.provider === confirmed
-            ? { ...provider, enabled: true }
-            : provider,
-        );
+        providers.push(provider.provider === confirmed ? { ...provider, enabled: true } : provider);
       }
       return providers;
     };

@@ -81,23 +81,17 @@ describe("settings screen", () => {
     );
     expect(markup).not.toContain("Recover on this Mac");
     expect(markup).not.toContain("TG-RK-");
-    expect(developmentMarkup).toMatch(
-      /<button[^>]*>Enter Recovery Key…<\/button>/,
-    );
+    expect(developmentMarkup).toMatch(/<button[^>]*>Enter Recovery Key…<\/button>/);
     expect(developmentMarkup).not.toContain('type="password"');
     expect(readyMarkup).toContain("Stored in this Mac’s Keychain.");
-    expect(readyMarkup).toContain(
-      'aria-label="Copy TouchGrass ID TG-234567"',
-    );
+    expect(readyMarkup).toContain('aria-label="Copy TouchGrass ID TG-234567"');
     expect(readyMarkup).toContain('data-copy-status="idle"');
     expect(readyMarkup).toContain('data-copy-feedback="idle"');
     expect(readyMarkup).not.toContain(">Copy ID<");
     expect(readyMarkup).toContain('data-slot="input"');
     expect(readyMarkup).toContain('data-slot="masked-recovery-key"');
     expect(readyMarkup).toContain('value="••••••••••••K9m"');
-    expect(readyMarkup).toMatch(
-      /<button[^>]*data-variant="ghost"[^>]*>View<\/button>/,
-    );
+    expect(readyMarkup).toMatch(/<button[^>]*data-variant="ghost"[^>]*>View<\/button>/);
     expect(readyMarkup).not.toContain('aria-label="Copy Recovery Key"');
     expect(readyMarkup).not.toContain("2".repeat(48));
     expect(revealedMarkup).toContain('data-slot="revealed-recovery-key"');
@@ -105,32 +99,23 @@ describe("settings screen", () => {
     expect(revealedMarkup).toContain('autofocus=""');
     expect(revealedMarkup).toContain('rows="2"');
     expect(revealedMarkup).toContain('wrap="soft"');
-    expect(revealedMarkup).toContain("whitespace-pre-wrap break-all");
-    expect(revealedMarkup).toContain(
-      `>${"2".repeat(48)}</textarea>`,
-    );
+    expect(revealedMarkup).toContain("break-all whitespace-pre-wrap");
+    expect(revealedMarkup).toContain(`>${"2".repeat(48)}</textarea>`);
     expect(revealedMarkup).toContain('aria-label="Copy Recovery Key"');
     expect(revealedMarkup).toContain('data-copy-status="idle"');
     expect(revealedMarkup).toContain('data-copy-feedback="idle"');
-    expect(revealedMarkup).toMatch(
-      /<button[^>]*data-variant="ghost"[^>]*>Hide<\/button>/,
-    );
+    expect(revealedMarkup).toMatch(/<button[^>]*data-variant="ghost"[^>]*>Hide<\/button>/);
   });
 
   test("presents Profile Pending without inventing a public ID", () => {
     const markup = renderToStaticMarkup(
-      <ProfileSettings
-        pendingDisplayName="Fabien"
-        profileProvisioning="profile-pending"
-      />,
+      <ProfileSettings pendingDisplayName="Fabien" profileProvisioning="profile-pending" />,
     );
 
     expect(markup).toContain('data-profile-state="profile-pending"');
     expect(markup).toContain("Profile Pending");
     expect(markup).toContain(">Fabien<");
-    expect(markup).toContain(
-      "Assigned automatically when Profile services are available.",
-    );
+    expect(markup).toContain("Assigned automatically when Profile services are available.");
     expect(markup).not.toContain("#TG-");
   });
 
@@ -139,13 +124,9 @@ describe("settings screen", () => {
 
     expect(generalMarkup).toContain("Not connected in this build.");
     expect(generalMarkup).toContain("Update state unavailable.");
-    expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(
-      2,
-    );
+    expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(2);
     expect(generalMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Check now/);
-    expect(generalMarkup).toMatch(
-      /<button[^>]*disabled=""[^>]*>View on GitHub/,
-    );
+    expect(generalMarkup).toMatch(/<button[^>]*disabled=""[^>]*>View on GitHub/);
   });
 
   test("keeps update actions inside the existing compact Settings rows", () => {
@@ -191,9 +172,7 @@ describe("settings screen", () => {
         }}
       />,
     );
-    expect(requiredMarkup).toContain(
-      "Version 1.4.0 is required for online features.",
-    );
+    expect(requiredMarkup).toContain("Version 1.4.0 is required for online features.");
 
     const failedMarkup = renderToStaticMarkup(
       <SettingsScreen
@@ -252,12 +231,8 @@ describe("settings screen", () => {
 
     expect(markup).not.toContain('aria-label="Check Codex again"');
     expect(markup).not.toContain('aria-label="Check Claude again"');
-    expect(markup).toContain(
-      'aria-label="Show Codex and include its quota and usage in totals"',
-    );
-    expect(markup).toContain(
-      'aria-label="Show Claude and include its quota and usage in totals"',
-    );
+    expect(markup).toContain('aria-label="Show Codex and include its quota and usage in totals"');
+    expect(markup).toContain('aria-label="Show Claude and include its quota and usage in totals"');
   });
 
   test("keeps an excluded provider visible and available to enable", () => {
@@ -274,9 +249,7 @@ describe("settings screen", () => {
     expect(markup).toContain('data-provider-enabled="true"');
     expect(markup).toContain('data-provider-enabled="false"');
     expect(markup).toContain("Claude shows as unavailable in the panel.");
-    expect(markup).toContain(
-      "Its quota and usage are excluded from totals.",
-    );
+    expect(markup).toContain("Its quota and usage are excluded from totals.");
     expect(markup).toContain(">Excluded<");
     expect(markup).not.toContain("Show and include");
     expect(markup).not.toContain("Connect Claude");
@@ -291,16 +264,11 @@ describe("settings screen", () => {
 
   test("renders the provider collection supplied by Rust", () => {
     const markup = renderToStaticMarkup(
-      <SettingsScreen
-        providers={[providers[1]]}
-        section="providers"
-      />,
+      <SettingsScreen providers={[providers[1]]} section="providers" />,
     );
 
     expect(markup).toContain(">Claude<");
     expect(markup).not.toContain(">Codex<");
-    expect(markup.match(/data-slot="provider-connection-card"/g)).toHaveLength(
-      1,
-    );
+    expect(markup.match(/data-slot="provider-connection-card"/g)).toHaveLength(1);
   });
 });

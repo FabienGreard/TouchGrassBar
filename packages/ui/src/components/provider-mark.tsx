@@ -24,11 +24,7 @@ function ProviderMark({
   return (
     <img
       alt={alt}
-      className={cn(
-        "object-contain",
-        size === "default" ? "size-[19px]" : "size-6",
-        className,
-      )}
+      className={cn("object-contain", size === "default" ? "size-[19px]" : "size-6", className)}
       data-size={size}
       data-slot="provider-mark"
       src={providerLogos[provider]}

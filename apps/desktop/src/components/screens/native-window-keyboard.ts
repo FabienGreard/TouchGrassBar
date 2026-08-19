@@ -1,14 +1,7 @@
-type NativeWindowKeyboardEvent = Pick<
-  KeyboardEvent,
-  "key" | "metaKey" | "preventDefault"
->;
+type NativeWindowKeyboardEvent = Pick<KeyboardEvent, "key" | "metaKey" | "preventDefault">;
 
-function isNativeWindowDismissal(
-  event: Pick<NativeWindowKeyboardEvent, "key" | "metaKey">,
-) {
-  return (
-    event.key === "Escape" || (event.metaKey && event.key.toLowerCase() === "w")
-  );
+function isNativeWindowDismissal(event: Pick<NativeWindowKeyboardEvent, "key" | "metaKey">) {
+  return event.key === "Escape" || (event.metaKey && event.key.toLowerCase() === "w");
 }
 
 function createNativeWindowKeyboardHandler({

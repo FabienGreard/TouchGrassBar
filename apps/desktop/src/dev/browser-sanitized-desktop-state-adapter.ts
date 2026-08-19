@@ -15,10 +15,7 @@ import type { SanitizedDesktopStatePort } from "@/native-state/sanitized-desktop
 import type { BrowserFixtureName } from "@/dev/preview-scenario";
 
 type ProviderEnablement = Readonly<Record<CodingProvider, boolean>>;
-type ObservedUsageTotal = Exclude<
-  UsageTotal,
-  { availability: "unavailable" }
->;
+type ObservedUsageTotal = Exclude<UsageTotal, { availability: "unavailable" }>;
 
 const allProvidersEnabled: ProviderEnablement = {
   claude: true,
@@ -39,16 +36,12 @@ function unavailableUsage(): UsagePeriods {
 
 function previewSyncState(status: SyncStatus, observedAt: string): SyncState {
   return {
-    lastSuccessfulAt:
-      status === "synced" || status === "stale" ? observedAt : null,
+    lastSuccessfulAt: status === "synced" || status === "stale" ? observedAt : null,
     status,
   };
 }
 
-function unavailableFixture(
-  now: Date,
-  syncStatus: SyncStatus,
-): SanitizedDesktopState {
+function unavailableFixture(now: Date, syncStatus: SyncStatus): SanitizedDesktopState {
   const observedAt = now.toISOString();
   return {
     combinedUsage: unavailableUsage(),
@@ -102,9 +95,7 @@ function observedUsage(
     observedTokens,
     trendPercent,
     trendPreviousTokens:
-      previousPeriodRatio > 0
-        ? Math.round(observedTokens / previousPeriodRatio)
-        : null,
+      previousPeriodRatio > 0 ? Math.round(observedTokens / previousPeriodRatio) : null,
   };
 }
 
@@ -118,20 +109,12 @@ function combinedUsageTotal(totals: readonly UsageTotal[]): UsageTotal {
   if (firstObserved === undefined) return { availability: "unavailable" };
   if (observed.length === 1) return { ...firstObserved };
 
-  const observedTokens = observed.reduce(
-    (total, usage) => total + usage.observedTokens,
-    0,
-  );
+  const observedTokens = observed.reduce((total, usage) => total + usage.observedTokens, 0);
   const hasCompleteTrendEvidence = observed.every(
-    (usage) =>
-      usage.trendPreviousTokens !== null &&
-      usage.trendPreviousTokens !== undefined,
+    (usage) => usage.trendPreviousTokens !== null && usage.trendPreviousTokens !== undefined,
   );
   const trendPreviousTokens = hasCompleteTrendEvidence
-    ? observed.reduce(
-        (total, usage) => total + (usage.trendPreviousTokens ?? 0),
-        0,
-      )
+    ? observed.reduce((total, usage) => total + (usage.trendPreviousTokens ?? 0), 0)
     : null;
   const trendPercent =
     trendPreviousTokens === null || trendPreviousTokens === 0
@@ -172,14 +155,9 @@ function combinedUsageTotal(totals: readonly UsageTotal[]): UsageTotal {
 
   return {
     ...costFields,
-    availability: observed.some((usage) => usage.availability === "stale")
-      ? "stale"
-      : "current",
-    coverage: observed.every((usage) => usage.coverage === "complete")
-      ? "complete"
-      : "partial",
-    evidenceBasis:
-      evidenceBases.size === 1 ? firstObserved.evidenceBasis : "mixed",
+    availability: observed.some((usage) => usage.availability === "stale") ? "stale" : "current",
+    coverage: observed.every((usage) => usage.coverage === "complete") ? "complete" : "partial",
+    evidenceBasis: evidenceBases.size === 1 ? firstObserved.evidenceBasis : "mixed",
     observedAt: observed.reduce(
       (latest, usage) => (usage.observedAt > latest ? usage.observedAt : latest),
       firstObserved.observedAt,
@@ -190,9 +168,7 @@ function combinedUsageTotal(totals: readonly UsageTotal[]): UsageTotal {
   };
 }
 
-function combinedScanStatus(
-  statuses: readonly UsageScanStatus[],
-): UsageScanStatus {
+function combinedScanStatus(statuses: readonly UsageScanStatus[]): UsageScanStatus {
   if (statuses.includes("indexing")) return "indexing";
   if (statuses.includes("complete")) return "complete";
   return "unavailable";
@@ -254,96 +230,53 @@ function populatedFixture(
   syncStatus: SyncStatus,
 ): SanitizedDesktopState {
   const observedAt = now.toISOString();
-  const resetAfter = (minutes: number) =>
-    new Date(now.getTime() + minutes * 60_000).toISOString();
+  const resetAfter = (minutes: number) => new Date(now.getTime() + minutes * 60_000).toISOString();
   const codexUsage = {
     scanStatus: "complete",
     sevenDayScanStatus: "complete",
-    sevenDays: observedUsage(
-      availability,
-      observedAt,
-      71_400_000,
-      214.96,
-      14,
-      {
-        apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
-        apiEquivalentCostQuality: "reconciled",
-        coverage: "complete",
-        evidenceBasis: "provider-reported",
-      },
-    ),
+    sevenDays: observedUsage(availability, observedAt, 71_400_000, 214.96, 14, {
+      apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
+      apiEquivalentCostQuality: "reconciled",
+      coverage: "complete",
+      evidenceBasis: "provider-reported",
+    }),
     thirtyDayScanStatus: "complete",
-    thirtyDays: observedUsage(
-      availability,
-      observedAt,
-      284_600_000,
-      856.73,
-      22,
-      {
-        apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
-        apiEquivalentCostQuality: "reconciled",
-        coverage: "complete",
-        evidenceBasis: "provider-reported",
-      },
-    ),
-    today: observedUsage(
-      availability,
-      observedAt,
-      12_800_000,
-      38.61,
-      -8,
-      {
-        apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
-        apiEquivalentCostQuality: "reconciled",
-        coverage: "complete",
-        evidenceBasis: "provider-reported",
-      },
-    ),
+    thirtyDays: observedUsage(availability, observedAt, 284_600_000, 856.73, 22, {
+      apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
+      apiEquivalentCostQuality: "reconciled",
+      coverage: "complete",
+      evidenceBasis: "provider-reported",
+    }),
+    today: observedUsage(availability, observedAt, 12_800_000, 38.61, -8, {
+      apiEquivalentCostBasis: "openai-api-2026-08-09-v3",
+      apiEquivalentCostQuality: "reconciled",
+      coverage: "complete",
+      evidenceBasis: "provider-reported",
+    }),
     todayScanStatus: "complete",
   } satisfies UsagePeriods;
   const claudeUsage = {
     scanStatus: "complete",
     sevenDayScanStatus: "complete",
-    sevenDays: observedUsage(
-      availability,
-      observedAt,
-      8_000_000,
-      24.5,
-      25,
-      {
-        apiEquivalentCostBasis: "anthropic-standard-2026-08-07-v1",
-        apiEquivalentCostQuality: "local-only",
-        coverage: "partial",
-        evidenceBasis: "locally-derived",
-      },
-    ),
+    sevenDays: observedUsage(availability, observedAt, 8_000_000, 24.5, 25, {
+      apiEquivalentCostBasis: "anthropic-standard-2026-08-07-v1",
+      apiEquivalentCostQuality: "local-only",
+      coverage: "partial",
+      evidenceBasis: "locally-derived",
+    }),
     thirtyDayScanStatus: "complete",
-    thirtyDays: observedUsage(
-      availability,
-      observedAt,
-      20_000_000,
-      61.75,
-      0,
-      {
-        apiEquivalentCostBasis: "anthropic-standard-2026-08-07-v1",
-        apiEquivalentCostQuality: "local-only",
-        coverage: "partial",
-        evidenceBasis: "locally-derived",
-      },
-    ),
-    today: observedUsage(
-      availability,
-      observedAt,
-      2_000_000,
-      6.25,
-      -12.5,
-      {
-        apiEquivalentCostBasis: "anthropic-standard-2026-08-07-v1",
-        apiEquivalentCostQuality: "local-only",
-        coverage: "partial",
-        evidenceBasis: "locally-derived",
-      },
-    ),
+    thirtyDays: observedUsage(availability, observedAt, 20_000_000, 61.75, 0, {
+      apiEquivalentCostBasis: "anthropic-standard-2026-08-07-v1",
+      apiEquivalentCostQuality: "local-only",
+      coverage: "partial",
+      evidenceBasis: "locally-derived",
+    }),
+    today: observedUsage(availability, observedAt, 2_000_000, 6.25, -12.5, {
+      apiEquivalentCostBasis: "anthropic-standard-2026-08-07-v1",
+      apiEquivalentCostQuality: "local-only",
+      coverage: "partial",
+      evidenceBasis: "locally-derived",
+    }),
     todayScanStatus: "complete",
   } satisfies UsagePeriods;
 
@@ -422,8 +355,7 @@ function fixture(
   now: Date,
   syncStatus: SyncStatus,
 ): SanitizedDesktopState {
-  if (name === "current" || name === "update")
-    return populatedFixture("current", now, syncStatus);
+  if (name === "current" || name === "update") return populatedFixture("current", now, syncStatus);
   if (name === "stale") return populatedFixture("stale", now, syncStatus);
   return unavailableFixture(now, syncStatus);
 }
@@ -434,19 +366,14 @@ export function createBrowserSanitizedDesktopStateAdapter(
   providerEnablement: ProviderEnablement = allProvidersEnabled,
   syncStatus: SyncStatus = "unavailable",
 ): SanitizedDesktopStatePort {
-  const snapshot = projectProviderEnablement(
-    fixture(name, now(), syncStatus),
-    providerEnablement,
-  );
+  const snapshot = projectProviderEnablement(fixture(name, now(), syncStatus), providerEnablement);
 
   return {
     readSnapshot: () =>
       name === "loading"
         ? new Promise<never>(() => undefined)
         : Promise.resolve({ ok: true, value: snapshot } as const),
-    requestRefresh: () =>
-      Promise.resolve({ ok: true, value: { accepted: true } } as const),
-    subscribeToInvalidations: () =>
-      Promise.resolve({ ok: true, value: () => undefined } as const),
+    requestRefresh: () => Promise.resolve({ ok: true, value: { accepted: true } } as const),
+    subscribeToInvalidations: () => Promise.resolve({ ok: true, value: () => undefined } as const),
   };
 }

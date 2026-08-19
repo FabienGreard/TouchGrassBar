@@ -3,10 +3,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
 import { resolveDevInstance } from "@/dev/dev-instance";
-import {
-  DevFixtureSwitcher,
-  DevPreviewSwitcher,
-} from "@/dev/dev-preview-switcher";
+import { DevFixtureSwitcher, DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
 import { syncPreviewStatuses } from "@/dev/preview-scenario";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -24,10 +21,7 @@ describe("development preview switcher", () => {
     });
     applyDevInstanceDocument(devInstance, "panel");
     const markup = renderToStaticMarkup(
-      <DevFixtureSwitcher
-        activeFixture="current"
-        devInstance={devInstance}
-      />,
+      <DevFixtureSwitcher activeFixture="current" devInstance={devInstance} />,
     );
 
     expect(markup).toContain('aria-label="Development fixture"');
@@ -43,16 +37,9 @@ describe("development preview switcher", () => {
     expect(markup).not.toContain('aria-label="Hide development preview"');
     expect(markup).toContain('data-state="minimized"');
     expect(markup).toContain("Preview · #47 Identify dev instances");
-    expect(document.title).toBe(
-      "TouchGrassBar · #47 Identify dev instances",
-    );
-    expect(document.documentElement.dataset.devInstance).toBe(
-      devInstance.instanceKey,
-    );
-    expect(setProperty).toHaveBeenCalledWith(
-      "--dev-instance-accent",
-      expect.any(String),
-    );
+    expect(document.title).toBe("TouchGrassBar · #47 Identify dev instances");
+    expect(document.documentElement.dataset.devInstance).toBe(devInstance.instanceKey);
+    expect(setProperty).toHaveBeenCalledWith("--dev-instance-accent", expect.any(String));
     expect(markup).toContain("fixed");
     expect(markup).toContain("bg-menu-glass");
     expect(markup).not.toContain("bg-[#111713e8]");
@@ -67,17 +54,11 @@ describe("development preview switcher", () => {
     );
     vi.stubGlobal("window", { sessionStorage: { getItem } });
 
-    const markup = renderToStaticMarkup(
-      <DevFixtureSwitcher activeFixture="current" />,
-    );
+    const markup = renderToStaticMarkup(<DevFixtureSwitcher activeFixture="current" />);
 
-    expect(getItem).toHaveBeenCalledWith(
-      "touchgrass:dev-preview-panel-state",
-    );
+    expect(getItem).toHaveBeenCalledWith("touchgrass:dev-preview-panel-state");
     expect(markup).toContain('data-state="expanded"');
-    expect(markup).toContain(
-      'style="bottom:auto;left:88px;right:auto;top:96px"',
-    );
+    expect(markup).toContain('style="bottom:auto;left:88px;right:auto;top:96px"');
     expect(markup).toContain('aria-label="Minimize development preview"');
   });
 
@@ -124,19 +105,13 @@ describe("development preview switcher", () => {
 
   test("offers each safe sync status without changing the provider fixture", () => {
     const markup = renderToStaticMarkup(
-      <DevPreviewSwitcher
-        activeFixture="stale"
-        activeSurface="panel"
-        activeSyncStatus="pending"
-      />,
+      <DevPreviewSwitcher activeFixture="stale" activeSurface="panel" activeSyncStatus="pending" />,
     );
 
     expect(markup).toContain('aria-label="Sync preview states"');
     expect(markup).toContain('href="?fixture=current&amp;syncStatus=pending"');
     for (const status of syncPreviewStatuses) {
-      expect(markup).toContain(
-        `href="?fixture=stale&amp;syncStatus=${status.key}"`,
-      );
+      expect(markup).toContain(`href="?fixture=stale&amp;syncStatus=${status.key}"`);
       expect(markup).toContain(`>${status.label}<`);
     }
     expect(markup).not.toContain("syncReason");

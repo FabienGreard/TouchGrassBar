@@ -5,10 +5,7 @@ import { useEffect, useRef } from "react";
 import { useCopyText } from "@/components/use-copy-text";
 
 import { ProfileEditor } from "./profile-editor";
-import {
-  focusAndSelectRecoveryInput,
-  maskRecoveryKeySuffix,
-} from "./recovery-key-input";
+import { focusAndSelectRecoveryInput, maskRecoveryKeySuffix } from "./recovery-key-input";
 
 type SettingsProfile = {
   displayName: string;
@@ -27,9 +24,7 @@ function ProfileSettings({
   recoveryKey = null,
   revealingRecoveryKey = false,
 }: {
-  onDisplayNameChange?:
-    | ((displayName: string) => boolean | Promise<boolean> | void)
-    | undefined;
+  onDisplayNameChange?: ((displayName: string) => boolean | Promise<boolean> | void) | undefined;
   onHideRecoveryKey?: (() => void) | undefined;
   onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
@@ -46,9 +41,7 @@ function ProfileSettings({
   const { copyStatus, copyText } = useCopyText(recoveryKey ?? "");
   const recoveryKeyUnavailable =
     revealingRecoveryKey ||
-    (recoveryKeyVisible
-      ? onHideRecoveryKey === undefined
-      : onRevealRecoveryKey === undefined);
+    (recoveryKeyVisible ? onHideRecoveryKey === undefined : onRevealRecoveryKey === undefined);
 
   useEffect(() => {
     if (recoveryKey === null || onHideRecoveryKey === undefined) return;
@@ -72,14 +65,10 @@ function ProfileSettings({
             avatarLabel={pendingInitial}
             data-profile-state="profile-pending"
             displayName={
-              <strong className="mt-0.5 block truncate text-[13px]">
-                {pendingName}
-              </strong>
+              <strong className="mt-0.5 block truncate text-[13px]">{pendingName}</strong>
             }
             touchGrassId={
-              <strong className="mt-1 block font-mono text-[10px]">
-                Profile Pending
-              </strong>
+              <strong className="mt-1 block font-mono text-[10px]">Profile Pending</strong>
             }
             touchGrassIdDescription="Assigned automatically when Profile services are available. Local provider utility remains available."
           />
@@ -109,9 +98,7 @@ function ProfileSettings({
         <div className="grid gap-3">
           {profile === null || profile.recoveryKeySuffix === null ? (
             <div data-profile-recovery-key-state="unavailable">
-              <strong className="block text-[12px]">
-                Recovery Key unavailable
-              </strong>
+              <strong className="block text-[12px]">Recovery Key unavailable</strong>
               <small className="mt-0.5 block text-[9px] text-sheet-muted">
                 {profile === null
                   ? "Available when this Profile is ready."
@@ -133,7 +120,7 @@ function ProfileSettings({
                     aria-label="Recovery Key"
                     autoComplete="off"
                     autoFocus
-                    className="block min-h-14 w-full resize-none overflow-hidden whitespace-pre-wrap break-all border-0 bg-transparent px-4 pt-3 pb-1 font-mono text-[11px] leading-5 tracking-[0.04em] text-sheet-ink outline-none"
+                    className="block min-h-14 w-full resize-none overflow-hidden border-0 bg-transparent px-4 pt-3 pb-1 font-mono text-[11px] leading-5 tracking-[0.04em] break-all whitespace-pre-wrap text-sheet-ink outline-none"
                     disabled={recoveryKeyUnavailable}
                     onFocus={(event) => event.currentTarget.select()}
                     readOnly
@@ -180,10 +167,7 @@ function ProfileSettings({
                   </div>
                 </div>
               ) : (
-                <div
-                  className="relative mt-3"
-                  data-slot="masked-recovery-key"
-                >
+                <div className="relative mt-3" data-slot="masked-recovery-key">
                   <Input
                     aria-label="Recovery Key"
                     autoComplete="off"
@@ -213,12 +197,9 @@ function ProfileSettings({
           )}
           <div className="flex items-center justify-between gap-6 border-t border-sheet-line pt-4">
             <span>
-              <strong className="block text-[11px]">
-                Recover from another Mac
-              </strong>
+              <strong className="block text-[11px]">Recover from another Mac</strong>
               <small className="mt-0.5 block text-[9px] leading-4 text-sheet-muted">
-                Enter the Recovery Key stored on your other Mac to restore its
-                Profile here.
+                Enter the Recovery Key stored on your other Mac to restore its Profile here.
               </small>
             </span>
             <Button

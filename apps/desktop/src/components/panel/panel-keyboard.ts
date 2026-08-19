@@ -8,19 +8,13 @@ type PanelKeyboardHandlerOptions = {
 function resolvePanelKeyboardCommand(
   event: Pick<KeyboardEvent, "key" | "metaKey">,
 ): PanelKeyboardCommand | null {
-  if (
-    event.key === "Escape" ||
-    (event.metaKey && event.key.toLowerCase() === "w")
-  )
+  if (event.key === "Escape" || (event.metaKey && event.key.toLowerCase() === "w"))
     return "hide_panel";
   if (event.metaKey && event.key === ",") return "open_settings";
   return null;
 }
 
-function createPanelKeyboardHandler({
-  dispatch,
-  enabled,
-}: PanelKeyboardHandlerOptions) {
+function createPanelKeyboardHandler({ dispatch, enabled }: PanelKeyboardHandlerOptions) {
   return (event: Pick<KeyboardEvent, "key" | "metaKey">) => {
     if (!enabled) return;
     const command = resolvePanelKeyboardCommand(event);

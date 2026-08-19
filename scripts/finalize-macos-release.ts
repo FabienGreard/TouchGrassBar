@@ -16,11 +16,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  createLatestManifest,
-  parseStableReleaseTag,
-  releaseAssetNames,
-} from "./release-contract";
+import { createLatestManifest, parseStableReleaseTag, releaseAssetNames } from "./release-contract";
 
 type ArtifactRecord = {
   bytes: number;
@@ -113,8 +109,7 @@ function validateUpdaterArchiveEntries(entries: string[]) {
         !entry.startsWith("/") &&
         !components.includes("..") &&
         !components.includes(".") &&
-        (entry === "TouchGrassBar.app" ||
-          entry.startsWith("TouchGrassBar.app/"))
+        (entry === "TouchGrassBar.app" || entry.startsWith("TouchGrassBar.app/"))
       );
     });
   if (!valid) throw new Error("Updater archive contents are invalid.");
@@ -224,11 +219,7 @@ function createTrustReceipt({
   };
 }
 
-function commandText(
-  executable: string,
-  argumentsList: string[],
-  failureMessage: string,
-) {
+function commandText(executable: string, argumentsList: string[], failureMessage: string) {
   const result = spawnSync(executable, argumentsList, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -237,11 +228,7 @@ function commandText(
   return `${result.stdout}${result.stderr}`.trim();
 }
 
-function commandPasses(
-  executable: string,
-  argumentsList: string[],
-  failureMessage: string,
-) {
+function commandPasses(executable: string, argumentsList: string[], failureMessage: string) {
   const result = spawnSync(executable, argumentsList, { stdio: "ignore" });
   if (result.status !== 0) throw new Error(failureMessage);
 }
@@ -261,9 +248,7 @@ function artifactRecord(filePath: string): ArtifactRecord {
 }
 
 function extractCertificateSha256(appPath: string, temporaryDirectory: string) {
-  const certificateDirectory = mkdtempSync(
-    join(temporaryDirectory, "certificate-"),
-  );
+  const certificateDirectory = mkdtempSync(join(temporaryDirectory, "certificate-"));
   const certificatePrefix = join(certificateDirectory, "leaf-");
   commandPasses(
     "/usr/bin/codesign",
@@ -393,14 +378,7 @@ function verifyDmg(dmgPath: string, expectedIdentity: string) {
   );
   commandPasses(
     "/usr/sbin/spctl",
-    [
-      "--assess",
-      "--type",
-      "open",
-      "--context",
-      "context:primary-signature",
-      dmgPath,
-    ],
+    ["--assess", "--type", "open", "--context", "context:primary-signature", dmgPath],
     "The DMG Gatekeeper assessment failed.",
   );
 }
@@ -493,11 +471,7 @@ function verifyDmgApp(
   } catch (error) {
     verificationError = error;
   }
-  const detached = spawnSync(
-    "/usr/bin/hdiutil",
-    ["detach", mountPoint],
-    { stdio: "ignore" },
-  );
+  const detached = spawnSync("/usr/bin/hdiutil", ["detach", mountPoint], { stdio: "ignore" });
   if (detached.status !== 0) {
     throw new Error("The release DMG cleanup failed.");
   }
@@ -533,21 +507,13 @@ function workflowActionVersions() {
 function toolchainVersions() {
   return {
     bun: commandText("bun", ["--version"], "The Bun version is unavailable."),
-    cargo: commandText(
-      "cargo",
-      ["--version"],
-      "The Cargo version is unavailable.",
-    ),
+    cargo: commandText("cargo", ["--version"], "The Cargo version is unavailable."),
     notarytool: commandText(
       "/usr/bin/xcrun",
       ["notarytool", "--version"],
       "The notarytool version is unavailable.",
     ),
-    rustc: commandText(
-      "rustc",
-      ["--version"],
-      "The Rust version is unavailable.",
-    ),
+    rustc: commandText("rustc", ["--version"], "The Rust version is unavailable."),
     xcode: commandText(
       "/usr/bin/xcodebuild",
       ["-version"],
@@ -589,9 +555,7 @@ function finalizeRelease() {
     Bun.env.GITHUB_ACTIONS !== "true" ||
     Bun.env.GITHUB_REF_TYPE !== "tag" ||
     Bun.env.GITHUB_SHA !== commit ||
-    !Bun.env.GITHUB_WORKFLOW_REF?.split("@", 1)[0]?.endsWith(
-      "/.github/workflows/release.yml",
-    )
+    !Bun.env.GITHUB_WORKFLOW_REF?.split("@", 1)[0]?.endsWith("/.github/workflows/release.yml")
   ) {
     throw new Error("Release finalization is restricted to the tagged arm64 workflow.");
   }
@@ -599,20 +563,10 @@ function finalizeRelease() {
   const names = releaseAssetNames(tag);
   const appPath = join(bundleRoot, "macos", "TouchGrassBar.app");
   const dmgPath = join(bundleRoot, "dmg", names.dmg);
-  const rawUpdaterArchivePath = join(
-    bundleRoot,
-    "macos",
-    "TouchGrassBar.app.tar.gz",
-  );
+  const rawUpdaterArchivePath = join(bundleRoot, "macos", "TouchGrassBar.app.tar.gz");
   const rawUpdaterSignaturePath = `${rawUpdaterArchivePath}.sig`;
-  const configurationPath = join(
-    outputDirectory,
-    "release-configuration.json",
-  );
-  const databaseCompatibilityPath = join(
-    outputDirectory,
-    names.databaseCompatibility,
-  );
+  const configurationPath = join(outputDirectory, "release-configuration.json");
+  const databaseCompatibilityPath = join(outputDirectory, names.databaseCompatibility);
   for (const expectedPath of [
     appPath,
     dmgPath,
@@ -628,12 +582,7 @@ function finalizeRelease() {
 
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "touchgrass-release."));
   try {
-    const trustedApp = verifyApp(
-      appPath,
-      expectedIdentity,
-      version,
-      temporaryDirectory,
-    );
+    const trustedApp = verifyApp(appPath, expectedIdentity, version, temporaryDirectory);
     verifyUpdaterSignature(rawUpdaterArchivePath, rawUpdaterSignaturePath);
     verifyArchiveApp(
       rawUpdaterArchivePath,
@@ -644,13 +593,7 @@ function finalizeRelease() {
     );
     notarizeDmg(dmgPath);
     verifyDmg(dmgPath, expectedIdentity);
-    verifyDmgApp(
-      dmgPath,
-      trustedApp,
-      expectedIdentity,
-      version,
-      temporaryDirectory,
-    );
+    verifyDmgApp(dmgPath, trustedApp, expectedIdentity, version, temporaryDirectory);
 
     const updaterArchivePath = join(outputDirectory, names.updaterArchive);
     const updaterSignaturePath = join(outputDirectory, names.updaterSignature);
@@ -685,14 +628,8 @@ function finalizeRelease() {
       mode: 0o644,
     });
     const trustArtifacts = [...primaryArtifacts, artifactRecord(checksumsPath)];
-    const configuration = JSON.parse(
-      readFileSync(configurationPath, "utf8"),
-    ) as unknown;
-    const governancePath = join(
-      workspaceRoot,
-      ".github",
-      "release-governance.json",
-    );
+    const configuration = JSON.parse(readFileSync(configurationPath, "utf8")) as unknown;
+    const governancePath = join(workspaceRoot, ".github", "release-governance.json");
     const governance = JSON.parse(readFileSync(governancePath, "utf8")) as unknown;
     const receipt = createTrustReceipt({
       actions: workflowActionVersions(),
@@ -710,20 +647,16 @@ function finalizeRelease() {
       toolchains: toolchainVersions(),
       workflowRunId,
     });
-    writeFileSync(
-      join(outputDirectory, names.receipt),
-      `${JSON.stringify(receipt, null, 2)}\n`,
-      { encoding: "utf8", mode: 0o644 },
-    );
-    writeFileSync(
-      join(outputDirectory, "release-notes.md"),
-      releaseNotes(tag, trustArtifacts),
-      { encoding: "utf8", mode: 0o644 },
-    );
+    writeFileSync(join(outputDirectory, names.receipt), `${JSON.stringify(receipt, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+    writeFileSync(join(outputDirectory, "release-notes.md"), releaseNotes(tag, trustArtifacts), {
+      encoding: "utf8",
+      mode: 0o644,
+    });
     rmSync(configurationPath, { force: true });
-    console.log(
-      `Release trust: PASS (${trustArtifacts.length} checked artifacts, arm64).`,
-    );
+    console.log(`Release trust: PASS (${trustArtifacts.length} checked artifacts, arm64).`);
   } finally {
     rmSync(temporaryDirectory, { force: true, recursive: true });
   }

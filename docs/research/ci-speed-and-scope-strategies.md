@@ -29,11 +29,11 @@ Do not add a shared dependency-install job. Add a Cargo dependency cache first. 
 
 Use different proof for each event:
 
-| Event | Code quality | Native proof | Bundle and release proof |
-| --- | --- | --- | --- |
-| Pull request | Full repository quality on Ubuntu | `cargo fmt`, `cargo test`, and `cargo clippy` on macOS | None |
-| Push to `main` | Full repository quality on Ubuntu | Full native checks on macOS | Unsigned app bundle |
-| Version tag | Verify that the exact tag commit has successful `main` CI | Do not repeat broad tests | Build, sign, notarize, publish a draft, then do a manual visual review |
+| Event          | Code quality                                              | Native proof                                           | Bundle and release proof                                               |
+| -------------- | --------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| Pull request   | Full repository quality on Ubuntu                         | `cargo fmt`, `cargo test`, and `cargo clippy` on macOS | None                                                                   |
+| Push to `main` | Full repository quality on Ubuntu                         | Full native checks on macOS                            | Unsigned app bundle                                                    |
+| Version tag    | Verify that the exact tag commit has successful `main` CI | Do not repeat broad tests                              | Build, sign, notarize, publish a draft, then do a manual visual review |
 
 This direction contains no Playwright, screenshot, PNG, or browser-preview job. Unit and exact layout-invariant tests remain in Code quality. A person checks the built macOS app before a draft release becomes public.
 
@@ -41,11 +41,11 @@ This direction contains no Playwright, screenshot, PNG, or browser-preview job. 
 
 The install step is small compared with the current work:
 
-| Hosted run | Bun install | Code quality | Rust format, test, and lint | Unsigned bundle | Whole job |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| [Run 30866644712](https://github.com/FabienGreard/TouchGrassBar/actions/runs/30866644712) | 6 s | 94 s | 47 s | 147 s | 311 s |
-| [Run 30867212021](https://github.com/FabienGreard/TouchGrassBar/actions/runs/30867212021) | 7 s | 110 s | 60 s | 177 s | 373 s |
-| [Run 30957867979](https://github.com/FabienGreard/TouchGrassBar/actions/runs/30957867979) | 9 s | 167 s | Not reached | Not reached | Failed earlier |
+| Hosted run                                                                                | Bun install | Code quality | Rust format, test, and lint | Unsigned bundle |      Whole job |
+| ----------------------------------------------------------------------------------------- | ----------: | -----------: | --------------------------: | --------------: | -------------: |
+| [Run 30866644712](https://github.com/FabienGreard/TouchGrassBar/actions/runs/30866644712) |         6 s |         94 s |                        47 s |           147 s |          311 s |
+| [Run 30867212021](https://github.com/FabienGreard/TouchGrassBar/actions/runs/30867212021) |         7 s |        110 s |                        60 s |           177 s |          373 s |
+| [Run 30957867979](https://github.com/FabienGreard/TouchGrassBar/actions/runs/30957867979) |         9 s |        167 s |                 Not reached |     Not reached | Failed earlier |
 
 The local `node_modules` tree is about 948 MiB. Passing that tree between jobs would exchange several seconds of installation for a large upload, download, and extraction path.
 

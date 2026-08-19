@@ -83,9 +83,7 @@ describe("provider card", () => {
   });
 
   test("shows cached quota without a loading pulse", () => {
-    const markup = renderToStaticMarkup(
-      <ProviderCard presentation={cachedProvider()} />,
-    );
+    const markup = renderToStaticMarkup(<ProviderCard presentation={cachedProvider()} />);
 
     expect(markup).not.toContain("aria-busy");
     expect(markup).not.toContain("animate-pulse");
@@ -94,9 +92,7 @@ describe("provider card", () => {
   });
 
   test("does not show a loading pulse when only cached Observed Usage is available", () => {
-    const markup = renderToStaticMarkup(
-      <ProviderCard presentation={cachedUsageProvider()} />,
-    );
+    const markup = renderToStaticMarkup(<ProviderCard presentation={cachedUsageProvider()} />);
 
     expect(markup).not.toContain("aria-busy");
     expect(markup).not.toContain("animate-pulse");

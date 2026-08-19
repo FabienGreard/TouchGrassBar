@@ -40,10 +40,7 @@ function localTime(iso: string) {
 
 async function deliveredBrowserFixture(name: BrowserFixtureName) {
   const delivery = createSanitizedDesktopStateDelivery(
-    createBrowserSanitizedDesktopStateAdapter(
-      name,
-      () => new Date("2026-08-06T13:45:00.000Z"),
-    ),
+    createBrowserSanitizedDesktopStateAdapter(name, () => new Date("2026-08-06T13:45:00.000Z")),
   );
 
   let stop: (() => void) | undefined;
@@ -112,9 +109,7 @@ describe("panel states", () => {
     expect(markup).toContain("h-[180px]");
     expect(markup).toContain("Friends");
     expect(markup).toContain("Global");
-    expect(markup).toMatch(
-      /aria-label="Select Leaderboard period"[^>]*>Today<\/button>/,
-    );
+    expect(markup).toMatch(/aria-label="Select Leaderboard period"[^>]*>Today<\/button>/);
     expect(markup).toContain("Combined");
     expect(markup).toContain('aria-label="Select Leaderboard period"');
     expect(markup).toContain('aria-label="Select Leaderboard provider"');
@@ -124,9 +119,7 @@ describe("panel states", () => {
     expect(markup.match(/data-slot="quota-progress"/g)).toHaveLength(2);
     expect(markup).not.toContain("Weekly limit");
     expect(markup).not.toContain("5-hour limit");
-    expect(
-      markup.match(/data-provider-availability="unavailable"/g),
-    ).toHaveLength(2);
+    expect(markup.match(/data-provider-availability="unavailable"/g)).toHaveLength(2);
     expect(markup).not.toContain("1970-01-01");
     expect(markup).not.toMatch(/>(?:laura|nora|max)<|#TG-/i);
     expect(markup).not.toContain('data-slot="skeleton"');
@@ -157,9 +150,7 @@ describe("panel states", () => {
     expect(markup).toContain('aria-busy="true"');
     expect(markup).not.toContain("Weekly limit");
     expect(markup).not.toContain("5-hour limit");
-    expect(
-      markup.match(/data-provider-availability="unavailable"/g),
-    ).toHaveLength(2);
+    expect(markup.match(/data-provider-availability="unavailable"/g)).toHaveLength(2);
     expect(markup).not.toContain("1970-01-01");
     expect(markup).toContain("Leaderboard unavailable");
     expect(markup).not.toContain('data-slot="provider-quota-lane"');
@@ -257,9 +248,7 @@ describe("panel states", () => {
       />,
     );
     expect(retryMarkup).toContain('aria-label="Retry required update"');
-    expect(retryMarkup).not.toContain(
-      'aria-label="Install update and relaunch"',
-    );
+    expect(retryMarkup).not.toContain('aria-label="Install update and relaunch"');
   });
 
   test("renders the populated development fixture without changing the production fallback", async () => {
@@ -284,9 +273,7 @@ describe("panel states", () => {
     expect(markup).toContain("#TG-LOOP55");
     expect(markup).toContain("#TG-7K4P9D");
     expect(markup).toContain("Fabien#TG-7K4P9D");
-    expect(markup).toContain(
-      'aria-label="Copy current user profile Fabien#TG-7K4P9D"',
-    );
+    expect(markup).toContain('aria-label="Copy current user profile Fabien#TG-7K4P9D"');
     expect(markup).toContain('data-copy-status="idle"');
     expect(markup).not.toContain("data-copy-indicator");
     expect(markup).toContain('data-copy-feedback="idle"');
@@ -308,24 +295,16 @@ describe("panel states", () => {
     expect(markup).toContain(
       `Weekly limit · 4d 10h left · ${localDateTime("2026-08-10T23:45:00.000Z")}`,
     );
-    expect(markup).toContain(
-      `5-hour limit · resets ${localTime("2026-08-06T18:40:00.000Z")}`,
-    );
+    expect(markup).toContain(`5-hour limit · resets ${localTime("2026-08-06T18:40:00.000Z")}`);
     expect(markup).toContain(
       `Weekly limit · 6d 13h left · ${localDateTime("2026-08-13T03:00:00.000Z")}`,
     );
-    expect(markup).toContain(
-      `5-hour limit · resets ${localTime("2026-08-06T18:20:00.000Z")}`,
-    );
+    expect(markup).toContain(`5-hour limit · resets ${localTime("2026-08-06T18:20:00.000Z")}`);
     expect(markup).toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-quota-tone="codex"/g)).toHaveLength(2);
     expect(markup.match(/data-quota-tone="claude"/g)).toHaveLength(2);
-    expect(markup).toContain(
-      'aria-label="Codex quota current, 74 percent remaining"',
-    );
-    expect(markup).toContain(
-      'aria-label="5-hour limit quota current, 62 percent remaining"',
-    );
+    expect(markup).toContain('aria-label="Codex quota current, 74 percent remaining"');
+    expect(markup).toContain('aria-label="5-hour limit quota current, 62 percent remaining"');
     expect(markup).toContain('data-quota-value="74"');
     expect(markup).toContain('data-quota-value="18"');
     expect(markup).toContain("--quota-codex-low");
@@ -420,9 +399,7 @@ describe("panel states", () => {
     );
 
     expect(currentMarkup.match(/data-quota-tone="claude"/g)).toHaveLength(2);
-    expect(currentMarkup).toContain(
-      'aria-label="Claude quota current, 18 percent remaining"',
-    );
+    expect(currentMarkup).toContain('aria-label="Claude quota current, 18 percent remaining"');
     expect(currentMarkup).toContain(
       'aria-label="5-hour limit quota current, 43 percent remaining"',
     );
@@ -430,9 +407,7 @@ describe("panel states", () => {
   });
 
   test("shows Claude-only observed usage in all accessible metric cards", async () => {
-    const claudeOnlyState = structuredClone(
-      await deliveredBrowserFixture("current"),
-    );
+    const claudeOnlyState = structuredClone(await deliveredBrowserFixture("current"));
     const unavailableUsage: UsagePeriods = {
       scanStatus: "unavailable",
       sevenDayScanStatus: "unavailable",
@@ -486,12 +461,8 @@ describe("panel states", () => {
       },
       todayScanStatus: "complete",
     };
-    const codex = claudeOnlyState.providers.find(
-      (provider) => provider.provider === "codex",
-    );
-    const claude = claudeOnlyState.providers.find(
-      (provider) => provider.provider === "claude",
-    );
+    const codex = claudeOnlyState.providers.find((provider) => provider.provider === "codex");
+    const claude = claudeOnlyState.providers.find((provider) => provider.provider === "claude");
     if (!codex || !claude) throw new Error("provider fixture unavailable");
     codex.usage = structuredClone(unavailableUsage);
     claude.usage = structuredClone(claudeUsage);
@@ -513,15 +484,9 @@ describe("panel states", () => {
     expect(markup).toContain(">2M</strong>");
     expect(markup).toContain(">8M</strong>");
     expect(markup).toContain(">20M</strong>");
-    expect(markup).toContain(
-      'aria-label="Down 12.5 percent from the previous day"',
-    );
-    expect(markup).toContain(
-      'aria-label="Up 25 percent from the previous 7 days"',
-    );
-    expect(markup).toContain(
-      'aria-label="No change from the previous 30 days"',
-    );
+    expect(markup).toContain('aria-label="Down 12.5 percent from the previous day"');
+    expect(markup).toContain('aria-label="Up 25 percent from the previous 7 days"');
+    expect(markup).toContain('aria-label="No change from the previous 30 days"');
     expect(markup).toContain(
       `aria-label="≈ $6.25, locally observed token evidence, partial period coverage, cost estimated from local pricing evidence, pricing basis ${pricingBasis}"`,
     );
@@ -578,18 +543,14 @@ describe("panel states", () => {
     currentState.combinedUsage.scanStatus = "indexing";
     currentState.combinedUsage.todayScanStatus = "indexing";
     const today = currentState.combinedUsage.today;
-    if (today.availability === "unavailable")
-      throw new Error("fixture unavailable");
+    if (today.availability === "unavailable") throw new Error("fixture unavailable");
     today.apiEquivalentCostUsd = null;
     today.apiEquivalentCostBasis = null;
     today.apiEquivalentCostQuality = null;
     today.apiEquivalentCostCoveragePercent = null;
     const sevenDays = currentState.combinedUsage.sevenDays;
     const thirtyDays = currentState.combinedUsage.thirtyDays;
-    if (
-      sevenDays.availability === "unavailable" ||
-      thirtyDays.availability === "unavailable"
-    )
+    if (sevenDays.availability === "unavailable" || thirtyDays.availability === "unavailable")
       throw new Error("fixture unavailable");
     sevenDays.apiEquivalentCostQuality = "modeled";
     sevenDays.apiEquivalentCostCoveragePercent = 80;
@@ -662,12 +623,8 @@ describe("panel states", () => {
     );
 
     expect(markup).toContain('data-provider-availability="stale"');
-    expect(markup).toContain(
-      'aria-label="Codex quota stale, 74 percent remaining"',
-    );
-    expect(markup).toContain(
-      'aria-label="5-hour limit quota stale, 62 percent remaining"',
-    );
+    expect(markup).toContain('aria-label="Codex quota stale, 74 percent remaining"');
+    expect(markup).toContain('aria-label="5-hour limit quota stale, 62 percent remaining"');
     expect(markup).toContain(
       `Weekly limit · 4d 10h left · ${localDateTime("2026-08-10T23:45:00.000Z")} · stale`,
     );
@@ -682,9 +639,7 @@ describe("panel states", () => {
     const markup = renderToStaticMarkup(<TokenmaxxersEmpty />);
 
     expect(markup).toContain("Your Leaderboard is lonely");
-    expect(markup).toContain(
-      "Add Tokenmaxxers by TouchGrass ID to compare scores.",
-    );
+    expect(markup).toContain("Add Tokenmaxxers by TouchGrass ID to compare scores.");
     expect(markup).toContain("Add a Tokenmaxxer");
     expect(markup).toContain('data-icon-provider="hugeicons"');
     expect(markup).toContain('data-icon-tone="default"');
@@ -694,9 +649,7 @@ describe("panel states", () => {
   });
 
   test("reports when a ready Global board has no synchronized scores", () => {
-    const markup = renderToStaticMarkup(
-      <Doomerboard currentProfile={currentProfile} rows={[]} />,
-    );
+    const markup = renderToStaticMarkup(<Doomerboard currentProfile={currentProfile} rows={[]} />);
 
     expect(markup).toContain('aria-label="Leaderboard unavailable"');
     expect(markup).toContain("Profile and synchronized scores are not ready.");
@@ -738,14 +691,10 @@ describe("panel states", () => {
 
       expect(markup).toContain(`aria-label="${boardLabel}"`);
       expect(markup).toMatch(
-        new RegExp(
-          `aria-label="Select Leaderboard provider"[^>]*>${providerLabel}</button>`,
-        ),
+        new RegExp(`aria-label="Select Leaderboard provider"[^>]*>${providerLabel}</button>`),
       );
       expect(markup).toMatch(
-        new RegExp(
-          `aria-label="Select Leaderboard period"[^>]*>${periodLabel}</button>`,
-        ),
+        new RegExp(`aria-label="Select Leaderboard period"[^>]*>${periodLabel}</button>`),
       );
       expect(markup).not.toContain("Scores are unavailable for this selection.");
     }
@@ -769,9 +718,7 @@ describe("panel states", () => {
   });
 
   test("does not infer the current Profile from fixture conventions", () => {
-    const markup = renderToStaticMarkup(
-      <Doomerboard rows={currentDoomerboardRows} />,
-    );
+    const markup = renderToStaticMarkup(<Doomerboard rows={currentDoomerboardRows} />);
 
     expect(markup).toContain('aria-label="Current user profile unavailable"');
     expect(markup).not.toContain("Copy current user profile");
@@ -805,9 +752,7 @@ describe("panel states", () => {
       },
     ];
     const markup = renderToStaticMarkup(<Doomerboard rows={tiedRows} />);
-    const ledger = markup.slice(
-      markup.indexOf('aria-label="More Leaderboard ranks"'),
-    );
+    const ledger = markup.slice(markup.indexOf('aria-label="More Leaderboard ranks"'));
 
     expect(markup).toContain("ada");
     expect(markup).toContain("bea");

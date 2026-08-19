@@ -10,7 +10,8 @@ const SUBSCRIPTION_HANDSHAKE_TIMEOUT_MS = 1_000;
 type StopListening = () => void;
 
 export type SanitizedDesktopStateInvalidation =
-  { kind: "revision"; notice: unknown } | { kind: "surface-resumed" };
+  | { kind: "revision"; notice: unknown }
+  | { kind: "surface-resumed" };
 
 export type SanitizedDesktopStatePortFaultCode =
   | "snapshot-unavailable"
@@ -20,25 +21,14 @@ export type SanitizedDesktopStatePortFaultCode =
 export type SanitizedDesktopStatePortOutcome<
   Value,
   Code extends SanitizedDesktopStatePortFaultCode = SanitizedDesktopStatePortFaultCode,
-> =
-  | { ok: true; value: Value }
-  | { ok: false; fault: { code: Code } };
+> = { ok: true; value: Value } | { ok: false; fault: { code: Code } };
 
 export type SanitizedDesktopStatePort = {
-  readSnapshot: () => Promise<
-    SanitizedDesktopStatePortOutcome<unknown, "snapshot-unavailable">
-  >;
-  requestRefresh: () => Promise<
-    SanitizedDesktopStatePortOutcome<unknown, "refresh-unavailable">
-  >;
+  readSnapshot: () => Promise<SanitizedDesktopStatePortOutcome<unknown, "snapshot-unavailable">>;
+  requestRefresh: () => Promise<SanitizedDesktopStatePortOutcome<unknown, "refresh-unavailable">>;
   subscribeToInvalidations: (
     receive: (invalidation: SanitizedDesktopStateInvalidation) => void,
-  ) => Promise<
-    SanitizedDesktopStatePortOutcome<
-      StopListening,
-      "invalidation-stream-unavailable"
-    >
-  >;
+  ) => Promise<SanitizedDesktopStatePortOutcome<StopListening, "invalidation-stream-unavailable">>;
 };
 
 export type SanitizedDesktopStateDeliveryView =
@@ -163,8 +153,7 @@ export function createSanitizedDesktopStateDelivery(
     })().finally(() => {
       if (activeRead !== cycle) return;
       activeRead = null;
-      if (cycle.requested && cycle.activation === activation)
-        void requestRead();
+      if (cycle.requested && cycle.activation === activation) void requestRead();
     });
     activeRead = cycle;
 

@@ -51,12 +51,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Catalog: Story = {
-  render: ({
-    size = 24,
-    spin = false,
-    strokeWidth = 1.7,
-    tone = "default",
-  }) => (
+  render: ({ size = 24, spin = false, strokeWidth = 1.7, tone = "default" }) => (
     <div className="grid grid-cols-2 gap-5 sm:grid-cols-4">
       <span className="flex items-center gap-2 text-xs">
         <RefreshIcon
@@ -78,30 +73,15 @@ export const Catalog: Story = {
         Download update
       </span>
       <span className="flex items-center gap-2 text-xs">
-        <InviteIcon
-          aria-label="Invite"
-          size={size}
-          strokeWidth={strokeWidth}
-          tone={tone}
-        />
+        <InviteIcon aria-label="Invite" size={size} strokeWidth={strokeWidth} tone={tone} />
         Invite
       </span>
       <span className="flex items-center gap-2 text-xs">
-        <SettingsIcon
-          aria-label="Settings"
-          size={size}
-          strokeWidth={strokeWidth}
-          tone={tone}
-        />
+        <SettingsIcon aria-label="Settings" size={size} strokeWidth={strokeWidth} tone={tone} />
         Settings
       </span>
       <span className="flex items-center gap-2 text-xs">
-        <RankingIcon
-          aria-label="Doomerboard"
-          size={size}
-          strokeWidth={strokeWidth}
-          tone={tone}
-        />
+        <RankingIcon aria-label="Doomerboard" size={size} strokeWidth={strokeWidth} tone={tone} />
         Doomerboard
       </span>
       <span className="flex items-center gap-2 text-xs">
@@ -114,21 +94,11 @@ export const Catalog: Story = {
         Provider
       </span>
       <span className="flex items-center gap-2 text-xs">
-        <EllipsisIcon
-          aria-label="More"
-          size={size}
-          strokeWidth={strokeWidth}
-          tone={tone}
-        />
+        <EllipsisIcon aria-label="More" size={size} strokeWidth={strokeWidth} tone={tone} />
         More
       </span>
       <span className="flex items-center gap-2 text-xs">
-        <CheckIcon
-          aria-label="Selected"
-          size={size}
-          strokeWidth={strokeWidth}
-          tone={tone}
-        />
+        <CheckIcon aria-label="Selected" size={size} strokeWidth={strokeWidth} tone={tone} />
         Selected
       </span>
     </div>

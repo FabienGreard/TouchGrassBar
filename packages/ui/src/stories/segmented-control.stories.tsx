@@ -1,10 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect, useState, type ComponentProps } from "react";
 
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "../index";
+import { SegmentedControl, SegmentedControlItem } from "../index";
 
 function AudienceControl({
   disabled,
@@ -20,9 +17,7 @@ function AudienceControl({
   return (
     <SegmentedControl
       aria-label="Doomerboard audience"
-      onValueChange={(value) =>
-        setCurrentSelection(value as "global" | "mine")
-      }
+      onValueChange={(value) => setCurrentSelection(value as "global" | "mine")}
       value={currentSelection}
     >
       <SegmentedControlItem disabled={disabled} value="mine">
@@ -57,8 +52,7 @@ const meta = {
   parameters: {
     docs: {
       description: {
-        component:
-          "The shared compact segmented control used to switch Doomerboard audiences.",
+        component: "The shared compact segmented control used to switch Doomerboard audiences.",
       },
     },
   },

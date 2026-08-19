@@ -9,10 +9,7 @@ import type {
 } from "@/native-state/update-delivery";
 
 type TauriUpdateBindings = {
-  invoke: (
-    command: string,
-    args?: Record<string, unknown>,
-  ) => Promise<unknown>;
+  invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
   listen: (event: string, receive: () => void) => Promise<() => void>;
 };
 
@@ -31,23 +28,17 @@ async function closedInvoke(
     return {
       ok: true,
       value:
-        args === undefined
-          ? await bindings.invoke(command)
-          : await bindings.invoke(command, args),
+        args === undefined ? await bindings.invoke(command) : await bindings.invoke(command, args),
     };
   } catch {
     return { fault: { code: fault }, ok: false };
   }
 }
 
-function createTauriUpdateAdapter(
-  bindings: TauriUpdateBindings = defaultBindings,
-): UpdatePort {
+function createTauriUpdateAdapter(bindings: TauriUpdateBindings = defaultBindings): UpdatePort {
   return {
-    check: () =>
-      closedInvoke(bindings, "check_for_updates", "update-check-unavailable"),
-    install: () =>
-      closedInvoke(bindings, "install_update", "update-install-unavailable"),
+    check: () => closedInvoke(bindings, "check_for_updates", "update-check-unavailable"),
+    install: () => closedInvoke(bindings, "install_update", "update-install-unavailable"),
     openLatestDmg: async () => {
       const outcome = await closedInvoke(
         bindings,
@@ -64,17 +55,12 @@ function createTauriUpdateAdapter(
       );
       return outcome.ok ? { ok: true, value: undefined } : outcome;
     },
-    read: () =>
-      closedInvoke(bindings, "get_update_state", "update-state-unavailable"),
-    retry: () =>
-      closedInvoke(bindings, "retry_update", "update-retry-unavailable"),
+    read: () => closedInvoke(bindings, "get_update_state", "update-state-unavailable"),
+    retry: () => closedInvoke(bindings, "retry_update", "update-retry-unavailable"),
     setAutomaticChecks: (enabled) =>
-      closedInvoke(
-        bindings,
-        "set_automatic_update_checks",
-        "update-preference-unavailable",
-        { enabled },
-      ),
+      closedInvoke(bindings, "set_automatic_update_checks", "update-preference-unavailable", {
+        enabled,
+      }),
     subscribe: async (receive) => {
       try {
         const stop = await bindings.listen(UPDATE_STATE_CHANGED_EVENT, receive);

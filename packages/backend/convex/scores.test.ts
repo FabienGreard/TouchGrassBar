@@ -110,8 +110,7 @@ describe("cost and ranking independence", () => {
       apiEquivalentCost: {
         coveragePercent: 50,
         micros: 3_000_000,
-        pricingBasis:
-          "anthropic-standard-2026-08-07-v1 + openai-api-2026-08-09-v3",
+        pricingBasis: "anthropic-standard-2026-08-07-v1 + openai-api-2026-08-09-v3",
         quality: "modeled",
       },
       tokenScore: 500,

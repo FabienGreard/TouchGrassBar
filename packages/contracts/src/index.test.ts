@@ -86,16 +86,11 @@ describe("public contracts", () => {
         rows: [{ ...view.rows[0], providerMessageId: "private" }],
       }).success,
     ).toBe(false);
-    expect(
-      doomerboardViewSchema.safeParse({ ...view, session: "private" })
-        .success,
-    ).toBe(false);
+    expect(doomerboardViewSchema.safeParse({ ...view, session: "private" }).success).toBe(false);
   });
 
   test("accepts an honestly unavailable native snapshot without invented zeroes", () => {
-    expect(sanitizedDesktopStateSchema.parse(unavailableState)).toEqual(
-      unavailableState,
-    );
+    expect(sanitizedDesktopStateSchema.parse(unavailableState)).toEqual(unavailableState);
     expect(JSON.stringify(unavailableState)).not.toContain("observedTokens");
   });
 
@@ -107,9 +102,8 @@ describe("public contracts", () => {
     "authority-rejected",
     "unavailable",
   ] as const)("accepts the sanitized %s sync state", (status) => {
-    const lastSuccessfulAt = status === "synced" || status === "stale"
-      ? "2026-08-08T12:00:00.000Z"
-      : null;
+    const lastSuccessfulAt =
+      status === "synced" || status === "stale" ? "2026-08-08T12:00:00.000Z" : null;
     expect(syncStateSchema.parse({ lastSuccessfulAt, status })).toEqual({
       lastSuccessfulAt,
       status,
@@ -148,12 +142,8 @@ describe("public contracts", () => {
     expect(refreshReceiptSchema.parse({ accepted: true })).toEqual({
       accepted: true,
     });
-    expect(refreshReceiptSchema.safeParse({ accepted: "yes" }).success).toBe(
-      false,
-    );
-    expect(
-      refreshReceiptSchema.safeParse({ accepted: true, revision: "2" }).success,
-    ).toBe(false);
+    expect(refreshReceiptSchema.safeParse({ accepted: "yes" }).success).toBe(false);
+    expect(refreshReceiptSchema.safeParse({ accepted: true, revision: "2" }).success).toBe(false);
   });
 
   test("strictly validates the Rust-owned bootstrap and Settings views", () => {
@@ -186,29 +176,18 @@ describe("public contracts", () => {
 
     expect(bootstrapStateSchema.parse(bootstrap)).toEqual(bootstrap);
     expect(settingsStateSchema.parse(settings)).toEqual(settings);
-    expect(
-      bootstrapStateSchema.safeParse({ ...bootstrap, localPath: "/private" })
-        .success,
-    ).toBe(false);
-    expect(
-      settingsStateSchema.safeParse({ ...settings, contractVersion: 2 })
-        .success,
-    ).toBe(false);
-    expect(
-      settingsStateSchema.safeParse({ ...settings, recoveryKeySuffix: "0-9" })
-        .success,
-    ).toBe(false);
+    expect(bootstrapStateSchema.safeParse({ ...bootstrap, localPath: "/private" }).success).toBe(
+      false,
+    );
+    expect(settingsStateSchema.safeParse({ ...settings, contractVersion: 2 }).success).toBe(false);
+    expect(settingsStateSchema.safeParse({ ...settings, recoveryKeySuffix: "0-9" }).success).toBe(
+      false,
+    );
   });
 
   test.each([
-    [
-      "an unknown contract version",
-      { ...unavailableState, contractVersion: 2 },
-    ],
-    [
-      "raw provider material",
-      { ...unavailableState, rawLog: "must never reach React" },
-    ],
+    ["an unknown contract version", { ...unavailableState, contractVersion: 2 }],
+    ["raw provider material", { ...unavailableState, rawLog: "must never reach React" }],
     ["session material", { ...unavailableState, sessionToken: "secret" }],
     ["an unsafe numeric revision", { ...unavailableState, revision: 2 }],
   ])("rejects %s", (_name, payload) => {

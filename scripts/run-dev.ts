@@ -23,9 +23,7 @@ if (!scope || !scopes.has(scope) || process.argv.length > 3) {
 }
 
 const target =
-  scope === "all" || scope === "backend" || scope === "desktop"
-    ? developmentTarget(Bun.env)
-    : null;
+  scope === "all" || scope === "backend" || scope === "desktop" ? developmentTarget(Bun.env) : null;
 claimDevelopmentRunnerLease();
 
 const backend: ChildSpecification = {
@@ -45,15 +43,7 @@ const landing: ChildSpecification = {
   label: "landing",
 };
 const ui: ChildSpecification = {
-  argumentsList: [
-    "bunx",
-    "--bun",
-    "storybook",
-    "dev",
-    "-p",
-    "6006",
-    "--no-open",
-  ],
+  argumentsList: ["bunx", "--bun", "storybook", "dev", "-p", "6006", "--no-open"],
   cwd: join(workspaceRoot, "packages", "ui"),
   label: "ui",
 };

@@ -14,10 +14,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import {
-  resolveDevInstance,
-  type DevInstance,
-} from "../apps/desktop/src/dev/dev-instance";
+import { resolveDevInstance, type DevInstance } from "../apps/desktop/src/dev/dev-instance";
 import {
   developmentEntitlements,
   signingTeamIdentifier,
@@ -28,32 +25,17 @@ import { resolveDevelopmentSigningConfiguration } from "./macos-development-sign
 
 const workspaceRoot = resolve(import.meta.dir, "..");
 const desktopRoot = join(workspaceRoot, "apps", "desktop");
-const generatedConfigDirectory = join(
-  desktopRoot,
-  "src-tauri",
-  ".dev-instance",
-);
+const generatedConfigDirectory = join(desktopRoot, "src-tauri", ".dev-instance");
 const generatedConfigPath = join(generatedConfigDirectory, "tauri.conf.json");
-const generatedEntitlementsPath = join(
-  generatedConfigDirectory,
-  "entitlements.plist",
-);
+const generatedEntitlementsPath = join(generatedConfigDirectory, "entitlements.plist");
 const generatedInfoPlistPath = join(generatedConfigDirectory, "Info.plist");
-const generatedConfigArgument = join(
-  "src-tauri",
-  ".dev-instance",
-  "tauri.conf.json",
-);
+const generatedConfigArgument = join("src-tauri", ".dev-instance", "tauri.conf.json");
 const portLockDirectory = join(tmpdir(), "touchgrassbar-dev-ports");
 const signedRunnerPath = join(workspaceRoot, "scripts", "run-signed-macos-dev.ts");
 const profileServiceEnvironmentNames = ["CONVEX_SITE_URL", "CONVEX_URL"] as const;
 
-function requireProfileServiceEnvironment(
-  environment: Record<string, string | undefined>,
-) {
-  const missing = profileServiceEnvironmentNames.filter(
-    (name) => !environment[name]?.trim(),
-  );
+function requireProfileServiceEnvironment(environment: Record<string, string | undefined>) {
+  const missing = profileServiceEnvironmentNames.filter((name) => !environment[name]?.trim());
   if (missing.length === 0) return;
   throw new Error(
     `Desktop Profile services are not configured (${missing.join(", ")}). Run \`bun setup\` before \`bun dev\`.`,
@@ -102,9 +84,7 @@ function requireNoDevelopmentRunner() {
 function activePortLease(lockPath: string) {
   try {
     const processId = Number(readFileSync(lockPath, "utf8"));
-    return !Number.isInteger(processId) || processId <= 0
-      ? true
-      : processIsRunning(processId);
+    return !Number.isInteger(processId) || processId <= 0 ? true : processIsRunning(processId);
   } catch {
     return true;
   }
@@ -201,10 +181,7 @@ async function writeTauriConfig(instance: DevInstance, bundle: boolean) {
   );
 }
 
-async function writeDevelopmentEntitlements(
-  instance: DevInstance,
-  signingIdentity: string,
-) {
+async function writeDevelopmentEntitlements(instance: DevInstance, signingIdentity: string) {
   await Bun.write(
     generatedEntitlementsPath,
     developmentEntitlements({
@@ -310,11 +287,9 @@ function signDevelopmentBundle(
     ],
     { stdio: "inherit" },
   );
-  execFileSync(
-    "/usr/bin/codesign",
-    ["--verify", "--deep", "--strict", appPath],
-    { stdio: "inherit" },
-  );
+  execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath], {
+    stdio: "inherit",
+  });
 }
 
 async function buildDevelopmentBundle(
@@ -324,16 +299,7 @@ async function buildDevelopmentBundle(
   provisioningProfile: string,
 ) {
   const child = Bun.spawn(
-    [
-      "bun",
-      "run",
-      "tauri",
-      "build",
-      "--bundles",
-      "app",
-      "--config",
-      generatedConfigArgument,
-    ],
+    ["bun", "run", "tauri", "build", "--bundles", "app", "--config", generatedConfigArgument],
     {
       cwd: desktopRoot,
       env: environment,
@@ -380,24 +346,19 @@ async function main() {
   const worktreeSeed = gitText(["rev-parse", "--show-toplevel"]);
   const requested = resolveDevInstance({
     accent: Bun.env.TOUCHGRASS_DEV_ACCENT,
-    branch:
-      branch || `detached-${gitText(["rev-parse", "--short", "HEAD"])}`,
+    branch: branch || `detached-${gitText(["rev-parse", "--short", "HEAD"])}`,
     label: Bun.env.TOUCHGRASS_DEV_LABEL,
     worktreeSeed,
   });
   const portLease = bundle ? null : await availablePort(requested.port);
   if (portLease) process.once("exit", portLease.release);
   const instance = { ...requested, port: portLease?.port ?? requested.port };
-  const { identity: signingIdentity, provisioningProfile } =
-    resolveDevelopmentSigningConfiguration(
-      instance.bundleIdentifier,
-      Bun.env,
-    );
-  const serializedInstance = JSON.stringify(instance);
-  const appBundlePath = join(
-    generatedConfigDirectory,
-    "TouchGrassBar Dev.app",
+  const { identity: signingIdentity, provisioningProfile } = resolveDevelopmentSigningConfiguration(
+    instance.bundleIdentifier,
+    Bun.env,
   );
+  const serializedInstance = JSON.stringify(instance);
+  const appBundlePath = join(generatedConfigDirectory, "TouchGrassBar Dev.app");
   const environment = {
     ...Bun.env,
     CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: signedRunnerPath,
@@ -429,15 +390,12 @@ async function main() {
       );
       return;
     }
-    const child = Bun.spawn(
-      ["bun", "run", "tauri", "dev", "--config", generatedConfigArgument],
-      {
-        cwd: desktopRoot,
-        env: environment,
-        stderr: "inherit",
-        stdout: "inherit",
-      },
-    );
+    const child = Bun.spawn(["bun", "run", "tauri", "dev", "--config", generatedConfigArgument], {
+      cwd: desktopRoot,
+      env: environment,
+      stderr: "inherit",
+      stdout: "inherit",
+    });
     process.exitCode = await child.exited;
   } finally {
     portLease?.release();

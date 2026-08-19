@@ -40,9 +40,7 @@ export const Rankings: Story = {
           >
             <strong>{row.rank}</strong>
             <span>{row.name}</span>
-            <small className="font-mono text-[8px] text-pearl-muted">
-              {row.id}
-            </small>
+            <small className="font-mono text-[8px] text-pearl-muted">{row.id}</small>
           </div>
         ))}
       </div>

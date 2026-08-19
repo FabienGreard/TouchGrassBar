@@ -61,8 +61,7 @@
   --color-rank-bronze-border: var(--rank-bronze-border);
 
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
-    "Helvetica Neue", sans-serif;
+    -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
   --font-mono: "SFMono-Regular", "SF Mono", ui-monospace, monospace;
 
   --radius-sm: calc(var(--radius) - 4px);
@@ -163,13 +162,7 @@
   --panel-background:
     radial-gradient(circle at 12% 0%, #c7f7df1c, transparent 34%),
     radial-gradient(circle at 88% 0%, #eadbff24, transparent 36%),
-    linear-gradient(
-      115deg,
-      #ffffff70 0%,
-      transparent 30%,
-      #eef0ff38 68%,
-      #ffffff52 100%
-    ),
+    linear-gradient(115deg, #ffffff70 0%, transparent 30%, #eef0ff38 68%, #ffffff52 100%),
     linear-gradient(140deg, #fffefefa, #eceaf2f7);
   --panel-header-background: linear-gradient(180deg, #ffffff96, #eef0fb38);
   --provider-row-background: linear-gradient(90deg, #f7f9ff42, #ffffff1c);
@@ -185,18 +178,8 @@
   --rank-gold-background: linear-gradient(145deg, #fff3cec9, #deb45cae);
   --rank-silver-background: linear-gradient(145deg, #ffffffc4, #c8cdcaaf);
   --rank-bronze-background: linear-gradient(145deg, #fff0e2c4, #d49369ad);
-  --gauge-today-background: linear-gradient(
-    90deg,
-    #55ad35 0%,
-    #80d94b 58%,
-    #a9ed64 100%
-  );
-  --gauge-week-background: linear-gradient(
-    90deg,
-    #55ad35 0%,
-    #95cf43 54%,
-    #d7cc4e 100%
-  );
+  --gauge-today-background: linear-gradient(90deg, #55ad35 0%, #80d94b 58%, #a9ed64 100%);
+  --gauge-week-background: linear-gradient(90deg, #55ad35 0%, #95cf43 54%, #d7cc4e 100%);
   --gauge-month-background: linear-gradient(
     90deg,
     #55ad35 0%,
@@ -205,16 +188,15 @@
     #d87946 100%
   );
   --panel-shadow:
-    inset 0 1px #fff, inset 1px 0 #ffffffa3, inset 0 -1px #48547524,
-    inset 0 0 0 0.5px #59638124, 0 30px 80px #1b203c52, 0 6px 22px #0005;
+    inset 0 1px #fff, inset 1px 0 #ffffffa3, inset 0 -1px #48547524, inset 0 0 0 0.5px #59638124,
+    0 30px 80px #1b203c52, 0 6px 22px #0005;
   --control-shadow: inset 0 1px #fff, 0 1px 4px #4d587219;
   --progress-track-shadow: inset 0 1px 2px #46516c38;
   --surface-shadow: inset 0 1px #ffffff88;
   --action-shadow: inset 0 1px #ffffff99, 0 1px 2px #0003;
   --sync-dot-shadow: 0 0 0 3px #6464571a;
   --native-sheet-shadow: inset 0 1px #fff, 0 35px 100px #1b203c70;
-  --menu-glass-shadow:
-    inset 0 1px #fff, inset 0 0 0 0.5px #20263d14, 0 16px 38px #20263d45;
+  --menu-glass-shadow: inset 0 1px #fff, inset 0 0 0 0.5px #20263d14, 0 16px 38px #20263d45;
   --rank-card-shadow: inset 0 1px #fff9, 0 4px 13px #4d58721c;
 }
 

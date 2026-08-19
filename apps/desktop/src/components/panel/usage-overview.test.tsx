@@ -43,9 +43,7 @@ describe("usage overview", () => {
   });
 
   test("shows indexing when a period has no evidence while its scan continues", () => {
-    const markup = renderToStaticMarkup(
-      <UsageOverview usage={unavailablePeriods("indexing")} />,
-    );
+    const markup = renderToStaticMarkup(<UsageOverview usage={unavailablePeriods("indexing")} />);
 
     expect(markup.match(/Indexing…/g)).toHaveLength(1);
     expect(markup.match(/Not observed/g)).toHaveLength(2);

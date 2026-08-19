@@ -64,20 +64,11 @@ function StepBody({
 }) {
   if (step === "providers") {
     return (
-      <ProvidersStep
-        busy={busyProviders}
-        onCheckProvider={onCheckProvider}
-        providers={providers}
-      />
+      <ProvidersStep busy={busyProviders} onCheckProvider={onCheckProvider} providers={providers} />
     );
   }
   if (step === "profile") {
-    return (
-      <ProfileStep
-        displayName={displayName}
-        onDisplayNameChange={onDisplayNameChange}
-      />
-    );
+    return <ProfileStep displayName={displayName} onDisplayNameChange={onDisplayNameChange} />;
   }
   return <FinishStep setupState={setupState} />;
 }
@@ -106,11 +97,8 @@ function StepActions({
   const next = onboardingSteps[index + 1]?.key;
   const actionLabel = onboardingSteps[index]?.actionLabel;
   const resolvedActionLabel =
-    step === "finish" && setupState === "profile-pending"
-      ? "Retry Profile creation"
-      : actionLabel;
-  const validDisplayName =
-    displayName.trim().length > 0 && [...displayName.trim()].length <= 40;
+    step === "finish" && setupState === "profile-pending" ? "Retry Profile creation" : actionLabel;
+  const validDisplayName = displayName.trim().length > 0 && [...displayName.trim()].length <= 40;
   const disabled = next
     ? step === "profile" && !validDisplayName
     : !canComplete ||
@@ -153,13 +141,8 @@ function StepActions({
             I have a Profile
           </Button>
         ) : null}
-        <Button
-          disabled={disabled}
-          type="submit"
-        >
-          {submissionState === "submitting" && !next
-            ? "Finishing…"
-            : resolvedActionLabel}
+        <Button disabled={disabled} type="submit">
+          {submissionState === "submitting" && !next ? "Finishing…" : resolvedActionLabel}
         </Button>
       </div>
     </div>
@@ -186,8 +169,7 @@ function OnboardingScreen({
   submissionState = "idle",
 }: OnboardingScreenProps) {
   const [localStep, setLocalStep] = useState<OnboardingStep>(initialStep);
-  const [localFurthestStep, setLocalFurthestStep] =
-    useState<OnboardingStep>(initialStep);
+  const [localFurthestStep, setLocalFurthestStep] = useState<OnboardingStep>(initialStep);
   const [localDisplayName, setLocalDisplayName] = useState(initialDisplayName);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const step = controlledStep ?? localStep;
@@ -221,8 +203,7 @@ function OnboardingScreen({
   };
 
   const submitStep = () => {
-    const validDisplayName =
-      displayName.trim().length > 0 && [...displayName.trim()].length <= 40;
+    const validDisplayName = displayName.trim().length > 0 && [...displayName.trim()].length <= 40;
     const next = onboardingSteps[activeStepIndex + 1]?.key;
     if (next) {
       if (step !== "profile" || validDisplayName) changeStep(next);
@@ -239,7 +220,7 @@ function OnboardingScreen({
   };
 
   return (
-    <NativeWindow className="relative h-screen min-h-0 w-screen min-w-0 max-w-none min-[680px]:grid-cols-[220px_minmax(0,1fr)]">
+    <NativeWindow className="relative h-screen min-h-0 w-screen max-w-none min-w-0 min-[680px]:grid-cols-[220px_minmax(0,1fr)]">
       <NativeWindowSidebar className="h-full min-h-0 overflow-hidden px-4 py-7">
         <Brand className="px-2" />
         <NativeWindowNav aria-label="Onboarding steps" className="mt-8">

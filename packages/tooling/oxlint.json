@@ -10,10 +10,5 @@
     "no-underscore-dangle": "off",
     "unicorn/no-array-sort": "off"
   },
-  "ignorePatterns": [
-    "**/dist/**",
-    "**/node_modules/**",
-    "**/target/**",
-    "**/_generated/**"
-  ]
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "**/target/**", "**/_generated/**"]
 }

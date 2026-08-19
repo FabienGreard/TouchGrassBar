@@ -20,8 +20,7 @@ const meta = {
   parameters: {
     docs: {
       description: {
-        component:
-          "The exact provider marks used in the desktop panel and native setup screens.",
+        component: "The exact provider marks used in the desktop panel and native setup screens.",
       },
     },
   },

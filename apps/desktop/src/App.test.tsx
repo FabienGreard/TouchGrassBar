@@ -20,9 +20,7 @@ describe("native App composition", () => {
     expect(markup).not.toContain("data-coding-provider-access-state");
     expect(markup).not.toContain('data-slot="provider-connection-card"');
     expect(markup).not.toContain('data-coding-provider-access-state="ready"');
-    expect(markup).not.toContain(
-      'data-coding-provider-access-state="not-installed"',
-    );
+    expect(markup).not.toContain('data-coding-provider-access-state="not-installed"');
     expect(markup).not.toContain("Detected locally");
     expect(markup).not.toContain("was not found");
     expect(markup).not.toContain("Check now");
@@ -50,15 +48,11 @@ describe("native App composition", () => {
   });
 
   test("does not invent provider detection in production onboarding", () => {
-    const markup = renderToStaticMarkup(
-      <App hasNativeRuntime surface="onboarding" />,
-    );
+    const markup = renderToStaticMarkup(<App hasNativeRuntime surface="onboarding" />);
 
     expect(markup).not.toContain("data-coding-provider-access-state");
     expect(markup).not.toContain('data-slot="provider-connection-card"');
     expect(markup).not.toContain('data-coding-provider-access-state="ready"');
-    expect(markup).not.toContain(
-      'data-coding-provider-access-state="not-installed"',
-    );
+    expect(markup).not.toContain('data-coding-provider-access-state="not-installed"');
   });
 });

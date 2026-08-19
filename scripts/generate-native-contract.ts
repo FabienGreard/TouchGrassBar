@@ -54,11 +54,8 @@ const process = Bun.spawn(
   ],
   { cwd: workspaceRoot, stderr: "inherit", stdout: "pipe" },
 );
-const contract = (await new Response(
-  process.stdout,
-).json()) as NativeContractExport;
-if ((await process.exited) !== 0)
-  throw new Error("native contract export failed");
+const contract = (await new Response(process.stdout).json()) as NativeContractExport;
+if ((await process.exited) !== 0) throw new Error("native contract export failed");
 
 const schema = contract.stateSchema;
 const bootstrapStateSchema = contract.bootstrapStateSchema;
@@ -78,11 +75,9 @@ const definitions = {
   ...(settingsStateSchema.$defs ?? {}),
   ...(updateStateSchema.$defs ?? {}),
 };
-const schemaName = (name: string) =>
-  `${name[0]!.toLowerCase()}${name.slice(1)}Schema`;
+const schemaName = (name: string) => `${name[0]!.toLowerCase()}${name.slice(1)}Schema`;
 const refName = (ref: string) => schemaName(ref.split("/").at(-1)!);
-const quoteKey = (key: string) =>
-  /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
+const quoteKey = (key: string) => (/^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key));
 
 function pinContractVersion(node: JsonSchema, version: number): JsonSchema {
   return {
@@ -96,24 +91,18 @@ function pinContractVersion(node: JsonSchema, version: number): JsonSchema {
                 pinContractVersion(value, version),
               ]),
             ),
-            ...(node.properties.contractVersion
-              ? { contractVersion: { const: version } }
-              : {}),
+            ...(node.properties.contractVersion ? { contractVersion: { const: version } } : {}),
           },
         }
       : {}),
     ...(node.anyOf
       ? {
-          anyOf: node.anyOf.map((variant) =>
-            pinContractVersion(variant, version),
-          ),
+          anyOf: node.anyOf.map((variant) => pinContractVersion(variant, version)),
         }
       : {}),
     ...(node.oneOf
       ? {
-          oneOf: node.oneOf.map((variant) =>
-            pinContractVersion(variant, version),
-          ),
+          oneOf: node.oneOf.map((variant) => pinContractVersion(variant, version)),
         }
       : {}),
   };
@@ -133,17 +122,10 @@ function render(node: JsonSchema, fieldName = ""): string {
     const nonNull = node.oneOf.filter((variant) => variant.type !== "null");
     if (nonNull.length === 1 && nonNull.length !== node.oneOf.length)
       return `${render(nonNull[0]!, fieldName)}.nullable()`;
-    const discriminator = Object.keys(node.oneOf[0]?.properties ?? {}).find(
-      (candidate) => {
-        const values = node.oneOf!.map(
-          (variant) => variant.properties?.[candidate]?.const,
-        );
-        return (
-          values.every((value) => value !== undefined) &&
-          new Set(values).size === values.length
-        );
-      },
-    );
+    const discriminator = Object.keys(node.oneOf[0]?.properties ?? {}).find((candidate) => {
+      const values = node.oneOf!.map((variant) => variant.properties?.[candidate]?.const);
+      return values.every((value) => value !== undefined) && new Set(values).size === values.length;
+    });
     const variants = node.oneOf.map((variant) => render(variant)).join(", ");
     return discriminator
       ? `z.discriminatedUnion(${JSON.stringify(discriminator)}, [${variants}])`
@@ -175,14 +157,10 @@ function render(node: JsonSchema, fieldName = ""): string {
   if (node.type === "integer" || node.type === "number") {
     let expression = "z.number()";
     if (node.type === "integer") expression += ".int()";
-    if (
-      (node.minimum ?? Number.NEGATIVE_INFINITY) >= 0 ||
-      fieldName.includes("Cost")
-    ) {
+    if ((node.minimum ?? Number.NEGATIVE_INFINITY) >= 0 || fieldName.includes("Cost")) {
       expression += ".nonnegative()";
     }
-    if (node.minimum !== undefined && node.minimum > 0)
-      expression += `.min(${node.minimum})`;
+    if (node.minimum !== undefined && node.minimum > 0) expression += `.min(${node.minimum})`;
     if (node.maximum !== undefined) expression += `.max(${node.maximum})`;
     return expression;
   }
@@ -224,8 +202,7 @@ function dependencies(node: JsonSchema): Set<string> {
     if (Array.isArray(value)) return value.forEach(visit);
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
-      if (key === "$ref" && typeof child === "string")
-        refs.add(child.split("/").at(-1)!);
+      if (key === "$ref" && typeof child === "string") refs.add(child.split("/").at(-1)!);
       else visit(child);
     }
   };
@@ -238,11 +215,9 @@ const visiting = new Set<string>();
 const visited = new Set<string>();
 const visitDefinition = (name: string) => {
   if (visited.has(name)) return;
-  if (visiting.has(name))
-    throw new Error(`recursive native contract definition: ${name}`);
+  if (visiting.has(name)) throw new Error(`recursive native contract definition: ${name}`);
   visiting.add(name);
-  for (const dependency of dependencies(definitions[name]!))
-    visitDefinition(dependency);
+  for (const dependency of dependencies(definitions[name]!)) visitDefinition(dependency);
   visiting.delete(name);
   visited.add(name);
   ordered.push(name);
@@ -288,8 +263,7 @@ const outputPath = `${workspaceRoot}packages/contracts/src/native.generated.ts`;
 const output = generated.replaceAll(";export", ";\nexport");
 if (Bun.argv.includes("--check")) {
   const current = await Bun.file(outputPath).text();
-  if (current !== output)
-    throw new Error("generated native contract is out of date");
+  if (current !== output) throw new Error("generated native contract is out of date");
 } else {
   await Bun.write(outputPath, output);
 }

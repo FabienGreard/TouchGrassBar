@@ -37,16 +37,14 @@ describe("desktop development environment", () => {
       CONVEX_DEPLOYMENT: "anonymous:anonymous-agent",
     };
 
+    expect(convexCommandEnvironment(["dev"], {}, selectedLocal).CONVEX_AGENT_MODE).toBe(
+      "anonymous",
+    );
     expect(
-      convexCommandEnvironment(["dev"], {}, selectedLocal).CONVEX_AGENT_MODE,
-    ).toBe("anonymous");
-    expect(
-      convexCommandEnvironment(["login"], {}, selectedLocal)
-        .CONVEX_AGENT_MODE,
+      convexCommandEnvironment(["login"], {}, selectedLocal).CONVEX_AGENT_MODE,
     ).toBeUndefined();
     expect(
-      convexCommandEnvironment(["deploy"], {}, selectedLocal)
-        .CONVEX_AGENT_MODE,
+      convexCommandEnvironment(["deploy"], {}, selectedLocal).CONVEX_AGENT_MODE,
     ).toBeUndefined();
     expect(
       convexCommandEnvironment(
@@ -88,18 +86,12 @@ describe("desktop development environment", () => {
     ) as TurboConfiguration;
 
     expect(configuration.tasks?.dev?.passThroughEnv).toEqual(
-      expect.arrayContaining([
-        "CONVEX_SITE_URL",
-        "CONVEX_URL",
-      ]),
+      expect.arrayContaining(["CONVEX_SITE_URL", "CONVEX_URL"]),
     );
   });
 
   test("exposes one cwd-independent development command surface", () => {
-    const root = resolve(
-      dirname(fileURLToPath(import.meta.url)),
-      "../../../../",
-    );
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../");
     const packageManifest = JSON.parse(
       readFileSync(resolve(root, "package.json"), "utf8"),
     ) as RootPackage;
@@ -111,42 +103,24 @@ describe("desktop development environment", () => {
     ) as WorkspacePackage;
 
     expect(packageManifest.scripts?.dev).toContain("scripts/run-dev.ts all");
-    expect(packageManifest.scripts?.["dev:desktop"]).toContain(
-      "scripts/run-dev.ts desktop",
-    );
-    expect(packageManifest.scripts?.["convex:login"]).toContain(
-      "packages/backend convex login",
-    );
-    expect(packageManifest.scripts?.["convex:switch:local"]).toBe(
-      "bun setup",
-    );
+    expect(packageManifest.scripts?.["dev:desktop"]).toContain("scripts/run-dev.ts desktop");
+    expect(packageManifest.scripts?.["convex:login"]).toContain("packages/backend convex login");
+    expect(packageManifest.scripts?.["convex:switch:local"]).toBe("bun setup");
     expect(packageManifest.scripts?.["convex:switch:dev"]).toBe(
       "bun scripts/switch-convex-environment.ts dev",
     );
     expect(packageManifest.scripts?.["convex:switch:prod"]).toBe(
       "bun scripts/switch-convex-environment.ts prod",
     );
-    expect(packageManifest.scripts?.["convex:deploy"]).toContain(
-      "packages/backend convex deploy",
-    );
+    expect(packageManifest.scripts?.["convex:deploy"]).toContain("packages/backend convex deploy");
     expect(packageManifest.scripts?.reset).toBe("bun scripts/reset.ts");
-    expect(packageManifest.scripts?.["reset:bundle"]).toBe(
-      "bun scripts/reset.ts --bundle",
-    );
-    expect(packageManifest.scripts?.["reset:release"]).toBe(
-      "bun scripts/reset.ts --release",
-    );
+    expect(packageManifest.scripts?.["reset:bundle"]).toBe("bun scripts/reset.ts --bundle");
+    expect(packageManifest.scripts?.["reset:release"]).toBe("bun scripts/reset.ts --release");
     expect(packageManifest.scripts?.["reset:prod"]).toBeUndefined();
     expect(packageManifest.scripts?.["worktree:setup"]).toBeUndefined();
     expect(packageManifest.scripts?.prod).toBeUndefined();
-    expect(desktopManifest.scripts?.dev).toBe(
-      "bun run --cwd ../.. dev:desktop",
-    );
-    expect(desktopManifest.scripts?.bundle).toBe(
-      "bun run --cwd ../.. desktop:bundle",
-    );
-    expect(backendManifest.scripts?.convex).toBe(
-      "bun ../../scripts/run-convex.ts",
-    );
+    expect(desktopManifest.scripts?.dev).toBe("bun run --cwd ../.. dev:desktop");
+    expect(desktopManifest.scripts?.bundle).toBe("bun run --cwd ../.. desktop:bundle");
+    expect(backendManifest.scripts?.convex).toBe("bun ../../scripts/run-convex.ts");
   });
 });

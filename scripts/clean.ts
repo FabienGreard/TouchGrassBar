@@ -7,9 +7,7 @@ import { workspaceRoot } from "./development-environment";
 
 const argumentsSet = new Set(process.argv.slice(2));
 const supportedArguments = new Set(["--dry-run"]);
-const unknownArguments = [...argumentsSet].filter(
-  (argument) => !supportedArguments.has(argument),
-);
+const unknownArguments = [...argumentsSet].filter((argument) => !supportedArguments.has(argument));
 if (unknownArguments.length > 0) {
   throw new Error(`Unknown argument(s): ${unknownArguments.join(", ")}`);
 }
@@ -27,13 +25,7 @@ const targets = [
   },
   {
     description: "desktop generated development configuration",
-    path: join(
-      workspaceRoot,
-      "apps",
-      "desktop",
-      "src-tauri",
-      ".dev-instance",
-    ),
+    path: join(workspaceRoot, "apps", "desktop", "src-tauri", ".dev-instance"),
   },
   {
     description: "landing build",

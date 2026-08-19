@@ -17,17 +17,14 @@ type DevelopmentSigningConfiguration = {
 
 function installedSigningIdentities() {
   return parseCodeSigningIdentities(
-    execFileSync(
-      "/usr/bin/security",
-      ["find-identity", "-v", "-p", "codesigning"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ),
+    execFileSync("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }),
   );
 }
 
-function resolveDevelopmentSigningIdentity(
-  environment: Record<string, string | undefined>,
-) {
+function resolveDevelopmentSigningIdentity(environment: Record<string, string | undefined>) {
   const identities = installedSigningIdentities();
   const configured = environment.TOUCHGRASS_DEV_SIGNING_IDENTITY?.trim();
   if (configured) {
@@ -45,29 +42,19 @@ function resolveDevelopmentSigningIdentity(
   );
 }
 
-function provisioningProfileCandidates(
-  environment: Record<string, string | undefined>,
-) {
+function provisioningProfileCandidates(environment: Record<string, string | undefined>) {
   const configured = environment.TOUCHGRASS_DEV_PROVISIONING_PROFILE?.trim();
   if (configured) return [configured];
   return [
     join(homedir(), "Library", "MobileDevice", "Provisioning Profiles"),
-    join(
-      homedir(),
-      "Library",
-      "Developer",
-      "Xcode",
-      "UserData",
-      "Provisioning Profiles",
-    ),
+    join(homedir(), "Library", "Developer", "Xcode", "UserData", "Provisioning Profiles"),
   ].flatMap((directory) => {
     if (!existsSync(directory)) return [];
     return readdirSync(directory, { withFileTypes: true })
       .filter(
         (entry) =>
           entry.isFile() &&
-          (entry.name.endsWith(".provisionprofile") ||
-            entry.name.endsWith(".mobileprovision")),
+          (entry.name.endsWith(".provisionprofile") || entry.name.endsWith(".mobileprovision")),
       )
       .map((entry) => join(directory, entry.name));
   });
@@ -75,29 +62,21 @@ function provisioningProfileCandidates(
 
 function provisioningProfileMetadata(path: string) {
   try {
-    const decoded = execFileSync(
-      "/usr/bin/security",
-      ["cms", "-D", "-i", path],
-      { stdio: ["ignore", "pipe", "ignore"] },
-    );
+    const decoded = execFileSync("/usr/bin/security", ["cms", "-D", "-i", path], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
     const value = (keyPath: string) =>
-      execFileSync(
-        "/usr/bin/plutil",
-        ["-extract", keyPath, "raw", "-o", "-", "-"],
-        {
-          encoding: "utf8",
-          input: decoded,
-          stdio: ["pipe", "pipe", "ignore"],
-        },
-      ).trim();
+      execFileSync("/usr/bin/plutil", ["-extract", keyPath, "raw", "-o", "-", "-"], {
+        encoding: "utf8",
+        input: decoded,
+        stdio: ["pipe", "pipe", "ignore"],
+      }).trim();
     return {
       Entitlements: {
         "com.apple.application-identifier": value(
           "Entitlements.com\\.apple\\.application-identifier",
         ),
-        "keychain-access-groups": [
-          value("Entitlements.keychain-access-groups.0"),
-        ],
+        "keychain-access-groups": [value("Entitlements.keychain-access-groups.0")],
       },
       ExpirationDate: value("ExpirationDate"),
       Platform: [value("Platform.0")],
@@ -117,8 +96,7 @@ function resolveDevelopmentSigningConfiguration(
   const matches = provisioningProfileCandidates(environment).filter((path) => {
     const profile = provisioningProfileMetadata(path);
     return (
-      profile !== null &&
-      provisioningProfileAllows(profile, { bundleIdentifier, teamIdentifier })
+      profile !== null && provisioningProfileAllows(profile, { bundleIdentifier, teamIdentifier })
     );
   });
   if (matches.length === 0) {

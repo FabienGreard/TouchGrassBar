@@ -1,8 +1,6 @@
 type MetricCardTrendTone = "negative" | "neutral" | "positive";
 
-function getMetricTrendTone(
-  trend: string | null | undefined,
-): MetricCardTrendTone {
+function getMetricTrendTone(trend: string | null | undefined): MetricCardTrendTone {
   if (!trend) return "neutral";
 
   const value = Number.parseFloat(trend.trim().replace("−", "-"));

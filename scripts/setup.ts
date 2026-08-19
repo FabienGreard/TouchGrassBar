@@ -13,10 +13,7 @@ import {
 } from "./development-environment";
 import { convexCommandEnvironment } from "./convex-command-environment";
 
-const convexCli = resolve(
-  workspaceRoot,
-  "packages/backend/node_modules/convex/bin/main.js",
-);
+const convexCli = resolve(workspaceRoot, "packages/backend/node_modules/convex/bin/main.js");
 type CommandResult = {
   exitCode: number;
   stderr: string;
@@ -24,18 +21,12 @@ type CommandResult = {
 };
 
 function failureMessage(message: string, result: CommandResult) {
-  const ansiEscape = new RegExp(
-    `${String.fromCodePoint(27)}\\[[0-?]*[ -/]*[@-~]`,
-    "g",
-  );
+  const ansiEscape = new RegExp(`${String.fromCodePoint(27)}\\[[0-?]*[ -/]*[@-~]`, "g");
   const diagnostic = result.stderr
     .replace(ansiEscape, "")
     .replaceAll(workspaceRoot, "<workspace>")
     .replaceAll(homedir(), "<home>")
-    .replace(
-      /\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY))=\S+/g,
-      "$1=<redacted>",
-    )
+    .replace(/\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|KEY))=\S+/g, "$1=<redacted>")
     .trim()
     .split(/\r?\n/)
     .slice(-8)
@@ -90,11 +81,7 @@ async function runCaptured(
     cwd: workspaceRoot,
     env:
       options.environment ??
-      convexCommandEnvironment(
-        argumentsList,
-        process.env,
-        readLocalDevelopmentEnvironment(),
-      ),
+      convexCommandEnvironment(argumentsList, process.env, readLocalDevelopmentEnvironment()),
     stdin: options.input === undefined ? "ignore" : "pipe",
     stderr: "pipe",
     stdout: "pipe",
@@ -120,17 +107,12 @@ async function installDependencies() {
 
 function removeObsoleteEnvironmentAliases() {
   if (!existsSync(localEnvironmentPath)) return;
-  const obsoleteNames = new Set([
-    "TOUCHGRASS_AUTH_SITE_URL",
-    "TOUCHGRASS_CONVEX_URL",
-  ]);
+  const obsoleteNames = new Set(["TOUCHGRASS_AUTH_SITE_URL", "TOUCHGRASS_CONVEX_URL"]);
   const current = readFileSync(localEnvironmentPath, "utf8");
   const next = current
     .split(/\r?\n/)
     .filter((line) => {
-      const name = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(
-        line,
-      )?.[1];
+      const name = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)?.[1];
       return !name || !obsoleteNames.has(name);
     })
     .join("\n")
@@ -142,10 +124,9 @@ function removeObsoleteEnvironmentAliases() {
 }
 
 async function provisionLocalDeployment() {
-  const result = await runCaptured(
-    ["dev", "--once", "--tail-logs", "disable"],
-    { environment: anonymousLocalEnvironment() },
-  );
+  const result = await runCaptured(["dev", "--once", "--tail-logs", "disable"], {
+    environment: anonymousLocalEnvironment(),
+  });
   if (!existsSync(localEnvironmentPath)) {
     throw new Error(failureMessage("Local Convex setup failed.", result));
   }
@@ -163,38 +144,23 @@ async function provisionLocalDeployment() {
 async function ensureLocalBetterAuthSecret() {
   const listed = await runCaptured(["env", "list", "--names-only"]);
   if (listed.exitCode !== 0) {
-    throw new Error(
-      failureMessage("The local Convex environment could not be read.", listed),
-    );
+    throw new Error(failureMessage("The local Convex environment could not be read.", listed));
   }
   if (!listed.stdout.split(/\r?\n/).includes("BETTER_AUTH_SECRET")) {
     const secret = randomBytes(48).toString("base64url");
-    const result = await runCaptured(
-      ["env", "set", "BETTER_AUTH_SECRET"],
-      { input: `${secret}\n` },
-    );
+    const result = await runCaptured(["env", "set", "BETTER_AUTH_SECRET"], {
+      input: `${secret}\n`,
+    });
     if (result.exitCode !== 0) {
-      throw new Error(
-        failureMessage("The local Better Auth secret could not be set.", result),
-      );
+      throw new Error(failureMessage("The local Better Auth secret could not be set.", result));
     }
   }
 }
 
 async function pushSelectedBackend() {
-  const result = await runCaptured([
-    "dev",
-    "--once",
-    "--tail-logs",
-    "disable",
-  ]);
+  const result = await runCaptured(["dev", "--once", "--tail-logs", "disable"]);
   if (result.exitCode !== 0) {
-    throw new Error(
-      failureMessage(
-        "The selected Convex backend could not be prepared.",
-        result,
-      ),
-    );
+    throw new Error(failureMessage("The selected Convex backend could not be prepared.", result));
   }
 }
 

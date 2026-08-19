@@ -1,10 +1,7 @@
 import { v } from "convex/values";
 
 import { internal } from "../_generated/api";
-import {
-  internalMutation,
-  type MutationCtx,
-} from "../_generated/server";
+import { internalMutation, type MutationCtx } from "../_generated/server";
 import { recomputeScores } from "../model/scores";
 import { rankingDayAt } from "../model/values";
 
@@ -52,11 +49,10 @@ export const scheduleAll = internalMutation({
     } else {
       await ctx.db.insert("scoreRecomputeDrains", nextDrain);
     }
-    await ctx.scheduler.runAfter(
-      0,
-      internal.internal.recompute.schedulePage,
-      { cursor: null, generation },
-    );
+    await ctx.scheduler.runAfter(0, internal.internal.recompute.schedulePage, {
+      cursor: null,
+      generation,
+    });
     return null;
   },
 });
@@ -77,14 +73,11 @@ export const schedulePage = internalMutation({
     ) {
       return null;
     }
-    const page = await ctx.db
-      .query("tokenmaxxers")
-      .withIndex("by_last_synced_at")
-      .paginate({
-        cursor: args.cursor,
-        maximumRowsRead: RECOMPUTE_PAGE_SIZE,
-        numItems: RECOMPUTE_PAGE_SIZE,
-      });
+    const page = await ctx.db.query("tokenmaxxers").withIndex("by_last_synced_at").paginate({
+      cursor: args.cursor,
+      maximumRowsRead: RECOMPUTE_PAGE_SIZE,
+      numItems: RECOMPUTE_PAGE_SIZE,
+    });
     const rankingDay = rankingDayAt();
     for (const tokenmaxxer of page.page) {
       await recomputeScores(ctx, tokenmaxxer._id, rankingDay);
@@ -100,11 +93,10 @@ export const schedulePage = internalMutation({
         ...progress,
         cursor: page.continueCursor,
       });
-      await ctx.scheduler.runAfter(
-        0,
-        internal.internal.recompute.schedulePage,
-        { cursor: page.continueCursor, generation: drain.generation },
-      );
+      await ctx.scheduler.runAfter(0, internal.internal.recompute.schedulePage, {
+        cursor: page.continueCursor,
+        generation: drain.generation,
+      });
     } else {
       await ctx.db.patch(drain._id, {
         ...progress,
@@ -123,17 +115,10 @@ export const monitor = internalMutation({
   handler: async (ctx) => {
     const drain = await currentDrain(ctx);
     const now = Date.now();
-    if (
-      !drain ||
-      drain.status !== "running" ||
-      now - drain.updatedAt < RECOMPUTE_STALL_MS
-    ) {
+    if (!drain || drain.status !== "running" || now - drain.updatedAt < RECOMPUTE_STALL_MS) {
       return null;
     }
-    if (
-      drain.lastAlertedAt === null ||
-      now - drain.lastAlertedAt >= RECOMPUTE_ALERT_COOLDOWN_MS
-    ) {
+    if (drain.lastAlertedAt === null || now - drain.lastAlertedAt >= RECOMPUTE_ALERT_COOLDOWN_MS) {
       console.error("Daily score recomputation drain stalled", {
         generation: drain.generation,
         pagesCompleted: drain.pagesCompleted,
@@ -141,11 +126,10 @@ export const monitor = internalMutation({
       });
       await ctx.db.patch(drain._id, { lastAlertedAt: now });
     }
-    await ctx.scheduler.runAfter(
-      0,
-      internal.internal.recompute.schedulePage,
-      { cursor: drain.cursor, generation: drain.generation },
-    );
+    await ctx.scheduler.runAfter(0, internal.internal.recompute.schedulePage, {
+      cursor: drain.cursor,
+      generation: drain.generation,
+    });
     return null;
   },
 });

@@ -1,8 +1,4 @@
-import type {
-  ProviderPresentation,
-  UpdateState,
-  UsagePeriods,
-} from "@touchgrass/contracts";
+import type { ProviderPresentation, UpdateState, UsagePeriods } from "@touchgrass/contracts";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import {
@@ -175,11 +171,7 @@ export const CompactPanel: Story = {
 export const ProviderAccess: Story = {
   render: () => (
     <NativeSheetSurface className="w-[620px] max-w-full p-8">
-      <CodingProviderAccessCard
-        displayName="Codex"
-        provider="codex"
-        state="detected"
-      />
+      <CodingProviderAccessCard displayName="Codex" provider="codex" state="detected" />
     </NativeSheetSurface>
   ),
 };

@@ -15,11 +15,7 @@ import { createUpdateDelivery } from "@/native-state/update-delivery";
 
 type PanelPresentation = Pick<
   PanelViewProps,
-  | "currentProfile"
-  | "doomerboardRows"
-  | "tokenmaxxerRows"
-  | "updateState"
-  | "usagePresentation"
+  "currentProfile" | "doomerboardRows" | "tokenmaxxerRows" | "updateState" | "usagePresentation"
 >;
 
 type PanelScreenProps = {
@@ -33,21 +29,11 @@ const compactTokenScore = new Intl.NumberFormat("en-US", {
   notation: "compact",
 });
 
-function PanelScreen({
-  hasNativeRuntime,
-  presentation = {},
-  stateDelivery,
-}: PanelScreenProps) {
+function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
-  const [doomerboardSelection, setDoomerboardSelection] = useState(
-    defaultDoomerboardQuery,
-  );
-  const [doomerboard] = useState(() =>
-    createDoomerboardDelivery(createTauriDoomerboardAdapter()),
-  );
-  const [updates] = useState(() =>
-    createUpdateDelivery(createTauriUpdateAdapter()),
-  );
+  const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
+  const [doomerboard] = useState(() => createDoomerboardDelivery(createTauriDoomerboardAdapter()));
+  const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
   const deliveryView = useSyncExternalStore(
     stateDelivery.subscribe,
     stateDelivery.getSnapshot,
@@ -130,9 +116,7 @@ function PanelScreen({
   useEffect(() => {
     if (!hasNativeRuntime || typeof ResizeObserver === "undefined") return;
 
-    const panel = document.querySelector<HTMLElement>(
-      '[data-slot="panel-shell"]',
-    );
+    const panel = document.querySelector<HTMLElement>('[data-slot="panel-shell"]');
     if (!panel) return;
 
     let lastHeight = 0;
@@ -155,16 +139,11 @@ function PanelScreen({
         }
       : null;
   const currentProfile =
-    presentation.currentProfile === undefined
-      ? nativeProfile
-      : presentation.currentProfile;
+    presentation.currentProfile === undefined ? nativeProfile : presentation.currentProfile;
   const nativeDoomerboardRows =
-    doomerboardView.phase === "ready" &&
-    doomerboardView.view?.status === "ready"
+    doomerboardView.phase === "ready" && doomerboardView.view?.status === "ready"
       ? doomerboardView.view.rows.map((row) => {
-          const presentedRow: NonNullable<
-            PanelViewProps["doomerboardRows"]
-          >[number] = {
+          const presentedRow: NonNullable<PanelViewProps["doomerboardRows"]>[number] = {
             displayName: row.displayName,
             rank: row.rank,
             tokenScore: compactTokenScore.format(row.tokenScore),
@@ -179,8 +158,7 @@ function PanelScreen({
           return presentedRow;
         })
       : undefined;
-  const updateActionsAvailable =
-    hasNativeRuntime || presentation.updateState !== undefined;
+  const updateActionsAvailable = hasNativeRuntime || presentation.updateState !== undefined;
   const updateState = presentation.updateState ?? updateView.state;
   const runUpdateAction = (action: () => Promise<boolean>) => {
     if (hasNativeRuntime) void action();
@@ -192,9 +170,7 @@ function PanelScreen({
       currentProfile={currentProfile}
       doomerboardRows={
         presentation.doomerboardRows ??
-        (doomerboardSelection.audience === "global"
-          ? nativeDoomerboardRows
-          : undefined)
+        (doomerboardSelection.audience === "global" ? nativeDoomerboardRows : undefined)
       }
       doomerboardSelection={doomerboardSelection}
       error={deliveryView.phase === "degraded"}
@@ -211,9 +187,7 @@ function PanelScreen({
         updateActionsAvailable
           ? () => {
               runUpdateAction(
-                updateState?.update.status === "failed"
-                  ? updates.retry
-                  : updates.install,
+                updateState?.update.status === "failed" ? updates.retry : updates.install,
               );
             }
           : undefined
@@ -222,9 +196,7 @@ function PanelScreen({
       state={deliveryView.snapshot}
       tokenmaxxerRows={
         presentation.tokenmaxxerRows ??
-        (doomerboardSelection.audience === "mine"
-          ? nativeDoomerboardRows
-          : undefined)
+        (doomerboardSelection.audience === "mine" ? nativeDoomerboardRows : undefined)
       }
       updateState={updateState}
       usagePresentation={presentation.usagePresentation}

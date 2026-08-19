@@ -6,10 +6,7 @@ import { cn } from "#lib/utils";
 function MetricCard({ className, ...props }: ComponentProps<"article">) {
   return (
     <article
-      className={cn(
-        "relative flex min-w-0 flex-col px-2.5 pt-[9px] pb-[18px]",
-        className,
-      )}
+      className={cn("relative flex min-w-0 flex-col px-2.5 pt-[9px] pb-[18px]", className)}
       data-slot="metric-card"
       {...props}
     />
@@ -32,10 +29,7 @@ function MetricCardGroup({ className, ...props }: ComponentProps<"div">) {
 function MetricCardLabel({ className, ...props }: ComponentProps<"small">) {
   return (
     <small
-      className={cn(
-        "text-[8px] text-pearl-muted contrast-more:text-pearl-ink",
-        className,
-      )}
+      className={cn("text-[8px] text-pearl-muted contrast-more:text-pearl-ink", className)}
       data-slot="metric-card-label"
       {...props}
     />
@@ -116,14 +110,8 @@ type MetricCardGaugeProps = ComponentProps<"span"> & {
   tone: keyof typeof gaugeTones;
 };
 
-function MetricCardGauge({
-  className,
-  fill,
-  tone,
-  ...props
-}: MetricCardGaugeProps) {
-  const normalizedFill =
-    fill === undefined ? 0 : Math.max(0, Math.min(100, fill));
+function MetricCardGauge({ className, fill, tone, ...props }: MetricCardGaugeProps) {
+  const normalizedFill = fill === undefined ? 0 : Math.max(0, Math.min(100, fill));
 
   return (
     <span

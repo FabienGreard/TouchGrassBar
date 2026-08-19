@@ -1,9 +1,4 @@
-const convexSelectionCommands = new Set([
-  "deploy",
-  "deployment",
-  "login",
-  "logout",
-]);
+const convexSelectionCommands = new Set(["deploy", "deployment", "login", "logout"]);
 
 function convexCommandEnvironment(
   argumentsList: string[],
@@ -13,8 +8,7 @@ function convexCommandEnvironment(
   const environment = { ...inheritedEnvironment };
   delete environment.CONVEX_AGENT_MODE;
   const deployment =
-    environment.CONVEX_DEPLOYMENT?.trim() ||
-    localEnvironment.CONVEX_DEPLOYMENT?.trim();
+    environment.CONVEX_DEPLOYMENT?.trim() || localEnvironment.CONVEX_DEPLOYMENT?.trim();
   const command = argumentsList[0];
   if (
     deployment?.startsWith("anonymous:") &&

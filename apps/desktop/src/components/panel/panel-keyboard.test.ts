@@ -17,12 +17,7 @@ describe("panel shortcut mapping used by PanelScreen", () => {
     onKeyDown({ key: "w", metaKey: false });
     onKeyDown({ key: "x", metaKey: true });
 
-    expect(commands).toEqual([
-      "hide_panel",
-      "hide_panel",
-      "hide_panel",
-      "open_settings",
-    ]);
+    expect(commands).toEqual(["hide_panel", "hide_panel", "hide_panel", "open_settings"]);
   });
 
   test("does not dispatch browser-preview shortcuts", () => {
