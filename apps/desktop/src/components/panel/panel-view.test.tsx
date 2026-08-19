@@ -319,6 +319,8 @@ describe("panel states", () => {
     expect(markup).not.toContain("Leaderboard unavailable");
     expect(markup).not.toContain("Expand Leaderboard");
     expect(markup).not.toContain("Collapse Leaderboard");
+    expect(markup).not.toContain("expanded-board-surface");
+    expect(markup).not.toContain("Leaderboard refresh failed");
     expect(markup).toContain("Friends");
   });
 
@@ -696,7 +698,9 @@ describe("panel states", () => {
       expect(markup).toMatch(
         new RegExp(`aria-label="Select Leaderboard period"[^>]*>${periodLabel}</button>`),
       );
-      expect(markup).not.toContain("Scores are unavailable for this selection.");
+      expect(markup).not.toContain(
+        "Scores are unavailable for this selection.",
+      );
     }
   });
 

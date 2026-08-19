@@ -25,6 +25,17 @@ const readyView = {
   status: "ready",
 } as const;
 
+const selectedView = {
+  ...readyView,
+  rows: [
+    {
+      ...readyView.rows[0],
+      displayName: "Selected Fabien",
+      tokenScore: 8_400_000,
+    },
+  ],
+} as const;
+
 function port(): DoomerboardPort & { changed: () => void } {
   let receiveChange: (() => void) | undefined;
   return {
@@ -88,6 +99,61 @@ describe("Doomerboard delivery", () => {
     expect(native.read).toHaveBeenNthCalledWith(1, defaultDoomerboardQuery);
     expect(native.read).toHaveBeenNthCalledWith(2, query);
     expect(delivery.getSnapshot()).toEqual({ phase: "ready", view: readyView });
+  });
+
+  test("keeps the current rankings visible while a new selection loads", async () => {
+    let finishSelection!: () => void;
+    const selectionStarted = new Promise<void>((resolve) => {
+      finishSelection = resolve;
+    });
+    const native = port();
+    native.read = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true as const, value: readyView })
+      .mockImplementationOnce(async () => {
+        await selectionStarted;
+        return { ok: true as const, value: selectedView };
+      });
+    const delivery = createDoomerboardDelivery(native);
+    await delivery.activate();
+
+    const selecting = delivery.select({
+      audience: "global",
+      scope: "codex",
+      windowDays: 7,
+    });
+
+    expect(delivery.getSnapshot()).toEqual({ phase: "ready", view: readyView });
+    finishSelection();
+    await selecting;
+    expect(delivery.getSnapshot()).toEqual({
+      phase: "ready",
+      view: selectedView,
+    });
+  });
+
+  test("does not label old rankings as a new unavailable selection", async () => {
+    const native = port();
+    native.read = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true as const, value: readyView })
+      .mockResolvedValueOnce({
+        fault: { code: "doomerboard-unavailable" as const },
+        ok: false as const,
+      });
+    const delivery = createDoomerboardDelivery(native);
+    await delivery.activate();
+
+    await delivery.select({
+      audience: "global",
+      scope: "claude",
+      windowDays: 30,
+    });
+
+    expect(delivery.getSnapshot()).toEqual({
+      phase: "degraded",
+      view: null,
+    });
   });
 });
 
