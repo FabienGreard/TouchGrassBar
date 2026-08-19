@@ -1,5 +1,6 @@
 import { type Infer, v } from "convex/values";
 
+export const MAX_SAVED_TOKENMAXXERS = 100;
 export const providerValidator = v.union(v.literal("codex"), v.literal("claude"));
 export const scoreScopeValidator = v.union(providerValidator, v.literal("combined"));
 export const scoreWindowValidator = v.union(v.literal(1), v.literal(7), v.literal(30));

@@ -6,7 +6,6 @@ import { requireAuthUser } from "./auth";
 import {
   doomerboard,
   type DoomerboardKey,
-  type LegacyDoomerboardKey,
 } from "./model/doomerboard";
 import { rejectAuthority } from "./model/authority";
 import { tokenmaxxerForAuthUser } from "./model/profile";
@@ -14,6 +13,7 @@ import {
   apiEquivalentCostValidator,
   assertRankingDay,
   boardKey,
+  MAX_SAVED_TOKENMAXXERS,
   rankingDayAt,
   scoreScopeValidator,
   scoreWindowValidator,
@@ -40,53 +40,36 @@ const canonicalKeyBounds = {
     key: [0, "\uffff"] as DoomerboardKey,
   },
 };
-const legacyKeyBounds = {
-  lower: { inclusive: true, key: 0 as LegacyDoomerboardKey },
-  upper: {
-    inclusive: true,
-    key: Number.MAX_SAFE_INTEGER as LegacyDoomerboardKey,
-  },
-};
-
-async function legacyPageThroughBoundaryTie(
+async function compatibilityRows(
   ctx: QueryCtx,
   namespace: string,
   pageSize: number,
 ) {
-  const firstPage = await doomerboard.paginate(ctx, {
-    bounds: legacyKeyBounds,
-    namespace,
-    order: "desc",
-    pageSize,
-  });
-  const boundaryKey = firstPage.page.at(-1)?.key;
-  if (firstPage.isDone || boundaryKey === undefined) {
-    return firstPage.page;
+  const descendingRows = await ctx.db
+    .query("publicUsages")
+    .withIndex(
+      "by_board_key_and_token_score_and_touch_grass_id",
+      (q) => q.eq("boardKey", namespace),
+    )
+    .order("desc")
+    .take(pageSize);
+  const boundaryScore = descendingRows.at(-1)?.tokenScore;
+  if (descendingRows.length < pageSize || boundaryScore === undefined) {
+    return descendingRows;
   }
-  if (typeof boundaryKey !== "number") {
-    throw new Error("Legacy Doomerboard scan returned a canonical key");
-  }
-
-  const items = [...firstPage.page];
-  let cursor = firstPage.cursor;
-  let isDone: boolean = firstPage.isDone;
-  while (!isDone) {
-    const nextPage = await doomerboard.paginate(ctx, {
-      bounds: legacyKeyBounds,
-      cursor,
-      namespace,
-      order: "desc",
-      pageSize: SCAN_ROWS_PER_KEY_FORMAT,
-    });
-    const tiedItems = nextPage.page.filter(
-      (item) => item.key === boundaryKey,
-    );
-    items.push(...tiedItems);
-    if (tiedItems.length !== nextPage.page.length) break;
-    cursor = nextPage.cursor;
-    isDone = nextPage.isDone;
-  }
-  return items;
+  const higherRows = descendingRows.filter(
+    (row) => row.tokenScore > boundaryScore,
+  );
+  const boundaryRows = await ctx.db
+    .query("publicUsages")
+    .withIndex(
+      "by_board_key_and_token_score_and_touch_grass_id",
+      (q) =>
+        q.eq("boardKey", namespace).eq("tokenScore", boundaryScore),
+    )
+    .order("asc")
+    .take(pageSize - higherRows.length);
+  return [...higherRows, ...boundaryRows];
 }
 
 export function rankRows<
@@ -140,20 +123,20 @@ async function globalRows(
       ? limit
       : SCAN_ROWS_PER_KEY_FORMAT;
   const namespace = boardKey(scope, windowDays);
-  const [canonicalPage, legacyItems] = await Promise.all([
+  const [canonicalPage, compatibleRows] = await Promise.all([
     doomerboard.paginate(ctx, {
       bounds: canonicalKeyBounds,
       namespace,
       order: "asc",
       pageSize: scanLimit,
     }),
-    legacyPageThroughBoundaryTie(ctx, namespace, scanLimit),
+    compatibilityRows(ctx, namespace, scanLimit),
   ]);
-  const candidates = await Promise.all(
-    [...canonicalPage.page, ...legacyItems].map((item) => ctx.db.get(item.id)),
+  const canonicalRows = await Promise.all(
+    canonicalPage.page.map((item) => ctx.db.get(item.id)),
   );
   const rowsById = new Map<Doc<"publicUsages">["_id"], Doc<"publicUsages">>();
-  for (const row of candidates) {
+  for (const row of [...canonicalRows, ...compatibleRows]) {
     if (
       row !== null &&
       (requiredComputedRankingDay === undefined ||
@@ -204,11 +187,14 @@ async function myTokenmaxxerRows(
 ) {
   const authUser = await requireAuthUser(ctx);
   const owner = await tokenmaxxerForAuthUser(ctx, authUser);
-  if (!owner) return [];
+  if (!owner) return { hasSavedTokenmaxxers: false, rows: [] };
   const added = await ctx.db
     .query("addedTokenmaxxers")
     .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))
-    .take(100);
+    .take(MAX_SAVED_TOKENMAXXERS + 1);
+  if (added.length > MAX_SAVED_TOKENMAXXERS) {
+    throw new Error("My Tokenmaxxers limit exceeded");
+  }
   const candidates = await Promise.all(
     added.map((edge) =>
       ctx.db
@@ -228,7 +214,10 @@ async function myTokenmaxxerRows(
       (requiredComputedRankingDay === undefined ||
         rankingDayAt(row.computedAt) === requiredComputedRankingDay),
   );
-  return rankRows(rows);
+  return {
+    hasSavedTokenmaxxers: added.length > 0,
+    rows: rankRows(rows),
+  };
 }
 
 export const currentMyTokenmaxxers = query({
@@ -237,7 +226,10 @@ export const currentMyTokenmaxxers = query({
     scope: scoreScopeValidator,
     windowDays: scoreWindowValidator,
   },
-  returns: v.array(doomerboardRow),
+  returns: v.object({
+    hasSavedTokenmaxxers: v.boolean(),
+    rows: v.array(doomerboardRow),
+  }),
   handler: (ctx, args) => {
     assertRankingDay(args.rankingDay);
     return myTokenmaxxerRows(
@@ -255,6 +247,6 @@ export const myTokenmaxxers = query({
     windowDays: scoreWindowValidator,
   },
   returns: v.array(doomerboardRow),
-  handler: (ctx, args) =>
-    myTokenmaxxerRows(ctx, args.scope, args.windowDays),
+  handler: async (ctx, args) =>
+    (await myTokenmaxxerRows(ctx, args.scope, args.windowDays)).rows,
 });

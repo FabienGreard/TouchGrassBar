@@ -129,6 +129,11 @@ export default defineSchema({
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
     .index("by_board_key", ["boardKey"])
+    .index("by_board_key_and_token_score_and_touch_grass_id", [
+      "boardKey",
+      "tokenScore",
+      "touchGrassId",
+    ])
     .index("by_tokenmaxxer_id_and_scope_and_window_days", [
       "tokenmaxxerId",
       "scope",

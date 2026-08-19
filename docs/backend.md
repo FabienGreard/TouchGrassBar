@@ -99,11 +99,11 @@ such as:
 Doomerboards use the composite Aggregate key `[-TokenScore, TouchGrass ID]`.
 Ascending Aggregate pagination therefore returns the highest score first and
 uses TouchGrass ID as the deterministic tie break. The current Global query is
-fixed to the Combined 1-day Board Key, requires the live Profile, and returns
-at most 100 public rows. It accepts no client identity. The native caller sends
-its validated UTC Ranking Day, which keeps the cached query stable within a day
-and changes its argument at rollover. Ordered pagination skips stale rows until
-it fills the requested current-day page or reaches the index end.
+limited to the validated Codex, Claude, or Combined scope and the 1-, 7-, or
+30-day window. It requires the live Profile and returns at most 100 public
+rows. It accepts no client identity. The native caller sends its validated UTC
+Ranking Day, scope, and window. The Ranking Day keeps the cached query stable
+within a day and changes its argument at rollover.
 
 `publicUsages` and `doomerboard` have one write path: every insert,
 replacement, or deletion changes both within the same mutation. A bounded,
@@ -114,7 +114,14 @@ paired repair is idempotent and changes only the observed index entry. The
 entries without recomputing usage or scores. Production dashboard edits to
 either side are prohibited.
 
-My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most those 100 indexed edges, performs indexed score lookups, and sorts only that bounded set in memory. It never scans the global score table.
+My Tokenmaxxers contains at most 100 saved Tokenmaxxers. The add mutation
+rejects a new unique entry at that limit but keeps an existing entry
+idempotent. Its query reads at most 101 indexed edges, fails closed if legacy
+data exceeds the limit, performs at most 100 indexed score lookups, and sorts
+only that bounded set in memory. An existing overflow can still be reduced by
+the exact indexed remove mutation. It never scans the global score table. The
+current-day response also reports whether any saved Tokenmaxxers exist, so an
+empty saved list stays distinct from temporarily unavailable scores.
 
 ## Maintenance
 

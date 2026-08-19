@@ -215,7 +215,7 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
                 .map_err(|_| TransportError::Unavailable)?
             })?;
         match result {
-            FunctionResult::Value(value) => parse_rows(value),
+            FunctionResult::Value(value) => parse_selected_rows(query, value),
             FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
                 Err(TransportError::AuthorityRejected)
             }
@@ -453,6 +453,30 @@ fn parse_rows(value: Value) -> Result<Vec<DoomerboardRowV1>, TransportError> {
         .ok_or(TransportError::Unavailable)
 }
 
+fn parse_selected_rows(
+    query: DoomerboardQueryV1,
+    value: Value,
+) -> Result<Vec<DoomerboardRowV1>, TransportError> {
+    if query.audience == DoomerboardAudienceV1::Global {
+        return parse_rows(value);
+    }
+    let Value::Object(mut object) = value else {
+        return Err(TransportError::Unavailable);
+    };
+    if !exact_keys(&object, ["hasSavedTokenmaxxers", "rows"]) {
+        return Err(TransportError::Unavailable);
+    }
+    let has_saved_tokenmaxxers = match object.remove("hasSavedTokenmaxxers") {
+        Some(Value::Boolean(value)) => value,
+        _ => return Err(TransportError::Unavailable),
+    };
+    let rows = parse_rows(object.remove("rows").ok_or(TransportError::Unavailable)?)?;
+    match (has_saved_tokenmaxxers, rows.is_empty()) {
+        (false, true) | (true, false) => Ok(rows),
+        (false, false) | (true, true) => Err(TransportError::Unavailable),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +541,16 @@ mod tests {
         }
     }
 
+    fn saved_rows(has_saved_tokenmaxxers: bool, rows: Vec<Value>) -> Value {
+        Value::Object(BTreeMap::from([
+            (
+                "hasSavedTokenmaxxers".to_owned(),
+                Value::Boolean(has_saved_tokenmaxxers),
+            ),
+            ("rows".to_owned(), Value::Array(rows)),
+        ]))
+    }
+
     #[test]
     fn accepts_only_ordered_bounded_public_rows() {
         let parsed = parse_rows(Value::Array(vec![
@@ -550,6 +584,25 @@ mod tests {
                 ("scope".to_owned(), Value::String("claude".to_owned()),),
                 ("windowDays".to_owned(), Value::Float64(30.0)),
             ]),
+        );
+    }
+
+    #[test]
+    fn saved_profiles_without_current_scores_are_unavailable_not_empty() {
+        let selected = query(DoomerboardAudienceV1::Mine, DoomerboardScopeV1::Combined, 1);
+        assert_eq!(
+            parse_selected_rows(selected, saved_rows(false, Vec::new())),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            parse_selected_rows(selected, saved_rows(true, Vec::new())),
+            Err(TransportError::Unavailable)
+        );
+        assert_eq!(
+            parse_selected_rows(selected, saved_rows(true, vec![row("TG-234567", 1, 500)]),)
+                .expect("parse saved board")
+                .len(),
+            1
         );
     }
 
