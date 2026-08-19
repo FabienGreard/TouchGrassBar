@@ -48,6 +48,47 @@ const legacyKeyBounds = {
   },
 };
 
+async function legacyPageThroughBoundaryTie(
+  ctx: QueryCtx,
+  namespace: string,
+  pageSize: number,
+) {
+  const firstPage = await doomerboard.paginate(ctx, {
+    bounds: legacyKeyBounds,
+    namespace,
+    order: "desc",
+    pageSize,
+  });
+  const boundaryKey = firstPage.page.at(-1)?.key;
+  if (firstPage.isDone || boundaryKey === undefined) {
+    return firstPage.page;
+  }
+  if (typeof boundaryKey !== "number") {
+    throw new Error("Legacy Doomerboard scan returned a canonical key");
+  }
+
+  const items = [...firstPage.page];
+  let cursor = firstPage.cursor;
+  let isDone: boolean = firstPage.isDone;
+  while (!isDone) {
+    const nextPage = await doomerboard.paginate(ctx, {
+      bounds: legacyKeyBounds,
+      cursor,
+      namespace,
+      order: "desc",
+      pageSize: SCAN_ROWS_PER_KEY_FORMAT,
+    });
+    const tiedItems = nextPage.page.filter(
+      (item) => item.key === boundaryKey,
+    );
+    items.push(...tiedItems);
+    if (tiedItems.length !== nextPage.page.length) break;
+    cursor = nextPage.cursor;
+    isDone = nextPage.isDone;
+  }
+  return items;
+}
+
 export function rankRows<
   T extends {
     apiEquivalentCost: ApiEquivalentCost | null;
@@ -98,22 +139,18 @@ async function globalRows(
     requiredComputedRankingDay === undefined
       ? limit
       : SCAN_ROWS_PER_KEY_FORMAT;
-  const pages = await Promise.all([
+  const namespace = boardKey(scope, windowDays);
+  const [canonicalPage, legacyItems] = await Promise.all([
     doomerboard.paginate(ctx, {
       bounds: canonicalKeyBounds,
-      namespace: boardKey(scope, windowDays),
+      namespace,
       order: "asc",
       pageSize: scanLimit,
     }),
-    doomerboard.paginate(ctx, {
-      bounds: legacyKeyBounds,
-      namespace: boardKey(scope, windowDays),
-      order: "desc",
-      pageSize: scanLimit,
-    }),
+    legacyPageThroughBoundaryTie(ctx, namespace, scanLimit),
   ]);
   const candidates = await Promise.all(
-    pages.flatMap((page) => page.page).map((item) => ctx.db.get(item.id)),
+    [...canonicalPage.page, ...legacyItems].map((item) => ctx.db.get(item.id)),
   );
   const rowsById = new Map<Doc<"publicUsages">["_id"], Doc<"publicUsages">>();
   for (const row of candidates) {

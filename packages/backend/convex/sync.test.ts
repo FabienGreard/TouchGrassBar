@@ -17,6 +17,19 @@ import schema from "./schema";
 const modules = import.meta.glob("./**/*.ts");
 const TODAY = "2026-08-08";
 const NOW = new Date(`${TODAY}T12:00:00.000Z`);
+const TOUCH_GRASS_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+function publicIdFor(index: number) {
+  let remaining = index;
+  let suffix = "";
+  for (let position = 0; position < 6; position += 1) {
+    suffix =
+      TOUCH_GRASS_ID_ALPHABET[remaining % TOUCH_GRASS_ID_ALPHABET.length] +
+      suffix;
+    remaining = Math.floor(remaining / TOUCH_GRASS_ID_ALPHABET.length);
+  }
+  return `TG-${suffix}`;
+}
 
 function testBackend() {
   const t = convexTest(schema, modules);
@@ -1225,16 +1238,6 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
-  const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const publicIdFor = (index: number) => {
-    let remaining = index;
-    let suffix = "";
-    for (let position = 0; position < 6; position += 1) {
-      suffix = alphabet[remaining % alphabet.length] + suffix;
-      remaining = Math.floor(remaining / alphabet.length);
-    }
-    return `TG-${suffix}`;
-  };
   const expected = Array.from({ length: 105 }, (_, index) => ({
     displayName: `Tokenmaxxer ${index}`,
     tokenScore: 500_000 - Math.floor(index / 3),
@@ -1341,6 +1344,54 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
   expect(JSON.stringify(cappedPage)).not.toMatch(
     /authSubject|boardKey|computedAt|tokenmaxxerId|usageBucket|provider|path|prompt|session/,
   );
+});
+
+test("the legacy Global Doomerboard completes a score tie before ranking it", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const rows = Array.from({ length: 321 }, (_, index) => ({
+    displayName: `Tied Tokenmaxxer ${index}`,
+    touchGrassId: publicIdFor(index),
+  }));
+
+  for (let offset = 0; offset < rows.length; offset += 50) {
+    await t.run(async (ctx) => {
+      for (const row of rows.slice(offset, offset + 50)) {
+        const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+          authSubject: `legacy-tie-${row.touchGrassId}`,
+          createdAt: NOW.getTime(),
+          displayName: row.displayName,
+          publicId: row.touchGrassId,
+        });
+        const publicUsageId = await ctx.db.insert("publicUsages", {
+          apiEquivalentCost: null,
+          boardKey: "tokens-v1:combined:1d",
+          computedAt: NOW.getTime(),
+          displayName: row.displayName,
+          scope: "combined",
+          tokenmaxxerId,
+          tokenScore: 100,
+          touchGrassId: row.touchGrassId,
+          windowDays: 1,
+        });
+        await doomerboard.insert(ctx, {
+          id: publicUsageId,
+          key: 100,
+          namespace: "tokens-v1:combined:1d",
+        });
+      }
+    });
+  }
+
+  const page = await authenticated.query(api.doomerboards.currentGlobal, {
+    limit: 100,
+    rankingDay: TODAY,
+  });
+  expect(page.map((row) => row.touchGrassId)).toEqual(
+    rows.slice(0, 100).map((row) => row.touchGrassId),
+  );
+  expect(page.every((row) => row.rank === 1)).toBe(true);
 });
 
 test("the migration repairs the Doomerboard index from public scores", async () => {
@@ -2205,17 +2256,21 @@ test("score recomputation ignores more than 1000 old rows", async () => {
   }
 });
 
-test("daily score recomputation drains past the first 200 Tokenmaxxers", async () => {
+test("daily score recomputation drains every Tokenmaxxer", async () => {
   const t = testBackend();
   const tokenmaxxerIds = await t.run(async (ctx) => {
     const ids = [];
-    for (let index = 0; index < 201; index += 1) {
+    for (let index = 0; index < 202; index += 1) {
       ids.push(
         await ctx.db.insert("tokenmaxxers", {
           authSubject: `rollover-${index}`,
           createdAt: NOW.getTime(),
           displayName: `Tokenmaxxer ${index}`,
-          lastSyncedAt: NOW.getTime(),
+          ...(index === 200
+            ? { lastSyncedAt: NOW.getTime() - 46 * 24 * 60 * 60 * 1_000 }
+            : index === 201
+              ? {}
+              : { lastSyncedAt: NOW.getTime() }),
           publicId: `TG-${String(index).padStart(6, "0")}`,
         }),
       );
@@ -2223,20 +2278,20 @@ test("daily score recomputation drains past the first 200 Tokenmaxxers", async (
     return ids;
   });
 
-  await t.mutation(internal.internal.recompute.scheduleRecentlyActive, {});
+  await t.mutation(internal.internal.recompute.scheduleAll, {});
   await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-  const finalTokenmaxxerId = tokenmaxxerIds.at(-1);
-  if (!finalTokenmaxxerId) throw new Error("Tokenmaxxer fixture missing");
-  const finalScores = await t.run(async (ctx) =>
-    ctx.db
-      .query("publicUsages")
-      .withIndex("by_tokenmaxxer_id", (q) =>
-        q.eq("tokenmaxxerId", finalTokenmaxxerId),
-      )
-      .take(9),
-  );
-  expect(finalScores).toHaveLength(9);
+  for (const tokenmaxxerId of tokenmaxxerIds.slice(-2)) {
+    const finalScores = await t.run(async (ctx) =>
+      ctx.db
+        .query("publicUsages")
+        .withIndex("by_tokenmaxxer_id", (q) =>
+          q.eq("tokenmaxxerId", tokenmaxxerId),
+        )
+        .take(9),
+    );
+    expect(finalScores).toHaveLength(9);
+  }
 });
 
 test("a delayed daily recomputation uses its execution Ranking Day", async () => {
@@ -2271,7 +2326,7 @@ test("a delayed daily recomputation uses its execution Ranking Day", async () =>
   });
 
   vi.setSystemTime(beforeMidnight);
-  await t.mutation(internal.internal.recompute.scheduleRecentlyActive, {});
+  await t.mutation(internal.internal.recompute.scheduleAll, {});
   vi.setSystemTime(afterMidnight);
   await t.finishAllScheduledFunctions(vi.runAllTimers);
 

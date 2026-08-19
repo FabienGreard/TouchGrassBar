@@ -17,16 +17,14 @@ export const one = internalMutation({
   },
 });
 
-export const scheduleRecentlyActive = internalMutation({
+export const scheduleAll = internalMutation({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
-    const activeSince = Date.now() - 45 * 24 * 60 * 60 * 1_000;
     await ctx.scheduler.runAfter(
       0,
-      internal.internal.recompute.scheduleRecentlyActivePage,
+      internal.internal.recompute.schedulePage,
       {
-        activeSince,
         paginationOpts: {
           cursor: null,
           maximumRowsRead: RECOMPUTE_PAGE_SIZE,
@@ -38,18 +36,15 @@ export const scheduleRecentlyActive = internalMutation({
   },
 });
 
-export const scheduleRecentlyActivePage = internalMutation({
+export const schedulePage = internalMutation({
   args: {
-    activeSince: v.number(),
     paginationOpts: paginationOptsValidator,
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     const page = await ctx.db
       .query("tokenmaxxers")
-      .withIndex("by_last_synced_at", (q) =>
-        q.gte("lastSyncedAt", args.activeSince),
-      )
+      .withIndex("by_last_synced_at")
       .paginate(args.paginationOpts);
     await Promise.all(
       page.page.map((tokenmaxxer) =>
@@ -61,9 +56,8 @@ export const scheduleRecentlyActivePage = internalMutation({
     if (!page.isDone) {
       await ctx.scheduler.runAfter(
         0,
-        internal.internal.recompute.scheduleRecentlyActivePage,
+        internal.internal.recompute.schedulePage,
         {
-          activeSince: args.activeSince,
           paginationOpts: {
             cursor: page.continueCursor,
             maximumRowsRead: RECOMPUTE_PAGE_SIZE,
