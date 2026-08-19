@@ -50,7 +50,7 @@ function QuerySelector({
     <PanelMenu>
       <PanelMenuTrigger asChild>
         <Button
-          aria-label={`Select Doomerboard ${label}`}
+          aria-label={`Select Leaderboard ${label}`}
           size="quiet"
           type="button"
           variant="ghost"
@@ -170,7 +170,7 @@ function DoomerboardToolbar({
     <>
       <header className="flex items-center justify-between px-3.5 pt-3">
         <div className="flex min-w-0 items-center gap-1.5">
-          <strong className="shrink-0 text-[10px]">Doomerboard</strong>
+          <strong className="shrink-0 text-[10px]">Leaderboard</strong>
           <CurrentProfileAction
             copyStatus={copyStatus}
             currentProfile={currentProfile}
@@ -196,15 +196,13 @@ function DoomerboardToolbar({
       </header>
       <div className="mx-3.5 mt-2">
         <SegmentedControl
-          aria-label="Doomerboard audience"
+          aria-label="Leaderboard audience"
           onValueChange={(value) =>
             onAudienceChange(value as DoomerboardAudience)
           }
           value={audience}
         >
-          <SegmentedControlItem value="mine">
-            My Tokenmaxxers
-          </SegmentedControlItem>
+          <SegmentedControlItem value="mine">Friends</SegmentedControlItem>
           <SegmentedControlItem value="global">Global</SegmentedControlItem>
         </SegmentedControl>
       </div>

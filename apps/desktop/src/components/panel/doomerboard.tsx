@@ -26,11 +26,11 @@ function DoomerboardUnavailable({
 }) {
   return (
     <div
-      aria-label="Doomerboard unavailable"
+      aria-label="Leaderboard unavailable"
       className="mx-3.5 flex h-full flex-col items-center justify-center rounded-[12px] border border-dashed border-pearl-line bg-pearl-surface px-6 py-3.5 text-center shadow-surface contrast-more:border-pearl-ink"
     >
       <RankingIcon aria-hidden="true" size={20} />
-      <strong className="mt-1.5 text-[10px]">Doomerboard unavailable</strong>
+      <strong className="mt-1.5 text-[10px]">Leaderboard unavailable</strong>
       <small className="mt-0.5 max-w-[260px] text-[8px] leading-3.5 text-pearl-muted contrast-more:text-pearl-ink">
         {selectionUnavailable
           ? "Scores are unavailable for this selection."
@@ -51,7 +51,7 @@ function TokenmaxxersEmpty({
       className="mx-3.5 flex h-full flex-col items-center justify-center rounded-[12px] border border-dashed border-pearl-line bg-pearl-surface px-6 py-3.5 text-center shadow-surface contrast-more:border-pearl-ink"
     >
       <InviteIcon aria-hidden="true" size={20} />
-      <strong className="mt-1.5 text-[10px]">Your Doomerboard is lonely</strong>
+      <strong className="mt-1.5 text-[10px]">Your Leaderboard is lonely</strong>
       <small className="mt-0.5 max-w-[260px] text-[8px] leading-3.5 text-pearl-muted contrast-more:text-pearl-ink">
         Add Tokenmaxxers by TouchGrass ID to compare scores.
       </small>
@@ -112,10 +112,10 @@ function Doomerboard({
           : tokenmaxxersEmpty
             ? "My Tokenmaxxers empty"
             : globalRowsEmpty
-              ? "Doomerboard unavailable"
+              ? "Leaderboard unavailable"
               : globalRowsMatchSelection
-                ? "Doomerboard rankings"
-                : "Doomerboard unavailable"
+                ? "Leaderboard rankings"
+                : "Leaderboard unavailable"
       }
       className="pb-2"
       data-expanded={expanded}
@@ -123,10 +123,10 @@ function Doomerboard({
       <DoomerboardToolbar
         action={
           <Button
-            aria-label={expanded ? "Collapse Doomerboard" : "Expand Doomerboard"}
+            aria-label={expanded ? "Collapse Leaderboard" : "Expand Leaderboard"}
             onClick={() => onExpandedChange(!expanded)}
             size="quiet"
-            title={expanded ? "Collapse Doomerboard" : "Expand Doomerboard"}
+            title={expanded ? "Collapse Leaderboard" : "Expand Leaderboard"}
             type="button"
             variant="ghost"
           >

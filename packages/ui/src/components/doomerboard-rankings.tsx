@@ -68,7 +68,7 @@ function DoomerboardRankings({
 
   return (
     <ScrollArea
-      aria-label="Doomerboard rankings"
+      aria-label="Leaderboard rankings"
       className={cn("h-full", className)}
       data-doomerboard-scroll=""
       data-variant={variant}
@@ -115,10 +115,7 @@ function DoomerboardRankings({
               <small className="mt-0.5 text-[7px] text-pearl-muted">
                 {row.touchGrassId}
               </small>
-              <span className="mt-[7px] text-[7px] text-pearl-muted">
-                Token Score
-              </span>
-              <strong className="text-[16px]">
+              <strong className="mt-[7px] text-[16px]">
                 {row.tokenScore}
               </strong>
             </article>
@@ -127,7 +124,7 @@ function DoomerboardRankings({
       </div>
       {ledger.length > 0 ? (
         <div
-          aria-label="More Doomerboard ranks"
+          aria-label="More Leaderboard ranks"
           className={cn(
             "mx-3.5 border-t border-pearl-line",
             variant === "expanded" && "mx-7",
@@ -150,12 +147,7 @@ function DoomerboardRankings({
                   {row.touchGrassId}
                 </small>
               </span>
-              <span className="text-right">
-                <small className="block text-[7px] text-pearl-muted">
-                  Token Score
-                </small>
-                <b className="text-[12px]">{row.tokenScore}</b>
-              </span>
+              <b className="text-right text-[12px]">{row.tokenScore}</b>
             </article>
           ))}
         </div>
