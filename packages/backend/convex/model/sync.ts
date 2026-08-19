@@ -98,21 +98,66 @@ async function upsertDailyUsage(
 export async function freezeTransferDayUsage(
   ctx: MutationCtx,
   tokenmaxxerId: GenericId<"tokenmaxxers">,
-  deviceId: GenericId<"devices">,
+  previousDeviceId: GenericId<"devices">,
+  newDeviceId: GenericId<"devices">,
   transferDay: string,
 ) {
   const oldSegments = await ctx.db
     .query("usageBuckets")
-    .withIndex("by_device_id", (query) => query.eq("deviceId", deviceId))
+    .withIndex("by_device_id", (query) =>
+      query.eq("deviceId", previousDeviceId),
+    )
     .take(MAX_DEVICE_USAGE_BUCKETS + 1);
   if (oldSegments.length > MAX_DEVICE_USAGE_BUCKETS) {
     throw new Error("Active Mac usage history is out of bounds");
   }
-  const affectedProviders = new Set<Provider>();
+  const providerSettings = await ctx.db
+    .query("deviceProviderSettings")
+    .withIndex("by_device_id", (query) =>
+      query.eq("deviceId", previousDeviceId),
+    )
+    .unique();
+  if (
+    providerSettings?.tokenmaxxerId !== undefined &&
+    providerSettings.tokenmaxxerId !== tokenmaxxerId
+  ) {
+    throw new Error("Active Mac provider settings owner is invalid");
+  }
+  const affectedProviders = new Set<Provider>(
+    providerSettings
+      ? [
+          ...(providerSettings.codexEnabled ? (["codex"] as const) : []),
+          ...(providerSettings.claudeEnabled ? (["claude"] as const) : []),
+        ]
+      : (["codex", "claude"] as const),
+  );
   for (const segment of oldSegments) {
     if (segment.rankingDay === transferDay && segment.coverage !== "partial") {
       await ctx.db.patch(segment._id, { coverage: "partial" });
       affectedProviders.add(segment.provider);
+    }
+  }
+  for (const provider of affectedProviders) {
+    const existingBoundary = await ctx.db
+      .query("usageTransferBoundaries")
+      .withIndex(
+        "by_tokenmaxxer_id_and_provider_and_ranking_day",
+        (query) =>
+          query
+            .eq("tokenmaxxerId", tokenmaxxerId)
+            .eq("provider", provider)
+            .eq("rankingDay", transferDay),
+      )
+      .unique();
+    if (!existingBoundary) {
+      await ctx.db.insert("usageTransferBoundaries", {
+        createdAt: Date.now(),
+        newDeviceId,
+        previousDeviceId,
+        provider,
+        rankingDay: transferDay,
+        tokenmaxxerId,
+      });
     }
   }
   for (const provider of affectedProviders) {

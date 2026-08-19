@@ -32,10 +32,20 @@ export async function tokenmaxxerForAuthUser(
   ctx: QueryCtx | MutationCtx,
   authUser: AuthUserReference,
 ) {
-  return ctx.db
+  const tokenmaxxer = await ctx.db
     .query("tokenmaxxers")
     .withIndex("by_auth_subject", (q) => q.eq("authSubject", authUser.id))
     .unique();
+  if (tokenmaxxer?.recoveryAttemptId) {
+    const recoveryAttempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
+    if (
+      recoveryAttempt?.status === "committed" &&
+      recoveryAttempt.authFinalizedAt === undefined
+    ) {
+      return rejectAuthority();
+    }
+  }
+  return tokenmaxxer;
 }
 
 export async function ensureTokenmaxxer(

@@ -52,6 +52,7 @@ export default defineSchema({
   profileRecoveryAttempts: defineTable({
     activatedAt: v.optional(v.number()),
     attemptDigest: v.string(),
+    authFinalizedAt: v.optional(v.number()),
     committedAt: v.optional(v.number()),
     expectedDeviceId: v.id("devices"),
     expectedGeneration: v.number(),
@@ -93,6 +94,19 @@ export default defineSchema({
       "provider",
       "rankingDay",
     ]),
+
+  usageTransferBoundaries: defineTable({
+    createdAt: v.number(),
+    newDeviceId: v.id("devices"),
+    previousDeviceId: v.id("devices"),
+    provider,
+    rankingDay: v.string(),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+  }).index("by_tokenmaxxer_id_and_provider_and_ranking_day", [
+    "tokenmaxxerId",
+    "provider",
+    "rankingDay",
+  ]),
 
   usageCorrectionAudits: defineTable({
     bucketId: v.id("usageBuckets"),

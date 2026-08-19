@@ -657,6 +657,9 @@ impl ProfileCoordinator {
         touch_grass_id: &str,
         recovery_key: &Secret,
     ) -> Result<ProfileProvisioningOutcome, ProfileError> {
+        if touch_grass_id.len() > 64 || recovery_key.expose().len() > 128 {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
         let staged = match self.custody.read(SecretKind::RecoveryPreparation)? {
             Some(value) => {
                 let prepared = PreparedRecovery::decode(&value)?;
@@ -756,7 +759,6 @@ impl ProfileCoordinator {
             .lock()
             .map_err(|_| ProfileError::message("Active Mac authority unavailable"))? =
             Some(authority);
-        self.clear_recovery_staging()?;
         Ok(ProfileProvisioningOutcome {
             activation: authority,
             profile: SanitizedProfileOutcome::Ready {
@@ -778,9 +780,20 @@ impl ProfileCoordinator {
         Ok(())
     }
 
+    pub(crate) fn complete_recovery(&self) -> Result<(), ProfileError> {
+        self.clear_recovery_staging()
+    }
+
     pub(crate) fn active_sync_credentials(
         &self,
     ) -> Result<Option<ActiveSyncCredentials>, ProfileError> {
+        if self
+            .custody
+            .read(SecretKind::RecoveryPreparation)?
+            .is_some()
+        {
+            return Err(ProfileError::authority_rejected());
+        }
         let SanitizedProfileOutcome::Ready {
             display_name,
             touch_grass_id,
@@ -2256,13 +2269,14 @@ mod tests {
             recovered.profile,
             SanitizedProfileOutcome::Ready { .. }
         ));
-        assert!(!fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
+        assert!(fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
         assert!(
-            !fixture
+            fixture
                 .custody
                 .contains(SecretKind::ReplacementInstallationCredential)
         );
-        assert!(!fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(fixture.coordinator.active_sync_credentials().is_err());
         assert_ne!(
             fixture
                 .custody
@@ -2294,5 +2308,14 @@ mod tests {
             fixture.lifecycle.bootstrap_state().profile_provisioning,
             ProfileProvisioningStatus::Ready
         );
+        fixture.coordinator.complete_recovery().unwrap();
+        assert!(!fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
+        assert!(
+            !fixture
+                .custody
+                .contains(SecretKind::ReplacementInstallationCredential)
+        );
+        assert!(!fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(fixture.coordinator.active_sync_credentials().is_ok());
     }
 }

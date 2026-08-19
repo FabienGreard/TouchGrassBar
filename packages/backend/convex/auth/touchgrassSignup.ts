@@ -22,6 +22,7 @@ const PUBLIC_ID_PATTERN = /^TG-[A-HJ-NP-Z2-9]{6}$/;
 const PROOF_HEADER = "x-touchgrass-signup-proof";
 const RECOVERY_KEY_PATTERN =
   /^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{48}$/;
+const DUMMY_RECOVERY_CREDENTIAL = "2".repeat(48);
 
 type PreparationPayload = {
   expiresAt: number;
@@ -46,6 +47,7 @@ type RecoveryProofPayload = {
 type RecoveryCommitResult = {
   activeMacActivatedAt: number;
   activeMacGeneration: number;
+  authFinalized: boolean;
   displayName: string;
   touchGrassId: string;
 };
@@ -62,6 +64,10 @@ export type TouchGrassPolicyPort = {
     authSubject: string;
     installationCredential: string;
   }) => Promise<RecoveryCommitResult | null>;
+  finalizeRecoveryAuth: (args: {
+    attemptDigest: string;
+    authSubject: string;
+  }) => Promise<boolean>;
   consumeSignupProof: (args: {
     nonceDigest: string;
     touchGrassId: string;
@@ -82,6 +88,7 @@ export type TouchGrassPolicyPort = {
     authSubject: string;
     touchGrassId: string;
   }) => Promise<{ expectedGeneration: number; expiresAt: number } | null>;
+  recoveryAuthPending: (args: { touchGrassId: string }) => Promise<boolean>;
   reserveCredentialAttempt: (
     keys: FailedCredentialKeys,
   ) => Promise<Id<"recoveryKeyAttemptReservations"> | null>;
@@ -273,6 +280,41 @@ function stringField(value: unknown, field: string) {
   return typeof candidate === "string" ? candidate : null;
 }
 
+function boundedStringField(value: unknown, field: string, maximum: number) {
+  const candidate = stringField(value, field);
+  return candidate !== null && candidate.length <= maximum ? candidate : null;
+}
+
+async function verifyRecoveryCredentials(
+  password: {
+    hash: (value: string) => Promise<string>;
+    verify: (args: { hash: string; password: string }) => Promise<boolean>;
+  },
+  accountHash: string | null,
+  primaryCredential: string | null,
+  replacementCredential: string | null,
+) {
+  const dummyHash = await password.hash(DUMMY_RECOVERY_CREDENTIAL);
+  const comparisonHash = accountHash ?? dummyHash;
+  const [primaryCredentialIsValid, replacementCredentialIsValid] =
+    await Promise.all([
+      password.verify({
+        hash: comparisonHash,
+        password: primaryCredential ?? DUMMY_RECOVERY_CREDENTIAL,
+      }),
+      password.verify({
+        hash: comparisonHash,
+        password: replacementCredential ?? DUMMY_RECOVERY_CREDENTIAL,
+      }),
+    ]);
+  return {
+    primaryCredentialIsValid:
+      accountHash !== null && primaryCredentialIsValid,
+    replacementCredentialIsValid:
+      accountHash !== null && replacementCredentialIsValid,
+  };
+}
+
 function recoveryUser(value: unknown) {
   if (!value || typeof value !== "object") return null;
   const id = Reflect.get(value, "id");
@@ -396,13 +438,14 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
         "/touchgrass/recovery/prepare",
         { method: "POST" },
         async (ctx) => {
-          const touchGrassId = stringField(ctx.body, "touchGrassId");
-          const recoveryKey = stringField(ctx.body, "recoveryKey");
-          const replacementRecoveryKey = stringField(
+          const touchGrassId = boundedStringField(ctx.body, "touchGrassId", 9);
+          const recoveryKey = boundedStringField(ctx.body, "recoveryKey", 48);
+          const replacementRecoveryKey = boundedStringField(
             ctx.body,
             "replacementRecoveryKey",
+            48,
           );
-          const attemptId = stringField(ctx.body, "attemptId");
+          const attemptId = boundedStringField(ctx.body, "attemptId", 32);
           const ipAddress = await requestIpAddress(policy);
           const keys = await failedCredentialKeys(
             ctx.context.secret,
@@ -442,31 +485,19 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                 })
               : null,
           );
-          const primaryCredentialIsValid =
-            recoveryKey !== null &&
-            typeof account?.password === "string" &&
-            (await ctx.context.password.verify({
-              hash: account.password,
-              password: recoveryKey,
-            }));
-          const replacementCredentialIsValid =
-            replacementRecoveryKey !== null &&
-            typeof account?.password === "string" &&
-            (await ctx.context.password.verify({
-              hash: account.password,
-              password: replacementRecoveryKey,
-            }));
+          const { primaryCredentialIsValid, replacementCredentialIsValid } =
+            await verifyRecoveryCredentials(
+              ctx.context.password,
+              account?.password ?? null,
+              recoveryKey,
+              replacementRecoveryKey,
+            );
           if (
             (!primaryCredentialIsValid && !replacementCredentialIsValid) ||
             !user ||
             !touchGrassId ||
             !attemptId
           ) {
-            if (!account?.password) {
-              await ctx.context.password.hash(
-                recoveryKey ?? "invalid-recovery-credential",
-              );
-            }
             await policy.finalizeCredentialAttempt({
               outcome: "failure",
               reservationId,
@@ -506,16 +537,26 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
         "/touchgrass/recovery/commit",
         { method: "POST" },
         async (ctx) => {
-          const currentRecoveryKey = stringField(
+          const currentRecoveryKey = boundedStringField(
             ctx.body,
             "currentRecoveryKey",
+            48,
           );
-          const installationCredential = stringField(
+          const installationCredential = boundedStringField(
             ctx.body,
             "installationCredential",
+            52,
           );
-          const newRecoveryKey = stringField(ctx.body, "newRecoveryKey");
-          const recoveryProof = stringField(ctx.body, "recoveryProof");
+          const newRecoveryKey = boundedStringField(
+            ctx.body,
+            "newRecoveryKey",
+            48,
+          );
+          const recoveryProof = boundedStringField(
+            ctx.body,
+            "recoveryProof",
+            1_024,
+          );
           const proof = recoveryProof
             ? await verifyRecoveryProof(
                 ctx.context.secret,
@@ -561,20 +602,15 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                 })
               : null,
           );
-          const currentKeyIsValid =
-            currentRecoveryKey !== null &&
-            typeof account?.password === "string" &&
-            (await ctx.context.password.verify({
-              hash: account.password,
-              password: currentRecoveryKey,
-            }));
-          const replacementKeyIsCurrent =
-            newRecoveryKey !== null &&
-            typeof account?.password === "string" &&
-            (await ctx.context.password.verify({
-              hash: account.password,
-              password: newRecoveryKey,
-            }));
+          const {
+            primaryCredentialIsValid: currentKeyIsValid,
+            replacementCredentialIsValid: replacementKeyIsCurrent,
+          } = await verifyRecoveryCredentials(
+            ctx.context.password,
+            account?.password ?? null,
+            currentRecoveryKey,
+            newRecoveryKey,
+          );
           if (
             !validShape ||
             !proof ||
@@ -582,11 +618,6 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             !account ||
             (!currentKeyIsValid && !replacementKeyIsCurrent)
           ) {
-            if (!account?.password) {
-              await ctx.context.password.hash(
-                currentRecoveryKey ?? "invalid-recovery-credential",
-              );
-            }
             await policy.finalizeCredentialAttempt({
               outcome: "failure",
               reservationId,
@@ -622,19 +653,39 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             });
             return rejectRecoveryCredential();
           }
-          if (!replacementKeyIsCurrent) {
-            const password = await ctx.context.password.hash(newRecoveryKey);
-            await ctx.context.internalAdapter.updateAccount(account.id, {
-              password,
-            });
+          if (!committed.authFinalized) {
+            try {
+              if (!replacementKeyIsCurrent) {
+                const password = await ctx.context.password.hash(newRecoveryKey);
+                await ctx.context.internalAdapter.updateAccount(account.id, {
+                  password,
+                });
+              }
+              await ctx.context.internalAdapter.deleteUserSessions(user.id);
+              const authFinalized = await policy.finalizeRecoveryAuth({
+                attemptDigest,
+                authSubject: user.id,
+              });
+              if (!authFinalized) throw new Error("Recovery finalization failed");
+            } catch {
+              await policy.finalizeCredentialAttempt({
+                outcome: "failure",
+                reservationId,
+              });
+              return rejectRecoveryCredential();
+            }
           }
-          await ctx.context.internalAdapter.deleteUserSessions(user.id);
           const finalized = await policy.finalizeCredentialAttempt({
             outcome: "success",
             reservationId,
           });
           if (!finalized) rejectRateLimitedCredential();
-          return ctx.json(committed);
+          return ctx.json({
+            activeMacActivatedAt: committed.activeMacActivatedAt,
+            activeMacGeneration: committed.activeMacGeneration,
+            displayName: committed.displayName,
+            touchGrassId: committed.touchGrassId,
+          });
         },
       ),
     },
@@ -680,6 +731,21 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               .reserveCredentialAttempt(keys)
               .catch(() => null);
             if (!reservationId) rejectRateLimitedCredential();
+            const touchGrassId =
+              typeof ctx.body.username === "string" &&
+              ctx.body.username.length <= 9
+                ? ctx.body.username.toUpperCase()
+                : "";
+            if (
+              touchGrassId &&
+              (await policy.recoveryAuthPending({ touchGrassId }))
+            ) {
+              await policy.finalizeCredentialAttempt({
+                outcome: "failure",
+                reservationId,
+              });
+              return rejectRecoveryCredential();
+            }
             return {
               context: { touchGrassRecoveryReservationId: reservationId },
             };

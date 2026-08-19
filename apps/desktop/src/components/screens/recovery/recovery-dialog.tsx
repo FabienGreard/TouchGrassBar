@@ -50,7 +50,13 @@ function RecoveryDialog({
     setSubmitting(false);
   }
 
+  function closeAfterRecovery() {
+    reset();
+    onOpenChange(false);
+  }
+
   function handleOpenChange(nextOpen: boolean) {
+    if (!nextOpen && submitting) return;
     if (!nextOpen) reset();
     onOpenChange(nextOpen);
   }
@@ -62,6 +68,12 @@ function RecoveryDialog({
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           focusAndSelectRecoveryInput(touchGrassIdInput.current);
+        }}
+        onEscapeKeyDown={(event) => {
+          if (submitting) event.preventDefault();
+        }}
+        onPointerDownOutside={(event) => {
+          if (submitting) event.preventDefault();
         }}
         position={portalContainer ? "container" : "viewport"}
       >
@@ -91,9 +103,7 @@ function RecoveryDialog({
           className="mt-4"
           onSubmit={(event) => {
             event.preventDefault();
-            if (!touchGrassId.trim() || !recoveryKey.trim() || submitting) {
-              return;
-            }
+            if (submitting) return;
             setRecoveryFailed(false);
             setSubmitting(true);
             void Promise.resolve(
@@ -103,7 +113,7 @@ function RecoveryDialog({
               }),
             )
               .then((recovered) => {
-                if (recovered) handleOpenChange(false);
+                if (recovered) closeAfterRecovery();
                 else setRecoveryFailed(true);
               })
               .catch(() => setRecoveryFailed(true))
@@ -191,9 +201,7 @@ function RecoveryDialog({
               </Button>
             </DialogClose>
             <Button
-              disabled={
-                !touchGrassId.trim() || !recoveryKey.trim() || submitting
-              }
+              disabled={submitting}
               type="submit"
             >
               {submitting ? "Recovering…" : "Recover on this Mac"}

@@ -382,30 +382,25 @@ impl ProfileRuntime {
         let Some(_attempt) = self.admission.try_start(None) else {
             return Err("Profile recovery unavailable".to_owned());
         };
-        let previous_touch_grass_id = self.lifecycle.ready_touch_grass_id();
         let recovered = self
             .coordinator
             .lock()
             .map_err(|_| "Profile recovery unavailable".to_owned())?
             .recover_profile(touch_grass_id, recovery_key)
             .map_err(|_| "Profile recovery unavailable".to_owned())?;
-        let recovered_touch_grass_id = match &recovered.profile {
-            SanitizedProfileOutcome::Ready { touch_grass_id, .. } => touch_grass_id,
+        match &recovered.profile {
+            SanitizedProfileOutcome::Ready { .. } => {}
             SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
                 return Err("Profile recovery unavailable".to_owned());
             }
-        };
-        let replaces_profile = previous_touch_grass_id
-            .as_deref()
-            .is_some_and(|previous| previous != recovered_touch_grass_id);
-        if replaces_profile {
-            self.usage_sync.replace_authority(recovered.activation)
-        } else {
-            self.usage_sync.install_authority(recovered.activation)
         }
-        .map_err(|_| "Profile recovery unavailable".to_owned())?;
-        self.core
-            .set_profile_outcome(recovered.profile)
+        self.usage_sync
+            .recover_authority(recovered.profile, recovered.activation)
+            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        self.coordinator
+            .lock()
+            .map_err(|_| "Profile recovery unavailable".to_owned())?
+            .complete_recovery()
             .map_err(|_| "Profile recovery unavailable".to_owned())?;
         self.usage_sync.request();
         Ok(())

@@ -1,7 +1,11 @@
 import { v } from "convex/values";
 
 import { internal } from "../_generated/api";
-import { internalMutation, type MutationCtx } from "../_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "../_generated/server";
 import { installationCredentialDigest } from "../model/profile";
 import { rateLimiter } from "../model/rateLimits";
 import { freezeTransferDayUsage } from "../model/sync";
@@ -14,6 +18,7 @@ const MAX_SAFE_GENERATION = Number.MAX_SAFE_INTEGER;
 const recoveryCommitResult = v.object({
   activeMacActivatedAt: v.number(),
   activeMacGeneration: v.number(),
+  authFinalized: v.boolean(),
   displayName: v.string(),
   touchGrassId: v.string(),
 });
@@ -233,6 +238,7 @@ export const commitRecoveryAttempt = internalMutation({
       return {
         activeMacActivatedAt: attempt.activatedAt,
         activeMacGeneration: attempt.expectedGeneration + 1,
+        authFinalized: attempt.authFinalizedAt !== undefined,
         displayName: tokenmaxxer.displayName,
         touchGrassId: tokenmaxxer.publicId,
       };
@@ -270,6 +276,7 @@ export const commitRecoveryAttempt = internalMutation({
       ctx,
       tokenmaxxer._id,
       oldDevice._id,
+      newDeviceId,
       transferDay,
     );
     await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: newDeviceId });
@@ -282,9 +289,52 @@ export const commitRecoveryAttempt = internalMutation({
     return {
       activeMacActivatedAt: activatedAt,
       activeMacGeneration: generation,
+      authFinalized: false,
       displayName: tokenmaxxer.displayName,
       touchGrassId: tokenmaxxer.publicId,
     };
+  },
+});
+
+export const finalizeRecoveryAuth = internalMutation({
+  args: {
+    attemptDigest: v.string(),
+    authSubject: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
+    if (!attempt || attempt.status !== "committed") return false;
+    const tokenmaxxer = await ctx.db.get(attempt.tokenmaxxerId);
+    if (
+      !tokenmaxxer ||
+      tokenmaxxer.authSubject !== args.authSubject ||
+      tokenmaxxer.recoveryAttemptId !== attempt._id
+    ) {
+      return false;
+    }
+    if (attempt.authFinalizedAt === undefined) {
+      await ctx.db.patch(attempt._id, { authFinalizedAt: Date.now() });
+    }
+    return true;
+  },
+});
+
+export const recoveryAuthPending = internalQuery({
+  args: { touchGrassId: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (query) =>
+        query.eq("publicId", args.touchGrassId),
+      )
+      .unique();
+    if (!tokenmaxxer?.recoveryAttemptId) return false;
+    const attempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
+    return (
+      attempt?.status === "committed" && attempt.authFinalizedAt === undefined
+    );
   },
 });
 

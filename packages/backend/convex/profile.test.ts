@@ -638,6 +638,17 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
   );
   expect(mismatchedReplay.status).toBe(401);
 
+  const newSignIn = await authFetch(t, "/api/auth/sign-in/username", {
+    body: JSON.stringify({
+      password: newRecoveryKey,
+      username: profile.touchGrassId,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+  expect(newSignIn.status).toBe(200);
+  const newSession = String((await json(newSignIn)).token);
+
   vi.advanceTimersByTime(5 * 60 * 1_000 + 1);
   const refreshedProof = await prepareRecovery(
     t,
@@ -665,20 +676,16 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
     displayName: profile.displayName,
     touchGrassId: profile.touchGrassId,
   });
-
-  const newSignIn = await authFetch(t, "/api/auth/sign-in/username", {
-    body: JSON.stringify({
-      password: newRecoveryKey,
-      username: profile.touchGrassId,
+  await expect(
+    authFetch(t, "/api/auth/convex/token", {
+      headers: bearer(newSession),
     }),
-    headers: { "content-type": "application/json" },
-    method: "POST",
-  });
-  expect(newSignIn.status).toBe(200);
+  ).resolves.toMatchObject({ status: 200 });
 
   const stored = await t.run(async (ctx) => ({
     devices: await ctx.db.query("devices").collect(),
     recoveryAttempts: await ctx.db.query("profileRecoveryAttempts").collect(),
+    transferBoundaries: await ctx.db.query("usageTransferBoundaries").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
   }));
   expect(stored.devices).toHaveLength(2);
@@ -698,6 +705,26 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
     "revokedAt",
   );
   const oldDevice = stored.devices.find(({ generation }) => generation === 1);
+  expect(stored.recoveryAttempts).toContainEqual(
+    expect.objectContaining({
+      authFinalizedAt: committed.activeMacActivatedAt,
+      status: "committed",
+    }),
+  );
+  expect(stored.transferBoundaries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        previousDeviceId: oldDevice?._id,
+        provider: "codex",
+        rankingDay: "2026-08-09",
+      }),
+      expect.objectContaining({
+        previousDeviceId: oldDevice?._id,
+        provider: "claude",
+        rankingDay: "2026-08-09",
+      }),
+    ]),
+  );
   expect(stored.usageBuckets).toContainEqual(
     expect.objectContaining({
       coverage: "partial",
@@ -828,6 +855,80 @@ test("an expired in-flight recovery can refresh its proof and commit", async () 
   expect(await json(committed)).toMatchObject({ activeMacGeneration: 2 });
 });
 
+test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", async () => {
+  vi.stubEnv(
+    "BETTER_AUTH_SECRET",
+    `${crypto.randomUUID()}${crypto.randomUUID()}`,
+  );
+  vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
+
+  const t = testBackend();
+  const profile = await createRecoverableProfile(t);
+  const attemptId = recoveryAttemptId("U");
+  const newRecoveryKey = replacementRecoveryKey("V");
+  const installationCredential = "W".repeat(52);
+  await prepareRecovery(t, profile, attemptId, newRecoveryKey);
+  const attemptDigest = await recoveryDigest(attemptId);
+  await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
+    attemptDigest,
+    authSubject: profile.user.id,
+    installationCredentialDigest: await installationCredentialDigest(
+      installationCredential,
+    ),
+    replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
+  });
+  await expect(
+    t.mutation(internal.auth.profileRecovery.commitRecoveryAttempt, {
+      attemptDigest,
+      authSubject: profile.user.id,
+      installationCredential,
+    }),
+  ).resolves.toMatchObject({ activeMacGeneration: 2, authFinalized: false });
+
+  await expect(
+    profile.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 2,
+      installationCredential,
+      profileBackfillAnchor: null,
+      snapshots: [
+        {
+          apiEquivalentCost: null,
+          correctionReason: null,
+          correctionRevision: null,
+          coverage: "partial",
+          evidenceBasis: "locally-derived",
+          observedAt: Date.now(),
+          observedTokens: 1,
+          provider: "codex",
+          rankingDay: new Date().toISOString().slice(0, 10),
+          revision: 1,
+        },
+      ],
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    profile.authenticated.mutation(api.tokenmaxxers.updateDisplayName, {
+      displayName: "Blocked while recovery is incomplete",
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    authFetch(t, "/api/auth/sign-in/username", {
+      body: JSON.stringify({
+        password: profile.recoveryKey,
+        username: profile.touchGrassId,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  ).resolves.toMatchObject({ status: 401 });
+  await expect(
+    t.mutation(internal.auth.profileRecovery.finalizeRecoveryAuth, {
+      attemptDigest,
+      authSubject: profile.user.id,
+    }),
+  ).resolves.toBe(true);
+});
+
 test("Profile recovery credential failures are indistinguishable and rate-limited", async () => {
   vi.stubEnv(
     "BETTER_AUTH_SECRET",
@@ -858,6 +959,12 @@ test("Profile recovery credential failures are indistinguishable and rate-limite
         recoveryKey: wrongRecoveryKey,
         replacementRecoveryKey: replacementRecoveryKey("H"),
         touchGrassId: profile.touchGrassId,
+      },
+      {
+        attemptId: "A".repeat(10_000),
+        recoveryKey: "R".repeat(10_000),
+        replacementRecoveryKey: "S".repeat(10_000),
+        touchGrassId: "T".repeat(10_000),
       },
     ].map((body, index) =>
       authFetch(

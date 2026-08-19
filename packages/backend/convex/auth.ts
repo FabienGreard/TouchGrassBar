@@ -43,6 +43,11 @@ function touchGrassPolicy(
         internal.auth.profileRecovery.commitRecoveryAttempt,
         args,
       ),
+    finalizeRecoveryAuth: (args) =>
+      action().runMutation(
+        internal.auth.profileRecovery.finalizeRecoveryAuth,
+        args,
+      ),
     consumeSignupProof: (args) =>
       action().runMutation(internal.auth.touchgrassSignup.consumeSignupProof, args),
     finalizeCredentialAttempt: (args) =>
@@ -58,6 +63,11 @@ function touchGrassPolicy(
     prepareRecoveryAttempt: (args) =>
       action().runMutation(
         internal.auth.profileRecovery.prepareRecoveryAttempt,
+        args,
+      ),
+    recoveryAuthPending: (args) =>
+      action().runQuery(
+        internal.auth.profileRecovery.recoveryAuthPending,
         args,
       ),
     reserveCredentialAttempt: (args) =>

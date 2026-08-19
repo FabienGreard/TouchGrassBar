@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 
 use crate::{
     profile::{ActiveMacActivation, ActiveSyncCredentials, ProfileCoordinator, Secret},
-    sanitized::NativeCore,
+    sanitized::{NativeCore, SanitizedProfileOutcome},
     updater::OnlineFeatureGate,
 };
 
@@ -43,7 +43,11 @@ pub(crate) enum UsageSyncAttemptResult {
 /// Profile or network access.
 trait PendingUsageSnapshotState: Send + Sync {
     fn install_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str>;
-    fn replace_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str>;
+    fn recover_authority(
+        &self,
+        profile: SanitizedProfileOutcome,
+        activation: ActiveMacActivation,
+    ) -> Result<(), &'static str>;
 
     fn prepare(
         &self,
@@ -77,9 +81,13 @@ impl PendingUsageSnapshotState for NativePendingUsageSnapshotState {
             .install_usage_sync_authority(activation.generation, activation.activated_at)
     }
 
-    fn replace_authority(&self, activation: ActiveMacActivation) -> Result<(), &'static str> {
+    fn recover_authority(
+        &self,
+        profile: SanitizedProfileOutcome,
+        activation: ActiveMacActivation,
+    ) -> Result<(), &'static str> {
         self.core
-            .replace_usage_sync_authority(activation.generation, activation.activated_at)
+            .recover_profile_authority(profile, activation.generation, activation.activated_at)
     }
 
     fn prepare(
@@ -214,12 +222,16 @@ impl PendingUsageSynchronization {
         self.inner.environment.state.install_authority(activation)
     }
 
-    /// Replace local synchronization authority after a different Profile is recovered.
-    pub(crate) fn replace_authority(
+    /// Atomically switch the Profile projection and its local synchronization ledger.
+    pub(crate) fn recover_authority(
         &self,
+        profile: SanitizedProfileOutcome,
         activation: ActiveMacActivation,
     ) -> Result<(), &'static str> {
-        self.inner.environment.state.replace_authority(activation)
+        self.inner
+            .environment
+            .state
+            .recover_authority(profile, activation)
     }
 
     /// Close admission and wait a bounded time for the active pass.
