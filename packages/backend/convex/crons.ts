@@ -11,4 +11,11 @@ crons.cron(
   {},
 );
 
+crons.interval(
+  "monitor daily score recomputation",
+  { minutes: 10 },
+  internal.internal.recompute.monitor,
+  {},
+);
+
 export default crons;

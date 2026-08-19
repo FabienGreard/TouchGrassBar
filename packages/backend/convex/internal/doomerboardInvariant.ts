@@ -17,6 +17,7 @@ const MAX_PAGES = 1_000;
 
 type PublicScore = {
   key: DoomerboardKey;
+  namespace: string;
 };
 
 type PublicScorePageRow = {
@@ -53,10 +54,6 @@ const invariantResultValidator = v.object({
   publicScores: v.number(),
 });
 
-function entryKey(namespace: string, id: GenericId<"publicUsages">) {
-  return `${namespace}\u0000${id}`;
-}
-
 function matchesKey(
   candidate: StoredDoomerboardKey,
   expected: DoomerboardKey,
@@ -74,7 +71,7 @@ async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
       WINDOWS.map((windowDays) => boardKey(scope, windowDays)),
     ),
   );
-  const publicScores = new Map<string, PublicScore>();
+  const publicScores = new Map<GenericId<"publicUsages">, PublicScore>();
   let invalidEntries = 0;
   let publicCursor: string | null = null;
   let publicComplete = false;
@@ -94,13 +91,13 @@ async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
       },
     );
     for (const row of page.page) {
-      const key = entryKey(row.boardKey, row.id);
-      if (publicScores.has(key)) {
+      if (publicScores.has(row.id)) {
         throw new Error("Public Score uniqueness invariant failed");
       }
       if (!knownNamespaces.has(row.boardKey)) invalidEntries += 1;
-      publicScores.set(key, {
+      publicScores.set(row.id, {
         key: doomerboardKey(row.tokenScore, row.touchGrassId),
+        namespace: row.boardKey,
       });
     }
     publicComplete = page.isDone;
@@ -131,8 +128,8 @@ async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
     throw new Error("Doomerboard namespace scan exceeded its bounded policy");
   }
 
-  const matched = new Set<string>();
-  const repairingExpectedKeys = new Set<string>();
+  const matched = new Set<GenericId<"publicUsages">>();
+  const repairingExpectedKeys = new Set<GenericId<"publicUsages">>();
   const repairs: RepairRequest[] = [];
   let aggregateEntries = 0;
   let extraEntries = 0;
@@ -153,11 +150,16 @@ async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
       });
       for (const row of page.page) {
         aggregateEntries += 1;
-        const key = entryKey(namespace, row.id);
-        const expected = publicScores.get(key);
+        const expected = publicScores.get(row.id);
         const namespaceIsValid = knownNamespaces.has(namespace);
+        const namespaceMatches = expected?.namespace === namespace;
         if (!namespaceIsValid) invalidEntries += 1;
-        if (!expected || !namespaceIsValid || matched.has(key)) {
+        if (
+          !expected ||
+          !namespaceIsValid ||
+          !namespaceMatches ||
+          matched.has(row.id)
+        ) {
           extraEntries += 1;
           repairs.push({
             id: row.id,
@@ -166,14 +168,14 @@ async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
           });
         } else if (!matchesKey(row.key, expected.key)) {
           mismatchedEntries += 1;
-          repairingExpectedKeys.add(key);
+          repairingExpectedKeys.add(row.id);
           repairs.push({
             id: row.id,
             namespace,
             observedKey: row.key,
           });
         } else {
-          matched.add(key);
+          matched.add(row.id);
         }
       }
       complete = page.isDone;
@@ -184,12 +186,9 @@ async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
     }
   }
 
-  for (const key of publicScores.keys()) {
-    if (matched.has(key) || repairingExpectedKeys.has(key)) continue;
-    const separator = key.indexOf("\u0000");
-    const namespace = key.slice(0, separator);
-    const id = key.slice(separator + 1) as GenericId<"publicUsages">;
-    repairs.push({ id, namespace, observedKey: null });
+  for (const [id, expected] of publicScores) {
+    if (matched.has(id) || repairingExpectedKeys.has(id)) continue;
+    repairs.push({ id, namespace: expected.namespace, observedKey: null });
   }
 
   return {

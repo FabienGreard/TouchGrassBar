@@ -1726,7 +1726,9 @@ test("the Doomerboard invariant repairs an invalid Public Usage namespace", asyn
   );
   if (!publicUsage) throw new Error("Public Usage missing");
   await t.run(async (ctx) => {
-    await ctx.db.patch(publicUsage._id, { boardKey: "invalid-board-key" });
+    await ctx.db.patch(publicUsage._id, {
+      boardKey: "invalid\u0000board-key",
+    });
   });
 
   await expect(
@@ -2458,6 +2460,72 @@ test("daily score recomputation drains every Tokenmaxxer", async () => {
     );
     expect(finalScores).toHaveLength(9);
   }
+  await expect(
+    t.run(async (ctx) => ctx.db.query("scoreRecomputeDrains").unique()),
+  ).resolves.toMatchObject({
+    pagesCompleted: 41,
+    profilesCompleted: 202,
+    status: "complete",
+  });
+});
+
+test("the daily score watchdog resumes a stalled persisted cursor", async () => {
+  const t = testBackend();
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 12; index += 1) {
+      await ctx.db.insert("tokenmaxxers", {
+        authSubject: `watchdog-${index}`,
+        createdAt: NOW.getTime(),
+        displayName: `Watchdog Tokenmaxxer ${index}`,
+        lastSyncedAt: NOW.getTime(),
+        publicId: `TG-WD${String(index).padStart(4, "0")}`,
+      });
+    }
+  });
+
+  await t.mutation(internal.internal.recompute.scheduleAll, {});
+  const started = await t.run(async (ctx) =>
+    ctx.db.query("scoreRecomputeDrains").unique(),
+  );
+  if (!started) throw new Error("Score recomputation drain missing");
+  await t.mutation(internal.internal.recompute.schedulePage, {
+    cursor: null,
+    generation: started.generation,
+  });
+  const persisted = await t.run(async (ctx) =>
+    ctx.db.query("scoreRecomputeDrains").unique(),
+  );
+  expect(persisted).toMatchObject({
+    pagesCompleted: 1,
+    profilesCompleted: 5,
+    status: "running",
+  });
+  expect(persisted?.cursor).toEqual(expect.any(String));
+
+  vi.setSystemTime(NOW.getTime() + 16 * 60 * 1_000);
+  const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    await t.mutation(internal.internal.recompute.monitor, {});
+    expect(error).toHaveBeenCalledWith(
+      "Daily score recomputation drain stalled",
+      expect.objectContaining({
+        generation: started.generation,
+        pagesCompleted: 1,
+        profilesCompleted: 5,
+      }),
+    );
+  } finally {
+    error.mockRestore();
+  }
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  await expect(
+    t.run(async (ctx) => ctx.db.query("scoreRecomputeDrains").unique()),
+  ).resolves.toMatchObject({
+    pagesCompleted: 3,
+    profilesCompleted: 12,
+    status: "complete",
+  });
 });
 
 test("a delayed daily recomputation uses its execution Ranking Day", async () => {

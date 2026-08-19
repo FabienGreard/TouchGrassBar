@@ -129,7 +129,15 @@ empty saved list stays distinct from a partial or unavailable score set.
 
 ## Maintenance
 
-A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer whose rolling score can change has been processed, so expired Ranking Days leave all windows. The drain is idempotent, retries safely, alerts if progress stalls, and has no correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain within the approved backend performance budget.
+A built-in daily cron starts at 00:05 UTC. It stores one generation, cursor, and
+completion record in `scoreRecomputeDrains`. Each bounded page recomputes five
+Tokenmaxxers and commits its cursor with the score writes. A ten-minute
+watchdog logs a count-only error and reschedules the persisted cursor after 15
+minutes without progress. Stale or duplicate page jobs fail closed against the
+stored generation and cursor. The drain continues until every Tokenmaxxer has
+been processed, so expired Ranking Days leave all windows. It has no
+correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain
+within the approved backend performance budget.
 
 The migrations component owns bounded repair work. The
 `backfillDoomerboard` migration is forward-only, resumable, and
