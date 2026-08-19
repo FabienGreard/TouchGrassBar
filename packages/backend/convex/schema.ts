@@ -128,6 +128,10 @@ export default defineSchema({
     updatedAt: v.number(),
   }),
 
+  doomerboardVersions: defineTable({
+    version: v.number(),
+  }),
+
   publicUsages: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
     boardKey: v.string(),

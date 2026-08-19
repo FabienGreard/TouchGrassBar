@@ -20,6 +20,7 @@ import type * as internal_migrations from "../internal/migrations.js";
 import type * as internal_recompute from "../internal/recompute.js";
 import type * as model_authority from "../model/authority.js";
 import type * as model_doomerboard from "../model/doomerboard.js";
+import type * as model_doomerboardVersion from "../model/doomerboardVersion.js";
 import type * as model_profile from "../model/profile.js";
 import type * as model_rateLimits from "../model/rateLimits.js";
 import type * as model_scores from "../model/scores.js";
@@ -47,6 +48,7 @@ declare const fullApi: ApiFromModules<{
   "internal/recompute": typeof internal_recompute;
   "model/authority": typeof model_authority;
   "model/doomerboard": typeof model_doomerboard;
+  "model/doomerboardVersion": typeof model_doomerboardVersion;
   "model/profile": typeof model_profile;
   "model/rateLimits": typeof model_rateLimits;
   "model/scores": typeof model_scores;

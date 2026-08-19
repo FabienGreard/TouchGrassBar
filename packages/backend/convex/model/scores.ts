@@ -2,6 +2,7 @@ import type { GenericId } from "convex/values";
 
 import type { MutationCtx } from "../_generated/server";
 import { doomerboard, doomerboardKey } from "./doomerboard";
+import { markDoomerboardChanged } from "./doomerboardVersion";
 import {
   SCOPES,
   WINDOWS,
@@ -241,6 +242,7 @@ export async function recomputeScores(
       });
     }
   }
+  await markDoomerboardChanged(ctx);
 
   return overview;
 }

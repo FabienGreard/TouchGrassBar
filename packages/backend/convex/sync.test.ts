@@ -653,7 +653,6 @@ test("a first Active Mac corrects a later current day after UTC rollover", async
     installationCredential: credential,
     snapshots: [usageSnapshot()],
   });
-
   const laterDay = "2026-08-09";
   const laterObservedAt = Date.parse(`${laterDay}T12:00:00.000Z`);
   vi.setSystemTime(laterObservedAt);
@@ -1633,6 +1632,9 @@ test("the read-only Doomerboard invariant detects and verifies an idempotent rep
     installationCredential: credential,
     snapshots: [usageSnapshot()],
   });
+  await expect(
+    t.query(internal.internal.doomerboardInvariantPage.version, {}),
+  ).resolves.toBe(1);
   const publicUsage = await t.run(async (ctx) =>
     ctx.db
       .query("publicUsages")
@@ -1694,6 +1696,9 @@ test("the read-only Doomerboard invariant detects and verifies an idempotent rep
   await expect(
     t.action(internal.internal.doomerboardInvariant.repair, {}),
   ).resolves.toEqual({ changedEntries: 0 });
+  await expect(
+    t.query(internal.internal.doomerboardInvariantPage.version, {}),
+  ).resolves.toBe(3);
   await expect(
     t.action(internal.internal.doomerboardInvariant.check, {}),
   ).resolves.toEqual({

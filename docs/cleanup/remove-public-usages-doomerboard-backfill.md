@@ -25,6 +25,8 @@ cloud migration or change a cloud deployment.
 1. Rehearse the repair on disposable, production-shaped local data.
 2. Record the approved deployment scope before a remote action.
 3. Run the read-only one-to-one invariant for `publicUsages` and Doomerboard.
+   Record results only from a scan whose start and end Doomerboard versions
+   match.
 4. Run the idempotent repair if the invariant reports a missing, extra, or
    mismatched entry. Run the resumable backfill for the legacy numeric-key
    migration.
@@ -64,6 +66,8 @@ manual dashboard edits.
   `packages/backend/convex/internal/doomerboardInvariantPage.ts` and
   `packages/backend/convex/internal/doomerboardInvariant.ts` after the repair
   window closes;
+- the `doomerboardVersions` singleton, its model helper, and its write-path
+  increments after the invariant scan is removed;
 - its repair regression in `packages/backend/convex/sync.test.ts`;
 - its maintenance text in `docs/backend.md`;
 - generated Convex declarations that reference the removed function;

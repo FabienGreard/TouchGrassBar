@@ -111,8 +111,11 @@ compatibility read counts numeric Aggregate entries before it loads them and
 fails closed above its fixed 640-row budget. This keeps deterministic
 TouchGrass ID tie ordering without a new blocking database index. A bounded,
 read-only invariant check proves a one-to-one match of document ID, Board Key,
-and composite key across all stored namespaces. It returns counts only. The
-paired repair is idempotent and changes only the observed index entry. The
+and composite key across all stored namespaces. Every score, migration, and
+repair transaction advances the singleton Doomerboard version. The action
+accepts a scan only when its start and end versions match and retries at most
+three times. It returns counts only. The paired repair is idempotent and
+changes only the observed index entry. The
 `backfillDoomerboard` migration repairs legacy numeric keys and missing index
 entries without recomputing usage or scores. Production dashboard edits to
 either side are prohibited.

@@ -14,6 +14,7 @@ import { SCOPES, WINDOWS, boardKey } from "../model/values";
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 1_000;
+const MAX_STABLE_SCAN_ATTEMPTS = 3;
 
 type PublicScore = {
   key: DoomerboardKey;
@@ -65,7 +66,7 @@ function matchesKey(
   );
 }
 
-async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
+async function inspectDoomerboardOnce(ctx: ActionCtx): Promise<Inspection> {
   const knownNamespaces = new Set(
     SCOPES.flatMap((scope) =>
       WINDOWS.map((windowDays) => boardKey(scope, windowDays)),
@@ -202,6 +203,22 @@ async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
     },
     repairs,
   };
+}
+
+async function inspectDoomerboard(ctx: ActionCtx): Promise<Inspection> {
+  for (let attempt = 0; attempt < MAX_STABLE_SCAN_ATTEMPTS; attempt += 1) {
+    const before = await ctx.runQuery(
+      internal.internal.doomerboardInvariantPage.version,
+      {},
+    );
+    const inspection = await inspectDoomerboardOnce(ctx);
+    const after = await ctx.runQuery(
+      internal.internal.doomerboardInvariantPage.version,
+      {},
+    );
+    if (before === after) return inspection;
+  }
+  throw new Error("Doomerboard changed during every invariant scan attempt");
 }
 
 export const check = internalAction({

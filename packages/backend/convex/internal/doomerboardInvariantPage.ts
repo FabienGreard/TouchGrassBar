@@ -11,6 +11,10 @@ import {
   isStoredDoomerboardKey,
   storedDoomerboardKeyValidator,
 } from "../model/doomerboard";
+import {
+  markDoomerboardChanged,
+  readDoomerboardVersion,
+} from "../model/doomerboardVersion";
 import { boardKey } from "../model/values";
 
 const publicScoreValidator = v.object({
@@ -37,6 +41,12 @@ export const publicScores = internalQuery({
       })),
     };
   },
+});
+
+export const version = internalQuery({
+  args: {},
+  returns: v.number(),
+  handler: (ctx) => readDoomerboardVersion(ctx),
 });
 
 export const repairEntry = internalMutation({
@@ -77,6 +87,7 @@ export const repairEntry = internalMutation({
       ),
       namespace: expectedNamespace,
     });
+    await markDoomerboardChanged(ctx);
     return null;
   },
 });

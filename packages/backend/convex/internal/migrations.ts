@@ -2,6 +2,7 @@ import { Migrations } from "@convex-dev/migrations";
 
 import { components } from "../_generated/api";
 import { doomerboard, doomerboardKey } from "../model/doomerboard";
+import { markDoomerboardChanged } from "../model/doomerboardVersion";
 import schema from "../schema";
 
 export const migrations = new Migrations(components.migrations, { schema });
@@ -22,6 +23,7 @@ export const backfillDoomerboard = migrations.define({
       ),
       namespace: publicUsage.boardKey,
     });
+    await markDoomerboardChanged(ctx);
   },
 });
 
