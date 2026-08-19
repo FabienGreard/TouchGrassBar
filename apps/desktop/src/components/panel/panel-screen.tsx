@@ -1,10 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import {
-  createAddTokenmaxxerRequestGuard,
-  type AddTokenmaxxerDialogStatus,
-} from "@/components/dialogs/add-tokenmaxxer";
+import { createAddTokenmaxxerRequestGuard } from "@/components/dialogs/add-tokenmaxxer";
 import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tokenmaxxer";
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
@@ -35,8 +32,6 @@ const compactTokenScore = new Intl.NumberFormat("en-US", {
 
 function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
-  const [addTokenmaxxerStatus, setAddTokenmaxxerStatus] =
-    useState<AddTokenmaxxerDialogStatus>("idle");
   const [addTokenmaxxerInFlight, setAddTokenmaxxerInFlight] = useState(false);
   const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
@@ -99,7 +94,6 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
     void subscribeToPanelAddTokenmaxxer(() => {
       if (active) {
         addTokenmaxxerRequests.invalidate();
-        setAddTokenmaxxerStatus("idle");
         setAddTokenmaxxerOpen(true);
       }
     }).then((stopListening) => {
@@ -179,7 +173,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   return (
     <PanelView
       addTokenmaxxerOpen={addTokenmaxxerOpen}
-      addTokenmaxxerStatus={addTokenmaxxerInFlight ? "submitting" : addTokenmaxxerStatus}
+      addTokenmaxxerSubmitting={addTokenmaxxerInFlight}
       currentProfile={currentProfile}
       doomerboardRows={
         presentation.doomerboardRows ??
@@ -203,20 +197,16 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
             const nextSelection = { ...doomerboardSelection, audience: "mine" as const };
             setDoomerboardSelection(nextSelection);
             setAddTokenmaxxerOpen(false);
-            setAddTokenmaxxerStatus("idle");
             void doomerboard.read(nextSelection);
             return;
           }
-          setAddTokenmaxxerStatus(outcome.status);
         })();
       }}
       onAddTokenmaxxerInputChange={() => {
         addTokenmaxxerRequests.invalidate();
-        setAddTokenmaxxerStatus("idle");
       }}
       onAddTokenmaxxerOpenChange={(open) => {
         addTokenmaxxerRequests.invalidate();
-        setAddTokenmaxxerStatus("idle");
         setAddTokenmaxxerOpen(open);
       }}
       onDoomerboardSelectionChange={setDoomerboardSelection}

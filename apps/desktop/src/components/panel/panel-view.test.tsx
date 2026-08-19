@@ -4,11 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
 import type { BrowserFixtureName } from "@/dev/preview-scenario";
-import {
-  Doomerboard,
-  tokenmaxxerInvitationText,
-  TokenmaxxersEmpty,
-} from "@/components/panel/doomerboard";
+import { Doomerboard, TokenmaxxersEmpty } from "@/components/panel/doomerboard";
 import { PanelView } from "@/components/panel/panel-view";
 import {
   currentProfile,
@@ -107,7 +103,7 @@ describe("panel states", () => {
     expect(markup).toContain('data-icon-provider="hugeicons"');
     expect(markup).toContain("Leaderboard unavailable");
     expect(markup).not.toContain("Add by ID");
-    expect(markup).toContain('aria-label="Current Tokenmaxxer Profile unavailable"');
+    expect(markup).toContain('aria-label="Current user profile unavailable"');
     expect(markup).not.toContain("— users");
     expect(markup).toContain('data-slot="doomerboard-viewport"');
     expect(markup).toContain("h-[180px]");
@@ -277,7 +273,7 @@ describe("panel states", () => {
     expect(markup).toContain("#TG-LOOP55");
     expect(markup).toContain("#TG-7K4P9D");
     expect(markup).toContain("Fabien#TG-7K4P9D");
-    expect(markup).toContain('aria-label="Copy Tokenmaxxer invitation for Fabien#TG-7K4P9D"');
+    expect(markup).toContain('aria-label="Copy current user profile Fabien#TG-7K4P9D"');
     expect(markup).toContain('data-copy-status="idle"');
     expect(markup).not.toContain("data-copy-indicator");
     expect(markup).toContain('data-copy-feedback="idle"');
@@ -652,20 +648,6 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|>)/);
   });
 
-  test("builds a public invitation with the standard installation route", () => {
-    const source = {
-      ...currentProfile,
-      privatePath: "/private/profile",
-      session: "private-session",
-    };
-    const invitation = tokenmaxxerInvitationText(source);
-
-    expect(invitation).toBe(
-      "Add me on TouchGrassBar with TouchGrass ID TG-7K4P9D. Install TouchGrassBar at https://touchgrassbar.com.",
-    );
-    expect(invitation).not.toMatch(/private|session|path/i);
-  });
-
   test("reports when a ready Global board has no synchronized scores", () => {
     const markup = renderToStaticMarkup(<Doomerboard currentProfile={currentProfile} rows={[]} />);
 
@@ -738,8 +720,8 @@ describe("panel states", () => {
   test("does not infer the current Profile from fixture conventions", () => {
     const markup = renderToStaticMarkup(<Doomerboard rows={currentDoomerboardRows} />);
 
-    expect(markup).toContain('aria-label="Current Tokenmaxxer Profile unavailable"');
-    expect(markup).not.toContain("Copy Tokenmaxxer invitation");
+    expect(markup).toContain('aria-label="Current user profile unavailable"');
+    expect(markup).not.toContain("Copy current user profile");
   });
 
   test("keeps every Tokenmaxxer when Token Scores share a rank", () => {

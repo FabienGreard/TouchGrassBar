@@ -7,7 +7,6 @@ import { PanelShell } from "@touchgrass/ui";
 import { useRef } from "react";
 
 import { AddTokenmaxxerDialog } from "@/components/dialogs/add-tokenmaxxer-dialog";
-import type { AddTokenmaxxerDialogStatus } from "@/components/dialogs/add-tokenmaxxer";
 import {
   Doomerboard,
   type CurrentProfile,
@@ -36,7 +35,7 @@ function updateActionLabel(updateState: UpdateState | null) {
 
 type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
-  addTokenmaxxerStatus?: AddTokenmaxxerDialogStatus | undefined;
+  addTokenmaxxerSubmitting?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
   doomerboardSelection?: DoomerboardQuery | undefined;
@@ -58,7 +57,7 @@ type PanelViewProps = {
 
 function PanelView({
   addTokenmaxxerOpen = false,
-  addTokenmaxxerStatus = "idle",
+  addTokenmaxxerSubmitting = false,
   currentProfile,
   doomerboardRows,
   doomerboardSelection = defaultDoomerboardQuery,
@@ -131,7 +130,7 @@ function PanelView({
         onOpenChange={onAddTokenmaxxerOpenChange}
         open={addTokenmaxxerOpen}
         portalContainer={panelContainerRef.current}
-        status={addTokenmaxxerStatus}
+        submitting={addTokenmaxxerSubmitting}
       />
     </>
   );
