@@ -1266,6 +1266,11 @@ test("the current Friends Doomerboard selects its provider and period", async ()
   const owner = await createProfile(t, installationCredential("A"), "Owner");
   const friendCredential = installationCredential("B");
   const friend = await createProfile(t, friendCredential, "Friend");
+  const waitingFriend = await createProfile(
+    t,
+    installationCredential("C"),
+    "Waiting Friend",
+  );
   await friend.authenticated.mutation(api.sync.dailyUsage, {
     profileBackfillAnchor: null,
     activeMacGeneration: 1,
@@ -1278,6 +1283,9 @@ test("the current Friends Doomerboard selects its provider and period", async ()
   await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
     touchGrassId: friend.touchGrassId,
   });
+  await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: waitingFriend.touchGrassId,
+  });
 
   await expect(
     owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
@@ -1286,7 +1294,6 @@ test("the current Friends Doomerboard selects its provider and period", async ()
       windowDays: 30,
     }),
   ).resolves.toMatchObject({
-    hasSavedTokenmaxxers: true,
     rows: [
       {
         displayName: "Friend",
@@ -1294,6 +1301,7 @@ test("the current Friends Doomerboard selects its provider and period", async ()
         touchGrassId: friend.touchGrassId,
       },
     ],
+    savedTokenmaxxerCount: 2,
   });
 });
 
@@ -1367,7 +1375,7 @@ test("My Tokenmaxxers rejects a new entry at its 100-entry limit", async () => {
       scope: "combined",
       windowDays: 1,
     }),
-  ).resolves.toEqual({ hasSavedTokenmaxxers: true, rows: [] });
+  ).resolves.toEqual({ rows: [], savedTokenmaxxerCount: 100 });
 });
 
 test("the current Global Doomerboard is authenticated, current, bounded, deterministic, and public-only", async () => {
@@ -1530,7 +1538,7 @@ test("the legacy Global Doomerboard completes a score tie before ranking it", as
   expect(page.every((row) => row.rank === 1)).toBe(true);
 });
 
-test("the compatibility read survives a missing index entry until migration repairs it", async () => {
+test("the migration repairs a missing Doomerboard index entry", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
@@ -1564,13 +1572,7 @@ test("the compatibility read survives a missing index entry until migration repa
       scope: "codex",
       windowDays: 1,
     }),
-  ).resolves.toMatchObject([
-    {
-      displayName: "Fabien",
-      rank: 1,
-      tokenScore: 100,
-    },
-  ]);
+  ).resolves.toEqual([]);
 
   const args = { cursor: null, dryRun: false, oneBatchOnly: true };
   await t.mutation(

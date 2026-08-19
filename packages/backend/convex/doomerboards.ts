@@ -6,6 +6,7 @@ import { requireAuthUser } from "./auth";
 import {
   doomerboard,
   type DoomerboardKey,
+  type LegacyDoomerboardKey,
 } from "./model/doomerboard";
 import { rejectAuthority } from "./model/authority";
 import { tokenmaxxerForAuthUser } from "./model/profile";
@@ -30,6 +31,7 @@ const doomerboardRow = v.object({
 
 const CURRENT_GLOBAL_SCAN_LIMIT = 640;
 const SCAN_ROWS_PER_KEY_FORMAT = CURRENT_GLOBAL_SCAN_LIMIT / 2;
+const MAX_LEGACY_COMPATIBILITY_ROWS = CURRENT_GLOBAL_SCAN_LIMIT;
 const canonicalKeyBounds = {
   lower: {
     inclusive: true,
@@ -40,36 +42,40 @@ const canonicalKeyBounds = {
     key: [0, "\uffff"] as DoomerboardKey,
   },
 };
-async function compatibilityRows(
+const legacyKeyBounds = {
+  lower: { inclusive: true, key: 0 as LegacyDoomerboardKey },
+  upper: {
+    inclusive: true,
+    key: Number.MAX_SAFE_INTEGER as LegacyDoomerboardKey,
+  },
+};
+
+async function legacyCompatibilityItems(
   ctx: QueryCtx,
   namespace: string,
-  pageSize: number,
 ) {
-  const descendingRows = await ctx.db
-    .query("publicUsages")
-    .withIndex(
-      "by_board_key_and_token_score_and_touch_grass_id",
-      (q) => q.eq("boardKey", namespace),
-    )
-    .order("desc")
-    .take(pageSize);
-  const boundaryScore = descendingRows.at(-1)?.tokenScore;
-  if (descendingRows.length < pageSize || boundaryScore === undefined) {
-    return descendingRows;
+  const count = await doomerboard.count(ctx, {
+    bounds: legacyKeyBounds,
+    namespace,
+  });
+  if (count > MAX_LEGACY_COMPATIBILITY_ROWS) {
+    throw new Error("Legacy Doomerboard compatibility limit exceeded");
   }
-  const higherRows = descendingRows.filter(
-    (row) => row.tokenScore > boundaryScore,
-  );
-  const boundaryRows = await ctx.db
-    .query("publicUsages")
-    .withIndex(
-      "by_board_key_and_token_score_and_touch_grass_id",
-      (q) =>
-        q.eq("boardKey", namespace).eq("tokenScore", boundaryScore),
-    )
-    .order("asc")
-    .take(pageSize - higherRows.length);
-  return [...higherRows, ...boundaryRows];
+  if (count === 0) return [];
+  const page = await doomerboard.paginate(ctx, {
+    bounds: legacyKeyBounds,
+    namespace,
+    order: "desc",
+    pageSize: count,
+  });
+  if (
+    !page.isDone ||
+    page.page.length !== count ||
+    page.page.some((item) => typeof item.key !== "number")
+  ) {
+    throw new Error("Legacy Doomerboard compatibility read is incomplete");
+  }
+  return page.page;
 }
 
 export function rankRows<
@@ -123,20 +129,20 @@ async function globalRows(
       ? limit
       : SCAN_ROWS_PER_KEY_FORMAT;
   const namespace = boardKey(scope, windowDays);
-  const [canonicalPage, compatibleRows] = await Promise.all([
+  const [canonicalPage, legacyItems] = await Promise.all([
     doomerboard.paginate(ctx, {
       bounds: canonicalKeyBounds,
       namespace,
       order: "asc",
       pageSize: scanLimit,
     }),
-    compatibilityRows(ctx, namespace, scanLimit),
+    legacyCompatibilityItems(ctx, namespace),
   ]);
-  const canonicalRows = await Promise.all(
-    canonicalPage.page.map((item) => ctx.db.get(item.id)),
+  const candidates = await Promise.all(
+    [...canonicalPage.page, ...legacyItems].map((item) => ctx.db.get(item.id)),
   );
   const rowsById = new Map<Doc<"publicUsages">["_id"], Doc<"publicUsages">>();
-  for (const row of [...canonicalRows, ...compatibleRows]) {
+  for (const row of candidates) {
     if (
       row !== null &&
       (requiredComputedRankingDay === undefined ||
@@ -187,7 +193,7 @@ async function myTokenmaxxerRows(
 ) {
   const authUser = await requireAuthUser(ctx);
   const owner = await tokenmaxxerForAuthUser(ctx, authUser);
-  if (!owner) return { hasSavedTokenmaxxers: false, rows: [] };
+  if (!owner) return { rows: [], savedTokenmaxxerCount: 0 };
   const added = await ctx.db
     .query("addedTokenmaxxers")
     .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))
@@ -215,8 +221,8 @@ async function myTokenmaxxerRows(
         rankingDayAt(row.computedAt) === requiredComputedRankingDay),
   );
   return {
-    hasSavedTokenmaxxers: added.length > 0,
     rows: rankRows(rows),
+    savedTokenmaxxerCount: added.length,
   };
 }
 
@@ -227,8 +233,8 @@ export const currentMyTokenmaxxers = query({
     windowDays: scoreWindowValidator,
   },
   returns: v.object({
-    hasSavedTokenmaxxers: v.boolean(),
     rows: v.array(doomerboardRow),
+    savedTokenmaxxerCount: v.number(),
   }),
   handler: (ctx, args) => {
     assertRankingDay(args.rankingDay);

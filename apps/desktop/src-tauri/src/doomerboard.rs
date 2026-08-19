@@ -463,17 +463,20 @@ fn parse_selected_rows(
     let Value::Object(mut object) = value else {
         return Err(TransportError::Unavailable);
     };
-    if !exact_keys(&object, ["hasSavedTokenmaxxers", "rows"]) {
+    if !exact_keys(&object, ["rows", "savedTokenmaxxerCount"]) {
         return Err(TransportError::Unavailable);
     }
-    let has_saved_tokenmaxxers = match object.remove("hasSavedTokenmaxxers") {
-        Some(Value::Boolean(value)) => value,
-        _ => return Err(TransportError::Unavailable),
-    };
+    let saved_tokenmaxxer_count = object
+        .remove("savedTokenmaxxerCount")
+        .as_ref()
+        .and_then(nonnegative_safe_integer)
+        .filter(|count| *count <= MAX_ROWS as u64)
+        .ok_or(TransportError::Unavailable)?;
     let rows = parse_rows(object.remove("rows").ok_or(TransportError::Unavailable)?)?;
-    match (has_saved_tokenmaxxers, rows.is_empty()) {
-        (false, true) | (true, false) => Ok(rows),
-        (false, false) | (true, true) => Err(TransportError::Unavailable),
+    if rows.len() as u64 == saved_tokenmaxxer_count {
+        Ok(rows)
+    } else {
+        Err(TransportError::Unavailable)
     }
 }
 
@@ -541,11 +544,11 @@ mod tests {
         }
     }
 
-    fn saved_rows(has_saved_tokenmaxxers: bool, rows: Vec<Value>) -> Value {
+    fn saved_rows(saved_tokenmaxxer_count: i64, rows: Vec<Value>) -> Value {
         Value::Object(BTreeMap::from([
             (
-                "hasSavedTokenmaxxers".to_owned(),
-                Value::Boolean(has_saved_tokenmaxxers),
+                "savedTokenmaxxerCount".to_owned(),
+                Value::Int64(saved_tokenmaxxer_count),
             ),
             ("rows".to_owned(), Value::Array(rows)),
         ]))
@@ -591,18 +594,22 @@ mod tests {
     fn saved_profiles_without_current_scores_are_unavailable_not_empty() {
         let selected = query(DoomerboardAudienceV1::Mine, DoomerboardScopeV1::Combined, 1);
         assert_eq!(
-            parse_selected_rows(selected, saved_rows(false, Vec::new())),
+            parse_selected_rows(selected, saved_rows(0, Vec::new())),
             Ok(Vec::new())
         );
         assert_eq!(
-            parse_selected_rows(selected, saved_rows(true, Vec::new())),
+            parse_selected_rows(selected, saved_rows(1, Vec::new())),
             Err(TransportError::Unavailable)
         );
         assert_eq!(
-            parse_selected_rows(selected, saved_rows(true, vec![row("TG-234567", 1, 500)]),)
+            parse_selected_rows(selected, saved_rows(1, vec![row("TG-234567", 1, 500)]),)
                 .expect("parse saved board")
                 .len(),
             1
+        );
+        assert_eq!(
+            parse_selected_rows(selected, saved_rows(2, vec![row("TG-234567", 1, 500)]),),
+            Err(TransportError::Unavailable)
         );
     }
 

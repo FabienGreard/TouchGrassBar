@@ -13,9 +13,9 @@ removes a legacy numeric Aggregate key and inserts the deterministic composite
 missing entry. It does not recalculate usage or Token Scores.
 
 Until the backfill and invariant checks complete, the Global Doomerboard keeps
-a bounded compatibility read through the Public Usage score-order index and
-the canonical Aggregate composite keys. The compatibility read completes only
-its bounded score-boundary tie, so it does not scan a complete legacy tie.
+a bounded compatibility read for legacy numeric keys and canonical Aggregate
+composite keys. It counts the legacy rows first and fails closed above the
+fixed 640-row budget, so it never performs an unbounded legacy tie scan.
 
 Only an explicitly approved deployment is in scope. PR #65 does not run a
 cloud migration or change a cloud deployment.
@@ -56,9 +56,7 @@ manual dashboard edits.
 - the legacy numeric key type and validator in
   `packages/backend/convex/model/doomerboard.ts`;
 - the bounded legacy numeric-key read path and regression in
-  `packages/backend/convex/doomerboards.ts`, the temporary
-  `by_board_key_and_token_score_and_touch_grass_id` index in
-  `packages/backend/convex/schema.ts`, and the regression in
+  `packages/backend/convex/doomerboards.ts` and the regression in
   `packages/backend/convex/sync.test.ts`;
 - the legacy numeric-key deletion in
   `packages/backend/convex/model/scores.ts`;

@@ -106,7 +106,10 @@ Ranking Day, scope, and window. The Ranking Day keeps the cached query stable
 within a day and changes its argument at rollover.
 
 `publicUsages` and `doomerboard` have one write path: every insert,
-replacement, or deletion changes both within the same mutation. A bounded,
+replacement, or deletion changes both within the same mutation. A legacy
+compatibility read counts numeric Aggregate entries before it loads them and
+fails closed above its fixed 640-row budget. This keeps deterministic
+TouchGrass ID tie ordering without a new blocking database index. A bounded,
 read-only invariant check proves a one-to-one match of document ID, Board Key,
 and composite key across all stored namespaces. It returns counts only. The
 paired repair is idempotent and changes only the observed index entry. The
@@ -120,8 +123,9 @@ idempotent. Its query reads at most 101 indexed edges, fails closed if legacy
 data exceeds the limit, performs at most 100 indexed score lookups, and sorts
 only that bounded set in memory. An existing overflow can still be reduced by
 the exact indexed remove mutation. It never scans the global score table. The
-current-day response also reports whether any saved Tokenmaxxers exist, so an
-empty saved list stays distinct from temporarily unavailable scores.
+current-day response also reports the exact saved Tokenmaxxer count. The native
+client accepts the board only when every saved entry has a current score, so an
+empty saved list stays distinct from a partial or unavailable score set.
 
 ## Maintenance
 
