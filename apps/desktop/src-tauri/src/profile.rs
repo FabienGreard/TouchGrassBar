@@ -748,7 +748,7 @@ fn unix_time_ms() -> Result<u64, ProfileError> {
         .map_err(|_| ProfileError::message("system clock unavailable"))
 }
 
-fn valid_touch_grass_id(value: &str) -> bool {
+pub(crate) fn valid_touch_grass_id(value: &str) -> bool {
     value.strip_prefix("TG-").is_some_and(|suffix| {
         suffix.len() == 6
             && suffix

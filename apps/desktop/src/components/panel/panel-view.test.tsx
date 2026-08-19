@@ -338,6 +338,8 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/data-doomerboard-scroll=""[^>]*tabindex/);
     expect(markup).not.toMatch(/data-slot="doomerboard-ledger"[^>]*tabindex/);
     expect(markup).not.toContain("Leaderboard unavailable");
+    expect(markup).not.toContain("Expand Leaderboard");
+    expect(markup).not.toContain("Collapse Leaderboard");
     expect(markup).toContain("Friends");
   });
 
@@ -691,12 +693,70 @@ describe("panel states", () => {
     expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|>)/);
   });
 
+  test("reports when a ready Global board has no synchronized scores", () => {
+    const markup = renderToStaticMarkup(
+      <Doomerboard currentProfile={currentProfile} rows={[]} />,
+    );
+
+    expect(markup).toContain('aria-label="Leaderboard unavailable"');
+    expect(markup).toContain("Profile and synchronized scores are not ready.");
+    expect(markup).not.toContain('data-doomerboard-scroll=""');
+  });
+
+  test("renders supplied rows for every Leaderboard selection", () => {
+    for (const [selection, providerLabel, periodLabel, boardLabel] of [
+      [
+        { audience: "global", scope: "codex", windowDays: 7 },
+        "Codex",
+        "7 days",
+        "Leaderboard rankings",
+      ],
+      [
+        { audience: "global", scope: "claude", windowDays: 30 },
+        "Claude",
+        "30 days",
+        "Leaderboard rankings",
+      ],
+      [
+        { audience: "mine", scope: "combined", windowDays: 1 },
+        "Combined",
+        "Today",
+        "My Tokenmaxxers rankings",
+      ],
+    ] as const) {
+      const markup = renderToStaticMarkup(
+        <Doomerboard
+          providers={[
+            { displayName: "Codex", provider: "codex" },
+            { displayName: "Claude", provider: "claude" },
+          ]}
+          rows={currentDoomerboardRows}
+          selection={selection}
+          tokenmaxxerRows={myTokenmaxxerRows}
+        />,
+      );
+
+      expect(markup).toContain(`aria-label="${boardLabel}"`);
+      expect(markup).toMatch(
+        new RegExp(
+          `aria-label="Select Leaderboard provider"[^>]*>${providerLabel}</button>`,
+        ),
+      );
+      expect(markup).toMatch(
+        new RegExp(
+          `aria-label="Select Leaderboard period"[^>]*>${periodLabel}</button>`,
+        ),
+      );
+      expect(markup).not.toContain("Scores are unavailable for this selection.");
+    }
+  });
+
   test("offers a populated fake Tokenmaxxers development mockup", () => {
     const markup = renderToStaticMarkup(
       <Doomerboard
         currentProfile={currentProfile}
-        initialAudience="mine"
         rows={currentDoomerboardRows}
+        selection={{ audience: "mine", scope: "combined", windowDays: 1 }}
         tokenmaxxerRows={myTokenmaxxerRows}
       />,
     );
@@ -705,7 +765,7 @@ describe("panel states", () => {
     expect(markup).toContain("TOUCH GRASS?");
     expect(markup).toContain("STILL ONLINE");
     expect(markup).toContain("Fabien");
-    expect(markup).not.toContain("Your Doomerboard is lonely");
+    expect(markup).not.toContain("Your Leaderboard is lonely");
   });
 
   test("does not infer the current Profile from fixture conventions", () => {
@@ -737,12 +797,23 @@ describe("panel states", () => {
         tokenScore: "9.1M",
         touchGrassId: "#TG-CCCCCC",
       },
+      {
+        displayName: "zoe",
+        rank: 3,
+        tokenScore: "9.1M",
+        touchGrassId: "#TG-DDDDDD",
+      },
     ];
     const markup = renderToStaticMarkup(<Doomerboard rows={tiedRows} />);
+    const ledger = markup.slice(
+      markup.indexOf('aria-label="More Leaderboard ranks"'),
+    );
 
     expect(markup).toContain("ada");
     expect(markup).toContain("bea");
     expect(markup).toContain("#TG-AAAAAA");
     expect(markup).toContain("#TG-BBBBBB");
+    expect(ledger).toContain("zoe");
+    expect(ledger).toContain("#TG-DDDDDD");
   });
 });

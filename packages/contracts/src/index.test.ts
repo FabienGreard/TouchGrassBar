@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   CONTRACT_VERSION,
   bootstrapStateSchema,
+  doomerboardViewSchema,
   refreshReceiptSchema,
   sanitizedDesktopStateSchema,
   settingsStateSchema,
@@ -50,6 +51,45 @@ describe("public contracts", () => {
         touchGrassId: "TG-7K4P9D",
       }),
     ).toEqual({ displayName: "Fabien", touchGrassId: "TG-7K4P9D" });
+  });
+
+  test("accepts only a bounded public Doomerboard view", () => {
+    const view = {
+      contractVersion: 1,
+      rows: [
+        {
+          apiEquivalentCostUsd: 12.5,
+          displayName: "Fabien",
+          rank: 1,
+          tokenScore: 4_200_000,
+          touchGrassId: "TG-7K4P9D",
+        },
+      ],
+      status: "ready",
+    } as const;
+    expect(doomerboardViewSchema.parse(view)).toEqual(view);
+    expect(
+      doomerboardViewSchema.parse({
+        contractVersion: 1,
+        status: "unavailable",
+      }),
+    ).toEqual({ contractVersion: 1, status: "unavailable" });
+    expect(
+      doomerboardViewSchema.safeParse({
+        ...view,
+        rows: Array.from({ length: 101 }, () => view.rows[0]),
+      }).success,
+    ).toBe(false);
+    expect(
+      doomerboardViewSchema.safeParse({
+        ...view,
+        rows: [{ ...view.rows[0], providerMessageId: "private" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      doomerboardViewSchema.safeParse({ ...view, session: "private" })
+        .success,
+    ).toBe(false);
   });
 
   test("accepts an honestly unavailable native snapshot without invented zeroes", () => {

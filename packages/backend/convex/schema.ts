@@ -116,6 +116,22 @@ export default defineSchema({
       "rankingDay",
     ]),
 
+  scoreRecomputeDrains: defineTable({
+    completedAt: v.union(v.number(), v.null()),
+    cursor: v.union(v.string(), v.null()),
+    generation: v.number(),
+    lastAlertedAt: v.union(v.number(), v.null()),
+    pagesCompleted: v.number(),
+    profilesCompleted: v.number(),
+    startedAt: v.number(),
+    status: v.union(v.literal("running"), v.literal("complete")),
+    updatedAt: v.number(),
+  }),
+
+  doomerboardVersions: defineTable({
+    version: v.number(),
+  }),
+
   publicUsages: defineTable({
     tokenmaxxerId: v.id("tokenmaxxers"),
     boardKey: v.string(),

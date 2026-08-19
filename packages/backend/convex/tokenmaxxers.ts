@@ -8,6 +8,7 @@ import {
   ensureTokenmaxxer,
   tokenmaxxerForAuthUser,
 } from "./model/profile";
+import { MAX_SAVED_TOKENMAXXERS } from "./model/values";
 
 const publicTokenmaxxer = v.object({
   displayName: v.string(),
@@ -85,7 +86,16 @@ export const updateDisplayName = mutation({
       throw new Error("TouchGrass Profile not found");
     }
     const displayName = cleanDisplayName(args.displayName);
+    const publicUsages = await ctx.db
+      .query("publicUsages")
+      .withIndex("by_tokenmaxxer_id", (q) =>
+        q.eq("tokenmaxxerId", tokenmaxxer._id),
+      )
+      .take(20);
     await ctx.db.patch(tokenmaxxer._id, { displayName });
+    for (const publicUsage of publicUsages) {
+      await ctx.db.patch(publicUsage._id, { displayName });
+    }
     return { displayName, touchGrassId: tokenmaxxer.publicId };
   },
 });
@@ -122,16 +132,23 @@ export const addToMyTokenmaxxers = mutation({
     }
     const existing = await ctx.db
       .query("addedTokenmaxxers")
+      .withIndex("by_owner_id_and_added_id", (q) =>
+        q.eq("ownerId", owner._id).eq("addedId", added._id),
+      )
+      .unique();
+    if (existing) return null;
+    const saved = await ctx.db
+      .query("addedTokenmaxxers")
       .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))
-      .take(500)
-      .then((rows) => rows.find((row) => row.addedId === added._id));
-    if (!existing) {
-      await ctx.db.insert("addedTokenmaxxers", {
-        addedId: added._id,
-        createdAt: Date.now(),
-        ownerId: owner._id,
-      });
+      .take(MAX_SAVED_TOKENMAXXERS);
+    if (saved.length >= MAX_SAVED_TOKENMAXXERS) {
+      throw new Error("My Tokenmaxxers limit reached");
     }
+    await ctx.db.insert("addedTokenmaxxers", {
+      addedId: added._id,
+      createdAt: Date.now(),
+      ownerId: owner._id,
+    });
     return null;
   },
 });
@@ -154,9 +171,10 @@ export const removeFromMyTokenmaxxers = mutation({
     }
     const edge = await ctx.db
       .query("addedTokenmaxxers")
-      .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))
-      .take(500)
-      .then((rows) => rows.find((row) => row.addedId === added._id));
+      .withIndex("by_owner_id_and_added_id", (q) =>
+        q.eq("ownerId", owner._id).eq("addedId", added._id),
+      )
+      .unique();
     if (edge) {
       await ctx.db.delete(edge._id);
     }

@@ -96,23 +96,56 @@ such as:
 - `tokens-v1:claude:7d`
 - `tokens-v1:combined:1d`
 
-Doomerboards page this index in descending order. `publicUsages` and
-`doomerboard` have one write path: every insert, replacement, or
-deletion changes both within the same mutation. A read-only invariant check
-proves a one-to-one match of document ID, Board Key, and Token Score. The
-`backfillDoomerboard` migration can repair index divergence without
-recomputing usage or scores. Production dashboard edits to either side are
-prohibited.
+Doomerboards use the composite Aggregate key `[-TokenScore, TouchGrass ID]`.
+Ascending Aggregate pagination therefore returns the highest score first and
+uses TouchGrass ID as the deterministic tie break. The current Global query is
+limited to the validated Codex, Claude, or Combined scope and the 1-, 7-, or
+30-day window. It requires the live Profile and returns at most 100 public
+rows. It accepts no client identity. The native caller sends its validated UTC
+Ranking Day, scope, and window. The Ranking Day keeps the cached query stable
+within a day and changes its argument at rollover.
 
-My Tokenmaxxers contains at most 100 saved Tokenmaxxers. Its query reads at most those 100 indexed edges, performs indexed score lookups, and sorts only that bounded set in memory. It never scans the global score table.
+`publicUsages` and `doomerboard` have one write path: every insert,
+replacement, or deletion changes both within the same mutation. A legacy
+compatibility read counts numeric Aggregate entries before it loads them and
+fails closed above its fixed 640-row budget. This keeps deterministic
+TouchGrass ID tie ordering without a new blocking database index. A bounded,
+read-only invariant check proves a one-to-one match of document ID, Board Key,
+and composite key across all stored namespaces. Every score, migration, and
+repair transaction advances the singleton Doomerboard version. The action
+accepts a scan only when its start and end versions match and retries at most
+three times. It returns counts only. The paired repair is idempotent and
+changes only the observed index entry. The
+`backfillDoomerboard` migration repairs legacy numeric keys and missing index
+entries without recomputing usage or scores. Production dashboard edits to
+either side are prohibited.
+
+My Tokenmaxxers contains at most 100 saved Tokenmaxxers. The add mutation
+rejects a new unique entry at that limit but keeps an existing entry
+idempotent. Its query reads at most 101 indexed edges, fails closed if legacy
+data exceeds the limit, performs at most 100 indexed score lookups, and sorts
+only that bounded set in memory. An existing overflow can still be reduced by
+the exact indexed remove mutation. It never scans the global score table. The
+current-day response also reports the exact saved Tokenmaxxer count. The native
+client accepts the board only when every saved entry has a current score, so an
+empty saved list stays distinct from a partial or unavailable score set.
 
 ## Maintenance
 
-A built-in daily cron starts at 00:05 UTC. It paginates until every Tokenmaxxer whose rolling score can change has been processed, so expired Ranking Days leave all windows. The drain is idempotent, retries safely, alerts if progress stalls, and has no correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain within the approved backend performance budget.
+A built-in daily cron starts at 00:05 UTC. It stores one generation, cursor, and
+completion record in `scoreRecomputeDrains`. Each bounded page recomputes five
+Tokenmaxxers and commits its cursor with the score writes. A ten-minute
+watchdog logs a count-only error and reschedules the persisted cursor after 15
+minutes without progress. Stale or duplicate page jobs fail closed against the
+stored generation and cursor. The drain continues until every Tokenmaxxer has
+been processed, so expired Ranking Days leave all windows. It has no
+correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain
+within the approved backend performance budget.
 
 The migrations component owns bounded repair work. The
 `backfillDoomerboard` migration is forward-only, resumable, and
-idempotent. It rebuilds only missing index entries from `publicUsages`.
+idempotent. It removes the legacy numeric key and inserts the deterministic
+composite key for each `publicUsages` row.
 The `backfillDeviceUsageCompletion` migration adds an explicit `null` pending
 state to older Device documents before `usageBackfillCompletedAt` becomes a
 required schema field. Missing and `null` use the same fail-closed behavior

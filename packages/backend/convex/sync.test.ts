@@ -9,7 +9,11 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
-import { doomerboard } from "./model/doomerboard";
+import {
+  doomerboard,
+  doomerboardKey,
+  type DoomerboardKey,
+} from "./model/doomerboard";
 import { installationCredentialDigest } from "./model/profile";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
@@ -17,6 +21,19 @@ import schema from "./schema";
 const modules = import.meta.glob("./**/*.ts");
 const TODAY = "2026-08-08";
 const NOW = new Date(`${TODAY}T12:00:00.000Z`);
+const TOUCH_GRASS_ID_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+function publicIdFor(index: number) {
+  let remaining = index;
+  let suffix = "";
+  for (let position = 0; position < 6; position += 1) {
+    suffix =
+      TOUCH_GRASS_ID_ALPHABET[remaining % TOUCH_GRASS_ID_ALPHABET.length] +
+      suffix;
+    remaining = Math.floor(remaining / TOUCH_GRASS_ID_ALPHABET.length);
+  }
+  return `TG-${suffix}`;
+}
 
 function testBackend() {
   const t = convexTest(schema, modules);
@@ -636,7 +653,6 @@ test("a first Active Mac corrects a later current day after UTC rollover", async
     installationCredential: credential,
     snapshots: [usageSnapshot()],
   });
-
   const laterDay = "2026-08-09";
   const laterObservedAt = Date.parse(`${laterDay}T12:00:00.000Z`);
   vi.setSystemTime(laterObservedAt);
@@ -1174,7 +1190,7 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   });
 
   await expect(
-    t.query(api.doomerboards.global, {
+    authenticated.query(api.doomerboards.global, {
       limit: 10,
       scope: "claude",
       windowDays: 1,
@@ -1190,7 +1206,338 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
   ]);
 });
 
-test("the migration repairs the Doomerboard index from public scores", async () => {
+test("Display Name changes immediately update Public Usage projections", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [usageSnapshot()],
+  });
+
+  await authenticated.mutation(api.tokenmaxxers.updateDisplayName, {
+    displayName: "Updated Fabien",
+  });
+
+  const publicUsages = await t.run(async (ctx) =>
+    ctx.db.query("publicUsages").collect(),
+  );
+  expect(publicUsages).toHaveLength(9);
+  expect(publicUsages.every((row) => row.displayName === "Updated Fabien")).toBe(
+    true,
+  );
+  await expect(
+    authenticated.query(api.doomerboards.global, {
+      limit: 10,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).resolves.toMatchObject([{ displayName: "Updated Fabien" }]);
+});
+
+test("the current Global Doomerboard selects its provider and period", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [
+      usageSnapshot({ observedTokens: 100, provider: "codex" }),
+      usageSnapshot({ observedTokens: 250, provider: "claude" }),
+    ],
+  });
+
+  await expect(
+    authenticated.query(api.doomerboards.currentGlobal, {
+      rankingDay: TODAY,
+      scope: "claude",
+      windowDays: 7,
+    }),
+  ).resolves.toMatchObject([{ tokenScore: 250 }]);
+});
+
+test("the current Friends Doomerboard selects its provider and period", async () => {
+  const t = testBackend();
+  const owner = await createProfile(t, installationCredential("A"), "Owner");
+  const friendCredential = installationCredential("B");
+  const friend = await createProfile(t, friendCredential, "Friend");
+  const waitingFriend = await createProfile(
+    t,
+    installationCredential("C"),
+    "Waiting Friend",
+  );
+  await friend.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: friendCredential,
+    snapshots: [
+      usageSnapshot({ observedTokens: 100, provider: "codex" }),
+      usageSnapshot({ observedTokens: 250, provider: "claude" }),
+    ],
+  });
+  await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: friend.touchGrassId,
+  });
+  await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: waitingFriend.touchGrassId,
+  });
+
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+      rankingDay: TODAY,
+      scope: "claude",
+      windowDays: 30,
+    }),
+  ).resolves.toMatchObject({
+    rows: [
+      {
+        displayName: "Friend",
+        tokenScore: 250,
+        touchGrassId: friend.touchGrassId,
+      },
+    ],
+    savedTokenmaxxerCount: 2,
+  });
+});
+
+test("My Tokenmaxxers rejects a new entry at its 100-entry limit", async () => {
+  const t = testBackend();
+  const owner = await createProfile(t, installationCredential("A"), "Owner");
+  const targetTouchGrassId = publicIdFor(100);
+  await t.run(async (ctx) => {
+    const ownerProfile = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", owner.touchGrassId))
+      .unique();
+    if (!ownerProfile) throw new Error("Owner Profile missing");
+    for (let index = 0; index <= 100; index += 1) {
+      const touchGrassId = publicIdFor(index);
+      const addedId = await ctx.db.insert("tokenmaxxers", {
+        authSubject: `saved-limit-${index}`,
+        createdAt: NOW.getTime(),
+        displayName: `Saved ${index}`,
+        publicId: touchGrassId,
+      });
+      if (index < 100) {
+        await ctx.db.insert("addedTokenmaxxers", {
+          addedId,
+          createdAt: NOW.getTime(),
+          ownerId: ownerProfile._id,
+        });
+      }
+    }
+  });
+
+  await expect(
+    owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: targetTouchGrassId,
+    }),
+  ).rejects.toThrow("My Tokenmaxxers limit reached");
+
+  await t.run(async (ctx) => {
+    const [ownerProfile, targetProfile] = await Promise.all([
+      ctx.db
+        .query("tokenmaxxers")
+        .withIndex("by_public_id", (q) => q.eq("publicId", owner.touchGrassId))
+        .unique(),
+      ctx.db
+        .query("tokenmaxxers")
+        .withIndex("by_public_id", (q) => q.eq("publicId", targetTouchGrassId))
+        .unique(),
+    ]);
+    if (!ownerProfile || !targetProfile) throw new Error("Profile missing");
+    await ctx.db.insert("addedTokenmaxxers", {
+      addedId: targetProfile._id,
+      createdAt: NOW.getTime(),
+      ownerId: ownerProfile._id,
+    });
+  });
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+      rankingDay: TODAY,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).rejects.toThrow("My Tokenmaxxers limit exceeded");
+  await expect(
+    owner.authenticated.mutation(api.tokenmaxxers.removeFromMyTokenmaxxers, {
+      touchGrassId: targetTouchGrassId,
+    }),
+  ).resolves.toBeNull();
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+      rankingDay: TODAY,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).resolves.toEqual({ rows: [], savedTokenmaxxerCount: 100 });
+});
+
+test("the current Global Doomerboard is authenticated, current, bounded, deterministic, and public-only", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const expected = Array.from({ length: 105 }, (_, index) => ({
+    displayName: `Tokenmaxxer ${index}`,
+    tokenScore: 500_000 - Math.floor(index / 3),
+    touchGrassId: publicIdFor(104 - index),
+  })).sort(
+    (left, right) =>
+      right.tokenScore - left.tokenScore ||
+      left.touchGrassId.localeCompare(right.touchGrassId),
+  );
+  const staleRows = Array.from({ length: 205 }, (_, index) => ({
+    displayName: `Stale Tokenmaxxer ${index}`,
+    tokenScore: 1_000_000 - index,
+    touchGrassId: publicIdFor(309 - index),
+  }));
+
+  async function seedRows(
+    rows: typeof expected,
+    computedAt: number,
+    keyFormat: "canonical" | "legacy" = "canonical",
+  ) {
+    for (let offset = 0; offset < rows.length; offset += 50) {
+      await t.run(async (ctx) => {
+        for (const row of rows.slice(offset, offset + 50)) {
+          const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+            authSubject: `seed-${row.touchGrassId}`,
+            createdAt: NOW.getTime(),
+            displayName: row.displayName,
+            publicId: row.touchGrassId,
+          });
+          const publicUsageId = await ctx.db.insert("publicUsages", {
+            apiEquivalentCost: null,
+            boardKey: "tokens-v1:combined:1d",
+            computedAt,
+            displayName: row.displayName,
+            scope: "combined",
+            tokenmaxxerId,
+            tokenScore: row.tokenScore,
+            touchGrassId: row.touchGrassId,
+            windowDays: 1,
+          });
+          await doomerboard.insert(ctx, {
+            id: publicUsageId,
+            key:
+              keyFormat === "legacy"
+                ? row.tokenScore
+                : doomerboardKey(row.tokenScore, row.touchGrassId),
+            namespace: "tokens-v1:combined:1d",
+          });
+        }
+      });
+    }
+  }
+  await seedRows(staleRows, NOW.getTime() - 24 * 60 * 60 * 1_000);
+  await seedRows(expected.slice(0, 50), NOW.getTime(), "legacy");
+  await seedRows(expected.slice(50), NOW.getTime());
+
+  await expect(
+    t.query(api.doomerboards.currentGlobal, {
+      limit: 10,
+      rankingDay: TODAY,
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    authenticated.query(api.doomerboards.currentGlobal, {
+      limit: 10,
+      rankingDay: TODAY,
+      tokenmaxxerId: "hostile-client-identity",
+    } as never),
+  ).rejects.toThrow();
+  await expect(
+    authenticated.query(api.doomerboards.currentGlobal, {
+      rankingDay: "2026-02-30",
+    }),
+  ).rejects.toThrow("rankingDay is not a real UTC calendar day");
+
+  const defaultPage = await authenticated.query(
+    api.doomerboards.currentGlobal,
+    { rankingDay: TODAY },
+  );
+  const cappedPage = await authenticated.query(
+    api.doomerboards.currentGlobal,
+    { limit: 500, rankingDay: TODAY },
+  );
+  expect(defaultPage).toHaveLength(50);
+  expect(cappedPage).toHaveLength(100);
+  expect(cappedPage).toEqual(
+    expected.slice(0, 100).map((row, _index, rows) => ({
+      apiEquivalentCost: null,
+      displayName: row.displayName,
+      rank:
+        rows.findIndex((candidate) => candidate.tokenScore === row.tokenScore) +
+        1,
+      tokenScore: row.tokenScore,
+      touchGrassId: row.touchGrassId,
+    })),
+  );
+  expect(Object.keys(cappedPage[0] ?? {}).sort()).toEqual([
+    "apiEquivalentCost",
+    "displayName",
+    "rank",
+    "tokenScore",
+    "touchGrassId",
+  ]);
+  expect(JSON.stringify(cappedPage)).not.toMatch(
+    /authSubject|boardKey|computedAt|tokenmaxxerId|usageBucket|provider|path|prompt|session/,
+  );
+});
+
+test("the legacy Global Doomerboard completes a score tie before ranking it", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const rows = Array.from({ length: 321 }, (_, index) => ({
+    displayName: `Tied Tokenmaxxer ${index}`,
+    touchGrassId: publicIdFor(index),
+  }));
+
+  for (let offset = 0; offset < rows.length; offset += 50) {
+    await t.run(async (ctx) => {
+      for (const row of rows.slice(offset, offset + 50)) {
+        const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+          authSubject: `legacy-tie-${row.touchGrassId}`,
+          createdAt: NOW.getTime(),
+          displayName: row.displayName,
+          publicId: row.touchGrassId,
+        });
+        const publicUsageId = await ctx.db.insert("publicUsages", {
+          apiEquivalentCost: null,
+          boardKey: "tokens-v1:combined:1d",
+          computedAt: NOW.getTime(),
+          displayName: row.displayName,
+          scope: "combined",
+          tokenmaxxerId,
+          tokenScore: 100,
+          touchGrassId: row.touchGrassId,
+          windowDays: 1,
+        });
+        await doomerboard.insert(ctx, {
+          id: publicUsageId,
+          key: 100,
+          namespace: "tokens-v1:combined:1d",
+        });
+      }
+    });
+  }
+
+  const page = await authenticated.query(api.doomerboards.currentGlobal, {
+    limit: 100,
+    rankingDay: TODAY,
+  });
+  expect(page.map((row) => row.touchGrassId)).toEqual(
+    rows.slice(0, 100).map((row) => row.touchGrassId),
+  );
+  expect(page.every((row) => row.rank === 1)).toBe(true);
+});
+
+test("the migration repairs a missing Doomerboard index entry", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
@@ -1211,12 +1558,15 @@ test("the migration repairs the Doomerboard index from public scores", async () 
   await t.run(async (ctx) => {
     await doomerboard.delete(ctx, {
       id: publicUsage._id,
-      key: publicUsage.tokenScore,
+      key: doomerboardKey(
+        publicUsage.tokenScore,
+        publicUsage.touchGrassId,
+      ),
       namespace: publicUsage.boardKey,
     });
   });
   await expect(
-    t.query(api.doomerboards.global, {
+    authenticated.query(api.doomerboards.global, {
       limit: 10,
       scope: "codex",
       windowDays: 1,
@@ -1232,9 +1582,31 @@ test("the migration repairs the Doomerboard index from public scores", async () 
     internal.internal.migrations.backfillDoomerboard,
     args,
   );
+  const repairedPage = await t.run((ctx) =>
+    doomerboard.paginate(ctx, {
+      bounds: {
+        lower: {
+          inclusive: true,
+          key: [-Number.MAX_SAFE_INTEGER, ""] as DoomerboardKey,
+        },
+        upper: {
+          inclusive: true,
+          key: [0, "\uffff"] as DoomerboardKey,
+        },
+      },
+      namespace: publicUsage.boardKey,
+      order: "asc",
+      pageSize: 10,
+    }),
+  );
+  expect(repairedPage.page).toContainEqual({
+    id: publicUsage._id,
+    key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
+    sumValue: 0,
+  });
 
   await expect(
-    t.query(api.doomerboards.global, {
+    authenticated.query(api.doomerboards.global, {
       limit: 10,
       scope: "codex",
       windowDays: 1,
@@ -1248,6 +1620,145 @@ test("the migration repairs the Doomerboard index from public scores", async () 
       touchGrassId: expect.any(String),
     },
   ]);
+});
+
+test("the read-only Doomerboard invariant detects and verifies an idempotent repair", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [usageSnapshot()],
+  });
+  await expect(
+    t.query(internal.internal.doomerboardInvariantPage.version, {}),
+  ).resolves.toBe(1);
+  const publicUsage = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicUsages")
+      .withIndex("by_board_key", (q) =>
+        q.eq("boardKey", "tokens-v1:combined:1d"),
+      )
+      .unique(),
+  );
+  if (!publicUsage) throw new Error("Public Usage missing");
+  await t.run(async (ctx) => {
+    await doomerboard.delete(ctx, {
+      id: publicUsage._id,
+      key: doomerboardKey(
+        publicUsage.tokenScore,
+        publicUsage.touchGrassId,
+      ),
+      namespace: publicUsage.boardKey,
+    });
+    await doomerboard.insert(ctx, {
+      id: publicUsage._id,
+      key: [
+        -publicUsage.tokenScore + 1,
+        publicUsage.touchGrassId,
+      ],
+      namespace: publicUsage.boardKey,
+    });
+    await doomerboard.insert(ctx, {
+      id: publicUsage._id,
+      key: doomerboardKey(
+        publicUsage.tokenScore,
+        publicUsage.touchGrassId,
+      ),
+      namespace: "invalid-board-key",
+    });
+  });
+
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.check, {}),
+  ).resolves.toMatchObject({
+    extraEntries: 1,
+    invalidEntries: 1,
+    mismatchedEntries: 1,
+    missingEntries: 1,
+  });
+
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.repair, {}),
+  ).resolves.toEqual({ changedEntries: 2 });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.check, {}),
+  ).resolves.toEqual({
+    aggregateEntries: 9,
+    extraEntries: 0,
+    invalidEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+    publicScores: 9,
+  });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.repair, {}),
+  ).resolves.toEqual({ changedEntries: 0 });
+  await expect(
+    t.query(internal.internal.doomerboardInvariantPage.version, {}),
+  ).resolves.toBe(3);
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.check, {}),
+  ).resolves.toEqual({
+    aggregateEntries: 9,
+    extraEntries: 0,
+    invalidEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+    publicScores: 9,
+  });
+});
+
+test("the Doomerboard invariant repairs an invalid Public Usage namespace", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    snapshots: [usageSnapshot()],
+  });
+  const publicUsage = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicUsages")
+      .withIndex("by_board_key", (q) =>
+        q.eq("boardKey", "tokens-v1:combined:1d"),
+      )
+      .unique(),
+  );
+  if (!publicUsage) throw new Error("Public Usage missing");
+  await t.run(async (ctx) => {
+    await ctx.db.patch(publicUsage._id, {
+      boardKey: "invalid\u0000board-key",
+    });
+  });
+
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.check, {}),
+  ).resolves.toMatchObject({
+    extraEntries: 1,
+    invalidEntries: 1,
+    missingEntries: 1,
+  });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.repair, {}),
+  ).resolves.toEqual({ changedEntries: 2 });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.check, {}),
+  ).resolves.toEqual({
+    aggregateEntries: 9,
+    extraEntries: 0,
+    invalidEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+    publicScores: 9,
+  });
+  await expect(
+    t.action(internal.internal.doomerboardInvariant.repair, {}),
+  ).resolves.toEqual({ changedEntries: 0 });
 });
 
 test("the device completion migration preserves pending Profile authority", async () => {
@@ -1916,6 +2427,165 @@ test("score recomputation ignores more than 1000 old rows", async () => {
       ),
     ).toMatchObject({ tokenScore: 303 });
   }
+});
+
+test("daily score recomputation drains every Tokenmaxxer", async () => {
+  const t = testBackend();
+  const tokenmaxxerIds = await t.run(async (ctx) => {
+    const ids = [];
+    for (let index = 0; index < 202; index += 1) {
+      ids.push(
+        await ctx.db.insert("tokenmaxxers", {
+          authSubject: `rollover-${index}`,
+          createdAt: NOW.getTime(),
+          displayName: `Tokenmaxxer ${index}`,
+          ...(index === 200
+            ? { lastSyncedAt: NOW.getTime() - 46 * 24 * 60 * 60 * 1_000 }
+            : index === 201
+              ? {}
+              : { lastSyncedAt: NOW.getTime() }),
+          publicId: `TG-${String(index).padStart(6, "0")}`,
+        }),
+      );
+    }
+    return ids;
+  });
+
+  await t.mutation(internal.internal.recompute.scheduleAll, {});
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  for (const tokenmaxxerId of tokenmaxxerIds.slice(-2)) {
+    const finalScores = await t.run(async (ctx) =>
+      ctx.db
+        .query("publicUsages")
+        .withIndex("by_tokenmaxxer_id", (q) =>
+          q.eq("tokenmaxxerId", tokenmaxxerId),
+        )
+        .take(9),
+    );
+    expect(finalScores).toHaveLength(9);
+  }
+  await expect(
+    t.run(async (ctx) => ctx.db.query("scoreRecomputeDrains").unique()),
+  ).resolves.toMatchObject({
+    pagesCompleted: 41,
+    profilesCompleted: 202,
+    status: "complete",
+  });
+}, 10_000);
+
+test("the daily score watchdog resumes a stalled persisted cursor", async () => {
+  const t = testBackend();
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 12; index += 1) {
+      await ctx.db.insert("tokenmaxxers", {
+        authSubject: `watchdog-${index}`,
+        createdAt: NOW.getTime(),
+        displayName: `Watchdog Tokenmaxxer ${index}`,
+        lastSyncedAt: NOW.getTime(),
+        publicId: `TG-WD${String(index).padStart(4, "0")}`,
+      });
+    }
+  });
+
+  await t.mutation(internal.internal.recompute.scheduleAll, {});
+  const started = await t.run(async (ctx) =>
+    ctx.db.query("scoreRecomputeDrains").unique(),
+  );
+  if (!started) throw new Error("Score recomputation drain missing");
+  await t.mutation(internal.internal.recompute.schedulePage, {
+    cursor: null,
+    generation: started.generation,
+  });
+  const persisted = await t.run(async (ctx) =>
+    ctx.db.query("scoreRecomputeDrains").unique(),
+  );
+  expect(persisted).toMatchObject({
+    pagesCompleted: 1,
+    profilesCompleted: 5,
+    status: "running",
+  });
+  expect(persisted?.cursor).toEqual(expect.any(String));
+
+  vi.setSystemTime(NOW.getTime() + 16 * 60 * 1_000);
+  const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    await t.mutation(internal.internal.recompute.monitor, {});
+    expect(error).toHaveBeenCalledWith(
+      "Daily score recomputation drain stalled",
+      expect.objectContaining({
+        generation: started.generation,
+        pagesCompleted: 1,
+        profilesCompleted: 5,
+      }),
+    );
+  } finally {
+    error.mockRestore();
+  }
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  await expect(
+    t.run(async (ctx) => ctx.db.query("scoreRecomputeDrains").unique()),
+  ).resolves.toMatchObject({
+    pagesCompleted: 3,
+    profilesCompleted: 12,
+    status: "complete",
+  });
+});
+
+test("a delayed daily recomputation uses its execution Ranking Day", async () => {
+  const t = testBackend();
+  const beforeMidnight = new Date("2026-08-08T23:59:59.900Z");
+  const afterMidnight = new Date("2026-08-09T00:00:00.100Z");
+  const tokenmaxxerId = await t.run(async (ctx) => {
+    const id = await ctx.db.insert("tokenmaxxers", {
+      authSubject: "delayed-rollover",
+      createdAt: beforeMidnight.getTime(),
+      displayName: "Delayed Tokenmaxxer",
+      lastSyncedAt: beforeMidnight.getTime(),
+      publicId: "TG-DELAY2",
+    });
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCost: null,
+      observedTokens: 100,
+      provider: "codex",
+      rankingDay: "2026-08-08",
+      tokenmaxxerId: id,
+      updatedAt: beforeMidnight.getTime(),
+    });
+    await ctx.db.insert("userDailyUsage", {
+      apiEquivalentCost: null,
+      observedTokens: 200,
+      provider: "codex",
+      rankingDay: "2026-08-09",
+      tokenmaxxerId: id,
+      updatedAt: afterMidnight.getTime(),
+    });
+    return id;
+  });
+
+  vi.setSystemTime(beforeMidnight);
+  await t.mutation(internal.internal.recompute.scheduleAll, {});
+  vi.setSystemTime(afterMidnight);
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  const currentScore = await t.run(async (ctx) =>
+    ctx.db
+      .query("publicUsages")
+      .withIndex(
+        "by_tokenmaxxer_id_and_scope_and_window_days",
+        (q) =>
+          q
+            .eq("tokenmaxxerId", tokenmaxxerId)
+            .eq("scope", "combined")
+            .eq("windowDays", 1),
+      )
+      .unique(),
+  );
+  expect(currentScore).toMatchObject({
+    computedAt: afterMidnight.getTime(),
+    tokenScore: 200,
+  });
 });
 
 test("a mismatched live session cannot create or change Active Mac authority", async () => {

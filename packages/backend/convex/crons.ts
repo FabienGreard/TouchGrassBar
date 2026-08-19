@@ -4,10 +4,17 @@ import { internal } from "./_generated/api";
 
 const crons = cronJobs();
 
-crons.daily(
-  "recompute recently active rolling scores",
-  { hourUTC: 0, minuteUTC: 5 },
-  internal.internal.recompute.scheduleRecentlyActive,
+crons.cron(
+  "recompute every Profile rolling score",
+  "5 0 * * *",
+  internal.internal.recompute.scheduleAll,
+  {},
+);
+
+crons.interval(
+  "monitor daily score recomputation",
+  { minutes: 10 },
+  internal.internal.recompute.monitor,
   {},
 );
 

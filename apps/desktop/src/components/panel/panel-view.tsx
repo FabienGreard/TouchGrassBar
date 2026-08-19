@@ -19,6 +19,10 @@ import {
   UsageOverview,
   type UsagePresentation,
 } from "@/components/panel/usage-overview";
+import {
+  defaultDoomerboardQuery,
+  type DoomerboardQuery,
+} from "@/native-state/doomerboard-delivery";
 
 function updateActionLabel(updateState: UpdateState | null) {
   if (updateState?.update.status === "failed") {
@@ -38,9 +42,13 @@ type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
+  doomerboardSelection?: DoomerboardQuery | undefined;
   error: boolean;
   nativeGlass?: boolean;
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
+  onDoomerboardSelectionChange?:
+    | ((selection: DoomerboardQuery) => void)
+    | undefined;
   onRefresh: () => void;
   onSettings: () => void;
   onUpdate?: (() => void) | undefined;
@@ -55,9 +63,11 @@ function PanelView({
   addTokenmaxxerOpen = false,
   currentProfile,
   doomerboardRows,
+  doomerboardSelection = defaultDoomerboardQuery,
   error,
   nativeGlass = false,
   onAddTokenmaxxerOpenChange = () => undefined,
+  onDoomerboardSelectionChange = () => undefined,
   onRefresh,
   onSettings,
   onUpdate = () => undefined,
@@ -72,7 +82,11 @@ function PanelView({
 
   return (
     <>
-      <PanelShell glass={nativeGlass} ref={panelContainerRef}>
+      <PanelShell
+        data-glass={nativeGlass ? "true" : "false"}
+        glass={nativeGlass}
+        ref={panelContainerRef}
+      >
         <PanelHeader
           error={error}
           onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
@@ -103,9 +117,12 @@ function PanelView({
             />
             <Doomerboard
               currentProfile={currentProfile}
+              key="doomerboard"
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
+              onSelectionChange={onDoomerboardSelectionChange}
               providers={visibleProviders}
               rows={doomerboardRows}
+              selection={doomerboardSelection}
               tokenmaxxerRows={tokenmaxxerRows}
             />
           </>

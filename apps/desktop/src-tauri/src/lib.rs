@@ -2,6 +2,7 @@ mod daily_usage_aggregate;
 mod database;
 #[cfg(debug_assertions)]
 mod dev_instance;
+mod doomerboard;
 pub mod lifecycle;
 mod menu_bar;
 mod network;
@@ -687,6 +688,19 @@ fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn get_doomerboard(
+    window: WebviewWindow,
+    runtime: State<'_, doomerboard::DoomerboardRuntime>,
+    query: doomerboard::DoomerboardQueryV1,
+) -> Result<doomerboard::DoomerboardViewV1, String> {
+    require_panel(&window)?;
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.read(query))
+        .await
+        .map_err(|_| "Doomerboard unavailable".to_owned())
+}
+
+#[tauri::command]
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
@@ -1075,6 +1089,7 @@ pub fn run() {
             check_for_updates,
             complete_bootstrap,
             get_bootstrap_state,
+            get_doomerboard,
             get_sanitized_state,
             get_settings_state,
             get_update_state,
@@ -1190,6 +1205,11 @@ pub fn run() {
             let profile_coordinator = Arc::new(Mutex::new(profile::production_coordinator(
                 lifecycle.clone(),
             )));
+            #[cfg(target_os = "macos")]
+            app.manage(doomerboard::production_runtime(
+                Arc::clone(&profile_coordinator),
+                online_gate.clone(),
+            ));
             #[cfg(debug_assertions)]
             let synchronization_environment = if physical_menu_bar_fixture.is_some() {
                 SynchronizationEnvironment::no_io(core.clone(), online_gate.clone())
@@ -1211,7 +1231,7 @@ pub fn run() {
                 lifecycle,
                 app.handle().clone(),
                 online_gate,
-                profile_coordinator,
+                Arc::clone(&profile_coordinator),
                 usage_sync.clone(),
             )?;
             profile_runtime.trigger();

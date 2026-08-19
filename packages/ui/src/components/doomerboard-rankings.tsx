@@ -44,6 +44,7 @@ function DoomerboardRankings({
     [3, 2],
   ]);
   const podium = rows
+    .slice(0, 3)
     .filter((row) => row.rank >= 1 && row.rank <= 3)
     .sort(
       (a, b) =>
@@ -51,8 +52,9 @@ function DoomerboardRankings({
           (podiumOrder.get(b.rank) ?? b.rank) ||
         a.touchGrassId.localeCompare(b.touchGrassId),
     );
+  const podiumIds = new Set(podium.map((row) => row.touchGrassId));
   const allLedgerRows = rows
-    .filter((row) => row.rank > 3)
+    .filter((row) => !podiumIds.has(row.touchGrassId))
     .sort(
       (a, b) =>
         a.rank - b.rank || a.touchGrassId.localeCompare(b.touchGrassId),
@@ -90,7 +92,10 @@ function DoomerboardRankings({
           const style = rankStyles[row.rank as 1 | 2 | 3];
           return (
             <article
-              className={`relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px] ${style.card}`}
+              className={cn(
+                "relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px]",
+                style.card,
+              )}
               key={row.touchGrassId}
             >
               <div
