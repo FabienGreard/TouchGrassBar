@@ -44,6 +44,25 @@ function cachedProvider() {
   } as const satisfies ProviderPresentation;
 }
 
+function staleExpiredProvider() {
+  return {
+    ...cachedProvider(),
+    quota: {
+      ...cachedProvider().quota,
+      availability: "stale",
+      quotaLanes: [
+        {
+          allowance: 100,
+          label: "Weekly limit",
+          remaining: 50,
+          resetAt: "2026-08-08T11:00:00Z",
+          unit: "percent",
+        },
+      ],
+    },
+  } as const satisfies ProviderPresentation;
+}
+
 function cachedUsageProvider() {
   return {
     ...unavailableProvider("indexing"),
@@ -89,6 +108,24 @@ describe("provider card", () => {
     expect(markup).not.toContain("animate-pulse");
     expect(markup).toContain("Weekly limit");
     expect(markup).toContain("50%");
+  });
+
+  test("shows stale expired quota without exposing cache state", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderCard
+        presentation={staleExpiredProvider()}
+        referenceTime="2026-08-08T12:00:00Z"
+        timeZone="UTC"
+      />,
+    );
+
+    expect(markup).toContain("Weekly limit");
+    expect(markup).toContain("Weekly limit · reset Sat 8 Aug, 11:00");
+    expect(markup).toContain("50%");
+    expect(markup).not.toContain(" · stale");
+    expect(markup).not.toContain("quota stale");
+    expect(markup).not.toContain("0m left");
+    expect(markup).not.toContain("expired");
   });
 
   test("does not show a loading pulse when only cached Observed Usage is available", () => {
