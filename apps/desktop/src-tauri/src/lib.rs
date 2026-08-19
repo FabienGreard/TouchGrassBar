@@ -382,12 +382,22 @@ impl ProfileRuntime {
         let Some(_attempt) = self.admission.try_start(None) else {
             return Err("Profile recovery unavailable".to_owned());
         };
-        let recovered = self
-            .coordinator
-            .lock()
-            .map_err(|_| "Profile recovery unavailable".to_owned())?
-            .recover_profile(touch_grass_id, recovery_key)
-            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        let recovered = {
+            let coordinator = self
+                .coordinator
+                .lock()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+            if coordinator
+                .complete_local_recovery_if_ready(touch_grass_id)
+                .map_err(|_| "Profile recovery unavailable".to_owned())?
+            {
+                self.usage_sync.request();
+                return Ok(());
+            }
+            coordinator
+                .recover_profile(touch_grass_id, recovery_key)
+                .map_err(|_| "Profile recovery unavailable".to_owned())?
+        };
         match &recovered.profile {
             SanitizedProfileOutcome::Ready { .. } => {}
             SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
@@ -397,11 +407,18 @@ impl ProfileRuntime {
         self.usage_sync
             .recover_authority(recovered.profile, recovered.activation)
             .map_err(|_| "Profile recovery unavailable".to_owned())?;
-        self.coordinator
-            .lock()
-            .map_err(|_| "Profile recovery unavailable".to_owned())?
-            .complete_recovery()
-            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        {
+            let coordinator = self
+                .coordinator
+                .lock()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+            coordinator
+                .mark_recovery_locally_committed()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+            coordinator
+                .complete_recovery()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        }
         self.usage_sync.request();
         Ok(())
     }

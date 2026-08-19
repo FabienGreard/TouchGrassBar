@@ -325,10 +325,17 @@ struct PreparedProfile {
 
 #[derive(Clone, Debug)]
 struct PreparedRecovery {
-    committed: bool,
+    state: RecoveryStage,
     expires_at_ms: u64,
     recovery_proof: Secret,
     touch_grass_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryStage {
+    Prepared,
+    ServerCommitted,
+    LocalCommitted,
 }
 
 impl PreparedRecovery {
@@ -338,7 +345,11 @@ impl PreparedRecovery {
             self.touch_grass_id,
             self.expires_at_ms,
             self.recovery_proof.expose(),
-            self.committed
+            match self.state {
+                RecoveryStage::Prepared => "prepared",
+                RecoveryStage::ServerCommitted => "server-committed",
+                RecoveryStage::LocalCommitted => "local-committed",
+            }
         ))
     }
 
@@ -356,9 +367,10 @@ impl PreparedRecovery {
             return Err(ProfileError::message("Profile recovery unavailable"));
         }
         Ok(Self {
-            committed: match fields.next() {
-                Some("true") => true,
-                Some("false") | None => false,
+            state: match fields.next() {
+                Some("local-committed") => RecoveryStage::LocalCommitted,
+                Some("server-committed") | Some("true") => RecoveryStage::ServerCommitted,
+                Some("prepared") | Some("false") | None => RecoveryStage::Prepared,
                 Some(_) => {
                     return Err(ProfileError::message("Profile recovery unavailable"));
                 }
@@ -707,7 +719,7 @@ impl ProfileCoordinator {
         self.custody.write(
             SecretKind::RecoveryPreparation,
             &PreparedRecovery {
-                committed: true,
+                state: RecoveryStage::ServerCommitted,
                 expires_at_ms: prepared.expires_at_ms,
                 recovery_proof: prepared.recovery_proof.clone(),
                 touch_grass_id: prepared.touch_grass_id.clone(),
@@ -808,6 +820,37 @@ impl ProfileCoordinator {
         Ok(())
     }
 
+    pub(crate) fn mark_recovery_locally_committed(&self) -> Result<(), ProfileError> {
+        let prepared = self
+            .custody
+            .read(SecretKind::RecoveryPreparation)?
+            .ok_or(ProfileError::message("Profile recovery unavailable"))?;
+        let mut prepared = PreparedRecovery::decode(&prepared)?;
+        if prepared.state == RecoveryStage::Prepared {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        prepared.state = RecoveryStage::LocalCommitted;
+        self.custody
+            .write(SecretKind::RecoveryPreparation, &prepared.encode())
+    }
+
+    pub(crate) fn complete_local_recovery_if_ready(
+        &self,
+        touch_grass_id: &str,
+    ) -> Result<bool, ProfileError> {
+        let Some(prepared) = self.custody.read(SecretKind::RecoveryPreparation)? else {
+            return Ok(false);
+        };
+        let prepared = PreparedRecovery::decode(&prepared)?;
+        if prepared.state != RecoveryStage::LocalCommitted
+            || prepared.touch_grass_id != touch_grass_id
+        {
+            return Ok(false);
+        }
+        self.clear_recovery_staging()?;
+        Ok(true)
+    }
+
     pub(crate) fn complete_recovery(&self) -> Result<(), ProfileError> {
         self.clear_recovery_staging()
     }
@@ -820,9 +863,9 @@ impl ProfileCoordinator {
             .read(SecretKind::RecoveryPreparation)?
             .map(|prepared| PreparedRecovery::decode(&prepared))
             .transpose()?
-            .is_some_and(|prepared| prepared.committed)
+            .is_some_and(|prepared| prepared.state != RecoveryStage::Prepared)
         {
-            return Err(ProfileError::authority_rejected());
+            return Err(ProfileError::message("Active Mac authority unavailable"));
         }
         let SanitizedProfileOutcome::Ready {
             display_name,
@@ -1274,7 +1317,7 @@ impl ProfileTransport for HttpProfileTransport {
             return Err(ProfileError::message("Profile recovery unavailable"));
         }
         Ok(PreparedRecovery {
-            committed: false,
+            state: RecoveryStage::Prepared,
             expires_at_ms: response.expires_at,
             recovery_proof: Secret::new(response.recovery_proof),
             touch_grass_id: touch_grass_id.to_owned(),
@@ -1579,7 +1622,7 @@ mod tests {
             *self.prepared_replacement_recovery_key.lock().unwrap() =
                 Some(replacement_recovery_key.expose().to_owned());
             Ok(PreparedRecovery {
-                committed: false,
+                state: RecoveryStage::Prepared,
                 expires_at_ms: u64::MAX,
                 recovery_proof: Secret::new(generate_secret(64)?),
                 touch_grass_id: touch_grass_id.to_owned(),
@@ -2320,7 +2363,7 @@ mod tests {
             .write(
                 SecretKind::RecoveryPreparation,
                 &PreparedRecovery {
-                    committed: false,
+                    state: RecoveryStage::Prepared,
                     expires_at_ms: 0,
                     recovery_proof: Secret::new(generate_secret(64).unwrap()),
                     touch_grass_id: touch_grass_id.clone(),
@@ -2345,7 +2388,10 @@ mod tests {
                 .contains(SecretKind::ReplacementInstallationCredential)
         );
         assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
-        assert!(fixture.coordinator.active_sync_credentials().is_err());
+        let Err(error) = fixture.coordinator.active_sync_credentials() else {
+            panic!("server-committed recovery must defer synchronization");
+        };
+        assert!(!error.is_authority_rejected());
         assert_ne!(
             fixture
                 .custody
@@ -2378,12 +2424,30 @@ mod tests {
             ProfileProvisioningStatus::Ready
         );
         fixture
+            .coordinator
+            .mark_recovery_locally_committed()
+            .unwrap();
+        fixture
             .custody
             .fail_next_delete(SecretKind::ReplacementInstallationCredential);
         assert!(fixture.coordinator.complete_recovery().is_err());
         assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
-        assert!(fixture.coordinator.active_sync_credentials().is_err());
-        fixture.coordinator.complete_recovery().unwrap();
+        let Err(error) = fixture.coordinator.active_sync_credentials() else {
+            panic!("local cleanup must defer synchronization");
+        };
+        assert!(!error.is_authority_rejected());
+        assert!(
+            fixture
+                .coordinator
+                .complete_local_recovery_if_ready(&touch_grass_id)
+                .unwrap()
+        );
+        assert!(
+            !fixture
+                .coordinator
+                .complete_local_recovery_if_ready(&touch_grass_id)
+                .unwrap()
+        );
         assert!(!fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
         assert!(
             !fixture

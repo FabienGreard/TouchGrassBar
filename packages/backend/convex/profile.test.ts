@@ -750,7 +750,12 @@ test("concurrent identical recovery commits finalize authentication once", async
   const attemptId = recoveryAttemptId("J");
   const newRecoveryKey = replacementRecoveryKey("K");
   const installationCredential = "M".repeat(52);
-  await prepareRecovery(t, profile, attemptId, newRecoveryKey);
+  const recoveryProof = await prepareRecovery(
+    t,
+    profile,
+    attemptId,
+    newRecoveryKey,
+  );
   const attemptDigest = await recoveryDigest(attemptId);
   await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
     attemptDigest,
@@ -784,13 +789,57 @@ test("concurrent identical recovery commits finalize authentication once", async
   const winningClaim = claims[0]
     ? "first-concurrent-claim"
     : "second-concurrent-claim";
+  await t.run(async (ctx) => {
+    const attempt = await ctx.db
+      .query("profileRecoveryAttempts")
+      .withIndex("by_attempt_digest", (query) =>
+        query.eq("attemptDigest", attemptDigest),
+      )
+      .unique();
+    if (!attempt) throw new Error("Recovery attempt is missing");
+    await ctx.db.patch(attempt._id, {
+      authFinalizationLeaseExpiresAt: Date.now() - 1,
+    });
+  });
+  const replacementClaim = "replacement-after-expired-lease";
   await expect(
-    t.mutation(internal.auth.profileRecovery.finalizeRecoveryAuth, {
+    t.mutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, {
+      attemptDigest,
+      authSubject: profile.user.id,
+      claim: replacementClaim,
+    }),
+  ).resolves.toBe(true);
+  await expect(
+    t.mutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, {
       attemptDigest,
       authSubject: profile.user.id,
       claim: winningClaim,
     }),
+  ).resolves.toBe(false);
+
+  const overlappingReplay = authFetch(
+    t,
+    "/api/auth/touchgrass/recovery/commit",
+    {
+      body: JSON.stringify({
+        currentRecoveryKey: profile.recoveryKey,
+        installationCredential,
+        newRecoveryKey,
+        recoveryProof,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await expect(
+    t.mutation(internal.auth.profileRecovery.finalizeRecoveryAuth, {
+      attemptDigest,
+      authSubject: profile.user.id,
+      claim: replacementClaim,
+    }),
   ).resolves.toBe(true);
+  await expect(overlappingReplay).resolves.toMatchObject({ status: 200 });
   await expect(
     t.mutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, {
       attemptDigest,

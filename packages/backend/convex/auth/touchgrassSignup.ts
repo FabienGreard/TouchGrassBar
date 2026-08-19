@@ -23,6 +23,8 @@ const PROOF_HEADER = "x-touchgrass-signup-proof";
 const RECOVERY_KEY_PATTERN =
   /^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{48}$/;
 const DUMMY_RECOVERY_CREDENTIAL = "2".repeat(48);
+const RECOVERY_FINALIZATION_WAIT_ATTEMPTS = 200;
+const RECOVERY_FINALIZATION_WAIT_MS = 25;
 
 type PreparationPayload = {
   expiresAt: number;
@@ -652,7 +654,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             });
             return rejectRecoveryCredential();
           }
-          const committed = await policy.commitRecoveryAttempt({
+          let committed = await policy.commitRecoveryAttempt({
             attemptDigest,
             authSubject: user.id,
             installationCredential,
@@ -666,44 +668,111 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
           }
           if (!committed.authFinalized) {
             const authFinalizationClaim = crypto.randomUUID();
-            const authFinalizationClaimed =
-              await policy.claimRecoveryAuthFinalization({
+            let authFinalizationClaimed = false;
+            for (
+              let waitAttempt = 0;
+              waitAttempt < RECOVERY_FINALIZATION_WAIT_ATTEMPTS;
+              waitAttempt += 1
+            ) {
+              authFinalizationClaimed =
+                await policy.claimRecoveryAuthFinalization({
+                  attemptDigest,
+                  authSubject: user.id,
+                  claim: authFinalizationClaim,
+                });
+              if (authFinalizationClaimed) break;
+              const replay = await policy.commitRecoveryAttempt({
                 attemptDigest,
                 authSubject: user.id,
-                claim: authFinalizationClaim,
+                installationCredential,
               });
-            if (!authFinalizationClaimed) {
+              if (replay?.authFinalized) {
+                committed = replay;
+                break;
+              }
+              await new Promise((resolve) =>
+                setTimeout(resolve, RECOVERY_FINALIZATION_WAIT_MS),
+              );
+            }
+            if (!authFinalizationClaimed && !committed.authFinalized) {
               await policy.finalizeCredentialAttempt({
-                outcome: "failure",
+                outcome: "success",
                 reservationId,
               });
               return rejectRecoveryCredential();
             }
-            try {
-              if (!replacementKeyIsCurrent) {
-                const password = await ctx.context.password.hash(newRecoveryKey);
-                await ctx.context.internalAdapter.updateAccount(account.id, {
-                  password,
+            if (authFinalizationClaimed) {
+              try {
+                if (!replacementKeyIsCurrent) {
+                  const password = await ctx.context.password.hash(newRecoveryKey);
+                  await ctx.context.internalAdapter.updateAccount(account.id, {
+                    password,
+                  });
+                }
+                const priorSessions =
+                  await ctx.context.internalAdapter.listSessions(user.id);
+                const stillOwnsFinalization =
+                  await policy.claimRecoveryAuthFinalization({
+                    attemptDigest,
+                    authSubject: user.id,
+                    claim: authFinalizationClaim,
+                  });
+                if (!stillOwnsFinalization) {
+                  for (
+                    let waitAttempt = 0;
+                    waitAttempt < RECOVERY_FINALIZATION_WAIT_ATTEMPTS;
+                    waitAttempt += 1
+                  ) {
+                    const replay = await policy.commitRecoveryAttempt({
+                      attemptDigest,
+                      authSubject: user.id,
+                      installationCredential,
+                    });
+                    if (replay?.authFinalized) {
+                      committed = replay;
+                      break;
+                    }
+                    await new Promise((resolve) =>
+                      setTimeout(resolve, RECOVERY_FINALIZATION_WAIT_MS),
+                    );
+                  }
+                  if (!committed.authFinalized) {
+                    await policy.finalizeCredentialAttempt({
+                      outcome: "success",
+                      reservationId,
+                    });
+                    return rejectRecoveryCredential();
+                  }
+                } else {
+                  const priorSessionTokens = priorSessions.map(
+                    (session) => session.token,
+                  );
+                  if (priorSessionTokens.length > 0) {
+                    await ctx.context.internalAdapter.deleteSessions(
+                      priorSessionTokens,
+                    );
+                  }
+                  const authFinalized = await policy.finalizeRecoveryAuth({
+                    attemptDigest,
+                    authSubject: user.id,
+                    claim: authFinalizationClaim,
+                  });
+                  if (!authFinalized) {
+                    throw new Error("Recovery finalization failed");
+                  }
+                }
+              } catch {
+                await policy.releaseRecoveryAuthFinalization({
+                  attemptDigest,
+                  authSubject: user.id,
+                  claim: authFinalizationClaim,
                 });
+                await policy.finalizeCredentialAttempt({
+                  outcome: "failure",
+                  reservationId,
+                });
+                return rejectRecoveryCredential();
               }
-              await ctx.context.internalAdapter.deleteUserSessions(user.id);
-              const authFinalized = await policy.finalizeRecoveryAuth({
-                attemptDigest,
-                authSubject: user.id,
-                claim: authFinalizationClaim,
-              });
-              if (!authFinalized) throw new Error("Recovery finalization failed");
-            } catch {
-              await policy.releaseRecoveryAuthFinalization({
-                attemptDigest,
-                authSubject: user.id,
-                claim: authFinalizationClaim,
-              });
-              await policy.finalizeCredentialAttempt({
-                outcome: "failure",
-                reservationId,
-              });
-              return rejectRecoveryCredential();
             }
           }
           const finalized = await policy.finalizeCredentialAttempt({
