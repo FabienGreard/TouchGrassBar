@@ -243,7 +243,7 @@ function DoomerboardSurface() {
           touchGrassId: "#TG-NULL77",
         }}
         onAudienceChange={noOp}
-        onCopyCurrentProfile={noOp}
+        onCopyTokenmaxxerInvitation={noOp}
         onPeriodChange={noOp}
         onProviderChange={noOp}
         period="today"

@@ -69,16 +69,16 @@ function QuerySelector({
 function CurrentProfileAction({
   copyStatus,
   currentProfile,
-  onCopyCurrentProfile,
+  onCopyTokenmaxxerInvitation,
 }: {
   copyStatus: CopyStatus;
   currentProfile: CurrentProfile | null;
-  onCopyCurrentProfile?: (() => void) | undefined;
+  onCopyTokenmaxxerInvitation?: (() => void) | undefined;
 }) {
   if (currentProfile === null) {
     return (
       <small
-        aria-label="Current user profile unavailable"
+        aria-label="Current Tokenmaxxer Profile unavailable"
         className="font-mono text-[7px] text-pearl-muted"
         data-slot="current-user-profile"
       >
@@ -91,19 +91,19 @@ function CurrentProfileAction({
   return (
     <span className="inline-flex min-w-0 items-center gap-0.5" data-slot="current-user-profile">
       <Button
-        aria-label={`Copy current user profile ${profile}`}
+        aria-label={`Copy Tokenmaxxer invitation for ${profile}`}
         className="max-w-[142px] rounded-[5px] font-mono text-[7px] font-medium"
         data-copy-status={copyStatus}
         data-slot="current-user-profile-action"
-        disabled={onCopyCurrentProfile === undefined}
-        onClick={onCopyCurrentProfile}
+        disabled={onCopyTokenmaxxerInvitation === undefined}
+        onClick={onCopyTokenmaxxerInvitation}
         size="quiet"
         title={
           copyStatus === "copied"
             ? "Copied"
             : copyStatus === "unavailable"
               ? "Copy unavailable"
-              : "Copy profile"
+              : "Copy invitation"
         }
         type="button"
         variant="ghost"
@@ -126,7 +126,7 @@ function DoomerboardToolbar({
   copyStatus = "idle",
   currentProfile,
   onAudienceChange,
-  onCopyCurrentProfile,
+  onCopyTokenmaxxerInvitation,
   onPeriodChange,
   onProviderChange,
   period,
@@ -137,7 +137,7 @@ function DoomerboardToolbar({
   copyStatus?: CopyStatus;
   currentProfile: CurrentProfile | null;
   onAudienceChange: (audience: DoomerboardAudience) => void;
-  onCopyCurrentProfile?: (() => void) | undefined;
+  onCopyTokenmaxxerInvitation?: (() => void) | undefined;
   onPeriodChange: (period: string) => void;
   onProviderChange: (provider: string) => void;
   period: string;
@@ -160,7 +160,7 @@ function DoomerboardToolbar({
           <CurrentProfileAction
             copyStatus={copyStatus}
             currentProfile={currentProfile}
-            onCopyCurrentProfile={onCopyCurrentProfile}
+            onCopyTokenmaxxerInvitation={onCopyTokenmaxxerInvitation}
           />
         </div>
         <div className="flex items-center gap-0.5 text-pearl-muted">

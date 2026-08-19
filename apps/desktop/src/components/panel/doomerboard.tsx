@@ -130,7 +130,7 @@ function Doomerboard({
         copyStatus={copyStatus}
         currentProfile={currentProfile}
         onAudienceChange={updateAudience}
-        onCopyCurrentProfile={currentProfile ? () => void copyText() : undefined}
+        onCopyTokenmaxxerInvitation={currentProfile ? () => void copyText() : undefined}
         onPeriodChange={updatePeriod}
         onProviderChange={updateProvider}
         period={period}

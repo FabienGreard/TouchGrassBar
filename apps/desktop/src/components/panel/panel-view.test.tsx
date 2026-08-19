@@ -107,7 +107,7 @@ describe("panel states", () => {
     expect(markup).toContain('data-icon-provider="hugeicons"');
     expect(markup).toContain("Leaderboard unavailable");
     expect(markup).not.toContain("Add by ID");
-    expect(markup).toContain('aria-label="Current user profile unavailable"');
+    expect(markup).toContain('aria-label="Current Tokenmaxxer Profile unavailable"');
     expect(markup).not.toContain("— users");
     expect(markup).toContain('data-slot="doomerboard-viewport"');
     expect(markup).toContain("h-[180px]");
@@ -277,7 +277,7 @@ describe("panel states", () => {
     expect(markup).toContain("#TG-LOOP55");
     expect(markup).toContain("#TG-7K4P9D");
     expect(markup).toContain("Fabien#TG-7K4P9D");
-    expect(markup).toContain('aria-label="Copy current user profile Fabien#TG-7K4P9D"');
+    expect(markup).toContain('aria-label="Copy Tokenmaxxer invitation for Fabien#TG-7K4P9D"');
     expect(markup).toContain('data-copy-status="idle"');
     expect(markup).not.toContain("data-copy-indicator");
     expect(markup).toContain('data-copy-feedback="idle"');
@@ -738,8 +738,8 @@ describe("panel states", () => {
   test("does not infer the current Profile from fixture conventions", () => {
     const markup = renderToStaticMarkup(<Doomerboard rows={currentDoomerboardRows} />);
 
-    expect(markup).toContain('aria-label="Current user profile unavailable"');
-    expect(markup).not.toContain("Copy current user profile");
+    expect(markup).toContain('aria-label="Current Tokenmaxxer Profile unavailable"');
+    expect(markup).not.toContain("Copy Tokenmaxxer invitation");
   });
 
   test("keeps every Tokenmaxxer when Token Scores share a rank", () => {

@@ -153,7 +153,7 @@ export const CompactPanel: Story = {
             touchGrassId: "#TG-7K4P9D",
           }}
           onAudienceChange={noOp}
-          onCopyCurrentProfile={noOp}
+          onCopyTokenmaxxerInvitation={noOp}
           onPeriodChange={noOp}
           onProviderChange={noOp}
           period="today"
