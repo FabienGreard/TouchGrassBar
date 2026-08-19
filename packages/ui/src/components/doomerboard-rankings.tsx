@@ -11,10 +11,7 @@ type DoomerboardRow = {
   touchGrassId: string;
 };
 
-type DoomerboardRankingsProps = Omit<
-  ComponentProps<typeof ScrollArea>,
-  "children"
-> & {
+type DoomerboardRankingsProps = Omit<ComponentProps<typeof ScrollArea>, "children"> & {
   ledgerLimit?: number | undefined;
   rows: readonly DoomerboardRow[];
 };

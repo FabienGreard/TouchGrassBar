@@ -50,10 +50,7 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
   const publishFailure = (requestedQuery: DoomerboardQuery) => {
     publish({
       phase: "degraded",
-      view:
-        viewQuery !== null && sameQuery(viewQuery, requestedQuery)
-          ? current.view
-          : null,
+      view: viewQuery !== null && sameQuery(viewQuery, requestedQuery) ? current.view : null,
     });
   };
 

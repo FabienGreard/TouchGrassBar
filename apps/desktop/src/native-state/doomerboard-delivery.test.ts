@@ -192,8 +192,7 @@ describe("Doomerboard delivery", () => {
       .mockImplementationOnce(
         () =>
           new Promise((resolve) => {
-            finishLatest = () =>
-              resolve({ ok: true as const, value: selectedView });
+            finishLatest = () => resolve({ ok: true as const, value: selectedView });
           }),
       );
     const delivery = createDoomerboardDelivery(native);

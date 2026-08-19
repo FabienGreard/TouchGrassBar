@@ -698,9 +698,7 @@ describe("panel states", () => {
       expect(markup).toMatch(
         new RegExp(`aria-label="Select Leaderboard period"[^>]*>${periodLabel}</button>`),
       );
-      expect(markup).not.toContain(
-        "Scores are unavailable for this selection.",
-      );
+      expect(markup).not.toContain("Scores are unavailable for this selection.");
     }
   });
 
