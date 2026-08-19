@@ -19,6 +19,12 @@ import {
 } from "@/native-state/doomerboard-delivery";
 
 const emptyProviders: readonly DoomerboardProvider[] = [];
+const INSTALLATION_URL = "https://touchgrassbar.com";
+
+function tokenmaxxerInvitationText(currentProfile: DoomerboardCurrentProfile) {
+  const touchGrassId = currentProfile.touchGrassId.replace(/^#/, "");
+  return `Add me on TouchGrassBar with TouchGrass ID ${touchGrassId}. Install TouchGrassBar at ${INSTALLATION_URL}.`;
+}
 
 function DoomerboardUnavailable({
   selectionUnavailable = false,
@@ -82,10 +88,8 @@ function Doomerboard({
   selection?: DoomerboardQuery | undefined;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
 }) {
-  const currentProfileText = currentProfile
-    ? `${currentProfile.displayName}${currentProfile.touchGrassId}`
-    : "";
-  const { copyStatus, copyText } = useCopyText(currentProfileText);
+  const invitationText = currentProfile ? tokenmaxxerInvitationText(currentProfile) : "";
+  const { copyStatus, copyText } = useCopyText(invitationText);
   const selectedRows = selection.audience === "global" ? rows : tokenmaxxerRows;
   const rowsEmpty = selectedRows !== undefined && selectedRows.length === 0;
   const period =
@@ -150,6 +154,6 @@ function Doomerboard({
   );
 }
 
-export { Doomerboard, TokenmaxxersEmpty };
+export { Doomerboard, tokenmaxxerInvitationText, TokenmaxxersEmpty };
 export type { DoomerboardCurrentProfile as CurrentProfile };
 export type { DoomerboardRow } from "@touchgrass/ui";

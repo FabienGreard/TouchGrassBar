@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
 import type { BrowserFixtureName } from "@/dev/preview-scenario";
-import { Doomerboard, TokenmaxxersEmpty } from "@/components/panel/doomerboard";
+import {
+  Doomerboard,
+  tokenmaxxerInvitationText,
+  TokenmaxxersEmpty,
+} from "@/components/panel/doomerboard";
 import { PanelView } from "@/components/panel/panel-view";
 import {
   currentProfile,
@@ -646,6 +650,20 @@ describe("panel states", () => {
     expect(markup).not.toContain("lucide");
     expect(markup).toContain("h-full");
     expect(markup).not.toMatch(/<button[^>]*\sdisabled(?:=|>)/);
+  });
+
+  test("builds a public invitation with the standard installation route", () => {
+    const source = {
+      ...currentProfile,
+      privatePath: "/private/profile",
+      session: "private-session",
+    };
+    const invitation = tokenmaxxerInvitationText(source);
+
+    expect(invitation).toBe(
+      "Add me on TouchGrassBar with TouchGrass ID TG-7K4P9D. Install TouchGrassBar at https://touchgrassbar.com.",
+    );
+    expect(invitation).not.toMatch(/private|session|path/i);
   });
 
   test("reports when a ready Global board has no synchronized scores", () => {
