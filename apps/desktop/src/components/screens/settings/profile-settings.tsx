@@ -21,6 +21,7 @@ function ProfileSettings({
   pendingDisplayName,
   profile = null,
   profileProvisioning = "not-authorized",
+  recoveryFailed = false,
   recoveryKey = null,
   revealingRecoveryKey = false,
 }: {
@@ -31,6 +32,7 @@ function ProfileSettings({
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
   profileProvisioning?: ProfileProvisioningStatus | undefined;
+  recoveryFailed?: boolean | undefined;
   recoveryKey?: string | null | undefined;
   revealingRecoveryKey?: boolean | undefined;
 }) {
@@ -210,6 +212,9 @@ function ProfileSettings({
               Enter Recovery Key…
             </Button>
           </div>
+          <small aria-live="polite" className="block text-[9px] text-sheet-muted">
+            {recoveryFailed ? "Profile recovery failed. Try again." : ""}
+          </small>
         </div>
       </section>
     </div>

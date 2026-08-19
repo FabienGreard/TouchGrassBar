@@ -129,6 +129,9 @@ function SettingsCoordinator({
       onRevealRecoveryKey={() => {
         void delivery.revealRecoveryKey();
       }}
+      onStartRecovery={() => {
+        void delivery.recoverProfile();
+      }}
       onSectionChange={delivery.selectSection}
       onRetryUpdate={() => {
         void updates.retry();
@@ -137,6 +140,7 @@ function SettingsCoordinator({
       profile={profile}
       profileProvisioning={state?.profileProvisioning}
       providers={settingsProviderAccessPresentations(providers)}
+      recoveryFailed={view.recoveryFailed}
       recoveryKey={view.recoveryKey}
       revealingRecoveryKey={view.revealingRecoveryKey}
       section={state?.section}

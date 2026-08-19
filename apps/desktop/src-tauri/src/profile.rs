@@ -9,7 +9,7 @@ use std::{
 };
 
 use convex::{ConvexClient, FunctionResult, Value};
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
@@ -22,9 +22,12 @@ const UPDATE_DISPLAY_NAME_MUTATION: &str = "tokenmaxxers:updateDisplayName";
 const PREPARE_PATH: &str = "/api/auth/touchgrass/prepare";
 const SIGN_UP_PATH: &str = "/api/auth/sign-up/email";
 const SIGN_IN_PATH: &str = "/api/auth/sign-in/username";
+const PREPARE_RECOVERY_PATH: &str = "/api/auth/touchgrass/recovery/prepare";
+const COMMIT_RECOVERY_PATH: &str = "/api/auth/touchgrass/recovery/commit";
 const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const SIGNUP_PROOF_HEADER: &str = "x-touchgrass-signup-proof";
 const PROFILE_MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_PROFILE_AUTH_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_PROFILE_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_PROFILE_JWT_BYTES: usize = 8 * 1_024;
 const AUTHORITY_REJECTED_MESSAGE: &str = "Active Mac authority rejected";
@@ -56,6 +59,10 @@ pub(crate) enum SecretKind {
     BetterAuthSession,
     InstallationCredential,
     SignupPreparation,
+    RecoveryAttemptId,
+    RecoveryPreparation,
+    ReplacementRecoveryKey,
+    ReplacementInstallationCredential,
     ConvexJwt,
 }
 
@@ -94,6 +101,26 @@ pub(crate) const fn keychain_policy(kind: SecretKind) -> KeychainPolicy {
             synchronized: false,
             accessibility: Accessibility::AfterFirstUnlockThisDeviceOnly,
         },
+        SecretKind::RecoveryAttemptId => KeychainPolicy {
+            account: "recovery-attempt-id",
+            synchronized: false,
+            accessibility: Accessibility::AfterFirstUnlockThisDeviceOnly,
+        },
+        SecretKind::RecoveryPreparation => KeychainPolicy {
+            account: "recovery-preparation",
+            synchronized: false,
+            accessibility: Accessibility::AfterFirstUnlockThisDeviceOnly,
+        },
+        SecretKind::ReplacementRecoveryKey => KeychainPolicy {
+            account: "replacement-recovery-key",
+            synchronized: false,
+            accessibility: Accessibility::WhenUnlockedThisDeviceOnly,
+        },
+        SecretKind::ReplacementInstallationCredential => KeychainPolicy {
+            account: "replacement-installation-credential",
+            synchronized: false,
+            accessibility: Accessibility::AfterFirstUnlockThisDeviceOnly,
+        },
         SecretKind::ConvexJwt => KeychainPolicy {
             account: "convex-jwt-memory-only",
             synchronized: false,
@@ -105,7 +132,7 @@ pub(crate) const fn keychain_policy(kind: SecretKind) -> KeychainPolicy {
 pub(crate) struct Secret(Zeroizing<String>);
 
 impl Secret {
-    fn new(value: String) -> Self {
+    pub(crate) fn new(value: String) -> Self {
         Self(Zeroizing::new(value))
     }
 
@@ -296,6 +323,36 @@ struct PreparedProfile {
     signup_proof: Secret,
 }
 
+#[derive(Clone, Debug)]
+struct PreparedRecovery {
+    recovery_proof: Secret,
+    touch_grass_id: String,
+}
+
+impl PreparedRecovery {
+    fn encode(&self) -> Secret {
+        Secret::new(format!(
+            "{}\n{}",
+            self.touch_grass_id,
+            self.recovery_proof.expose()
+        ))
+    }
+
+    fn decode(value: &Secret) -> Result<Self, ProfileError> {
+        let mut fields = value.expose().splitn(2, '\n');
+        let (Some(touch_grass_id), Some(recovery_proof)) = (fields.next(), fields.next()) else {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        };
+        if !valid_touch_grass_id(touch_grass_id) || recovery_proof.is_empty() {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        Ok(Self {
+            recovery_proof: Secret::new(recovery_proof.to_owned()),
+            touch_grass_id: touch_grass_id.to_owned(),
+        })
+    }
+}
+
 impl PreparedProfile {
     fn encode(&self) -> Secret {
         Secret::new(format!(
@@ -345,6 +402,19 @@ trait ProfileTransport: Send + Sync {
         touch_grass_id: &str,
         recovery_key: &Secret,
     ) -> Result<SignInOutcome, ProfileError>;
+    fn prepare_recovery(
+        &self,
+        touch_grass_id: &str,
+        recovery_key: &Secret,
+        attempt_id: &Secret,
+    ) -> Result<PreparedRecovery, ProfileError>;
+    fn commit_recovery(
+        &self,
+        prepared: &PreparedRecovery,
+        current_recovery_key: &Secret,
+        new_recovery_key: &Secret,
+        installation_credential: &Secret,
+    ) -> Result<CommittedRecovery, ProfileError>;
     fn ensure_profile(
         &self,
         session: &Secret,
@@ -354,6 +424,14 @@ trait ProfileTransport: Send + Sync {
     ) -> Result<EnsuredProfileAuthority, ProfileError>;
     fn update_display_name(&self, session: &Secret, display_name: &str)
     -> Result<(), ProfileError>;
+}
+
+struct CommittedRecovery {
+    active_mac_activated_at: u64,
+    active_mac_generation: u64,
+    display_name: String,
+    session: Secret,
+    touch_grass_id: String,
 }
 
 fn profile_mutation_payload(display_name: String) -> BTreeMap<String, Value> {
@@ -566,6 +644,118 @@ impl ProfileCoordinator {
         }))
     }
 
+    pub(crate) fn recover_profile(
+        &self,
+        touch_grass_id: &str,
+        recovery_key: &Secret,
+    ) -> Result<ProfileProvisioningOutcome, ProfileError> {
+        if !valid_touch_grass_id(touch_grass_id) || !valid_recovery_key(recovery_key.expose()) {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        let prepared = match self.custody.read(SecretKind::RecoveryPreparation)? {
+            Some(value) => {
+                let prepared = PreparedRecovery::decode(&value)?;
+                if prepared.touch_grass_id != touch_grass_id {
+                    self.clear_recovery_staging()?;
+                    self.prepare_recovery(touch_grass_id, recovery_key)?
+                } else {
+                    prepared
+                }
+            }
+            None => self.prepare_recovery(touch_grass_id, recovery_key)?,
+        };
+        let replacement_recovery_key =
+            self.ensure_secret(SecretKind::ReplacementRecoveryKey, 48)?;
+        let replacement_installation_credential =
+            self.ensure_secret(SecretKind::ReplacementInstallationCredential, 52)?;
+        let committed = self.transport.commit_recovery(
+            &prepared,
+            recovery_key,
+            &replacement_recovery_key,
+            &replacement_installation_credential,
+        )?;
+        self.finalize_recovery(
+            committed,
+            &replacement_recovery_key,
+            &replacement_installation_credential,
+        )
+    }
+
+    fn prepare_recovery(
+        &self,
+        touch_grass_id: &str,
+        recovery_key: &Secret,
+    ) -> Result<PreparedRecovery, ProfileError> {
+        let attempt_id = self.ensure_secret(SecretKind::RecoveryAttemptId, 32)?;
+        let _replacement_recovery_key =
+            self.ensure_secret(SecretKind::ReplacementRecoveryKey, 48)?;
+        let _replacement_installation_credential =
+            self.ensure_secret(SecretKind::ReplacementInstallationCredential, 52)?;
+        let prepared =
+            self.transport
+                .prepare_recovery(touch_grass_id, recovery_key, &attempt_id)?;
+        if prepared.touch_grass_id != touch_grass_id {
+            return Err(ProfileError::authority_rejected());
+        }
+        self.custody
+            .write(SecretKind::RecoveryPreparation, &prepared.encode())?;
+        Ok(prepared)
+    }
+
+    fn finalize_recovery(
+        &self,
+        committed: CommittedRecovery,
+        replacement_recovery_key: &Secret,
+        replacement_installation_credential: &Secret,
+    ) -> Result<ProfileProvisioningOutcome, ProfileError> {
+        if !valid_touch_grass_id(&committed.touch_grass_id)
+            || committed.display_name.trim().is_empty()
+            || committed.display_name.chars().count() > 40
+        {
+            return Err(ProfileError::authority_rejected());
+        }
+        let authority = ActiveMacActivation {
+            activated_at: committed.active_mac_activated_at,
+            generation: committed.active_mac_generation,
+        };
+        self.custody
+            .write(SecretKind::RecoveryKey, replacement_recovery_key)?;
+        self.custody.write(
+            SecretKind::InstallationCredential,
+            replacement_installation_credential,
+        )?;
+        self.custody
+            .write(SecretKind::BetterAuthSession, &committed.session)?;
+        self.lifecycle
+            .recover_profile(&committed.display_name, &committed.touch_grass_id)
+            .map_err(ProfileError::message)?;
+        *self
+            .active_mac_authority
+            .lock()
+            .map_err(|_| ProfileError::message("Active Mac authority unavailable"))? =
+            Some(authority);
+        self.clear_recovery_staging()?;
+        Ok(ProfileProvisioningOutcome {
+            activation: authority,
+            profile: SanitizedProfileOutcome::Ready {
+                display_name: committed.display_name,
+                touch_grass_id: committed.touch_grass_id,
+            },
+        })
+    }
+
+    fn clear_recovery_staging(&self) -> Result<(), ProfileError> {
+        for kind in [
+            SecretKind::RecoveryAttemptId,
+            SecretKind::RecoveryPreparation,
+            SecretKind::ReplacementRecoveryKey,
+            SecretKind::ReplacementInstallationCredential,
+        ] {
+            self.custody.delete(kind)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn active_sync_credentials(
         &self,
     ) -> Result<Option<ActiveSyncCredentials>, ProfileError> {
@@ -654,6 +844,7 @@ impl ProfileCoordinator {
         let SignInOutcome::Authenticated(session) =
             self.transport.sign_in(touch_grass_id, &recovery_key)?
         else {
+            let _ = self.custody.delete(SecretKind::BetterAuthSession);
             return Err(ProfileError::authority_rejected());
         };
         self.custody
@@ -757,6 +948,13 @@ pub(crate) fn valid_touch_grass_id(value: &str) -> bool {
     })
 }
 
+fn valid_recovery_key(value: &str) -> bool {
+    value.len() == 48
+        && value
+            .bytes()
+            .all(|character| SECRET_ALPHABET.contains(&character))
+}
+
 #[derive(Clone)]
 pub(crate) struct HttpProfileTransport {
     auth_site_url: Option<&'static str>,
@@ -779,6 +977,21 @@ impl HttpProfileTransport {
             .auth_site_url
             .ok_or(ProfileError::message("profile service unavailable"))?;
         Ok(format!("{}{path}", base.trim_end_matches('/')))
+    }
+
+    fn decode_auth_response<T: DeserializeOwned>(
+        response: reqwest::blocking::Response,
+    ) -> Result<T, ProfileError> {
+        let mut body = Zeroizing::new(Vec::with_capacity(MAX_PROFILE_AUTH_RESPONSE_BYTES));
+        response
+            .take((MAX_PROFILE_AUTH_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut body)
+            .map_err(|_| ProfileError::message("Profile recovery unavailable"))?;
+        if body.len() > MAX_PROFILE_AUTH_RESPONSE_BYTES {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        serde_json::from_slice(body.as_slice())
+            .map_err(|_| ProfileError::message("Profile recovery unavailable"))
     }
 
     fn fetch_convex_token(
@@ -882,6 +1095,22 @@ struct SignInResponse {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepareRecoveryResponse {
+    recovery_proof: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitRecoveryResponse {
+    active_mac_activated_at: u64,
+    active_mac_generation: u64,
+    display_name: String,
+    token: String,
+    touch_grass_id: String,
+}
+
+#[derive(Deserialize)]
 struct ConvexTokenResponse {
     token: String,
 }
@@ -952,6 +1181,88 @@ impl ProfileTransport for HttpProfileTransport {
             .json::<SignInResponse>()
             .map_err(|_| ProfileError::message("Profile creation pending"))?;
         Ok(SignInOutcome::Authenticated(Secret::new(response.token)))
+    }
+
+    fn prepare_recovery(
+        &self,
+        touch_grass_id: &str,
+        recovery_key: &Secret,
+        attempt_id: &Secret,
+    ) -> Result<PreparedRecovery, ProfileError> {
+        let response = self
+            .client
+            .post(self.endpoint(PREPARE_RECOVERY_PATH)?)
+            .json(&serde_json::json!({
+                "attemptId": attempt_id.expose(),
+                "recoveryKey": recovery_key.expose(),
+                "touchGrassId": touch_grass_id,
+            }))
+            .send()
+            .map_err(|_| ProfileError::message("Profile recovery unavailable"))?;
+        if matches!(response.status().as_u16(), 400 | 401 | 403 | 404 | 429) {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        let response = response
+            .error_for_status()
+            .map_err(|_| ProfileError::message("Profile recovery unavailable"))?;
+        let response = Self::decode_auth_response::<PrepareRecoveryResponse>(response)?;
+        if response.recovery_proof.is_empty() || response.recovery_proof.len() > 1_024 {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        Ok(PreparedRecovery {
+            recovery_proof: Secret::new(response.recovery_proof),
+            touch_grass_id: touch_grass_id.to_owned(),
+        })
+    }
+
+    fn commit_recovery(
+        &self,
+        prepared: &PreparedRecovery,
+        current_recovery_key: &Secret,
+        new_recovery_key: &Secret,
+        installation_credential: &Secret,
+    ) -> Result<CommittedRecovery, ProfileError> {
+        let response = self
+            .client
+            .post(self.endpoint(COMMIT_RECOVERY_PATH)?)
+            .json(&serde_json::json!({
+                "currentRecoveryKey": current_recovery_key.expose(),
+                "installationCredential": installation_credential.expose(),
+                "newRecoveryKey": new_recovery_key.expose(),
+                "recoveryProof": prepared.recovery_proof.expose(),
+            }))
+            .send()
+            .map_err(|_| ProfileError::message("Profile recovery unavailable"))?;
+        if matches!(response.status().as_u16(), 400 | 401 | 403 | 404 | 429) {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        let response = response
+            .error_for_status()
+            .map_err(|_| ProfileError::message("Profile recovery unavailable"))?;
+        let response = Self::decode_auth_response::<CommitRecoveryResponse>(response)?;
+        if response.touch_grass_id != prepared.touch_grass_id
+            || !valid_touch_grass_id(&response.touch_grass_id)
+            || response.active_mac_generation < 2
+            || response.active_mac_generation > MAX_SAFE_INTEGER
+            || response.active_mac_activated_at > MAX_SAFE_INTEGER
+            || OffsetDateTime::from_unix_timestamp_nanos(
+                i128::from(response.active_mac_activated_at) * 1_000_000,
+            )
+            .is_err()
+            || response.display_name.trim().is_empty()
+            || response.display_name.chars().count() > 40
+            || response.token.is_empty()
+            || response.token.len() > MAX_PROFILE_JWT_BYTES
+        {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
+        Ok(CommittedRecovery {
+            active_mac_activated_at: response.active_mac_activated_at,
+            active_mac_generation: response.active_mac_generation,
+            display_name: response.display_name,
+            session: Secret::new(response.token),
+            touch_grass_id: response.touch_grass_id,
+        })
     }
 
     fn ensure_profile(
@@ -1062,6 +1373,7 @@ mod tests {
         sign_in_count: AtomicUsize,
         exchange_count: AtomicUsize,
         fixed_profile_mutation: AtomicBool,
+        fail_recovery_commit: AtomicBool,
         last_jwt: Mutex<Option<String>>,
         authority_touch_grass_id: Mutex<Option<String>>,
         private_sentinels: [Secret; 3],
@@ -1085,6 +1397,7 @@ mod tests {
                 sign_in_count: AtomicUsize::new(0),
                 exchange_count: AtomicUsize::new(0),
                 fixed_profile_mutation: AtomicBool::new(false),
+                fail_recovery_commit: AtomicBool::new(false),
                 last_jwt: Mutex::new(None),
                 authority_touch_grass_id: Mutex::new(None),
                 private_sentinels: [
@@ -1107,6 +1420,10 @@ mod tests {
 
         fn fail_next_attempt(&self) {
             self.fail_next.store(true, Ordering::SeqCst);
+        }
+
+        fn fail_next_recovery_commit(&self) {
+            self.fail_recovery_commit.store(true, Ordering::SeqCst);
         }
 
         fn exchange_count(&self) -> usize {
@@ -1165,6 +1482,37 @@ mod tests {
                 SignInOutcome::Authenticated(Secret::new(generate_secret(42)?))
             } else {
                 SignInOutcome::NoAccount
+            })
+        }
+
+        fn prepare_recovery(
+            &self,
+            touch_grass_id: &str,
+            _recovery_key: &Secret,
+            _attempt_id: &Secret,
+        ) -> Result<PreparedRecovery, ProfileError> {
+            Ok(PreparedRecovery {
+                recovery_proof: Secret::new(generate_secret(64)?),
+                touch_grass_id: touch_grass_id.to_owned(),
+            })
+        }
+
+        fn commit_recovery(
+            &self,
+            prepared: &PreparedRecovery,
+            _current_recovery_key: &Secret,
+            _new_recovery_key: &Secret,
+            _installation_credential: &Secret,
+        ) -> Result<CommittedRecovery, ProfileError> {
+            if self.fail_recovery_commit.swap(false, Ordering::SeqCst) {
+                return Err(ProfileError::message("Profile recovery unavailable"));
+            }
+            Ok(CommittedRecovery {
+                active_mac_activated_at: ACTIVE_MAC_ACTIVATED_AT + 1_000,
+                active_mac_generation: 2,
+                display_name: "Fabien".to_owned(),
+                session: Secret::new(generate_secret(42)?),
+                touch_grass_id: prepared.touch_grass_id.clone(),
             })
         }
 
@@ -1699,6 +2047,7 @@ mod tests {
 
         assert!(error.is_authority_rejected());
         assert!(restarted.active_mac_authority.lock().unwrap().is_none());
+        assert!(!fixture.custody.contains(SecretKind::BetterAuthSession));
     }
 
     #[test]
@@ -1794,5 +2143,96 @@ mod tests {
         for boundary in fixture.public_boundaries() {
             fixture.assert_public_boundary_is_sanitized(&boundary);
         }
+    }
+
+    #[test]
+    fn recovery_stages_replacement_secrets_before_commit_and_preserves_old_custody_on_failure() {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture.coordinator.retry_pending().unwrap();
+        let old_recovery_key = fixture
+            .custody
+            .read(SecretKind::RecoveryKey)
+            .unwrap()
+            .unwrap();
+        let old_installation_credential = fixture
+            .custody
+            .read(SecretKind::InstallationCredential)
+            .unwrap()
+            .unwrap();
+        fixture.transport.fail_next_recovery_commit();
+        let supplied_recovery_key = Secret::new("R".repeat(48));
+        let touch_grass_id = fixture.transport.touch_grass_id().to_owned();
+
+        assert!(
+            fixture
+                .coordinator
+                .recover_profile(&touch_grass_id, &supplied_recovery_key)
+                .is_err()
+        );
+        assert_eq!(
+            fixture
+                .custody
+                .read(SecretKind::RecoveryKey)
+                .unwrap()
+                .unwrap()
+                .expose(),
+            old_recovery_key.expose()
+        );
+        assert_eq!(
+            fixture
+                .custody
+                .read(SecretKind::InstallationCredential)
+                .unwrap()
+                .unwrap()
+                .expose(),
+            old_installation_credential.expose()
+        );
+        assert!(fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
+        assert!(
+            fixture
+                .custody
+                .contains(SecretKind::ReplacementInstallationCredential)
+        );
+        assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
+
+        let recovered = fixture
+            .coordinator
+            .recover_profile(&touch_grass_id, &supplied_recovery_key)
+            .unwrap();
+        assert_eq!(recovered.activation.generation, 2);
+        assert!(matches!(
+            recovered.profile,
+            SanitizedProfileOutcome::Ready { .. }
+        ));
+        assert!(!fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
+        assert!(
+            !fixture
+                .custody
+                .contains(SecretKind::ReplacementInstallationCredential)
+        );
+        assert!(!fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert_ne!(
+            fixture
+                .custody
+                .read(SecretKind::RecoveryKey)
+                .unwrap()
+                .unwrap()
+                .expose(),
+            old_recovery_key.expose()
+        );
+        assert_ne!(
+            fixture
+                .custody
+                .read(SecretKind::InstallationCredential)
+                .unwrap()
+                .unwrap()
+                .expose(),
+            old_installation_credential.expose()
+        );
+        assert_eq!(
+            fixture.lifecycle.bootstrap_state().profile_provisioning,
+            ProfileProvisioningStatus::Ready
+        );
     }
 }

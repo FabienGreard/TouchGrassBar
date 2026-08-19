@@ -33,6 +33,7 @@ export default defineSchema({
     publicId: v.string(),
     createdAt: v.number(),
     lastSyncedAt: v.optional(v.number()),
+    recoveryAttemptId: v.optional(v.id("profileRecoveryAttempts")),
   })
     .index("by_auth_subject", ["authSubject"])
     .index("by_public_id", ["publicId"])
@@ -47,6 +48,24 @@ export default defineSchema({
     revokedAt: v.optional(v.number()),
     usageBackfillCompletedAt: v.optional(v.union(v.number(), v.null())),
   }).index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
+
+  profileRecoveryAttempts: defineTable({
+    activatedAt: v.optional(v.number()),
+    attemptDigest: v.string(),
+    committedAt: v.optional(v.number()),
+    expectedDeviceId: v.id("devices"),
+    expectedGeneration: v.number(),
+    expiresAt: v.number(),
+    newDeviceId: v.optional(v.id("devices")),
+    status: v.union(
+      v.literal("prepared"),
+      v.literal("committing"),
+      v.literal("committed"),
+    ),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+  })
+    .index("by_attempt_digest", ["attemptDigest"])
+    .index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
 
   usageBuckets: defineTable({
     deviceId: v.id("devices"),

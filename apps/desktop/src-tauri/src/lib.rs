@@ -9,6 +9,8 @@ mod network;
 pub mod profile;
 mod providers;
 mod quota_headroom;
+#[cfg(target_os = "macos")]
+mod recovery_sheet;
 pub mod sanitized;
 pub mod updater;
 mod usage_sync;
@@ -369,6 +371,33 @@ impl ProfileRuntime {
 
     fn attempt_now(&self) -> Result<Option<SanitizedProfileOutcome>, String> {
         self.attempt()
+    }
+
+    fn recover_profile(
+        &self,
+        touch_grass_id: &str,
+        recovery_key: &profile::Secret,
+    ) -> Result<(), String> {
+        if self.online_gate.is_paused() {
+            return Err("Profile recovery unavailable".to_owned());
+        }
+        let Some(_attempt) = self.admission.try_start(None) else {
+            return Err("Profile recovery unavailable".to_owned());
+        };
+        let recovered = self
+            .coordinator
+            .lock()
+            .map_err(|_| "Profile recovery unavailable".to_owned())?
+            .recover_profile(touch_grass_id, recovery_key)
+            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        self.usage_sync
+            .install_authority(recovered.activation)
+            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        self.core
+            .set_profile_outcome(recovered.profile)
+            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        self.usage_sync.request();
+        Ok(())
     }
 
     fn reveal_recovery_key(
@@ -873,6 +902,26 @@ async fn complete_bootstrap(
     Ok(state)
 }
 
+#[tauri::command]
+async fn recover_profile(
+    window: WebviewWindow,
+    profile_runtime: State<'_, ProfileRuntime>,
+) -> Result<(), String> {
+    require_settings_or_onboarding(&window)?;
+    let Some(credentials) = recovery_sheet::request(&window)
+        .await
+        .map_err(str::to_owned)?
+    else {
+        return Ok(());
+    };
+    let runtime = profile_runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.recover_profile(&credentials.touch_grass_id, &credentials.recovery_key)
+    })
+    .await
+    .map_err(|_| "Profile recovery unavailable".to_owned())?
+}
+
 fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
     #[cfg(debug_assertions)]
     if dev_instance::DevelopmentInstance::from_environment().is_some() {
@@ -1100,6 +1149,7 @@ pub fn run() {
             open_source_repository,
             open_settings,
             request_refresh,
+            recover_profile,
             resize_panel,
             reveal_recovery_key,
             retry_update,

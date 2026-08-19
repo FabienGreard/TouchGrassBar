@@ -58,7 +58,7 @@ function syncPresentation(
   }
 
   const detailLabel = {
-    "authority-rejected": "Mac authorization is required",
+    "authority-rejected": "Active Mac transferred",
     offline: "Synchronization is offline",
     stale: "Synchronization is delayed",
     synced: undefined,

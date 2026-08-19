@@ -12,6 +12,10 @@ export const touchGrassAuthPolicy = {
     attempts: 5,
     windowMs: MINUTE,
   },
+  successfulProfileRecovery: {
+    attempts: 3,
+    windowMs: 60 * MINUTE,
+  },
 } as const;
 
 export const rateLimiter = new RateLimiter(components.rateLimiter, {
@@ -38,5 +42,11 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
     kind: "token bucket",
     period: MINUTE,
     rate: 60,
+  },
+  successfulProfileRecovery: {
+    kind: "fixed window",
+    period: touchGrassAuthPolicy.successfulProfileRecovery.windowMs,
+    rate: touchGrassAuthPolicy.successfulProfileRecovery.attempts,
+    start: 0,
   },
 });

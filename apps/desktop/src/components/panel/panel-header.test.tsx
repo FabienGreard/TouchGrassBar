@@ -1,4 +1,7 @@
-import { CONTRACT_VERSION, type SanitizedDesktopState } from "@touchgrass/contracts";
+import {
+  CONTRACT_VERSION,
+  type SanitizedDesktopState,
+} from "@touchgrass/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
@@ -104,13 +107,16 @@ describe("panel sync status", () => {
   test.each([
     ["stale", "Synchronization is delayed"],
     ["offline", "Synchronization is offline"],
-    ["authority-rejected", "Mac authorization is required"],
-  ] as const)("reports the loaded %s detail outside the headline", (status, detail) => {
-    const markup = renderHeader({ state: stateWithSync(status) });
+    ["authority-rejected", "Active Mac transferred"],
+  ] as const)(
+    "reports the loaded %s detail outside the headline",
+    (status, detail) => {
+      const markup = renderHeader({ state: stateWithSync(status) });
 
-    expect(markup).toContain('>Live<span class="sr-only">. ');
-    expect(markup).toContain(detail);
-  });
+      expect(markup).toContain('>Live<span class="sr-only">. ');
+      expect(markup).toContain(detail);
+    },
+  );
 
   test("keeps sync status independent from provider freshness", () => {
     const markup = renderToStaticMarkup(
@@ -142,7 +148,9 @@ describe("panel sync status", () => {
   });
 
   test("uses unavailable only when no state can load", () => {
-    expect(renderHeader({ error: true, state: null })).toContain(">Sync unavailable</small>");
+    expect(renderHeader({ error: true, state: null })).toContain(
+      ">Sync unavailable</small>",
+    );
     const loaded = renderHeader({
       error: true,
       state: stateWithSync("unavailable"),
@@ -172,7 +180,7 @@ describe("panel sync status", () => {
     const markup = renderHeader({ state });
 
     expect(markup).toContain(">Live<span");
-    expect(markup).toContain("Mac authorization is required");
+    expect(markup).toContain("Active Mac transferred");
     expect(markup).not.toContain("sentinel-");
   });
 });

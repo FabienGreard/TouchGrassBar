@@ -113,6 +113,12 @@ function OnboardingCoordinator({
           setSubmissionFailed(!completed);
         });
       }}
+      onStartRecovery={() => {
+        setSubmissionFailed(false);
+        void delivery.recoverProfile().then((recovered) => {
+          setSubmissionFailed(!recovered);
+        });
+      }}
       onStepChange={selectStep}
       providers={providerAccessPresentations(providers)}
       setupState={setupState}

@@ -4673,6 +4673,7 @@ name = "touchgrassbar"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "chrono-tz",
  "convex",

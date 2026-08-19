@@ -59,6 +59,7 @@ type SettingsScreenProps = {
   pendingDisplayName?: string | null | undefined;
   profile?: SettingsProfile | null | undefined;
   profileProvisioning?: ProfileProvisioningStatus | undefined;
+  recoveryFailed?: boolean | undefined;
   providers?: readonly SettingsProviderAccessPresentation[] | undefined;
   recoveryKey?: string | null | undefined;
   revealingRecoveryKey?: boolean | undefined;
@@ -90,6 +91,7 @@ function SettingsScreen({
   profile = null,
   profileProvisioning = "not-authorized",
   providers = [],
+  recoveryFailed = false,
   recoveryKey = null,
   revealingRecoveryKey = false,
   savingProviders = [],
@@ -203,6 +205,7 @@ function SettingsScreen({
               pendingDisplayName={pendingDisplayName}
               profile={profile}
               profileProvisioning={profileProvisioning}
+              recoveryFailed={recoveryFailed}
               recoveryKey={recoveryKey}
               revealingRecoveryKey={revealingRecoveryKey}
             />

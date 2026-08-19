@@ -33,6 +33,16 @@ function touchGrassPolicy(
   const action = () => actionContext(ctx);
 
   return {
+    claimRecoveryAttempt: (args) =>
+      action().runMutation(
+        internal.auth.profileRecovery.claimRecoveryAttempt,
+        args,
+      ),
+    commitRecoveryAttempt: (args) =>
+      action().runMutation(
+        internal.auth.profileRecovery.commitRecoveryAttempt,
+        args,
+      ),
     consumeSignupProof: (args) =>
       action().runMutation(internal.auth.touchgrassSignup.consumeSignupProof, args),
     finalizeCredentialAttempt: (args) =>
@@ -45,6 +55,11 @@ function touchGrassPolicy(
       return limit.ok;
     },
     requestIpAddress,
+    prepareRecoveryAttempt: (args) =>
+      action().runMutation(
+        internal.auth.profileRecovery.prepareRecoveryAttempt,
+        args,
+      ),
     reserveCredentialAttempt: (args) =>
       action().runMutation(internal.auth.credentialAttempts.reserveCredentialAttempt, args),
   };

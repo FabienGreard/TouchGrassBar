@@ -107,6 +107,15 @@ describe("settings screen", () => {
     expect(revealedMarkup).toMatch(/<button[^>]*data-variant="ghost"[^>]*>Hide<\/button>/);
   });
 
+  test("shows one bounded recovery failure message", () => {
+    const markup = renderToStaticMarkup(
+      <ProfileSettings recoveryFailed onStartRecovery={() => undefined} />,
+    );
+
+    expect(markup).toContain("Profile recovery failed. Try again.");
+    expect(markup).toContain('aria-live="polite"');
+  });
+
   test("presents Profile Pending without inventing a public ID", () => {
     const markup = renderToStaticMarkup(
       <ProfileSettings pendingDisplayName="Fabien" profileProvisioning="profile-pending" />,
