@@ -32,10 +32,7 @@ function developmentEntitlements({
   bundleIdentifier,
   teamIdentifier,
 }: DevelopmentEntitlementsInput) {
-  if (
-    bundleIdentifier !== "app.touchgrass.bar" &&
-    bundleIdentifier !== "app.touchgrass.bar.dev"
-  ) {
+  if (bundleIdentifier !== "app.touchgrass.bar" && bundleIdentifier !== "app.touchgrass.bar.dev") {
     throw new Error("The desktop bundle identifier is invalid.");
   }
   if (!/^[A-Z0-9]{10}$/.test(teamIdentifier)) {
@@ -61,19 +58,14 @@ function developmentEntitlements({
 
 function provisioningProfileAllows(
   profile: ProvisioningProfileMetadata,
-  {
-    bundleIdentifier,
-    teamIdentifier,
-  }: DevelopmentEntitlementsInput,
+  { bundleIdentifier, teamIdentifier }: DevelopmentEntitlementsInput,
 ) {
   const applicationIdentifier = `${teamIdentifier}.${bundleIdentifier}`;
   const profileTeams = profile.TeamIdentifier;
   const platforms = profile.Platform;
   const keychainGroups = profile.Entitlements?.["keychain-access-groups"];
   const expiration =
-    typeof profile.ExpirationDate === "string"
-      ? Date.parse(profile.ExpirationDate)
-      : Number.NaN;
+    typeof profile.ExpirationDate === "string" ? Date.parse(profile.ExpirationDate) : Number.NaN;
   return (
     Number.isFinite(expiration) &&
     expiration > Date.now() &&
@@ -81,12 +73,10 @@ function provisioningProfileAllows(
     profileTeams.includes(teamIdentifier) &&
     Array.isArray(platforms) &&
     platforms.includes("OSX") &&
-    profile.Entitlements?.["com.apple.application-identifier"] ===
-      applicationIdentifier &&
+    profile.Entitlements?.["com.apple.application-identifier"] === applicationIdentifier &&
     Array.isArray(keychainGroups) &&
     keychainGroups.some(
-      (group) =>
-        group === applicationIdentifier || group === `${teamIdentifier}.*`,
+      (group) => group === applicationIdentifier || group === `${teamIdentifier}.*`,
     )
   );
 }

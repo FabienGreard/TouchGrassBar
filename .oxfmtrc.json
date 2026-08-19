@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": [
+    ".agents/**",
+    "packages/backend/convex/_generated/**",
+    "packages/contracts/src/native.generated.ts"
+  ],
+  "printWidth": 100,
+  "sortTailwindcss": {
+    "attributes": ["viewportClassName"],
+    "functions": ["clsx", "cn", "cva"],
+    "stylesheet": "./packages/ui/src/theme.css"
+  }
+}

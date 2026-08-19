@@ -1,23 +1,13 @@
 #!/usr/bin/env bun
 
 import { execFileSync, spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  existsSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
 import { resolveDevInstance } from "../apps/desktop/src/dev/dev-instance";
-import {
-  localEnvironmentPath,
-  workspaceRoot,
-} from "./development-environment";
+import { localEnvironmentPath, workspaceRoot } from "./development-environment";
 import {
   activeDevelopmentRunnerProcessId,
   developmentRunnerPath,
@@ -30,14 +20,8 @@ type CleanupTarget = {
 };
 
 const argumentsSet = new Set(process.argv.slice(2));
-const supportedArguments = new Set([
-  "--bundle",
-  "--dry-run",
-  "--release",
-]);
-const unknownArguments = [...argumentsSet].filter(
-  (argument) => !supportedArguments.has(argument),
-);
+const supportedArguments = new Set(["--bundle", "--dry-run", "--release"]);
+const unknownArguments = [...argumentsSet].filter((argument) => !supportedArguments.has(argument));
 if (unknownArguments.length > 0) {
   throw new Error(`Unknown argument(s): ${unknownArguments.join(", ")}`);
 }
@@ -105,12 +89,7 @@ function desktopTargets(identifier: string): CleanupTarget[] {
     },
     {
       description: "desktop saved window state",
-      path: join(
-        userHome,
-        "Library",
-        "Saved Application State",
-        `${identifier}.savedState`,
-      ),
+      path: join(userHome, "Library", "Saved Application State", `${identifier}.savedState`),
     },
   ];
 }
@@ -149,14 +128,7 @@ function processIdsForPaths(paths: string[]) {
 function releaseProcessIds() {
   return processIdsForPaths([
     "/Applications/TouchGrassBar.app/Contents/MacOS/touchgrassbar",
-    join(
-      userHome,
-      "Applications",
-      "TouchGrassBar.app",
-      "Contents",
-      "MacOS",
-      "touchgrassbar",
-    ),
+    join(userHome, "Applications", "TouchGrassBar.app", "Contents", "MacOS", "touchgrassbar"),
     join(
       workspaceRoot,
       "apps",
@@ -176,16 +148,7 @@ function releaseProcessIds() {
 
 function developmentBundleProcessIds() {
   return processIdsForPaths([
-    join(
-      workspaceRoot,
-      "apps",
-      "desktop",
-      "src-tauri",
-      "target",
-      "release",
-      "bundle",
-      "macos",
-    ),
+    join(workspaceRoot, "apps", "desktop", "src-tauri", "target", "release", "bundle", "macos"),
   ]);
 }
 
@@ -196,10 +159,7 @@ async function stopApp(processIds: number[], description: string) {
   }
   for (const processId of processIds) process.kill(processId, "SIGTERM");
   const startedAt = Date.now();
-  while (
-    processIds.some(processIsRunning) &&
-    Date.now() - startedAt < 5_000
-  ) {
+  while (processIds.some(processIsRunning) && Date.now() - startedAt < 5_000) {
     await Bun.sleep(100);
   }
   if (processIds.some(processIsRunning)) {
@@ -242,9 +202,7 @@ function resetKeychain(service: string) {
     }
   }
   console.log(
-    dryRun
-      ? "[dry-run] TouchGrassBar Keychain items"
-      : "Removed TouchGrassBar Keychain items.",
+    dryRun ? "[dry-run] TouchGrassBar Keychain items" : "Removed TouchGrassBar Keychain items.",
   );
 }
 
@@ -281,9 +239,7 @@ function clearConvexSelection() {
   const source = readFileSync(localEnvironmentPath, "utf8")
     .split(/\r?\n/)
     .filter((line) => {
-      const name = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(
-        line,
-      )?.[1];
+      const name = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(line)?.[1];
       return !name || !managedNames.has(name);
     })
     .join("\n")

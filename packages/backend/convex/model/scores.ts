@@ -79,8 +79,7 @@ export function calculateScore(
     costMicros = checkedAdd(costMicros, cost.micros, "API-equivalent cost");
     pricingBases.add(cost.pricingBasis);
     quality = weakestQuality(quality, cost.quality);
-    const coveragePercent =
-      cost.quality === "modeled" ? cost.coveragePercent : 100;
+    const coveragePercent = cost.quality === "modeled" ? cost.coveragePercent : 100;
     if (coveragePercent === null) {
       throw new Error("Modeled cost is missing its coverage");
     }
@@ -126,13 +125,9 @@ async function upsertPublicUsage(
 ) {
   const publicUsages = await ctx.db
     .query("publicUsages")
-    .withIndex("by_tokenmaxxer_id", (q) =>
-      q.eq("tokenmaxxerId", tokenmaxxer._id),
-    )
+    .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxer._id))
     .take(20);
-  const existing = publicUsages.find(
-    (row) => row.scope === scope && row.windowDays === windowDays,
-  );
+  const existing = publicUsages.find((row) => row.scope === scope && row.windowDays === windowDays);
   const namespace = boardKey(scope, windowDays);
   const values = {
     boardKey: namespace,
@@ -216,14 +211,12 @@ export async function recomputeScores(
         .map((provider) =>
           ctx.db
             .query("userDailyUsage")
-            .withIndex(
-              "by_tokenmaxxer_id_and_provider_and_ranking_day",
-              (q) =>
-                q
-                  .eq("tokenmaxxerId", tokenmaxxerId)
-                  .eq("provider", provider)
-                  .gte("rankingDay", fromDay)
-                  .lte("rankingDay", asOfDay),
+            .withIndex("by_tokenmaxxer_id_and_provider_and_ranking_day", (q) =>
+              q
+                .eq("tokenmaxxerId", tokenmaxxerId)
+                .eq("provider", provider)
+                .gte("rankingDay", fromDay)
+                .lte("rankingDay", asOfDay),
             )
             .take(MAX_DAYS_PER_PROVIDER),
         ),

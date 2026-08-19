@@ -39,8 +39,7 @@ export const NeedsAccess: Story = {
         Check again
       </Button>
     ),
-    description:
-      "Claude is installed, but TouchGrassBar cannot read its local state yet.",
+    description: "Claude is installed, but TouchGrassBar cannot read its local state yet.",
     label: "Claude",
     provider: "claude",
     status: "Needs access",
@@ -55,8 +54,7 @@ export const NotInstalled: Story = {
         Check again
       </Button>
     ),
-    description:
-      "Claude was not found in Applications or your command-line tools.",
+    description: "Claude was not found in Applications or your command-line tools.",
     label: "Claude",
     provider: "claude",
     status: "Not installed",

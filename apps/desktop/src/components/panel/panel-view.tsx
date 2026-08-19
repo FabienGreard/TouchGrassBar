@@ -15,10 +15,7 @@ import {
 import { LoadingPanel } from "@/components/panel/loading-panel";
 import { PanelHeader } from "@/components/panel/panel-header";
 import { ProviderCard } from "@/components/panel/provider-card";
-import {
-  UsageOverview,
-  type UsagePresentation,
-} from "@/components/panel/usage-overview";
+import { UsageOverview, type UsagePresentation } from "@/components/panel/usage-overview";
 import {
   defaultDoomerboardQuery,
   type DoomerboardQuery,
@@ -26,9 +23,7 @@ import {
 
 function updateActionLabel(updateState: UpdateState | null) {
   if (updateState?.update.status === "failed") {
-    return updateState.onlineFeaturesPaused
-      ? "Retry required update"
-      : "Retry update";
+    return updateState.onlineFeaturesPaused ? "Retry required update" : "Retry update";
   }
   if (updateState?.update.status === "available") {
     return updateState.onlineFeaturesPaused
@@ -46,9 +41,7 @@ type PanelViewProps = {
   error: boolean;
   nativeGlass?: boolean;
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
-  onDoomerboardSelectionChange?:
-    | ((selection: DoomerboardQuery) => void)
-    | undefined;
+  onDoomerboardSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
   onRefresh: () => void;
   onSettings: () => void;
   onUpdate?: (() => void) | undefined;
@@ -104,10 +97,7 @@ function PanelView({
           <>
             <div>
               {visibleProviders.map((provider) => (
-                <ProviderCard
-                  key={provider.provider}
-                  presentation={provider}
-                />
+                <ProviderCard key={provider.provider} presentation={provider} />
               ))}
             </div>
             <UsageOverview

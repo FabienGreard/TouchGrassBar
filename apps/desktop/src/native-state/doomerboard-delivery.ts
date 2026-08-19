@@ -1,7 +1,4 @@
-import {
-  doomerboardViewSchema,
-  type DoomerboardView,
-} from "@touchgrass/contracts";
+import { doomerboardViewSchema, type DoomerboardView } from "@touchgrass/contracts";
 
 type DoomerboardPortOutcome<Value> =
   | { ok: true; value: Value }
@@ -21,9 +18,7 @@ const defaultDoomerboardQuery: DoomerboardQuery = {
 
 type DoomerboardPort = {
   read: (query: DoomerboardQuery) => Promise<DoomerboardPortOutcome<unknown>>;
-  subscribe: (
-    receive: () => void,
-  ) => Promise<DoomerboardPortOutcome<() => void>>;
+  subscribe: (receive: () => void) => Promise<DoomerboardPortOutcome<() => void>>;
 };
 
 type DoomerboardDeliverySnapshot = {
@@ -106,9 +101,7 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
     getSnapshot: () => current,
     read,
     select: (nextQuery: DoomerboardQuery) =>
-      sameQuery(query, nextQuery)
-        ? (readInFlight ?? Promise.resolve())
-        : read(nextQuery),
+      sameQuery(query, nextQuery) ? (readInFlight ?? Promise.resolve()) : read(nextQuery),
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);

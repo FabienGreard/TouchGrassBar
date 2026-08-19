@@ -3,10 +3,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { cn } from "#lib/utils";
 import { ProviderMark } from "./provider-mark";
 
-type ProviderConnectionCardProps = Omit<
-  ComponentProps<"article">,
-  "children"
-> & {
+type ProviderConnectionCardProps = Omit<ComponentProps<"article">, "children"> & {
   action?: ReactNode;
   description: ReactNode;
   detail?: ReactNode;
@@ -27,11 +24,9 @@ function StatusPill({
     <small
       className={cn(
         "inline-flex w-fit items-center rounded-full border px-2 py-0 text-[8px] leading-4 font-semibold whitespace-nowrap",
-        tone === "ready" &&
-          "border-board-tab-active-border bg-action text-accent-foreground",
+        tone === "ready" && "border-board-tab-active-border bg-action text-accent-foreground",
         tone === "attention" && "border-[#d7bd83] bg-[#fff4d9] text-[#664914]",
-        tone === "neutral" &&
-          "border-sheet-line bg-[#e2e4eb] text-[#484c59] shadow-surface",
+        tone === "neutral" && "border-sheet-line bg-[#e2e4eb] text-[#484c59] shadow-surface",
       )}
       data-slot="status-pill"
     >
@@ -73,9 +68,7 @@ function ProviderConnectionCard({
         </small>
         {detail}
         {action === undefined ? null : (
-          <div className="mt-auto flex items-center justify-end pt-1">
-            {action}
-          </div>
+          <div className="mt-auto flex items-center justify-end pt-1">{action}</div>
         )}
       </div>
     </article>

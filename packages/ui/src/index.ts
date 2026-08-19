@@ -23,10 +23,7 @@ export type { DialogContentProps } from "./components/dialog";
 export { DesktopAppIcon } from "./components/desktop-app-icon";
 export type { DesktopAppIconProps } from "./components/desktop-app-icon";
 export { DoomerboardRankings } from "./components/doomerboard-rankings";
-export type {
-  DoomerboardRankingsProps,
-  DoomerboardRow,
-} from "./components/doomerboard-rankings";
+export type { DoomerboardRankingsProps, DoomerboardRow } from "./components/doomerboard-rankings";
 export { DoomerboardToolbar } from "./components/doomerboard-toolbar";
 export type {
   DoomerboardAudience,
@@ -75,19 +72,13 @@ export type { ProviderConnectionCardProps } from "./components/provider-connecti
 export { ProviderMark } from "./components/provider-mark";
 export { QuotaProgress } from "./components/quota-progress";
 export { ScrollArea, ScrollBar } from "./components/scroll-area";
-export {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "./components/segmented-control";
+export { SegmentedControl, SegmentedControlItem } from "./components/segmented-control";
 export { Switch } from "./components/switch";
 export { SettingsToggleRow } from "./components/settings-toggle-row";
 export { UpdatesSettings } from "./components/updates-settings";
 export type { UpdatesSettingsProps } from "./components/updates-settings";
 export { UsageOverview } from "./components/usage-overview";
-export type {
-  UsageMetricPresentation,
-  UsagePresentation,
-} from "./components/usage-overview";
+export type { UsageMetricPresentation, UsagePresentation } from "./components/usage-overview";
 export { getMetricTrendTone } from "./lib/metric";
 export type { MetricCardTrendTone } from "./lib/metric";
 export {

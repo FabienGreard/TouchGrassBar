@@ -23,13 +23,9 @@ describe("release governance", () => {
 
     expect(uses.length).toBeGreaterThan(0);
     expect(
-      uses.every((match) =>
-        /^(?:stable|v[0-9]+(?:\.[0-9]+){0,2})$/.test(match[2] ?? ""),
-      ),
+      uses.every((match) => /^(?:stable|v[0-9]+(?:\.[0-9]+){0,2})$/.test(match[2] ?? "")),
     ).toBe(true);
-    expect(release.indexOf("validate-source")).toBeLessThan(
-      release.indexOf("name: macos-release"),
-    );
+    expect(release.indexOf("validate-source")).toBeLessThan(release.indexOf("name: macos-release"));
     expect(release).toContain("$RUNNER_TEMP/touchgrass-release-private");
     expect(release).toContain("if: ${{ always() }}");
     expect(release).toContain("--draft");
@@ -38,12 +34,14 @@ describe("release governance", () => {
   });
 
   test("keeps the exact policy and release-only updater settings", () => {
-    const governance = JSON.parse(
-      read(".github", "release-governance.json"),
-    ) as Record<string, any>;
-    const config = JSON.parse(
-      read("apps", "desktop", "src-tauri", "tauri.conf.json"),
-    ) as Record<string, any>;
+    const governance = JSON.parse(read(".github", "release-governance.json")) as Record<
+      string,
+      any
+    >;
+    const config = JSON.parse(read("apps", "desktop", "src-tauri", "tauri.conf.json")) as Record<
+      string,
+      any
+    >;
     const productionScript = read("scripts", "run-desktop-prod.ts");
     const releaseWorkflow = read(".github", "workflows", "release.yml");
 
@@ -53,9 +51,7 @@ describe("release governance", () => {
       secrets: releaseSecrets,
       variables: releaseEnvironmentVariables,
     });
-    expect(governance.environments["public-release"].required_reviewers).toEqual([
-      "FabienGreard",
-    ]);
+    expect(governance.environments["public-release"].required_reviewers).toEqual(["FabienGreard"]);
     expect(governance.actions).toMatchObject({
       allowed_actions: "selected",
       sha_pinning_required: false,

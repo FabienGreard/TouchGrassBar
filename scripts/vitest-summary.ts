@@ -22,9 +22,7 @@ const suiteDetails: Record<string, { name: string; order: number }> = {
 };
 
 function reportLine(markdown: string, label: string): string | undefined {
-  return markdown
-    .split("\n")
-    .find((line) => line.includes(`**${label}**`));
+  return markdown.split("\n").find((line) => line.includes(`**${label}**`));
 }
 
 function count(line: string | undefined, resultPattern: string): number {
@@ -41,10 +39,7 @@ function counts(line: string): Counts {
   };
 }
 
-export function parseVitestSummary(
-  id: string,
-  markdown: string,
-): VitestSuiteSummary | null {
+export function parseVitestSummary(id: string, markdown: string): VitestSuiteSummary | null {
   const fileLine = reportLine(markdown, "Test Files");
   const testLine = reportLine(markdown, "Test Results");
   if (!fileLine || !testLine) return null;
@@ -68,22 +63,16 @@ function passed(countsValue: Counts): string {
   return `${countsValue.passed} / ${countsValue.total}`;
 }
 
-export function renderVitestSummary(
-  summaries: VitestSuiteSummary[],
-): string {
+export function renderVitestSummary(summaries: VitestSuiteSummary[]): string {
   if (summaries.length === 0) {
-    return [
-      "# Test report",
-      "",
-      "⚠️ No Vitest report was produced. See the job log.",
-      "",
-    ].join("\n");
+    return ["# Test report", "", "⚠️ No Vitest report was produced. See the job log.", ""].join(
+      "\n",
+    );
   }
 
   const ordered = [...summaries].sort(
     (left, right) =>
-      (suiteDetails[left.id]?.order ?? 1_000) -
-      (suiteDetails[right.id]?.order ?? 1_000),
+      (suiteDetails[left.id]?.order ?? 1_000) - (suiteDetails[right.id]?.order ?? 1_000),
   );
   const totals = ordered.reduce(
     (current, summary) => ({

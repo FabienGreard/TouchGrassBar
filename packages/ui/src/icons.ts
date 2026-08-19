@@ -11,11 +11,7 @@ import {
   Settings01Icon,
   UserAdd01Icon,
 } from "@hugeicons/core-free-icons";
-import {
-  HugeiconsIcon,
-  type HugeiconsIconProps,
-  type IconSvgElement,
-} from "@hugeicons/react";
+import { HugeiconsIcon, type HugeiconsIconProps, type IconSvgElement } from "@hugeicons/react";
 import { createElement, forwardRef } from "react";
 
 import { cn } from "./lib/utils";
@@ -71,30 +67,15 @@ function createIcon(icon: IconSvgElement, displayName: string) {
 }
 
 const CheckIcon: TouchGrassIcon = createIcon(HugeCheckIcon, "CheckIcon");
-const ArrowExpand01Icon: TouchGrassIcon = createIcon(
-  HugeArrowExpand01Icon,
-  "ArrowExpand01Icon",
-);
-const ArrowShrink02Icon: TouchGrassIcon = createIcon(
-  HugeArrowShrink02Icon,
-  "ArrowShrink02Icon",
-);
-const DownloadIcon: TouchGrassIcon = createIcon(
-  HugeDownloadIcon,
-  "DownloadIcon",
-);
-const GripVerticalIcon: TouchGrassIcon = createIcon(
-  HugeGripVerticalIcon,
-  "GripVerticalIcon",
-);
+const ArrowExpand01Icon: TouchGrassIcon = createIcon(HugeArrowExpand01Icon, "ArrowExpand01Icon");
+const ArrowShrink02Icon: TouchGrassIcon = createIcon(HugeArrowShrink02Icon, "ArrowShrink02Icon");
+const DownloadIcon: TouchGrassIcon = createIcon(HugeDownloadIcon, "DownloadIcon");
+const GripVerticalIcon: TouchGrassIcon = createIcon(HugeGripVerticalIcon, "GripVerticalIcon");
 const ProviderStatusIcon: TouchGrassIcon = createIcon(
   MoreHorizontalCircle01Icon,
   "ProviderStatusIcon",
 );
-const EllipsisIcon: TouchGrassIcon = createIcon(
-  MoreHorizontalIcon,
-  "EllipsisIcon",
-);
+const EllipsisIcon: TouchGrassIcon = createIcon(MoreHorizontalIcon, "EllipsisIcon");
 const RefreshIcon: TouchGrassIcon = createIcon(HugeRefreshIcon, "RefreshIcon");
 const SettingsIcon: TouchGrassIcon = createIcon(Settings01Icon, "SettingsIcon");
 const RankingIcon: TouchGrassIcon = createIcon(HugeRankingIcon, "RankingIcon");

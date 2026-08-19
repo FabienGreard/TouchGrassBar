@@ -26,8 +26,8 @@ describe("Recovery Key input", () => {
   test("clears on resize and captured scroll until cleanup", () => {
     const listeners = new Map<string, () => void>();
     const target = {
-      addEventListener: vi.fn(
-        (event: string, listener: () => void) => listeners.set(event, listener),
+      addEventListener: vi.fn((event: string, listener: () => void) =>
+        listeners.set(event, listener),
       ),
       removeEventListener: vi.fn((event: string) => listeners.delete(event)),
     } as unknown as Pick<Window, "addEventListener" | "removeEventListener">;
@@ -40,10 +40,6 @@ describe("Recovery Key input", () => {
     expect(clear).toHaveBeenCalledTimes(2);
     expect(target.addEventListener).toHaveBeenCalledWith("scroll", clear, true);
     cleanup();
-    expect(target.removeEventListener).toHaveBeenCalledWith(
-      "scroll",
-      clear,
-      true,
-    );
+    expect(target.removeEventListener).toHaveBeenCalledWith("scroll", clear, true);
   });
 });

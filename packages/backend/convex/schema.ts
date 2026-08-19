@@ -24,10 +24,7 @@ export default defineSchema({
     touchGrassIdKey: v.string(),
   })
     .index("by_ip_key_and_expires_at", ["ipKey", "expiresAt"])
-    .index("by_touch_grass_id_key_and_expires_at", [
-      "touchGrassIdKey",
-      "expiresAt",
-    ]),
+    .index("by_touch_grass_id_key_and_expires_at", ["touchGrassIdKey", "expiresAt"]),
 
   tokenmaxxers: defineTable({
     activeDeviceId: v.optional(v.id("devices")),
@@ -69,11 +66,7 @@ export default defineSchema({
     syncedAt: v.number(),
   })
     .index("by_device_id", ["deviceId"])
-    .index("by_device_id_and_provider_and_ranking_day", [
-      "deviceId",
-      "provider",
-      "rankingDay",
-    ])
+    .index("by_device_id_and_provider_and_ranking_day", ["deviceId", "provider", "rankingDay"])
     .index("by_tokenmaxxer_id_and_provider_and_ranking_day", [
       "tokenmaxxerId",
       "provider",
@@ -145,11 +138,7 @@ export default defineSchema({
   })
     .index("by_tokenmaxxer_id", ["tokenmaxxerId"])
     .index("by_board_key", ["boardKey"])
-    .index("by_tokenmaxxer_id_and_scope_and_window_days", [
-      "tokenmaxxerId",
-      "scope",
-      "windowDays",
-    ]),
+    .index("by_tokenmaxxer_id_and_scope_and_window_days", ["tokenmaxxerId", "scope", "windowDays"]),
 
   addedTokenmaxxers: defineTable({
     ownerId: v.id("tokenmaxxers"),

@@ -25,13 +25,9 @@ type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
   revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
-  selectSection: (
-    section: SettingsSection,
-  ) => Promise<SettingsPortOutcome<void>>;
+  selectSection: (section: SettingsSection) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
-  updateDisplayName: (
-    displayName: string,
-  ) => Promise<SettingsPortOutcome<unknown>>;
+  updateDisplayName: (displayName: string) => Promise<SettingsPortOutcome<unknown>>;
   setProviderEnabled: (
     provider: CodingProvider,
     enabled: boolean,
@@ -39,9 +35,7 @@ type SettingsPort = {
   subscribeNavigation: (
     receive: (payload: unknown) => void,
   ) => Promise<SettingsPortOutcome<() => void>>;
-  subscribeRecoveryClear: (
-    receive: () => void,
-  ) => Promise<SettingsPortOutcome<() => void>>;
+  subscribeRecoveryClear: (receive: () => void) => Promise<SettingsPortOutcome<() => void>>;
 };
 
 type SettingsDeliverySnapshot = {
@@ -72,10 +66,7 @@ function createSettingsDelivery(port: SettingsPort) {
   let optimisticDisplayName: string | null = null;
   let providerConfirmationRevision = 0;
   const providerConfirmationRevisions = new Map<CodingProvider, number>();
-  const providerSavesInFlight = new Map<
-    CodingProvider,
-    Promise<boolean>
-  >();
+  const providerSavesInFlight = new Map<CodingProvider, Promise<boolean>>();
   let sectionSelection = Promise.resolve(true);
   let sectionRevision = 0;
   let selectedSection: SettingsSection | null = null;
@@ -110,8 +101,7 @@ function createSettingsDelivery(port: SettingsPort) {
     const section = selectedSection ?? parsed.data.section;
     selectedSection = section;
     const providers = parsed.data.providers.map((provider) => {
-      const confirmationRevision =
-        providerConfirmationRevisions.get(provider.provider) ?? 0;
+      const confirmationRevision = providerConfirmationRevisions.get(provider.provider) ?? 0;
       if (confirmationRevision <= observedProviderRevision) return provider;
       const lastConfirmed = current.snapshot?.providers.find(
         (item) => item.provider === provider.provider,
@@ -122,30 +112,20 @@ function createSettingsDelivery(port: SettingsPort) {
     });
     const snapshot = {
       ...parsed.data,
-      ...(optimisticDisplayName === null
-        ? {}
-        : { displayName: optimisticDisplayName }),
+      ...(optimisticDisplayName === null ? {} : { displayName: optimisticDisplayName }),
       providers,
-      recoveryKeySuffix: recoveryClearAvailable
-        ? parsed.data.recoveryKeySuffix
-        : null,
+      recoveryKeySuffix: recoveryClearAvailable ? parsed.data.recoveryKeySuffix : null,
       section,
     };
     const previousRecoveryContext =
       current.snapshot?.profileProvisioning === "ready"
-        ? [
-            current.snapshot.touchGrassId,
-            current.snapshot.recoveryKeySuffix,
-          ].join(":")
+        ? [current.snapshot.touchGrassId, current.snapshot.recoveryKeySuffix].join(":")
         : null;
     const nextRecoveryContext =
       snapshot.profileProvisioning === "ready"
         ? [snapshot.touchGrassId, snapshot.recoveryKeySuffix].join(":")
         : null;
-    if (
-      current.snapshot !== null &&
-      previousRecoveryContext !== nextRecoveryContext
-    ) {
+    if (current.snapshot !== null && previousRecoveryContext !== nextRecoveryContext) {
       clearRecoveryKey();
     }
     publish({
@@ -159,9 +139,7 @@ function createSettingsDelivery(port: SettingsPort) {
     return true;
   };
 
-  const publishDisplayName = (
-    displayName: SettingsState["displayName"],
-  ) => {
+  const publishDisplayName = (displayName: SettingsState["displayName"]) => {
     if (current.snapshot === null) return;
     const snapshot = { ...current.snapshot };
     if (displayName === undefined) {
@@ -260,8 +238,7 @@ function createSettingsDelivery(port: SettingsPort) {
           return false;
         }
         const outcome = await port.revealRecoveryKey();
-        const recoveryKey =
-          outcome.ok && revision === recoveryRevision ? outcome.value : null;
+        const recoveryKey = outcome.ok && revision === recoveryRevision ? outcome.value : null;
         publish({
           ...current,
           recoveryKey,
@@ -363,10 +340,7 @@ function createSettingsDelivery(port: SettingsPort) {
           return false;
         }
         providerConfirmationRevision += 1;
-        providerConfirmationRevisions.set(
-          provider,
-          providerConfirmationRevision,
-        );
+        providerConfirmationRevisions.set(provider, providerConfirmationRevision);
         if (current.snapshot === null) {
           return accept(parsed.data);
         }
@@ -386,9 +360,7 @@ function createSettingsDelivery(port: SettingsPort) {
         if (current.savingProviders.includes(provider)) {
           publish({
             ...current,
-            savingProviders: current.savingProviders.filter(
-              (item) => item !== provider,
-            ),
+            savingProviders: current.savingProviders.filter((item) => item !== provider),
           });
         }
       });
@@ -403,9 +375,4 @@ function createSettingsDelivery(port: SettingsPort) {
 }
 
 export { createSettingsDelivery };
-export type {
-  SettingsDeliverySnapshot,
-  SettingsPort,
-  SettingsPortFaultCode,
-  SettingsPortOutcome,
-};
+export type { SettingsDeliverySnapshot, SettingsPort, SettingsPortFaultCode, SettingsPortOutcome };

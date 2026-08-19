@@ -5,13 +5,7 @@ import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const workspaceRoot = resolve(import.meta.dir, "..");
-const manifestPath = join(
-  workspaceRoot,
-  "apps",
-  "desktop",
-  "src-tauri",
-  "Cargo.toml",
-);
+const manifestPath = join(workspaceRoot, "apps", "desktop", "src-tauri", "Cargo.toml");
 const probeDirectory = join(
   workspaceRoot,
   "apps",
@@ -26,19 +20,10 @@ function main() {
     throw new Error("Use: bun debug:claude-quota");
   }
   mkdirSync(probeDirectory, { recursive: true });
-  console.error(
-    "[TouchGrassBar][claude-quota-report] debug_source=claude-cli snapshot=direct",
-  );
+  console.error("[TouchGrassBar][claude-quota-report] debug_source=claude-cli snapshot=direct");
   const result = spawnSync(
     "cargo",
-    [
-      "run",
-      "--quiet",
-      "--manifest-path",
-      manifestPath,
-      "--bin",
-      "debug_claude_quota",
-    ],
+    ["run", "--quiet", "--manifest-path", manifestPath, "--bin", "debug_claude_quota"],
     {
       cwd: workspaceRoot,
       env: {

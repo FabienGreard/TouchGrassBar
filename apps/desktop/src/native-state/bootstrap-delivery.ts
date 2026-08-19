@@ -1,7 +1,4 @@
-import {
-  bootstrapStateSchema,
-  type BootstrapState,
-} from "@touchgrass/contracts";
+import { bootstrapStateSchema, type BootstrapState } from "@touchgrass/contracts";
 
 type BootstrapPortFaultCode =
   | "bootstrap-completion-unavailable"

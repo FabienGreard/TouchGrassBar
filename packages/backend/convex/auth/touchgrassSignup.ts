@@ -1,10 +1,5 @@
 import type { BetterAuthPlugin } from "better-auth";
-import {
-  APIError,
-  createAuthEndpoint,
-  createAuthMiddleware,
-  isAPIError,
-} from "better-auth/api";
+import { APIError, createAuthEndpoint, createAuthMiddleware, isAPIError } from "better-auth/api";
 import { v } from "convex/values";
 
 import { internal } from "../_generated/api";
@@ -29,10 +24,7 @@ type FailedCredentialKeys = {
 };
 
 export type TouchGrassPolicyPort = {
-  consumeSignupProof: (args: {
-    nonceDigest: string;
-    touchGrassId: string;
-  }) => Promise<boolean>;
+  consumeSignupProof: (args: { nonceDigest: string; touchGrassId: string }) => Promise<boolean>;
   finalizeCredentialAttempt: (args: {
     outcome: "failure" | "success";
     reservationId: Id<"recoveryKeyAttemptReservations">;
@@ -52,10 +44,7 @@ export type TouchGrassPolicyPort = {
 function bytesToBase64Url(bytes: Uint8Array) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/, "");
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
 function base64UrlToBytes(value: string) {
@@ -63,9 +52,7 @@ function base64UrlToBytes(value: string) {
   const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   try {
-    return Uint8Array.from(atob(padded), (character) =>
-      character.charCodeAt(0),
-    );
+    return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
   } catch {
     return null;
   }
@@ -97,10 +84,7 @@ async function hmacKey(secret: string) {
 }
 
 async function sha256Digest(value: string) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return bytesToBase64Url(new Uint8Array(digest));
 }
 
@@ -118,9 +102,7 @@ async function opaqueLimitKey(
 }
 
 async function signPreparation(secret: string, payload: PreparationPayload) {
-  const encodedPayload = bytesToBase64Url(
-    new TextEncoder().encode(JSON.stringify(payload)),
-  );
+  const encodedPayload = bytesToBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
   const signature = await crypto.subtle.sign(
     "HMAC",
     await hmacKey(secret),
@@ -129,11 +111,7 @@ async function signPreparation(secret: string, payload: PreparationPayload) {
   return `${encodedPayload}.${bytesToBase64Url(new Uint8Array(signature))}`;
 }
 
-async function verifyPreparation(
-  secret: string,
-  proof: string,
-  now: number,
-) {
+async function verifyPreparation(secret: string, proof: string, now: number) {
   if (proof.length > 1_024) return null;
   const [encodedPayload, encodedSignature, extra] = proof.split(".");
   if (!encodedPayload || !encodedSignature || extra !== undefined) return null;
@@ -174,11 +152,7 @@ function signupProofFromHeaders(context: {
   headers?: Headers | undefined;
   request?: { headers: Headers } | undefined;
 }) {
-  return (
-    context.request?.headers.get(PROOF_HEADER) ??
-    context.headers?.get(PROOF_HEADER) ??
-    null
-  );
+  return context.request?.headers.get(PROOF_HEADER) ?? context.headers?.get(PROOF_HEADER) ?? null;
 }
 
 function rejectRateLimitedCredential(): never {
@@ -193,14 +167,9 @@ async function requestIpAddress(policy: TouchGrassPolicyPort) {
   return ipAddress;
 }
 
-function reservationIdFromHookContext(
-  value: unknown,
-): Id<"recoveryKeyAttemptReservations"> | null {
+function reservationIdFromHookContext(value: unknown): Id<"recoveryKeyAttemptReservations"> | null {
   if (!value || typeof value !== "object") return null;
-  const reservationId = Reflect.get(
-    value,
-    "touchGrassRecoveryReservationId",
-  );
+  const reservationId = Reflect.get(value, "touchGrassRecoveryReservationId");
   return typeof reservationId === "string"
     ? (reservationId as Id<"recoveryKeyAttemptReservations">)
     : null;
@@ -211,9 +180,7 @@ function touchGrassIdLimitInput(value: unknown) {
     return "invalid-touchgrass-id";
   }
   const normalized = value.toUpperCase();
-  return PUBLIC_ID_PATTERN.test(normalized)
-    ? normalized
-    : "invalid-touchgrass-id";
+  return PUBLIC_ID_PATTERN.test(normalized) ? normalized : "invalid-touchgrass-id";
 }
 
 async function failedCredentialKeys(
@@ -243,9 +210,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             "profile-preparation-ip",
             ipAddress,
           );
-          const allowed = await policy
-            .limitProfilePreparation({ ipKey })
-            .catch(() => false);
+          const allowed = await policy.limitProfilePreparation({ ipKey }).catch(() => false);
           if (!allowed) rejectRateLimitedCredential();
 
           const touchGrassId = createTouchGrassId();
@@ -307,9 +272,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               ipAddress,
               ctx.body.username,
             );
-            const reservationId = await policy
-              .reserveCredentialAttempt(keys)
-              .catch(() => null);
+            const reservationId = await policy.reserveCredentialAttempt(keys).catch(() => null);
             if (!reservationId) rejectRateLimitedCredential();
             return {
               context: { touchGrassRecoveryReservationId: reservationId },
@@ -325,9 +288,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             if (!reservationId) rejectRateLimitedCredential();
             const completed = await policy
               .finalizeCredentialAttempt({
-                outcome: isAPIError(ctx.context.returned)
-                  ? "failure"
-                  : "success",
+                outcome: isAPIError(ctx.context.returned) ? "failure" : "success",
                 reservationId,
               })
               .catch(() => false);
@@ -352,18 +313,14 @@ export const issueSignupProof = internalMutation({
     }
     const existing = await ctx.db
       .query("signupProofs")
-      .withIndex("by_nonce_digest", (query) =>
-        query.eq("nonceDigest", args.nonceDigest),
-      )
+      .withIndex("by_nonce_digest", (query) => query.eq("nonceDigest", args.nonceDigest))
       .unique();
     if (existing) throw new Error("Signup proof nonce collision");
 
     const signupProofId = await ctx.db.insert("signupProofs", args);
-    await ctx.scheduler.runAt(
-      args.expiresAt,
-      internal.auth.touchgrassSignup.expireSignupProof,
-      { signupProofId },
-    );
+    await ctx.scheduler.runAt(args.expiresAt, internal.auth.touchgrassSignup.expireSignupProof, {
+      signupProofId,
+    });
     return null;
   },
 });
@@ -374,9 +331,7 @@ export const consumeSignupProof = internalMutation({
   handler: async (ctx, args) => {
     const signupProof = await ctx.db
       .query("signupProofs")
-      .withIndex("by_nonce_digest", (query) =>
-        query.eq("nonceDigest", args.nonceDigest),
-      )
+      .withIndex("by_nonce_digest", (query) => query.eq("nonceDigest", args.nonceDigest))
       .unique();
     if (!signupProof) return false;
     if (signupProof.expiresAt <= Date.now()) {

@@ -34,9 +34,8 @@ function ProfileStep({
       />
       <div className="grid gap-1 px-1 text-[8px] leading-3.5 text-sheet-muted">
         <small>
-          Other people can see your Display Name, TouchGrass ID, and daily
-          scores on the Doomerboard. They cannot see your prompts,
-          conversations, credentials, logs, or files.
+          Other people can see your Display Name, TouchGrass ID, and daily scores on the
+          Doomerboard. They cannot see your prompts, conversations, credentials, logs, or files.
         </small>
       </div>
     </div>

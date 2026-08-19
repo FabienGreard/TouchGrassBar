@@ -17,9 +17,7 @@ function assertInstallationCredential(installationCredential: string) {
   }
 }
 
-export async function installationCredentialDigest(
-  installationCredential: string,
-) {
+export async function installationCredentialDigest(installationCredential: string) {
   assertInstallationCredential(installationCredential);
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -103,11 +101,7 @@ export async function claimActiveDevice(
   }
 
   const device = await ctx.db.get(tokenmaxxer.activeDeviceId);
-  if (
-    !device ||
-    device.tokenmaxxerId !== tokenmaxxerId ||
-    device.revokedAt !== undefined
-  ) {
+  if (!device || device.tokenmaxxerId !== tokenmaxxerId || device.revokedAt !== undefined) {
     return rejectAuthority();
   }
 

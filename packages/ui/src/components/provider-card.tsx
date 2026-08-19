@@ -1,8 +1,4 @@
-import type {
-  ProviderPresentation,
-  ProviderSnapshot,
-  QuotaLane,
-} from "@touchgrass/contracts";
+import type { ProviderPresentation, ProviderSnapshot, QuotaLane } from "@touchgrass/contracts";
 
 import { ProviderMark } from "./provider-mark";
 import { QuotaProgress } from "./quota-progress";
@@ -39,12 +35,7 @@ function exactResetDate(resetAt: Date, timeZone?: string) {
 }
 
 function quotaPercentage(lane: QuotaLane | null | undefined) {
-  if (
-    !lane?.allowance ||
-    lane.remaining === null ||
-    lane.remaining === undefined
-  )
-    return null;
+  if (!lane?.allowance || lane.remaining === null || lane.remaining === undefined) return null;
   return Math.max(0, Math.min(100, (lane.remaining / lane.allowance) * 100));
 }
 
@@ -59,18 +50,13 @@ function quotaLabel(
   if (!lane.resetAt) return `${lane.label}${freshness}`;
 
   const resetAt = new Date(lane.resetAt);
-  if (Number.isNaN(resetAt.getTime()))
-    return `${lane.label} · resets ${lane.resetAt}${freshness}`;
+  if (Number.isNaN(resetAt.getTime())) return `${lane.label} · resets ${lane.resetAt}${freshness}`;
 
-  const referenceTimeMilliseconds = referenceTime
-    ? new Date(referenceTime).getTime()
-    : Date.now();
+  const referenceTimeMilliseconds = referenceTime ? new Date(referenceTime).getTime() : Date.now();
   const remainingMilliseconds = Math.max(
     0,
     resetAt.getTime() -
-      (Number.isNaN(referenceTimeMilliseconds)
-        ? Date.now()
-        : referenceTimeMilliseconds),
+      (Number.isNaN(referenceTimeMilliseconds) ? Date.now() : referenceTimeMilliseconds),
   );
   const totalMinutes = Math.floor(remainingMilliseconds / 60_000);
   const totalHours = Math.floor(totalMinutes / 60);
@@ -85,8 +71,7 @@ function quotaLabel(
         : `${minutesLeft}m`;
 
   const time = resetTimeFormatter(timeZone).format(resetAt);
-  if (!/week/i.test(lane.label))
-    return `${lane.label} · resets ${time}${freshness}`;
+  if (!/week/i.test(lane.label)) return `${lane.label} · resets ${time}${freshness}`;
 
   const exactReset = exactResetDate(resetAt, timeZone);
   return `${lane.label} · ${timeLeft} left · ${exactReset}${freshness}`;
@@ -106,14 +91,9 @@ function quotaAriaLabel(
 
 function orderedQuotaLanes(provider: ProviderSnapshot) {
   if (provider.availability === "unavailable") return provider.quotaLanes;
-  const weeklyLane = provider.quotaLanes.find((lane) =>
-    /week/i.test(lane.label),
-  );
+  const weeklyLane = provider.quotaLanes.find((lane) => /week/i.test(lane.label));
   if (!weeklyLane) return provider.quotaLanes;
-  return [
-    weeklyLane,
-    ...provider.quotaLanes.filter((lane) => lane !== weeklyLane),
-  ];
+  return [weeklyLane, ...provider.quotaLanes.filter((lane) => lane !== weeklyLane)];
 }
 
 function ProviderQuotaLane({
@@ -139,13 +119,7 @@ function ProviderQuotaLane({
       <small className="truncate text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
         {quotaLabel(lane, availability, referenceTime, timeZone)}
       </small>
-      <strong
-        className={
-          percentage === null
-            ? "text-[9px] text-usage-unavailable"
-            : "text-[9px]"
-        }
-      >
+      <strong className={percentage === null ? "text-[9px] text-usage-unavailable" : "text-[9px]"}>
         {percentage === null ? "—" : `${Math.round(percentage)}%`}
       </strong>
       <div className="col-span-2">
@@ -164,14 +138,10 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
   const { displayName: label, quota: provider } = presentation;
   const hasCachedQuotaOrObservedUsage =
     provider.availability !== "unavailable" ||
-    [
-      presentation.usage.today,
-      presentation.usage.sevenDays,
-      presentation.usage.thirtyDays,
-    ].some((usage) => usage.availability !== "unavailable");
-  const loading =
-    presentation.usage.scanStatus === "indexing" &&
-    !hasCachedQuotaOrObservedUsage;
+    [presentation.usage.today, presentation.usage.sevenDays, presentation.usage.thirtyDays].some(
+      (usage) => usage.availability !== "unavailable",
+    );
+  const loading = presentation.usage.scanStatus === "indexing" && !hasCachedQuotaOrObservedUsage;
   const lanes = orderedQuotaLanes(provider);
   const primaryLane = lanes[0] ?? null;
   const secondaryLanes = lanes.slice(1);
@@ -182,16 +152,12 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
       aria-busy={loading || undefined}
       aria-labelledby={`${provider.provider}-heading`}
       className={`border-b border-pearl-line bg-provider-row px-4 py-[15px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight ${
-        loading
-          ? "pointer-events-none animate-pulse motion-reduce:animate-none"
-          : ""
+        loading ? "pointer-events-none animate-pulse motion-reduce:animate-none" : ""
       }`}
       data-provider-availability={provider.availability}
       data-provider-presence={presentation.presence}
     >
-      {loading ? (
-        <span className="sr-only">Refreshing {label}…</span>
-      ) : null}
+      {loading ? <span className="sr-only">Refreshing {label}…</span> : null}
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2.5">
         <span className="grid h-[29px] w-[29px] place-items-center overflow-hidden rounded-[7px] border border-input bg-pearl-control shadow-control contrast-more:border-pearl-ink">
           <ProviderMark provider={provider.provider} />
@@ -206,11 +172,7 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
         </span>
         <strong
           aria-label={quotaAriaLabel(label, provider.availability, percentage)}
-          className={
-            percentage === null
-              ? "text-[21px] text-usage-unavailable"
-              : "text-[21px]"
-          }
+          className={percentage === null ? "text-[21px] text-usage-unavailable" : "text-[21px]"}
         >
           {percentage === null ? "—" : `${Math.round(percentage)}%`}
         </strong>

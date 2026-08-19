@@ -16,9 +16,7 @@ try {
   console.log("Development provisioning profile: valid");
 } catch (error) {
   console.error(
-    error instanceof Error
-      ? error.message
-      : "The development signing configuration is invalid.",
+    error instanceof Error ? error.message : "The development signing configuration is invalid.",
   );
   process.exitCode = 1;
 }

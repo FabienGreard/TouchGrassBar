@@ -20,9 +20,7 @@ function ProvidersStep({
           displayName={provider.displayName}
           key={provider.provider}
           onCheck={
-            onCheckProvider === undefined
-              ? undefined
-              : () => onCheckProvider(provider.provider)
+            onCheckProvider === undefined ? undefined : () => onCheckProvider(provider.provider)
           }
           provider={provider.provider}
           state={provider.state}

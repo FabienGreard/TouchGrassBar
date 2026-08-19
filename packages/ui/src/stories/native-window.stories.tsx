@@ -33,16 +33,12 @@ export const BasicLayout: Story = {
         <Brand />
         <NativeWindowNav>
           <NativeWindowNavItem aria-current="page">General</NativeWindowNavItem>
-          <NativeWindowNavItem aria-disabled="true">
-            Providers
-          </NativeWindowNavItem>
+          <NativeWindowNavItem aria-disabled="true">Providers</NativeWindowNavItem>
         </NativeWindowNav>
       </NativeWindowSidebar>
       <NativeWindowContent>
         <h1 className="m-0 text-[22px] tracking-[-0.04em]">Settings</h1>
-        <p className="mt-2 text-[11px] text-sheet-muted">
-          Standalone native sheet
-        </p>
+        <p className="mt-2 text-[11px] text-sheet-muted">Standalone native sheet</p>
       </NativeWindowContent>
     </NativeWindow>
   ),

@@ -40,15 +40,11 @@ function LoadingPanel({ loading = true }: LoadingPanelProps) {
   return (
     <div
       aria-busy={loading || undefined}
-      aria-label={
-        loading ? "Loading local provider state" : "Local provider state unavailable"
-      }
+      aria-label={loading ? "Loading local provider state" : "Local provider state unavailable"}
       data-slot="loading-panel"
       role={loading ? "status" : undefined}
     >
-      {loading ? (
-        <span className="sr-only">Reading the local snapshot…</span>
-      ) : null}
+      {loading ? <span className="sr-only">Reading the local snapshot…</span> : null}
       <div
         aria-hidden="true"
         className={
@@ -60,10 +56,7 @@ function LoadingPanel({ loading = true }: LoadingPanelProps) {
       >
         <div>
           {loadingProviders.map((provider) => (
-            <ProviderCard
-              key={provider.provider}
-              presentation={provider}
-            />
+            <ProviderCard key={provider.provider} presentation={provider} />
           ))}
         </div>
         <UsageOverview usage={loadingUsage} />

@@ -24,10 +24,7 @@ export const apiEquivalentCostValueValidator = v.object({
   pricingBasis: v.string(),
   quality: costQualityValidator,
 });
-export const apiEquivalentCostValidator = v.union(
-  v.null(),
-  apiEquivalentCostValueValidator,
-);
+export const apiEquivalentCostValidator = v.union(v.null(), apiEquivalentCostValueValidator);
 
 const MAX_OBSERVED_AT_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 
@@ -52,15 +49,9 @@ export type UsageSnapshot = Infer<typeof usageSnapshotValidator>;
 
 // Keep a bounded catalog of bases that retained Daily Usage can still cite.
 // Remove an old basis only after no retained provider-day can reference it.
-const APPROVED_PRICING_BASES_BY_PROVIDER: Record<
-  Provider,
-  readonly string[]
-> = {
+const APPROVED_PRICING_BASES_BY_PROVIDER: Record<Provider, readonly string[]> = {
   claude: ["anthropic-standard-2026-08-07-v1"],
-  codex: [
-    "openai-api-2026-08-09-v3",
-    "openai-standard-2026-08-06-v1",
-  ],
+  codex: ["openai-api-2026-08-09-v3", "openai-standard-2026-08-06-v1"],
 };
 
 export const WINDOWS: readonly ScoreWindow[] = [1, 7, 30];
@@ -83,13 +74,8 @@ export function assertUsageSnapshot(
   if (!Number.isSafeInteger(snapshot.revision) || snapshot.revision < 1) {
     throw new Error("revision must be a positive safe integer");
   }
-  if (
-    (snapshot.correctionReason === null) !==
-    (snapshot.correctionRevision === null)
-  ) {
-    throw new Error(
-      "correctionReason and correctionRevision must both be null or both be set",
-    );
+  if ((snapshot.correctionReason === null) !== (snapshot.correctionRevision === null)) {
+    throw new Error("correctionReason and correctionRevision must both be null or both be set");
   }
   if (
     snapshot.correctionRevision !== null &&
@@ -97,9 +83,7 @@ export function assertUsageSnapshot(
       snapshot.correctionRevision < 1 ||
       snapshot.correctionRevision > snapshot.revision)
   ) {
-    throw new Error(
-      "correctionRevision must be a positive safe integer at or before revision",
-    );
+    throw new Error("correctionRevision must be a positive safe integer at or before revision");
   }
   if (!Number.isSafeInteger(snapshot.observedTokens) || snapshot.observedTokens < 0) {
     throw new Error("observedTokens must be a non-negative safe integer");
@@ -130,18 +114,12 @@ export function assertUsageSnapshot(
   ) {
     throw new Error("pricingBasis must be a bounded catalog identifier");
   }
-  if (
-    !APPROVED_PRICING_BASES_BY_PROVIDER[snapshot.provider].includes(
-      cost.pricingBasis,
-    )
-  ) {
+  if (!APPROVED_PRICING_BASES_BY_PROVIDER[snapshot.provider].includes(cost.pricingBasis)) {
     throw new Error("pricingBasis is not approved for this provider");
   }
   if (
-    (snapshot.evidenceBasis === "provider-reported" &&
-      cost.quality === "local-only") ||
-    (snapshot.evidenceBasis === "locally-derived" &&
-      cost.quality === "reconciled")
+    (snapshot.evidenceBasis === "provider-reported" && cost.quality === "local-only") ||
+    (snapshot.evidenceBasis === "locally-derived" && cost.quality === "reconciled")
   ) {
     throw new Error("cost quality does not match the evidence basis");
   }
@@ -163,9 +141,7 @@ export function assertRankingDay(rankingDay: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(rankingDay)) {
     throw new Error("rankingDay must be a UTC date in YYYY-MM-DD form");
   }
-  const canonicalDay = new Date(`${rankingDay}T00:00:00.000Z`)
-    .toISOString()
-    .slice(0, 10);
+  const canonicalDay = new Date(`${rankingDay}T00:00:00.000Z`).toISOString().slice(0, 10);
   if (canonicalDay !== rankingDay) {
     throw new Error("rankingDay is not a real UTC calendar day");
   }

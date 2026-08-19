@@ -24,9 +24,7 @@ function SettingsToggleRow({
       <span>
         <strong className="block text-[12px]">{label}</strong>
         {description ? (
-          <small className="mt-0.5 block text-[9px] text-sheet-muted">
-            {description}
-          </small>
+          <small className="mt-0.5 block text-[9px] text-sheet-muted">{description}</small>
         ) : null}
       </span>
       <Switch

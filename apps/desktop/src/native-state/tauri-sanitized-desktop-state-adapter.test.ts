@@ -36,9 +36,7 @@ describe("Tauri Sanitized Desktop State adapter", () => {
     const receiveInvalidation = vi.fn();
     const adapter = createTauriSanitizedDesktopStateAdapter(bindings);
 
-    const subscription = await adapter.subscribeToInvalidations(
-      receiveInvalidation,
-    );
+    const subscription = await adapter.subscribeToInvalidations(receiveInvalidation);
     expect(subscription.ok).toBe(true);
     if (!subscription.ok) throw new Error("expected connected adapter");
 
@@ -73,9 +71,7 @@ describe("Tauri Sanitized Desktop State adapter", () => {
       fault: { code: "refresh-unavailable" },
       ok: false,
     });
-    expect(
-      await adapter.subscribeToInvalidations(() => undefined),
-    ).toEqual({
+    expect(await adapter.subscribeToInvalidations(() => undefined)).toEqual({
       fault: { code: "invalidation-stream-unavailable" },
       ok: false,
     });
@@ -87,15 +83,11 @@ describe("Tauri Sanitized Desktop State adapter", () => {
     const bindings: TauriSanitizedDesktopStateBindings = {
       invoke: vi.fn(async () => undefined),
       listen: vi.fn(async () => stopRevisionNotices),
-      onFocusChanged: vi.fn(() =>
-        Promise.reject(new Error("private focus-listener detail")),
-      ),
+      onFocusChanged: vi.fn(() => Promise.reject(new Error("private focus-listener detail"))),
     };
     const adapter = createTauriSanitizedDesktopStateAdapter(bindings);
 
-    expect(
-      await adapter.subscribeToInvalidations(() => undefined),
-    ).toEqual({
+    expect(await adapter.subscribeToInvalidations(() => undefined)).toEqual({
       fault: { code: "invalidation-stream-unavailable" },
       ok: false,
     });

@@ -16,12 +16,8 @@ function DialogClose(props: ComponentProps<typeof DialogPrimitive.Close>) {
   return <DialogPrimitive.Close data-slot="dialog-close" {...props} />;
 }
 
-function DialogDescription(
-  props: ComponentProps<typeof DialogPrimitive.Description>,
-) {
-  return (
-    <DialogPrimitive.Description data-slot="dialog-description" {...props} />
-  );
+function DialogDescription(props: ComponentProps<typeof DialogPrimitive.Description>) {
+  return <DialogPrimitive.Description data-slot="dialog-description" {...props} />;
 }
 
 function DialogTitle(props: ComponentProps<typeof DialogPrimitive.Title>) {
@@ -45,7 +41,7 @@ function DialogContent({
     <DialogPrimitive.Portal container={container ?? undefined}>
       <DialogPrimitive.Overlay
         className={cn(
-          "inset-0 z-50 bg-pearl-ink/25 backdrop-blur-[3px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 motion-reduce:animate-none",
+          "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 inset-0 z-50 bg-pearl-ink/25 backdrop-blur-[3px] motion-reduce:animate-none",
           contained ? "absolute" : "fixed",
         )}
         data-slot="dialog-overlay"
@@ -53,7 +49,7 @@ function DialogContent({
       <DialogPrimitive.Content
         className={cn(
           nativeSheetSurfaceClassName,
-          "top-1/2 left-1/2 z-50 w-[calc(100%_-_32px)] max-w-[340px] -translate-x-1/2 -translate-y-1/2 p-4 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 motion-reduce:animate-none",
+          "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 top-1/2 left-1/2 z-50 w-[calc(100%_-_32px)] max-w-[340px] -translate-x-1/2 -translate-y-1/2 p-4 motion-reduce:animate-none",
           contained ? "absolute" : "fixed",
           className,
         )}
@@ -64,12 +60,5 @@ function DialogContent({
   );
 }
 
-export {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-  DialogTrigger,
-};
+export { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle, DialogTrigger };
 export type { DialogContentProps };

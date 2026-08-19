@@ -51,20 +51,13 @@ function RecoverySheetPreview({
         position={portalContainer ? "container" : "viewport"}
       >
         <div className="relative px-8 text-center">
-          <DialogTitle className="m-0 text-[14px] font-bold">
-            Recover from another Mac
-          </DialogTitle>
+          <DialogTitle className="m-0 text-[14px] font-bold">Recover from another Mac</DialogTitle>
           <DialogDescription className="mt-1 mb-0 text-[10px] leading-4 text-pearl-muted contrast-more:text-pearl-ink">
             Enter the Recovery Key stored on your other Mac.
           </DialogDescription>
           <span className="absolute -top-1 -right-1 text-[16px]">
             <DialogClose asChild>
-              <Button
-                aria-label="Close recovery dialog"
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
+              <Button aria-label="Close recovery dialog" size="icon" type="button" variant="ghost">
                 ×
               </Button>
             </DialogClose>
@@ -109,12 +102,10 @@ function RecoverySheetPreview({
           </label>
 
           <div className="mt-3 rounded-[10px] border border-[#d7bd83] bg-[#fff4d9] px-3 py-2.5 text-left">
-            <strong className="block text-[10px] text-[#4f3912]">
-              One-use Recovery Key
-            </strong>
+            <strong className="block text-[10px] text-[#4f3912]">One-use Recovery Key</strong>
             <small className="mt-1 block text-[8px] leading-3.5 text-[#6d5a32]">
-              This key works once. After recovery, this Mac takes over and the
-              other Mac stops syncing. A new Recovery Key is created here.
+              This key works once. After recovery, this Mac takes over and the other Mac stops
+              syncing. A new Recovery Key is created here.
             </small>
           </div>
 
@@ -125,8 +116,7 @@ function RecoverySheetPreview({
             >
               <strong className="block text-[10px]">Not connected yet</strong>
               <small className="mt-1 block text-[8px] leading-4 text-pearl-muted">
-                Recovery is not connected to the native or backend flow in this
-                build.
+                Recovery is not connected to the native or backend flow in this build.
               </small>
             </div>
           ) : null}

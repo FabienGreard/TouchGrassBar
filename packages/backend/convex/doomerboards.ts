@@ -3,11 +3,7 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { query, type QueryCtx } from "./_generated/server";
 import { requireAuthUser } from "./auth";
-import {
-  doomerboard,
-  type DoomerboardKey,
-  type LegacyDoomerboardKey,
-} from "./model/doomerboard";
+import { doomerboard, type DoomerboardKey, type LegacyDoomerboardKey } from "./model/doomerboard";
 import { rejectAuthority } from "./model/authority";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
@@ -50,10 +46,7 @@ const legacyKeyBounds = {
   },
 };
 
-async function legacyCompatibilityItems(
-  ctx: QueryCtx,
-  namespace: string,
-) {
+async function legacyCompatibilityItems(ctx: QueryCtx, namespace: string) {
   const count = await doomerboard.count(ctx, {
     bounds: legacyKeyBounds,
     namespace,
@@ -88,8 +81,7 @@ export function rankRows<
 >(rows: T[]) {
   const orderedRows = [...rows].sort(
     (left, right) =>
-      right.tokenScore - left.tokenScore ||
-      left.touchGrassId.localeCompare(right.touchGrassId),
+      right.tokenScore - left.tokenScore || left.touchGrassId.localeCompare(right.touchGrassId),
   );
   let rank = 0;
   let previousScore: number | null = null;
@@ -124,10 +116,7 @@ async function globalRows(
 ) {
   await requireDoomerboardProfile(ctx);
   const limit = Math.min(Math.max(Math.floor(requestedLimit ?? 50), 1), 100);
-  const scanLimit =
-    requiredComputedRankingDay === undefined
-      ? limit
-      : SCAN_ROWS_PER_KEY_FORMAT;
+  const scanLimit = requiredComputedRankingDay === undefined ? limit : SCAN_ROWS_PER_KEY_FORMAT;
   const namespace = boardKey(scope, windowDays);
   const [canonicalPage, legacyItems] = await Promise.all([
     doomerboard.paginate(ctx, {
@@ -181,8 +170,7 @@ export const global = query({
     windowDays: scoreWindowValidator,
   },
   returns: v.array(doomerboardRow),
-  handler: (ctx, args) =>
-    globalRows(ctx, args.scope, args.windowDays, args.limit),
+  handler: (ctx, args) => globalRows(ctx, args.scope, args.windowDays, args.limit),
 });
 
 async function myTokenmaxxerRows(
@@ -206,10 +194,7 @@ async function myTokenmaxxerRows(
       ctx.db
         .query("publicUsages")
         .withIndex("by_tokenmaxxer_id_and_scope_and_window_days", (q) =>
-          q
-            .eq("tokenmaxxerId", edge.addedId)
-            .eq("scope", scope)
-            .eq("windowDays", windowDays),
+          q.eq("tokenmaxxerId", edge.addedId).eq("scope", scope).eq("windowDays", windowDays),
         )
         .unique(),
     ),
@@ -238,12 +223,7 @@ export const currentMyTokenmaxxers = query({
   }),
   handler: (ctx, args) => {
     assertRankingDay(args.rankingDay);
-    return myTokenmaxxerRows(
-      ctx,
-      args.scope,
-      args.windowDays,
-      args.rankingDay,
-    );
+    return myTokenmaxxerRows(ctx, args.scope, args.windowDays, args.rankingDay);
   },
 });
 
@@ -253,6 +233,5 @@ export const myTokenmaxxers = query({
     windowDays: scoreWindowValidator,
   },
   returns: v.array(doomerboardRow),
-  handler: async (ctx, args) =>
-    (await myTokenmaxxerRows(ctx, args.scope, args.windowDays)).rows,
+  handler: async (ctx, args) => (await myTokenmaxxerRows(ctx, args.scope, args.windowDays)).rows,
 });

@@ -48,9 +48,7 @@ function boundedLabel(value: string) {
       return codePoint <= 31 || codePoint === 127 ? " " : character;
     })
     .join("");
-  const normalized = printable
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = printable.replace(/\s+/g, " ").trim();
   return [...normalized].slice(0, labelLimit).join("").trim();
 }
 
@@ -80,9 +78,7 @@ function branchPresentation(branch: string, instanceKey: string) {
 function labelTag(label: string, fallback: string) {
   if (!label) return fallback;
   const firstWord = /[#\p{L}\p{N}]+/u.exec(label)?.[0] ?? label;
-  return [...firstWord.toLocaleUpperCase("en-US")]
-    .slice(0, tagLimit)
-    .join("");
+  return [...firstWord.toLocaleUpperCase("en-US")].slice(0, tagLimit).join("");
 }
 
 function resolveDevInstance({
@@ -140,11 +136,5 @@ function currentDevInstance() {
   return parseDevInstance(import.meta.env.VITE_TOUCHGRASS_DEV_INSTANCE);
 }
 
-export {
-  currentDevInstance,
-  devAccentColors,
-  devAccents,
-  parseDevInstance,
-  resolveDevInstance,
-};
+export { currentDevInstance, devAccentColors, devAccents, parseDevInstance, resolveDevInstance };
 export type { DevAccent, DevInstance, ResolveDevInstanceInput };

@@ -39,9 +39,7 @@ function updateSummary(state: UpdateState | null) {
     case "upToDate":
       return "TouchGrassBar is up to date.";
     case "idle":
-      return state.onlineFeaturesPaused
-        ? "Update required for online features."
-        : "Stable channel";
+      return state.onlineFeaturesPaused ? "Update required for online features." : "Stable channel";
   }
 }
 
@@ -57,21 +55,10 @@ function UpdatesSettings({
 }: UpdatesSettingsProps) {
   const status = state?.update.status;
   const primaryAction =
-    status === "available"
-      ? onInstall
-      : status === "failed"
-        ? onRetry
-        : onCheckForUpdates;
+    status === "available" ? onInstall : status === "failed" ? onRetry : onCheckForUpdates;
   const primaryLabel =
-    status === "available"
-      ? "Install & Relaunch"
-      : status === "failed"
-        ? "Retry"
-        : "Check now";
-  const primaryBusy =
-    status === "checking" ||
-    status === "downloading" ||
-    status === "installing";
+    status === "available" ? "Install & Relaunch" : status === "failed" ? "Retry" : "Check now";
+  const primaryBusy = status === "checking" || status === "downloading" || status === "installing";
   const recovery = status === "failed";
 
   return (
@@ -90,11 +77,7 @@ function UpdatesSettings({
             </small>
           </span>
           <Button
-            disabled={
-              primaryAction === undefined ||
-              primaryBusy ||
-              status === "unavailable"
-            }
+            disabled={primaryAction === undefined || primaryBusy || status === "unavailable"}
             onClick={primaryAction}
             type="button"
             variant="ghost"
@@ -108,9 +91,7 @@ function UpdatesSettings({
           grouped
           label="Check automatically"
           onCheckedChange={onAutoUpdatesChange}
-          {...(autoUpdates === null
-            ? { description: "Not connected in this build." }
-            : {})}
+          {...(autoUpdates === null ? { description: "Not connected in this build." } : {})}
         />
       </div>
       <div className="flex items-center justify-between gap-6 border-t border-sheet-line px-4 pt-3">
@@ -125,11 +106,7 @@ function UpdatesSettings({
           </small>
         </span>
         <Button
-          disabled={
-            recovery
-              ? onOpenLatestDmg === undefined
-              : onOpenSource === undefined
-          }
+          disabled={recovery ? onOpenLatestDmg === undefined : onOpenSource === undefined}
           onClick={recovery ? onOpenLatestDmg : onOpenSource}
           type="button"
           variant="ghost"

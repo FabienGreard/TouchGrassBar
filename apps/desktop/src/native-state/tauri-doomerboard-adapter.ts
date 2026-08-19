@@ -3,21 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { REVISION_NOTICE_EVENT } from "@touchgrass/contracts";
 
-import type {
-  DoomerboardPort,
-  DoomerboardPortOutcome,
-} from "@/native-state/doomerboard-delivery";
+import type { DoomerboardPort, DoomerboardPortOutcome } from "@/native-state/doomerboard-delivery";
 
 type StopListening = () => void;
 type TauriDoomerboardBindings = {
   invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
-  listen: (
-    event: string,
-    receive: (event: { payload: unknown }) => void,
-  ) => Promise<StopListening>;
-  onFocusChanged: (
-    receive: (event: { payload: boolean }) => void,
-  ) => Promise<StopListening>;
+  listen: (event: string, receive: (event: { payload: unknown }) => void) => Promise<StopListening>;
+  onFocusChanged: (receive: (event: { payload: boolean }) => void) => Promise<StopListening>;
 };
 
 const remoteRefreshIntervalMs = 5 * 60 * 1_000;
@@ -44,11 +36,7 @@ function stopSafely(stop: StopListening | null) {
 }
 
 function millisecondsUntilNextUtcDay(now = new Date()) {
-  const nextUtcDay = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate() + 1,
-  );
+  const nextUtcDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
   return Math.max(nextUtcDay - now.getTime(), 1);
 }
 

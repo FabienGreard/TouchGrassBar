@@ -10,8 +10,7 @@ const config = {
     options: {},
   },
   stories: ["../src/**/*.mdx", "../src/**/*.stories.@(js|jsx|mjs|ts|tsx)"],
-  viteFinal: async (config) =>
-    mergeConfig(config, { plugins: [tailwindcss()] }),
+  viteFinal: async (config) => mergeConfig(config, { plugins: [tailwindcss()] }),
 } satisfies StorybookConfig;
 
 export default config;

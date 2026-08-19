@@ -29,9 +29,7 @@ async function authFetch(
 ) {
   const result = await t.action(async (ctx) => {
     const auth = createAuthWithRequestIp(ctx, async () => platformIp);
-    const response = await auth.handler(
-      new Request(`https://example.convex.site${path}`, init),
-    );
+    const response = await auth.handler(new Request(`https://example.convex.site${path}`, init));
     return {
       body: await response.text(),
       headers: Array.from(response.headers.entries()),
@@ -68,19 +66,12 @@ afterEach(() => {
 test("Recovery Key signup is short-lived, hashed, and session-validating", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-05T00:00:00.000Z"));
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
 
-  const expiredPreparation = await authFetch(
-    t,
-    "/api/auth/touchgrass/prepare",
-    { method: "POST" },
-  );
+  const expiredPreparation = await authFetch(t, "/api/auth/touchgrass/prepare", { method: "POST" });
   expect(expiredPreparation.status).toBe(200);
   const expired = await json(expiredPreparation);
   vi.advanceTimersByTime(121_000);
@@ -131,9 +122,7 @@ test("Recovery Key signup is short-lived, hashed, and session-validating", async
       method: "POST",
     });
   const concurrentSignups = await Promise.all([signupRequest(), signupRequest()]);
-  expect(concurrentSignups.map(({ status }) => status).sort()).toEqual([
-    200, 403,
-  ]);
+  expect(concurrentSignups.map(({ status }) => status).sort()).toEqual([200, 403]);
   const signup = concurrentSignups.find(({ status }) => status === 200);
   expect(signup).toBeDefined();
   if (!signup) throw new Error("Concurrent signup did not succeed");
@@ -252,10 +241,7 @@ test("Recovery Key signup is short-lived, hashed, and session-validating", async
 });
 
 test("failed Recovery Keys use independent opaque limits", async () => {
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
@@ -334,12 +320,7 @@ test("failed Recovery Keys use independent opaque limits", async () => {
   );
   expect(successfulAtBoundary.status).toBe(200);
   sameIpFailures.push(
-    await signIn(
-      `TG-AAAA${21 + attempts}`,
-      wrongRecoveryKey,
-      "192.0.2.1",
-      "198.18.0.100",
-    ),
+    await signIn(`TG-AAAA${21 + attempts}`, wrongRecoveryKey, "192.0.2.1", "198.18.0.100"),
   );
   expect(sameIpFailures.every(({ status }) => status === 401)).toBe(true);
   const blockedByIp = await signIn(
@@ -353,11 +334,7 @@ test("failed Recovery Keys use independent opaque limits", async () => {
   const distinctIpFailures: Response[] = [];
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     distinctIpFailures.push(
-      await signIn(
-        byIdCredential.touchGrassId,
-        wrongRecoveryKey,
-        `198.51.100.${attempt + 1}`,
-      ),
+      await signIn(byIdCredential.touchGrassId, wrongRecoveryKey, `198.51.100.${attempt + 1}`),
     );
   }
   expect(distinctIpFailures.every(({ status }) => status === 401)).toBe(true);
@@ -381,21 +358,16 @@ test("Recovery Key attempt admission is atomic and resets at the typed boundary"
   const attempts = touchGrassAuthPolicy.failedRecoveryKey.attempts;
   const admitted = await Promise.all(
     Array.from({ length: attempts + 1 }, () =>
-      t.mutation(
-        internal.auth.credentialAttempts.reserveCredentialAttempt,
-        keys,
-      ),
+      t.mutation(internal.auth.credentialAttempts.reserveCredentialAttempt, keys),
     ),
   );
-  const reservationIds = admitted.filter(
-    (reservationId) => reservationId !== null,
-  );
+  const reservationIds = admitted.filter((reservationId) => reservationId !== null);
   expect(reservationIds).toHaveLength(attempts);
 
-  await t.mutation(
-    internal.auth.credentialAttempts.finalizeCredentialAttempt,
-    { outcome: "success", reservationId: reservationIds[0]! },
-  );
+  await t.mutation(internal.auth.credentialAttempts.finalizeCredentialAttempt, {
+    outcome: "success",
+    reservationId: reservationIds[0]!,
+  });
   const replacementId = await t.mutation(
     internal.auth.credentialAttempts.reserveCredentialAttempt,
     keys,
@@ -403,38 +375,26 @@ test("Recovery Key attempt admission is atomic and resets at the typed boundary"
   expect(replacementId).not.toBeNull();
   if (!replacementId) throw new Error("Replacement reservation is missing");
 
-  for (const reservationId of [
-    ...reservationIds.slice(1, attempts),
-    replacementId,
-  ]) {
-    await t.mutation(
-      internal.auth.credentialAttempts.finalizeCredentialAttempt,
-      { outcome: "failure", reservationId },
-    );
+  for (const reservationId of [...reservationIds.slice(1, attempts), replacementId]) {
+    await t.mutation(internal.auth.credentialAttempts.finalizeCredentialAttempt, {
+      outcome: "failure",
+      reservationId,
+    });
   }
   await expect(
-    t.mutation(
-      internal.auth.credentialAttempts.reserveCredentialAttempt,
-      keys,
-    ),
+    t.mutation(internal.auth.credentialAttempts.reserveCredentialAttempt, keys),
   ).resolves.toBeNull();
 
   vi.advanceTimersByTime(touchGrassAuthPolicy.failedRecoveryKey.windowMs + 1);
   await expect(
-    t.mutation(
-      internal.auth.credentialAttempts.reserveCredentialAttempt,
-      keys,
-    ),
+    t.mutation(internal.auth.credentialAttempts.reserveCredentialAttempt, keys),
   ).resolves.not.toBeNull();
 });
 
 test("Profile preparation uses the typed IP boundary and reset window", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-05T00:00:00.000Z"));
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();

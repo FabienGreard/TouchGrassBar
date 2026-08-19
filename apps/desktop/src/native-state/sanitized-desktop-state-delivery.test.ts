@@ -1,7 +1,4 @@
-import {
-  CONTRACT_VERSION,
-  type SanitizedDesktopState,
-} from "@touchgrass/contracts";
+import { CONTRACT_VERSION, type SanitizedDesktopState } from "@touchgrass/contracts";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -56,9 +53,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function success<Value>(
-  value: Value,
-): SanitizedDesktopStatePortOutcome<Value, never> {
+function success<Value>(value: Value): SanitizedDesktopStatePortOutcome<Value, never> {
   return { ok: true, value };
 }
 
@@ -71,8 +66,8 @@ function fault<Code extends SanitizedDesktopStatePortFaultCode>(
 function controlledAdapter(initialSnapshot: unknown = state("1")) {
   const reads: Array<unknown | Promise<unknown>> = [initialSnapshot];
   const refreshes: Array<unknown | Promise<unknown>> = [];
-  let receiveInvalidation:
-    ((invalidation: SanitizedDesktopStateInvalidation) => void) | null = null;
+  let receiveInvalidation: ((invalidation: SanitizedDesktopStateInvalidation) => void) | null =
+    null;
   let readCount = 0;
   let refreshCount = 0;
   let unsubscribeCount = 0;
@@ -99,12 +94,10 @@ function controlledAdapter(initialSnapshot: unknown = state("1")) {
 
   return {
     port,
-    emit: (notice: unknown) =>
-      receiveInvalidation?.({ kind: "revision", notice }),
+    emit: (notice: unknown) => receiveInvalidation?.({ kind: "revision", notice }),
     operations,
     queueRead: (snapshot: unknown | Promise<unknown>) => reads.push(snapshot),
-    queueRefresh: (receipt: unknown | Promise<unknown>) =>
-      refreshes.push(receipt),
+    queueRefresh: (receipt: unknown | Promise<unknown>) => refreshes.push(receipt),
     readCount: () => readCount,
     refreshCount: () => refreshCount,
     resume: () => receiveInvalidation?.({ kind: "surface-resumed" }),
@@ -156,8 +149,7 @@ describe("Sanitized Desktop State delivery", () => {
     const delivery = createSanitizedDesktopStateDelivery({
       readSnapshot: () => Promise.resolve(fault("snapshot-unavailable")),
       requestRefresh: () => Promise.resolve(success({ accepted: true })),
-      subscribeToInvalidations: () =>
-        Promise.resolve(success(() => undefined)),
+      subscribeToInvalidations: () => Promise.resolve(success(() => undefined)),
     });
     const unsubscribe = delivery.subscribe(() => undefined);
 
@@ -174,8 +166,7 @@ describe("Sanitized Desktop State delivery", () => {
     const delivery = createSanitizedDesktopStateDelivery({
       readSnapshot: () => Promise.resolve(success(state("1"))),
       requestRefresh: () => Promise.resolve(fault("refresh-unavailable")),
-      subscribeToInvalidations: () =>
-        Promise.resolve(success(() => undefined)),
+      subscribeToInvalidations: () => Promise.resolve(success(() => undefined)),
     });
     const unsubscribe = delivery.subscribe(() => undefined);
     await waitForRevision(delivery, "1");
@@ -397,12 +388,8 @@ describe("Sanitized Desktop State delivery", () => {
     vi.useFakeTimers();
     try {
       const fallbackRead = deferred<unknown>();
-      const connection = deferred<
-        SanitizedDesktopStatePortOutcome<
-          () => void,
-          "invalidation-stream-unavailable"
-        >
-      >();
+      const connection =
+        deferred<SanitizedDesktopStatePortOutcome<() => void, "invalidation-stream-unavailable">>();
       const stopListening = vi.fn();
       const delivery = createSanitizedDesktopStateDelivery({
         readSnapshot: () => fallbackRead.promise.then(success),
@@ -429,12 +416,8 @@ describe("Sanitized Desktop State delivery", () => {
   test("cleans up a late subscription from a timed-out stale activation", async () => {
     vi.useFakeTimers();
     try {
-      const connection = deferred<
-        SanitizedDesktopStatePortOutcome<
-          () => void,
-          "invalidation-stream-unavailable"
-        >
-      >();
+      const connection =
+        deferred<SanitizedDesktopStatePortOutcome<() => void, "invalidation-stream-unavailable">>();
       const stopListening = vi.fn();
       const delivery = createSanitizedDesktopStateDelivery({
         readSnapshot: () => Promise.resolve(success(state("1"))),
@@ -517,12 +500,8 @@ describe("Sanitized Desktop State delivery", () => {
   test("falls back to a cached snapshot while notice subscription is stalled", async () => {
     vi.useFakeTimers();
     try {
-      const connection = deferred<
-        SanitizedDesktopStatePortOutcome<
-          () => void,
-          "invalidation-stream-unavailable"
-        >
-      >();
+      const connection =
+        deferred<SanitizedDesktopStatePortOutcome<() => void, "invalidation-stream-unavailable">>();
       const reads = [state("1"), state("2")];
       const delivery = createSanitizedDesktopStateDelivery({
         readSnapshot: () => Promise.resolve(success(reads.shift())),
@@ -543,5 +522,4 @@ describe("Sanitized Desktop State delivery", () => {
       vi.useRealTimers();
     }
   });
-
 });

@@ -12,12 +12,7 @@ function ProfileCardStory({ variant }: ProfileCardStoryArgs) {
       <ProfileCard
         avatarLabel="F"
         displayName={
-          <Input
-            aria-label="Display name"
-            className="mt-1 h-8"
-            readOnly
-            value="Fabien"
-          />
+          <Input aria-label="Display name" className="mt-1 h-8" readOnly value="Fabien" />
         }
         touchGrassId={
           <strong className="mt-1 block font-mono text-[10px] text-sheet-muted">
@@ -32,19 +27,13 @@ function ProfileCardStory({ variant }: ProfileCardStoryArgs) {
   return (
     <ProfileCard
       avatarLabel="F"
-      displayName={
-        <strong className="mt-0.5 block truncate text-[13px]">Fabien</strong>
-      }
+      displayName={<strong className="mt-0.5 block truncate text-[13px]">Fabien</strong>}
       displayNameAction={
         <Button size="quiet" type="button" variant="ghost">
           Edit
         </Button>
       }
-      touchGrassId={
-        <strong className="mt-1 block font-mono text-[10px]">
-          #TG-7K4P9D
-        </strong>
-      }
+      touchGrassId={<strong className="mt-1 block font-mono text-[10px]">#TG-7K4P9D</strong>}
       touchGrassIdAction={
         <Button size="quiet" type="button" variant="ghost">
           Copy ID

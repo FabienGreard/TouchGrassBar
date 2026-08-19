@@ -15,9 +15,7 @@ describe("macOS development signing", () => {
 `);
     const identity = identities[0];
 
-    expect(identity).toBe(
-      "Developer ID Application: Example Developer (AB12CD34EF)",
-    );
+    expect(identity).toBe("Developer ID Application: Example Developer (AB12CD34EF)");
     const teamIdentifier = signingTeamIdentifier(identity!);
     expect(teamIdentifier).toBe("AB12CD34EF");
     expect(
@@ -28,8 +26,7 @@ describe("macOS development signing", () => {
     ).toContain("<string>AB12CD34EF.app.touchgrass.bar.dev</string>");
     const profile = {
       Entitlements: {
-        "com.apple.application-identifier":
-          "AB12CD34EF.app.touchgrass.bar.dev",
+        "com.apple.application-identifier": "AB12CD34EF.app.touchgrass.bar.dev",
         "keychain-access-groups": ["AB12CD34EF.*"],
       },
       ExpirationDate: "2999-01-01T00:00:00Z",

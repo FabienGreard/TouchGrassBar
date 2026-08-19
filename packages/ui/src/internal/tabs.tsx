@@ -19,10 +19,7 @@ function Tabs({
   );
 }
 
-function TabsList({
-  className,
-  ...props
-}: ComponentProps<typeof TabsPrimitive.List>) {
+function TabsList({ className, ...props }: ComponentProps<typeof TabsPrimitive.List>) {
   return (
     <TabsPrimitive.List
       className={cn("inline-flex items-center", className)}
@@ -32,10 +29,7 @@ function TabsList({
   );
 }
 
-function TabsTrigger({
-  className,
-  ...props
-}: ComponentProps<typeof TabsPrimitive.Trigger>) {
+function TabsTrigger({ className, ...props }: ComponentProps<typeof TabsPrimitive.Trigger>) {
   return (
     <TabsPrimitive.Trigger
       className={cn(

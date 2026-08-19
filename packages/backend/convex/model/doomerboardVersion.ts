@@ -6,18 +6,13 @@ async function versionRow(ctx: Pick<QueryCtx, "db">) {
     throw new Error("Doomerboard version singleton invariant failed");
   }
   const row = rows[0] ?? null;
-  if (
-    row &&
-    (!Number.isSafeInteger(row.version) || row.version < 0)
-  ) {
+  if (row && (!Number.isSafeInteger(row.version) || row.version < 0)) {
     throw new Error("Doomerboard version is invalid");
   }
   return row;
 }
 
-export async function readDoomerboardVersion(
-  ctx: Pick<QueryCtx, "db">,
-) {
+export async function readDoomerboardVersion(ctx: Pick<QueryCtx, "db">) {
   return (await versionRow(ctx))?.version ?? 0;
 }
 

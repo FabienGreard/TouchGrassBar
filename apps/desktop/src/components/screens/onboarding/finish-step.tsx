@@ -1,7 +1,6 @@
 import { CheckIcon, MacMenuBarPreview } from "@touchgrass/ui";
 
-type OnboardingSetupState =
-  "profile-pending" | "ready" | "required" | "unavailable";
+type OnboardingSetupState = "profile-pending" | "ready" | "required" | "unavailable";
 
 function setupCopy(state: OnboardingSetupState) {
   if (state === "ready") {
@@ -42,27 +41,18 @@ function FinishStep({ setupState }: { setupState: OnboardingSetupState }) {
         data-setup-state={setupState}
       >
         <span className="grid size-8 shrink-0 place-items-center rounded-full bg-action text-accent-foreground">
-          {locallyComplete ? (
-            <CheckIcon size={15} />
-          ) : (
-            <span aria-hidden="true">—</span>
-          )}
+          {locallyComplete ? <CheckIcon size={15} /> : <span aria-hidden="true">—</span>}
         </span>
         <span className="min-w-0">
           <strong className="block text-[12px]">{copy.title}</strong>
-          <small className="mt-1 block text-[9px] leading-4 text-sheet-muted">
-            {copy.detail}
-          </small>
+          <small className="mt-1 block text-[9px] leading-4 text-sheet-muted">{copy.detail}</small>
         </span>
       </div>
       <div className="grid gap-2 px-1 pt-1">
         <span>
-          <strong className="block text-[12px]">
-            Open TouchGrassBar anytime
-          </strong>
+          <strong className="block text-[12px]">Open TouchGrassBar anytime</strong>
           <small className="mt-1 block text-[9px] leading-4 text-sheet-muted">
-            Click the highlighted menu bar icon whenever you want to check your
-            limits.
+            Click the highlighted menu bar icon whenever you want to check your limits.
           </small>
         </span>
         <MacMenuBarPreview />

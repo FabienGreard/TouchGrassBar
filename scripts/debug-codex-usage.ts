@@ -8,13 +8,7 @@ import { join, resolve } from "node:path";
 import { resolveDevInstance } from "../apps/desktop/src/dev/dev-instance";
 
 const workspaceRoot = resolve(import.meta.dir, "..");
-const manifestPath = join(
-  workspaceRoot,
-  "apps",
-  "desktop",
-  "src-tauri",
-  "Cargo.toml",
-);
+const manifestPath = join(workspaceRoot, "apps", "desktop", "src-tauri", "Cargo.toml");
 const debugDirectory = join(
   workspaceRoot,
   "apps",
@@ -52,9 +46,7 @@ function requestedOptions() {
       continue;
     }
     if (argument !== "--passes" || index + 1 >= argumentsList.length) {
-      throw new Error(
-        "Use: bun debug:codex-usage [--fresh] [--passes <1-100>]",
-      );
+      throw new Error("Use: bun debug:codex-usage [--fresh] [--passes <1-100>]");
     }
     passes = Number(argumentsList[index + 1]);
     index += 1;
@@ -68,15 +60,11 @@ function requestedOptions() {
 function seedDebugDatabase(liveDatabase: string) {
   if (existsSync(debugDatabase) || !existsSync(liveDatabase)) return;
   mkdirSync(debugDirectory, { recursive: true });
-  const backup = spawnSync(
-    "sqlite3",
-    [liveDatabase, `.backup '${debugDatabase}'`],
-    {
-      cwd: workspaceRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const backup = spawnSync("sqlite3", [liveDatabase, `.backup '${debugDatabase}'`], {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   if (backup.status !== 0) {
     throw new Error("The private SQLite debug snapshot could not be created.");
   }
@@ -107,10 +95,7 @@ function accountCacheShape(database: string) {
   );
   if (result.status !== 0) return null;
   const [dayColumns, metaColumns] = result.stdout.trim().split("\n");
-  if (
-    dayColumns === "day,tokens,observed_at" &&
-    metaColumns === "singleton,refreshed_at"
-  ) {
+  if (dayColumns === "day,tokens,observed_at" && metaColumns === "singleton,refreshed_at") {
     return "current";
   }
   if (dayColumns === "day,tokens" && metaColumns === "singleton,observed_at") {
@@ -121,9 +106,7 @@ function accountCacheShape(database: string) {
 
 function refreshAccountCache(liveDatabase: string) {
   if (!existsSync(liveDatabase)) {
-    console.error(
-      "[TouchGrassBar][codex-usage] debug_account_cache=unavailable",
-    );
+    console.error("[TouchGrassBar][codex-usage] debug_account_cache=unavailable");
     return;
   }
   mkdirSync(debugDirectory, { recursive: true });
@@ -131,10 +114,7 @@ function refreshAccountCache(liveDatabase: string) {
   if (sourceShape === null) {
     const clear = spawnSync(
       "sqlite3",
-      [
-        debugDatabase,
-        ["BEGIN IMMEDIATE;", ...currentAccountCacheSchema, "COMMIT;"].join(" "),
-      ],
+      [debugDatabase, ["BEGIN IMMEDIATE;", ...currentAccountCacheSchema, "COMMIT;"].join(" ")],
       {
         cwd: workspaceRoot,
         encoding: "utf8",
@@ -144,9 +124,7 @@ function refreshAccountCache(liveDatabase: string) {
     if (clear.status !== 0) {
       throw new Error("The private account usage cache could not be cleared.");
     }
-    console.error(
-      "[TouchGrassBar][codex-usage] debug_account_cache=unavailable",
-    );
+    console.error("[TouchGrassBar][codex-usage] debug_account_cache=unavailable");
     return;
   }
   const copyAccountDays =

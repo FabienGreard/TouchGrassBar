@@ -16,7 +16,10 @@
   isolation: isolate;
   border: 0;
   border-top: 2px solid #ff6b4a52;
-  background: radial-gradient(circle at 14% 18%, #451417 0, transparent 36rem), radial-gradient(circle at 82% 62%, #281014 0, transparent 30rem), linear-gradient(145deg, #210d10, var(--d-doomer-bg) 72%);
+  background:
+    radial-gradient(circle at 14% 18%, #451417 0, transparent 36rem),
+    radial-gradient(circle at 82% 62%, #281014 0, transparent 30rem),
+    linear-gradient(145deg, #210d10, var(--d-doomer-bg) 72%);
   box-shadow: none;
   place-items: normal;
 }
@@ -184,11 +187,23 @@
 }
 
 @keyframes d-board-live {
-  0%, 100% { opacity: 0.55; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1.2); }
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
 }
 
 @keyframes d-board-sheen {
-  0%, 62% { background-position: 100% 50%; }
-  100% { background-position: -100% 50%; }
+  0%,
+  62% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: -100% 50%;
+  }
 }

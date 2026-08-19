@@ -9,11 +9,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
-import {
-  doomerboard,
-  doomerboardKey,
-  type DoomerboardKey,
-} from "./model/doomerboard";
+import { doomerboard, doomerboardKey, type DoomerboardKey } from "./model/doomerboard";
 import { installationCredentialDigest } from "./model/profile";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
@@ -27,9 +23,7 @@ function publicIdFor(index: number) {
   let remaining = index;
   let suffix = "";
   for (let position = 0; position < 6; position += 1) {
-    suffix =
-      TOUCH_GRASS_ID_ALPHABET[remaining % TOUCH_GRASS_ID_ALPHABET.length] +
-      suffix;
+    suffix = TOUCH_GRASS_ID_ALPHABET[remaining % TOUCH_GRASS_ID_ALPHABET.length] + suffix;
     remaining = Math.floor(remaining / TOUCH_GRASS_ID_ALPHABET.length);
   }
   return `TG-${suffix}`;
@@ -44,16 +38,10 @@ function testBackend() {
   return t;
 }
 
-async function authFetch(
-  t: ReturnType<typeof testBackend>,
-  path: string,
-  init: RequestInit,
-) {
+async function authFetch(t: ReturnType<typeof testBackend>, path: string, init: RequestInit) {
   const result = await t.action(async (ctx) => {
     const auth = createAuthWithRequestIp(ctx, async () => "203.0.113.10");
-    const response = await auth.handler(
-      new Request(`https://example.convex.site${path}`, init),
-    );
+    const response = await auth.handler(new Request(`https://example.convex.site${path}`, init));
     return {
       body: await response.text(),
       headers: Array.from(response.headers.entries()),
@@ -86,10 +74,7 @@ function installationCredential(character: string) {
   return character.repeat(52);
 }
 
-async function authenticateProfile(
-  t: ReturnType<typeof testBackend>,
-  displayName: string,
-) {
+async function authenticateProfile(t: ReturnType<typeof testBackend>, displayName: string) {
   const preparation = await authFetch(t, "/api/auth/touchgrass/prepare", {
     method: "POST",
   });
@@ -198,11 +183,8 @@ function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
       coveragePercent: null,
       micros: 1_000,
       pricingBasis:
-        provider === "codex"
-          ? "openai-api-2026-08-09-v3"
-          : "anthropic-standard-2026-08-07-v1",
-      quality:
-        evidenceBasis === "provider-reported" ? "reconciled" : "local-only",
+        provider === "codex" ? "openai-api-2026-08-09-v3" : "anthropic-standard-2026-08-07-v1",
+      quality: evidenceBasis === "provider-reported" ? "reconciled" : "local-only",
     },
     correctionReason: null,
     correctionRevision: null,
@@ -220,10 +202,7 @@ function usageSnapshot(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(NOW);
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 });
 
@@ -237,9 +216,7 @@ test("first Profile accepts a thirty UTC day backfill atomically", async () => {
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   const snapshots = Array.from({ length: 30 }, (_, offset) => {
-    const rankingDay = new Date(
-      NOW.getTime() - offset * 24 * 60 * 60 * 1_000,
-    )
+    const rankingDay = new Date(NOW.getTime() - offset * 24 * 60 * 60 * 1_000)
       .toISOString()
       .slice(0, 10);
     return [
@@ -295,14 +272,13 @@ test("first Profile accepts a thirty UTC day backfill atomically", async () => {
   });
   expect(retry).toHaveLength(60);
   expect(retry.every(({ outcome }) => outcome === "idempotent")).toBe(true);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual(stored.buckets);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(
+    stored.buckets,
+  );
 
   const historicalCorrection = {
     ...snapshots.find(
-      (snapshot) =>
-        snapshot.provider === "claude" && snapshot.rankingDay !== TODAY,
+      (snapshot) => snapshot.provider === "claude" && snapshot.rankingDay !== TODAY,
     )!,
     correctionReason: "parser-correction" as const,
     correctionRevision: 2,
@@ -331,18 +307,14 @@ test("a completed sparse Profile backfill keeps missing days absent", async () =
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
-  const oldestDay = new Date(NOW.getTime() - 29 * 24 * 60 * 60 * 1_000)
-    .toISOString()
-    .slice(0, 10);
+  const oldestDay = new Date(NOW.getTime() - 29 * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
   await authenticated.mutation(api.sync.dailyUsage, {
     activeMacGeneration: 1,
     installationCredential: credential,
     profileBackfillAnchor: TODAY,
     snapshots: [usageSnapshot(), usageSnapshot({ rankingDay: oldestDay })],
   });
-  const missingDay = new Date(NOW.getTime() - 1 * 24 * 60 * 60 * 1_000)
-    .toISOString()
-    .slice(0, 10);
+  const missingDay = new Date(NOW.getTime() - 1 * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
@@ -352,9 +324,7 @@ test("a completed sparse Profile backfill keeps missing days absent", async () =
       snapshots: [usageSnapshot({ rankingDay: missingDay })],
     }),
   ).rejects.toThrow("keeps original-window missing days closed");
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toHaveLength(2);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toHaveLength(2);
 });
 
 test("an empty Profile backfill completes once and closes new historical days", async () => {
@@ -371,9 +341,7 @@ test("an empty Profile backfill completes once and closes new historical days", 
     }),
   ).resolves.toEqual([]);
   expect(
-    await t.run(async (ctx) =>
-      (await ctx.db.query("devices").first())?.usageBackfillCompletedAt,
-    ),
+    await t.run(async (ctx) => (await ctx.db.query("devices").first())?.usageBackfillCompletedAt),
   ).toBe(NOW.getTime());
 
   await expect(
@@ -385,9 +353,7 @@ test("an empty Profile backfill completes once and closes new historical days", 
     }),
   ).resolves.toEqual([]);
 
-  const previousDay = new Date(NOW.getTime() - 24 * 60 * 60 * 1_000)
-    .toISOString()
-    .slice(0, 10);
+  const previousDay = new Date(NOW.getTime() - 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
       profileBackfillAnchor: null,
@@ -410,9 +376,7 @@ test("a Profile backfill completion rolls back with one invalid row", async () =
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
-  const outsideProfileWindow = new Date(
-    NOW.getTime() - 30 * 24 * 60 * 60 * 1_000,
-  )
+  const outsideProfileWindow = new Date(NOW.getTime() - 30 * 24 * 60 * 60 * 1_000)
     .toISOString()
     .slice(0, 10);
 
@@ -421,18 +385,14 @@ test("a Profile backfill completion rolls back with one invalid row", async () =
       activeMacGeneration: 1,
       installationCredential: credential,
       profileBackfillAnchor: TODAY,
-      snapshots: [
-        usageSnapshot(),
-        usageSnapshot({ rankingDay: outsideProfileWindow }),
-      ],
+      snapshots: [usageSnapshot(), usageSnapshot({ rankingDay: outsideProfileWindow })],
     }),
   ).rejects.toThrow("outside the Profile window");
 
   await expect(
     t.run(async (ctx) => ({
       buckets: await ctx.db.query("usageBuckets").collect(),
-      completedAt: (await ctx.db.query("devices").first())
-        ?.usageBackfillCompletedAt,
+      completedAt: (await ctx.db.query("devices").first())?.usageBackfillCompletedAt,
     })),
   ).resolves.toEqual({ buckets: [], completedAt: null });
 });
@@ -515,9 +475,7 @@ test("a marked Profile retry admits the latest anchor-day revision", async () =>
     snapshots: [latestAnchorSnapshot],
   };
 
-  await expect(
-    authenticated.mutation(api.sync.dailyUsage, args),
-  ).resolves.toEqual([
+  await expect(authenticated.mutation(api.sync.dailyUsage, args)).resolves.toEqual([
     {
       outcome: "committed",
       provider: "codex",
@@ -525,9 +483,7 @@ test("a marked Profile retry admits the latest anchor-day revision", async () =>
       revision: 2,
     },
   ]);
-  await expect(
-    authenticated.mutation(api.sync.dailyUsage, args),
-  ).resolves.toEqual([
+  await expect(authenticated.mutation(api.sync.dailyUsage, args)).resolves.toEqual([
     {
       outcome: "idempotent",
       provider: "codex",
@@ -535,9 +491,10 @@ test("a marked Profile retry admits the latest anchor-day revision", async () =>
       revision: 2,
     },
   ]);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").first()),
-  ).toMatchObject({ observedTokens: 120, revision: 2 });
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").first())).toMatchObject({
+    observedTokens: 120,
+    revision: 2,
+  });
 });
 
 test("a completed Profile accepts only in-day delayed post-anchor rows", async () => {
@@ -566,9 +523,7 @@ test("a completed Profile accepts only in-day delayed post-anchor rows", async (
     profileBackfillAnchor: null,
     snapshots: [delayed],
   };
-  await expect(
-    authenticated.mutation(api.sync.dailyUsage, delayedArgs),
-  ).resolves.toEqual([
+  await expect(authenticated.mutation(api.sync.dailyUsage, delayedArgs)).resolves.toEqual([
     {
       outcome: "committed",
       provider: "codex",
@@ -576,9 +531,7 @@ test("a completed Profile accepts only in-day delayed post-anchor rows", async (
       revision: 2,
     },
   ]);
-  await expect(
-    authenticated.mutation(api.sync.dailyUsage, delayedArgs),
-  ).resolves.toEqual([
+  await expect(authenticated.mutation(api.sync.dailyUsage, delayedArgs)).resolves.toEqual([
     {
       outcome: "idempotent",
       provider: "codex",
@@ -617,9 +570,7 @@ test("a marked Profile backfill rejects more than sixty total snapshots", async 
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
   const snapshots = Array.from({ length: 31 }, (_, offset) => {
-    const rankingDay = new Date(
-      NOW.getTime() - offset * 24 * 60 * 60 * 1_000,
-    )
+    const rankingDay = new Date(NOW.getTime() - offset * 24 * 60 * 60 * 1_000)
       .toISOString()
       .slice(0, 10);
     return [
@@ -638,9 +589,7 @@ test("a marked Profile backfill rejects more than sixty total snapshots", async 
       snapshots,
     }),
   ).rejects.toThrow("at most 60 Daily Usage Snapshots");
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual([]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual([]);
 });
 
 test("a first Active Mac corrects a later current day after UTC rollover", async () => {
@@ -709,15 +658,15 @@ test("a first Active Mac corrects a later current day after UTC rollover", async
   ]);
 
   const corrected = await t.run(async (ctx) => ({
-    bucket: (
-      await ctx.db.query("usageBuckets").collect()
-    ).find((row) => row.rankingDay === laterDay),
-    daily: (
-      await ctx.db.query("userDailyUsage").collect()
-    ).find((row) => row.rankingDay === laterDay),
-    score: (
-      await ctx.db.query("publicUsages").collect()
-    ).find((row) => row.scope === "combined" && row.windowDays === 30),
+    bucket: (await ctx.db.query("usageBuckets").collect()).find(
+      (row) => row.rankingDay === laterDay,
+    ),
+    daily: (await ctx.db.query("userDailyUsage").collect()).find(
+      (row) => row.rankingDay === laterDay,
+    ),
+    score: (await ctx.db.query("publicUsages").collect()).find(
+      (row) => row.scope === "combined" && row.windowDays === 30,
+    ),
   }));
   expect(corrected.bucket).toMatchObject({
     observedTokens: 150,
@@ -766,9 +715,7 @@ test("provider-reported evidence rejects higher and lower local replacements", a
     ]);
   }
 
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").first()),
-  ).toMatchObject({
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").first())).toMatchObject({
     evidenceBasis: "provider-reported",
     observedTokens: 100,
     revision: 1,
@@ -779,9 +726,7 @@ test("a retained Codex correction keeps an approved prior pricing basis", async 
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
-  const previousDay = new Date(NOW.getTime() - 24 * 60 * 60 * 1_000)
-    .toISOString()
-    .slice(0, 10);
+  const previousDay = new Date(NOW.getTime() - 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
   const priorCost = {
     coveragePercent: null,
     micros: 1_000,
@@ -818,9 +763,7 @@ test("a retained Codex correction keeps an approved prior pricing basis", async 
       ],
     }),
   ).resolves.toMatchObject([{ outcome: "committed", revision: 2 }]);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").first()),
-  ).toMatchObject({
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").first())).toMatchObject({
     apiEquivalentCost: priorCost,
     observedTokens: 90,
     revision: 2,
@@ -863,13 +806,9 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 1,
     },
   ]);
-  const beforeRetry = await t.run(async (ctx) =>
-    ctx.db.query("usageBuckets").collect(),
-  );
+  const beforeRetry = await t.run(async (ctx) => ctx.db.query("usageBuckets").collect());
   expect(beforeRetry).toHaveLength(2);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("publicUsages").collect()),
-  ).toHaveLength(9);
+  expect(await t.run(async (ctx) => ctx.db.query("publicUsages").collect())).toHaveLength(9);
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
@@ -892,9 +831,7 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 1,
     },
   ]);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual(beforeRetry);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(beforeRetry);
 
   const higherSnapshots = snapshots.map((snapshot) =>
     Object.assign({}, snapshot, {
@@ -922,9 +859,7 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 1,
     },
   ]);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual(beforeRetry);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(beforeRetry);
 
   const lowerSnapshots = snapshots.map((snapshot) =>
     Object.assign({}, snapshot, {
@@ -952,9 +887,7 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 1,
     },
   ]);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual(beforeRetry);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(beforeRetry);
 
   const olderObservations = snapshots.map((snapshot) =>
     Object.assign({}, snapshot, {
@@ -984,9 +917,7 @@ test("both providers commit atomically and retries report exact revision outcome
       revision: 2,
     },
   ]);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual(beforeRetry);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual(beforeRetry);
 
   await authenticated.mutation(api.sync.dailyUsage, {
     profileBackfillAnchor: null,
@@ -1060,14 +991,10 @@ test("provider settings exclude accepted usage and restore retained history", as
     { claudeEnabled: false, codexEnabled: true, revision: 1 },
   ]);
   expect(
-    disabled.scores.find(
-      (row) => row.scope === "combined" && row.windowDays === 1,
-    ),
+    disabled.scores.find((row) => row.scope === "combined" && row.windowDays === 1),
   ).toMatchObject({ tokenScore: 100 });
   expect(
-    disabled.scores.find(
-      (row) => row.scope === "claude" && row.windowDays === 1,
-    ),
+    disabled.scores.find((row) => row.scope === "claude" && row.windowDays === 1),
   ).toMatchObject({ tokenScore: 0 });
 
   await expect(
@@ -1142,11 +1069,7 @@ test("provider settings require exact Active Mac authority and values", async ()
       revision: 1,
     }),
   ).rejects.toThrow("duplicate provider");
-  expect(
-    await t.run(async (ctx) =>
-      ctx.db.query("deviceProviderSettings").collect(),
-    ),
-  ).toEqual([]);
+  expect(await t.run(async (ctx) => ctx.db.query("deviceProviderSettings").collect())).toEqual([]);
 });
 
 test("modeled cost metadata reaches daily, score, and Doomerboard rows", async () => {
@@ -1182,9 +1105,7 @@ test("modeled cost metadata reaches daily, score, and Doomerboard rows", async (
     apiEquivalentCost,
   });
   expect(
-    stored.publicUsages.find(
-      (row) => row.scope === "claude" && row.windowDays === 1,
-    ),
+    stored.publicUsages.find((row) => row.scope === "claude" && row.windowDays === 1),
   ).toMatchObject({
     apiEquivalentCost,
   });
@@ -1221,13 +1142,9 @@ test("Display Name changes immediately update Public Usage projections", async (
     displayName: "Updated Fabien",
   });
 
-  const publicUsages = await t.run(async (ctx) =>
-    ctx.db.query("publicUsages").collect(),
-  );
+  const publicUsages = await t.run(async (ctx) => ctx.db.query("publicUsages").collect());
   expect(publicUsages).toHaveLength(9);
-  expect(publicUsages.every((row) => row.displayName === "Updated Fabien")).toBe(
-    true,
-  );
+  expect(publicUsages.every((row) => row.displayName === "Updated Fabien")).toBe(true);
   await expect(
     authenticated.query(api.doomerboards.global, {
       limit: 10,
@@ -1265,11 +1182,7 @@ test("the current Friends Doomerboard selects its provider and period", async ()
   const owner = await createProfile(t, installationCredential("A"), "Owner");
   const friendCredential = installationCredential("B");
   const friend = await createProfile(t, friendCredential, "Friend");
-  const waitingFriend = await createProfile(
-    t,
-    installationCredential("C"),
-    "Waiting Friend",
-  );
+  const waitingFriend = await createProfile(t, installationCredential("C"), "Waiting Friend");
   await friend.authenticated.mutation(api.sync.dailyUsage, {
     profileBackfillAnchor: null,
     activeMacGeneration: 1,
@@ -1387,8 +1300,7 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
     touchGrassId: publicIdFor(104 - index),
   })).sort(
     (left, right) =>
-      right.tokenScore - left.tokenScore ||
-      left.touchGrassId.localeCompare(right.touchGrassId),
+      right.tokenScore - left.tokenScore || left.touchGrassId.localeCompare(right.touchGrassId),
   );
   const staleRows = Array.from({ length: 205 }, (_, index) => ({
     displayName: `Stale Tokenmaxxer ${index}`,
@@ -1456,23 +1368,20 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
     }),
   ).rejects.toThrow("rankingDay is not a real UTC calendar day");
 
-  const defaultPage = await authenticated.query(
-    api.doomerboards.currentGlobal,
-    { rankingDay: TODAY },
-  );
-  const cappedPage = await authenticated.query(
-    api.doomerboards.currentGlobal,
-    { limit: 500, rankingDay: TODAY },
-  );
+  const defaultPage = await authenticated.query(api.doomerboards.currentGlobal, {
+    rankingDay: TODAY,
+  });
+  const cappedPage = await authenticated.query(api.doomerboards.currentGlobal, {
+    limit: 500,
+    rankingDay: TODAY,
+  });
   expect(defaultPage).toHaveLength(50);
   expect(cappedPage).toHaveLength(100);
   expect(cappedPage).toEqual(
     expected.slice(0, 100).map((row, _index, rows) => ({
       apiEquivalentCost: null,
       displayName: row.displayName,
-      rank:
-        rows.findIndex((candidate) => candidate.tokenScore === row.tokenScore) +
-        1,
+      rank: rows.findIndex((candidate) => candidate.tokenScore === row.tokenScore) + 1,
       tokenScore: row.tokenScore,
       touchGrassId: row.touchGrassId,
     })),
@@ -1558,10 +1467,7 @@ test("the migration repairs a missing Doomerboard index entry", async () => {
   await t.run(async (ctx) => {
     await doomerboard.delete(ctx, {
       id: publicUsage._id,
-      key: doomerboardKey(
-        publicUsage.tokenScore,
-        publicUsage.touchGrassId,
-      ),
+      key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
       namespace: publicUsage.boardKey,
     });
   });
@@ -1574,14 +1480,8 @@ test("the migration repairs a missing Doomerboard index entry", async () => {
   ).resolves.toEqual([]);
 
   const args = { cursor: null, dryRun: false, oneBatchOnly: true };
-  await t.mutation(
-    internal.internal.migrations.backfillDoomerboard,
-    args,
-  );
-  await t.mutation(
-    internal.internal.migrations.backfillDoomerboard,
-    args,
-  );
+  await t.mutation(internal.internal.migrations.backfillDoomerboard, args);
+  await t.mutation(internal.internal.migrations.backfillDoomerboard, args);
   const repairedPage = await t.run((ctx) =>
     doomerboard.paginate(ctx, {
       bounds: {
@@ -1632,60 +1532,43 @@ test("the read-only Doomerboard invariant detects and verifies an idempotent rep
     installationCredential: credential,
     snapshots: [usageSnapshot()],
   });
-  await expect(
-    t.query(internal.internal.doomerboardInvariantPage.version, {}),
-  ).resolves.toBe(1);
+  await expect(t.query(internal.internal.doomerboardInvariantPage.version, {})).resolves.toBe(1);
   const publicUsage = await t.run(async (ctx) =>
     ctx.db
       .query("publicUsages")
-      .withIndex("by_board_key", (q) =>
-        q.eq("boardKey", "tokens-v1:combined:1d"),
-      )
+      .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:combined:1d"))
       .unique(),
   );
   if (!publicUsage) throw new Error("Public Usage missing");
   await t.run(async (ctx) => {
     await doomerboard.delete(ctx, {
       id: publicUsage._id,
-      key: doomerboardKey(
-        publicUsage.tokenScore,
-        publicUsage.touchGrassId,
-      ),
+      key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
       namespace: publicUsage.boardKey,
     });
     await doomerboard.insert(ctx, {
       id: publicUsage._id,
-      key: [
-        -publicUsage.tokenScore + 1,
-        publicUsage.touchGrassId,
-      ],
+      key: [-publicUsage.tokenScore + 1, publicUsage.touchGrassId],
       namespace: publicUsage.boardKey,
     });
     await doomerboard.insert(ctx, {
       id: publicUsage._id,
-      key: doomerboardKey(
-        publicUsage.tokenScore,
-        publicUsage.touchGrassId,
-      ),
+      key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
       namespace: "invalid-board-key",
     });
   });
 
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.check, {}),
-  ).resolves.toMatchObject({
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toMatchObject({
     extraEntries: 1,
     invalidEntries: 1,
     mismatchedEntries: 1,
     missingEntries: 1,
   });
 
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.repair, {}),
-  ).resolves.toEqual({ changedEntries: 2 });
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.check, {}),
-  ).resolves.toEqual({
+  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
+    changedEntries: 2,
+  });
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
     aggregateEntries: 9,
     extraEntries: 0,
     invalidEntries: 0,
@@ -1693,15 +1576,11 @@ test("the read-only Doomerboard invariant detects and verifies an idempotent rep
     missingEntries: 0,
     publicScores: 9,
   });
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.repair, {}),
-  ).resolves.toEqual({ changedEntries: 0 });
-  await expect(
-    t.query(internal.internal.doomerboardInvariantPage.version, {}),
-  ).resolves.toBe(3);
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.check, {}),
-  ).resolves.toEqual({
+  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
+    changedEntries: 0,
+  });
+  await expect(t.query(internal.internal.doomerboardInvariantPage.version, {})).resolves.toBe(3);
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
     aggregateEntries: 9,
     extraEntries: 0,
     invalidEntries: 0,
@@ -1724,9 +1603,7 @@ test("the Doomerboard invariant repairs an invalid Public Usage namespace", asyn
   const publicUsage = await t.run(async (ctx) =>
     ctx.db
       .query("publicUsages")
-      .withIndex("by_board_key", (q) =>
-        q.eq("boardKey", "tokens-v1:combined:1d"),
-      )
+      .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:combined:1d"))
       .unique(),
   );
   if (!publicUsage) throw new Error("Public Usage missing");
@@ -1736,19 +1613,15 @@ test("the Doomerboard invariant repairs an invalid Public Usage namespace", asyn
     });
   });
 
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.check, {}),
-  ).resolves.toMatchObject({
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toMatchObject({
     extraEntries: 1,
     invalidEntries: 1,
     missingEntries: 1,
   });
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.repair, {}),
-  ).resolves.toEqual({ changedEntries: 2 });
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.check, {}),
-  ).resolves.toEqual({
+  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
+    changedEntries: 2,
+  });
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
     aggregateEntries: 9,
     extraEntries: 0,
     invalidEntries: 0,
@@ -1756,9 +1629,9 @@ test("the Doomerboard invariant repairs an invalid Public Usage namespace", asyn
     missingEntries: 0,
     publicScores: 9,
   });
-  await expect(
-    t.action(internal.internal.doomerboardInvariant.repair, {}),
-  ).resolves.toEqual({ changedEntries: 0 });
+  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
+    changedEntries: 0,
+  });
 });
 
 test("the device completion migration preserves pending Profile authority", async () => {
@@ -1790,23 +1663,13 @@ test("the device completion migration preserves pending Profile authority", asyn
         }),
       ],
     }),
-  ).rejects.toThrow(
-    "new Profile history requires an explicit backfill completion marker",
-  );
+  ).rejects.toThrow("new Profile history requires an explicit backfill completion marker");
 
   const args = { cursor: null, dryRun: false, oneBatchOnly: true };
-  await t.mutation(
-    internal.internal.migrations.backfillDeviceUsageCompletion,
-    args,
-  );
-  await t.mutation(
-    internal.internal.migrations.backfillDeviceUsageCompletion,
-    args,
-  );
+  await t.mutation(internal.internal.migrations.backfillDeviceUsageCompletion, args);
+  await t.mutation(internal.internal.migrations.backfillDeviceUsageCompletion, args);
   expect(
-    await t.run(async (ctx) =>
-      (await ctx.db.query("devices").unique())?.usageBackfillCompletedAt,
-    ),
+    await t.run(async (ctx) => (await ctx.db.query("devices").unique())?.usageBackfillCompletedAt),
   ).toBeNull();
 
   await expect(
@@ -1866,9 +1729,7 @@ test("Active Mac authority is isolated by Profile, credential, generation, and r
       snapshots: [snapshot],
     }),
   ).rejects.toThrow("authority-rejected");
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual([]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual([]);
 });
 
 test("same-day Active Mac transfer freezes and adds both provider segments", async () => {
@@ -1966,12 +1827,8 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
   ).toEqual([75, 200]);
   expect(stored.userDailyUsage).toHaveLength(2);
 
-  const codexDaily = stored.userDailyUsage.find(
-    (row) => row.provider === "codex",
-  );
-  const claudeDaily = stored.userDailyUsage.find(
-    (row) => row.provider === "claude",
-  );
+  const codexDaily = stored.userDailyUsage.find((row) => row.provider === "codex");
+  const claudeDaily = stored.userDailyUsage.find((row) => row.provider === "claude");
   expect(codexDaily).toMatchObject({
     apiEquivalentCost: {
       micros: 1_500,
@@ -1980,9 +1837,7 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
     },
     observedTokens: 150,
   });
-  expect(codexDaily?.apiEquivalentCost?.coveragePercent).toBeCloseTo(
-    83.333_333,
-  );
+  expect(codexDaily?.apiEquivalentCost?.coveragePercent).toBeCloseTo(83.333_333);
   expect(claudeDaily).toMatchObject({
     apiEquivalentCost: {
       micros: 2_000,
@@ -1991,9 +1846,7 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
     },
     observedTokens: 275,
   });
-  expect(claudeDaily?.apiEquivalentCost?.coveragePercent).toBeCloseTo(
-    72.727_273,
-  );
+  expect(claudeDaily?.apiEquivalentCost?.coveragePercent).toBeCloseTo(72.727_273);
 
   const combinedUsage = stored.publicUsages.find(
     (row) => row.scope === "combined" && row.windowDays === 1,
@@ -2001,15 +1854,12 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
   expect(combinedUsage).toMatchObject({
     apiEquivalentCost: {
       micros: 3_500,
-      pricingBasis:
-        "anthropic-standard-2026-08-07-v1 + openai-api-2026-08-09-v3",
+      pricingBasis: "anthropic-standard-2026-08-07-v1 + openai-api-2026-08-09-v3",
       quality: "modeled",
     },
     tokenScore: 425,
   });
-  expect(combinedUsage?.apiEquivalentCost?.coveragePercent).toBeCloseTo(
-    76.470_588,
-  );
+  expect(combinedUsage?.apiEquivalentCost?.coveragePercent).toBeCloseTo(76.470_588);
 });
 
 test("a rollover accepts a zero transfer carryover after activation", async () => {
@@ -2118,13 +1968,9 @@ test("a rollover accepts a zero transfer carryover after activation", async () =
       rankingDay: TODAY,
     }),
   );
-  const affectedPublicUsages = stored.publicUsages.filter(
-    (usage) => usage.tokenScore === 100,
-  );
+  const affectedPublicUsages = stored.publicUsages.filter((usage) => usage.tokenScore === 100);
   expect(affectedPublicUsages).toHaveLength(4);
-  expect(
-    affectedPublicUsages.every((usage) => usage.apiEquivalentCost === null),
-  ).toBe(true);
+  expect(affectedPublicUsages.every((usage) => usage.apiEquivalentCost === null)).toBe(true);
 
   const currentDay = "2026-08-09";
   await expect(
@@ -2241,13 +2087,9 @@ test("a rollover commits and retries a partial transfer-day segment", async () =
       rankingDay: TODAY,
     }),
   );
-  const affectedPublicUsages = stored.publicUsages.filter(
-    (usage) => usage.tokenScore === 150,
-  );
+  const affectedPublicUsages = stored.publicUsages.filter((usage) => usage.tokenScore === 150);
   expect(affectedPublicUsages).toHaveLength(4);
-  expect(
-    affectedPublicUsages.every((usage) => usage.apiEquivalentCost === null),
-  ).toBe(true);
+  expect(affectedPublicUsages.every((usage) => usage.apiEquivalentCost === null)).toBe(true);
 });
 
 test("the first Active Mac can backfill its creation day after UTC rollover", async () => {
@@ -2278,9 +2120,7 @@ test("the first Active Mac can backfill its creation day after UTC rollover", as
       revision: 1,
     },
   ]);
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toHaveLength(1);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toHaveLength(1);
 });
 
 test("historical usage rejects every value outside a transfer carryover", async () => {
@@ -2343,9 +2183,7 @@ test("historical usage rejects every value outside a transfer carryover", async 
       }),
     ).rejects.toThrow("transfer");
   }
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual([]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual([]);
 });
 
 test("score recomputation ignores more than 1000 old rows", async () => {
@@ -2365,9 +2203,7 @@ test("score recomputation ignores more than 1000 old rows", async () => {
       apiEquivalentCost: null,
       observedTokens: 10_000 + dayOffset,
       provider,
-      rankingDay: new Date(Date.UTC(2020, 0, dayOffset + 1))
-        .toISOString()
-        .slice(0, 10),
+      rankingDay: new Date(Date.UTC(2020, 0, dayOffset + 1)).toISOString().slice(0, 10),
       tokenmaxxerId,
       updatedAt: NOW.getTime(),
     })),
@@ -2404,27 +2240,19 @@ test("score recomputation ignores more than 1000 old rows", async () => {
   const scores = await t.run(async (ctx) =>
     ctx.db
       .query("publicUsages")
-      .withIndex("by_tokenmaxxer_id", (q) =>
-        q.eq("tokenmaxxerId", tokenmaxxerId),
-      )
+      .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))
       .take(9),
   );
   expect(scores).toHaveLength(9);
   for (const windowDays of [1, 7, 30] as const) {
     expect(
-      scores.find(
-        (row) => row.scope === "codex" && row.windowDays === windowDays,
-      ),
+      scores.find((row) => row.scope === "codex" && row.windowDays === windowDays),
     ).toMatchObject({ tokenScore: 101 });
     expect(
-      scores.find(
-        (row) => row.scope === "claude" && row.windowDays === windowDays,
-      ),
+      scores.find((row) => row.scope === "claude" && row.windowDays === windowDays),
     ).toMatchObject({ tokenScore: 202 });
     expect(
-      scores.find(
-        (row) => row.scope === "combined" && row.windowDays === windowDays,
-      ),
+      scores.find((row) => row.scope === "combined" && row.windowDays === windowDays),
     ).toMatchObject({ tokenScore: 303 });
   }
 });
@@ -2458,9 +2286,7 @@ test("daily score recomputation drains every Tokenmaxxer", async () => {
     const finalScores = await t.run(async (ctx) =>
       ctx.db
         .query("publicUsages")
-        .withIndex("by_tokenmaxxer_id", (q) =>
-          q.eq("tokenmaxxerId", tokenmaxxerId),
-        )
+        .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxerId))
         .take(9),
     );
     expect(finalScores).toHaveLength(9);
@@ -2489,17 +2315,13 @@ test("the daily score watchdog resumes a stalled persisted cursor", async () => 
   });
 
   await t.mutation(internal.internal.recompute.scheduleAll, {});
-  const started = await t.run(async (ctx) =>
-    ctx.db.query("scoreRecomputeDrains").unique(),
-  );
+  const started = await t.run(async (ctx) => ctx.db.query("scoreRecomputeDrains").unique());
   if (!started) throw new Error("Score recomputation drain missing");
   await t.mutation(internal.internal.recompute.schedulePage, {
     cursor: null,
     generation: started.generation,
   });
-  const persisted = await t.run(async (ctx) =>
-    ctx.db.query("scoreRecomputeDrains").unique(),
-  );
+  const persisted = await t.run(async (ctx) => ctx.db.query("scoreRecomputeDrains").unique());
   expect(persisted).toMatchObject({
     pagesCompleted: 1,
     profilesCompleted: 5,
@@ -2572,13 +2394,8 @@ test("a delayed daily recomputation uses its execution Ranking Day", async () =>
   const currentScore = await t.run(async (ctx) =>
     ctx.db
       .query("publicUsages")
-      .withIndex(
-        "by_tokenmaxxer_id_and_scope_and_window_days",
-        (q) =>
-          q
-            .eq("tokenmaxxerId", tokenmaxxerId)
-            .eq("scope", "combined")
-            .eq("windowDays", 1),
+      .withIndex("by_tokenmaxxer_id_and_scope_and_window_days", (q) =>
+        q.eq("tokenmaxxerId", tokenmaxxerId).eq("scope", "combined").eq("windowDays", 1),
       )
       .unique(),
   );
@@ -2781,9 +2598,7 @@ test("a corrected revision can be the first server insert", async () => {
       }),
     ).rejects.toThrow("final evidence");
   }
-  expect(
-    await t.run(async (ctx) => ctx.db.query("usageBuckets").collect()),
-  ).toEqual([]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toEqual([]);
 
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
@@ -2822,9 +2637,7 @@ test("a corrected revision can be the first server insert", async () => {
     },
   ]);
 
-  const buckets = await t.run(async (ctx) =>
-    ctx.db.query("usageBuckets").collect(),
-  );
+  const buckets = await t.run(async (ctx) => ctx.db.query("usageBuckets").collect());
   expect(
     buckets.map((bucket) => ({
       lastCorrectionReason: bucket.lastCorrectionReason,
@@ -2857,10 +2670,7 @@ test("lost correction acknowledgements keep one lineage for both providers", asy
     profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
-    snapshots: [
-      usageSnapshot(),
-      usageSnapshot({ observedTokens: 200, provider: "claude" }),
-    ],
+    snapshots: [usageSnapshot(), usageSnapshot({ observedTokens: 200, provider: "claude" })],
   });
   await authenticated.mutation(api.sync.dailyUsage, {
     profileBackfillAnchor: null,
@@ -2962,13 +2772,7 @@ test("lost correction acknowledgements keep one lineage for both providers", asy
   ]);
   expect(
     stored.buckets.map(
-      ({
-        correctionReason,
-        correctionRevision,
-        observedTokens,
-        provider,
-        revision,
-      }) => ({
+      ({ correctionReason, correctionRevision, observedTokens, provider, revision }) => ({
         correctionReason,
         correctionRevision,
         observedTokens,
@@ -3063,10 +2867,7 @@ test("a skipped correction revision is new after an older server revision", asyn
     profileBackfillAnchor: null,
     activeMacGeneration: 1,
     installationCredential: credential,
-    snapshots: [
-      usageSnapshot(),
-      usageSnapshot({ observedTokens: 200, provider: "claude" }),
-    ],
+    snapshots: [usageSnapshot(), usageSnapshot({ observedTokens: 200, provider: "claude" })],
   });
 
   await expect(
@@ -3097,9 +2898,10 @@ test("a skipped correction revision is new after an older server revision", asyn
   ]);
   expect(
     await t.run(async (ctx) =>
-      (await ctx.db.query("usageCorrectionAudits").collect()).map(
-        ({ provider, revision }) => ({ provider, revision }),
-      ),
+      (await ctx.db.query("usageCorrectionAudits").collect()).map(({ provider, revision }) => ({
+        provider,
+        revision,
+      })),
     ),
   ).toEqual([
     { provider: "codex", revision: 2 },
@@ -3202,9 +3004,7 @@ test("correction reasons require exact evidence transitions", async () => {
     },
   ]);
 
-  const buckets = await t.run(async (ctx) =>
-    ctx.db.query("usageBuckets").collect(),
-  );
+  const buckets = await t.run(async (ctx) => ctx.db.query("usageBuckets").collect());
   expect(buckets).toHaveLength(1);
   expect(buckets[0]).toMatchObject({
     evidenceBasis: "provider-reported",
@@ -3252,9 +3052,7 @@ test("every accepted correction keeps a private append-only audit row", async ()
     audits: await ctx.db.query("usageCorrectionAudits").collect(),
     buckets: await ctx.db.query("usageBuckets").collect(),
   }));
-  expect(
-    stored.audits.map(({ reason, revision }) => ({ reason, revision })),
-  ).toEqual([
+  expect(stored.audits.map(({ reason, revision }) => ({ reason, revision }))).toEqual([
     { reason: "parser-correction", revision: 2 },
     { reason: "provider-replacement", revision: 3 },
   ]);
@@ -3275,126 +3073,122 @@ test("hostile and non-canonical payloads fail before any usage write", async () 
     activeMacGeneration: 1,
     installationCredential: credential,
   };
-  const invalidBatches: unknown[][] = (["codex", "claude"] as const).flatMap(
-    (provider) => {
-      const pricingBasis =
-        provider === "codex"
-          ? "openai-api-2026-08-09-v3"
-          : "anthropic-standard-2026-08-07-v1";
-      return [
-        Array.from({ length: 63 }, () => usageSnapshot({ provider })),
-        [usageSnapshot({ provider }), usageSnapshot({ provider, revision: 2 })],
-        [usageSnapshot({ provider, rankingDay: "2026-08-09" })],
-        [
-          usageSnapshot({
-            observedAt: Date.parse("2026-08-07T23:59:59.999Z"),
-            provider,
-          }),
-        ],
-        [
-          usageSnapshot({
-            observedAt: NOW.getTime() + 5 * 60 * 1_000 + 1,
-            provider,
-          }),
-        ],
-        [
-          usageSnapshot({
-            observedTokens: Number.MAX_SAFE_INTEGER + 1,
-            provider,
-          }),
-        ],
-        [usageSnapshot({ correctionRevision: 1, provider })],
-        [
-          usageSnapshot({
-            correctionReason: "parser-correction",
-            correctionRevision: null,
-            provider,
-          }),
-        ],
-        [
-          usageSnapshot({
-            correctionReason: "parser-correction",
-            correctionRevision: 0,
-            provider,
-            revision: 2,
-          }),
-        ],
-        [
-          usageSnapshot({
-            correctionReason: "parser-correction",
-            correctionRevision: 3,
-            provider,
-            revision: 2,
-          }),
-        ],
-        [
-          usageSnapshot({
-            correctionReason: "parser-correction",
-            correctionRevision: 1.5,
-            provider,
-            revision: 2,
-          }),
-        ],
-        [
-          usageSnapshot({
-            apiEquivalentCost: {
-              coveragePercent: null,
-              micros: 1,
-              pricingBasis,
-              quality: "modeled",
-            },
-            provider,
-          }),
-        ],
-        [
-          usageSnapshot({
-            apiEquivalentCost: {
-              coveragePercent: null,
-              micros: 1,
-              pricingBasis,
-              quality: "reconciled",
-            },
-            provider,
-          }),
-        ],
-        [
-          usageSnapshot({
-            apiEquivalentCost: {
-              coveragePercent: null,
-              micros: 1,
-              pricingBasis,
-              quality: "local-only",
-            },
-            evidenceBasis: "provider-reported",
-            provider,
-          }),
-        ],
-        [
-          usageSnapshot({
-            apiEquivalentCost: {
-              coveragePercent: null,
-              micros: 1,
-              pricingBasis: "provider-private-id",
-              quality: "local-only",
-            },
-            provider,
-          }),
-        ],
-        [
-          {
-            ...usageSnapshot({ provider }),
-            privatePath: "/private/provider/session.jsonl",
+  const invalidBatches: unknown[][] = (["codex", "claude"] as const).flatMap((provider) => {
+    const pricingBasis =
+      provider === "codex" ? "openai-api-2026-08-09-v3" : "anthropic-standard-2026-08-07-v1";
+    return [
+      Array.from({ length: 63 }, () => usageSnapshot({ provider })),
+      [usageSnapshot({ provider }), usageSnapshot({ provider, revision: 2 })],
+      [usageSnapshot({ provider, rankingDay: "2026-08-09" })],
+      [
+        usageSnapshot({
+          observedAt: Date.parse("2026-08-07T23:59:59.999Z"),
+          provider,
+        }),
+      ],
+      [
+        usageSnapshot({
+          observedAt: NOW.getTime() + 5 * 60 * 1_000 + 1,
+          provider,
+        }),
+      ],
+      [
+        usageSnapshot({
+          observedTokens: Number.MAX_SAFE_INTEGER + 1,
+          provider,
+        }),
+      ],
+      [usageSnapshot({ correctionRevision: 1, provider })],
+      [
+        usageSnapshot({
+          correctionReason: "parser-correction",
+          correctionRevision: null,
+          provider,
+        }),
+      ],
+      [
+        usageSnapshot({
+          correctionReason: "parser-correction",
+          correctionRevision: 0,
+          provider,
+          revision: 2,
+        }),
+      ],
+      [
+        usageSnapshot({
+          correctionReason: "parser-correction",
+          correctionRevision: 3,
+          provider,
+          revision: 2,
+        }),
+      ],
+      [
+        usageSnapshot({
+          correctionReason: "parser-correction",
+          correctionRevision: 1.5,
+          provider,
+          revision: 2,
+        }),
+      ],
+      [
+        usageSnapshot({
+          apiEquivalentCost: {
+            coveragePercent: null,
+            micros: 1,
+            pricingBasis,
+            quality: "modeled",
           },
-        ],
-        [
-          {
-            ...usageSnapshot({ provider }),
-            providerMessageId: "provider-private-id",
+          provider,
+        }),
+      ],
+      [
+        usageSnapshot({
+          apiEquivalentCost: {
+            coveragePercent: null,
+            micros: 1,
+            pricingBasis,
+            quality: "reconciled",
           },
-        ],
-      ];
-    },
-  );
+          provider,
+        }),
+      ],
+      [
+        usageSnapshot({
+          apiEquivalentCost: {
+            coveragePercent: null,
+            micros: 1,
+            pricingBasis,
+            quality: "local-only",
+          },
+          evidenceBasis: "provider-reported",
+          provider,
+        }),
+      ],
+      [
+        usageSnapshot({
+          apiEquivalentCost: {
+            coveragePercent: null,
+            micros: 1,
+            pricingBasis: "provider-private-id",
+            quality: "local-only",
+          },
+          provider,
+        }),
+      ],
+      [
+        {
+          ...usageSnapshot({ provider }),
+          privatePath: "/private/provider/session.jsonl",
+        },
+      ],
+      [
+        {
+          ...usageSnapshot({ provider }),
+          providerMessageId: "provider-private-id",
+        },
+      ],
+    ];
+  });
 
   for (const snapshots of invalidBatches) {
     await expect(
@@ -3453,9 +3247,7 @@ test("the app database stores only the installation digest and approved usage fi
     devices: await ctx.db.query("devices").collect(),
     publicUsages: await ctx.db.query("publicUsages").collect(),
     tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
-    usageCorrectionAudits: await ctx.db
-      .query("usageCorrectionAudits")
-      .collect(),
+    usageCorrectionAudits: await ctx.db.query("usageCorrectionAudits").collect(),
     usageBuckets: await ctx.db.query("usageBuckets").collect(),
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
   }));
@@ -3463,9 +3255,7 @@ test("the app database stores only the installation digest and approved usage fi
   expect(serialized).not.toContain(credential);
   expect(serialized).not.toContain("privatePath");
   expect(serialized).not.toContain("providerMessageId");
-  expect(stored.devices[0]?.installationCredentialDigest).toMatch(
-    /^sha256:[0-9a-f]{64}$/,
-  );
+  expect(stored.devices[0]?.installationCredentialDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
   expect(stored.usageCorrectionAudits).toHaveLength(1);
   expect(stored.usageCorrectionAudits[0]).toMatchObject({
     provider: "claude",

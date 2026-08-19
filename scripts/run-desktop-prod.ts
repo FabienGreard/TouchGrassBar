@@ -33,19 +33,8 @@ const profilePath = resolve(
 );
 const entitlementsPath = join(generatedDirectory, "prod-entitlements.plist");
 const configPath = join(generatedDirectory, "prod-tauri.conf.json");
-const configArgument = join(
-  "src-tauri",
-  ".dev-instance",
-  "prod-tauri.conf.json",
-);
-const appPath = join(
-  tauriRoot,
-  "target",
-  "release",
-  "bundle",
-  "macos",
-  `${productName}.app`,
-);
+const configArgument = join("src-tauri", ".dev-instance", "prod-tauri.conf.json");
+const appPath = join(tauriRoot, "target", "release", "bundle", "macos", `${productName}.app`);
 const profileEnvironmentNames = ["CONVEX_SITE_URL", "CONVEX_URL"] as const;
 const developmentEnvironmentNames = [
   "TOUCHGRASS_DEV_APP_BUNDLE_PATH",
@@ -61,11 +50,7 @@ const developmentEnvironmentNames = [
   "VITE_TOUCHGRASS_DEV_INSTANCE",
 ] as const;
 
-function commandOutput(
-  executable: string,
-  argumentsList: string[],
-  input?: string | Uint8Array,
-) {
+function commandOutput(executable: string, argumentsList: string[], input?: string | Uint8Array) {
   return execFileSync(executable, argumentsList, {
     encoding: "utf8",
     input,
@@ -74,39 +59,22 @@ function commandOutput(
 }
 
 function plistValue(path: string, keyPath: string) {
-  return commandOutput("/usr/bin/plutil", [
-    "-extract",
-    keyPath,
-    "raw",
-    "-o",
-    "-",
-    path,
-  ]);
+  return commandOutput("/usr/bin/plutil", ["-extract", keyPath, "raw", "-o", "-", path]);
 }
 
 function requireProfileEnvironment() {
-  const missing = profileEnvironmentNames.filter(
-    (name) => !Bun.env[name]?.trim(),
-  );
+  const missing = profileEnvironmentNames.filter((name) => !Bun.env[name]?.trim());
   if (missing.length > 0) {
-    throw new Error(
-      `Production Profile services are not configured (${missing.join(", ")}).`,
-    );
+    throw new Error(`Production Profile services are not configured (${missing.join(", ")}).`);
   }
 }
 
 function resolveProductionIdentity() {
   const identities = parseCodeSigningIdentities(
-    commandOutput("/usr/bin/security", [
-      "find-identity",
-      "-v",
-      "-p",
-      "codesigning",
-    ]),
+    commandOutput("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning"]),
   ).filter((identity) => identity.startsWith("Developer ID Application:"));
   const configured = Bun.env.TOUCHGRASS_PROD_SIGNING_IDENTITY?.trim();
-  const configuredIdentity =
-    configured || Bun.env.APPLE_SIGNING_IDENTITY?.trim();
+  const configuredIdentity = configured || Bun.env.APPLE_SIGNING_IDENTITY?.trim();
   if (configuredIdentity) {
     if (!identities.includes(configuredIdentity)) {
       throw new Error("The configured production signing identity is not valid.");
@@ -142,22 +110,10 @@ function verifyProfile(signingIdentity: string, temporaryDirectory: string) {
     throw new Error("The production provisioning profile is not installed.");
   }
   const decodedProfilePath = join(temporaryDirectory, "profile.plist");
-  const profileEntitlementsPath = join(
-    temporaryDirectory,
-    "profile-entitlements.plist",
-  );
-  const profileCertificateBase64Path = join(
-    temporaryDirectory,
-    "profile-certificate.base64",
-  );
-  const profileCertificatePath = join(
-    temporaryDirectory,
-    "profile-certificate.cer",
-  );
-  const installedCertificatePath = join(
-    temporaryDirectory,
-    "installed-certificate.pem",
-  );
+  const profileEntitlementsPath = join(temporaryDirectory, "profile-entitlements.plist");
+  const profileCertificateBase64Path = join(temporaryDirectory, "profile-certificate.base64");
+  const profileCertificatePath = join(temporaryDirectory, "profile-certificate.cer");
+  const installedCertificatePath = join(temporaryDirectory, "installed-certificate.pem");
   execFileSync(
     "/usr/bin/openssl",
     [
@@ -175,41 +131,24 @@ function verifyProfile(signingIdentity: string, temporaryDirectory: string) {
   );
   execFileSync(
     "/usr/bin/plutil",
-    [
-      "-extract",
-      "Entitlements",
-      "xml1",
-      "-o",
-      profileEntitlementsPath,
-      decodedProfilePath,
-    ],
+    ["-extract", "Entitlements", "xml1", "-o", profileEntitlementsPath, decodedProfilePath],
     { stdio: "ignore" },
   );
   const teamIdentifier = signingTeamIdentifier(signingIdentity);
   const applicationIdentifier = `${teamIdentifier}.${bundleIdentifier}`;
-  const keychainGroup = plistValue(
-    profileEntitlementsPath,
-    "keychain-access-groups.0",
-  );
+  const keychainGroup = plistValue(profileEntitlementsPath, "keychain-access-groups.0");
   if (
-    plistValue(
-      profileEntitlementsPath,
-      "com\\.apple\\.application-identifier",
-    ) !== applicationIdentifier ||
-    plistValue(
-      profileEntitlementsPath,
-      "com\\.apple\\.developer\\.team-identifier",
-    ) !== teamIdentifier ||
-    (keychainGroup !== applicationIdentifier &&
-      keychainGroup !== `${teamIdentifier}.*`) ||
+    plistValue(profileEntitlementsPath, "com\\.apple\\.application-identifier") !==
+      applicationIdentifier ||
+    plistValue(profileEntitlementsPath, "com\\.apple\\.developer\\.team-identifier") !==
+      teamIdentifier ||
+    (keychainGroup !== applicationIdentifier && keychainGroup !== `${teamIdentifier}.*`) ||
     plistValue(decodedProfilePath, "Platform.0") !== "OSX" ||
     plistValue(decodedProfilePath, "ProvisionsAllDevices") !== "true"
   ) {
     throw new Error("The production provisioning profile binding is invalid.");
   }
-  const expiration = Date.parse(
-    plistValue(decodedProfilePath, "ExpirationDate"),
-  );
+  const expiration = Date.parse(plistValue(decodedProfilePath, "ExpirationDate"));
   if (!Number.isFinite(expiration) || expiration <= Date.now()) {
     throw new Error("The production provisioning profile has expired.");
   }
@@ -227,13 +166,7 @@ function verifyProfile(signingIdentity: string, temporaryDirectory: string) {
   );
   execFileSync(
     "/usr/bin/base64",
-    [
-      "-D",
-      "-i",
-      profileCertificateBase64Path,
-      "-o",
-      profileCertificatePath,
-    ],
+    ["-D", "-i", profileCertificateBase64Path, "-o", profileCertificatePath],
     { stdio: "ignore" },
   );
   const installedCertificate = commandOutput("/usr/bin/security", [
@@ -243,18 +176,10 @@ function verifyProfile(signingIdentity: string, temporaryDirectory: string) {
     "-p",
   ]);
   writeFileSync(installedCertificatePath, installedCertificate, "utf8");
-  const profileFingerprint = certificateFingerprint(
-    profileCertificatePath,
-    "DER",
-  );
-  const installedFingerprint = certificateFingerprint(
-    installedCertificatePath,
-    "PEM",
-  );
+  const profileFingerprint = certificateFingerprint(profileCertificatePath, "DER");
+  const installedFingerprint = certificateFingerprint(installedCertificatePath, "PEM");
   if (!profileFingerprint || profileFingerprint !== installedFingerprint) {
-    throw new Error(
-      "The production profile does not contain the installed signing certificate.",
-    );
+    throw new Error("The production profile does not contain the installed signing certificate.");
   }
   return teamIdentifier;
 }
@@ -265,18 +190,12 @@ async function writeProductionConfiguration(
   version: string,
 ) {
   mkdirSync(generatedDirectory, { recursive: true });
-  const embeddedProfileSource = join(
-    generatedDirectory,
-    "prod.provisionprofile",
-  );
+  const embeddedProfileSource = join(generatedDirectory, "prod.provisionprofile");
   if (profilePath !== embeddedProfileSource) {
     copyFileSync(profilePath, embeddedProfileSource);
   }
   chmodSync(embeddedProfileSource, 0o600);
-  await Bun.write(
-    entitlementsPath,
-    developmentEntitlements({ bundleIdentifier, teamIdentifier }),
-  );
+  await Bun.write(entitlementsPath, developmentEntitlements({ bundleIdentifier, teamIdentifier }));
   await Bun.write(
     configPath,
     `${JSON.stringify(
@@ -287,8 +206,7 @@ async function writeProductionConfiguration(
           macOS: {
             entitlements: ".dev-instance/prod-entitlements.plist",
             files: {
-              "embedded.provisionprofile":
-                ".dev-instance/prod.provisionprofile",
+              "embedded.provisionprofile": ".dev-instance/prod.provisionprofile",
             },
           },
           ...(applicationOnly ? { targets: ["app"] } : {}),
@@ -314,16 +232,7 @@ function productionBuildEnvironment() {
 async function buildApp() {
   console.log("Building the local production app bundle...");
   const child = Bun.spawn(
-    [
-      "bun",
-      "run",
-      "tauri",
-      "build",
-      "--bundles",
-      "app",
-      "--config",
-      configArgument,
-    ],
+    ["bun", "run", "tauri", "build", "--bundles", "app", "--config", configArgument],
     {
       cwd: desktopRoot,
       env: productionBuildEnvironment(),
@@ -344,27 +253,17 @@ function verifySignedApp(
   requireNotarization: boolean,
 ) {
   const contentsPath = join(appPath, "Contents");
-  const embeddedProfilePath = join(
-    contentsPath,
-    "embedded.provisionprofile",
-  );
-  const signedEntitlementsPath = join(
-    temporaryDirectory,
-    "signed-entitlements.plist",
-  );
-  execFileSync(
-    "/usr/bin/codesign",
-    ["--verify", "--deep", "--strict", appPath],
-    { stdio: "ignore" },
-  );
+  const embeddedProfilePath = join(contentsPath, "embedded.provisionprofile");
+  const signedEntitlementsPath = join(temporaryDirectory, "signed-entitlements.plist");
+  execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath], {
+    stdio: "ignore",
+  });
   if (!readFileSync(profilePath).equals(readFileSync(embeddedProfilePath))) {
     throw new Error("The embedded production profile is not exact.");
   }
-  const signatureDetails = spawnSync(
-    "/usr/bin/codesign",
-    ["--display", "--verbose=4", appPath],
-    { encoding: "utf8" },
-  );
+  const signatureDetails = spawnSync("/usr/bin/codesign", ["--display", "--verbose=4", appPath], {
+    encoding: "utf8",
+  });
   if (signatureDetails.status !== 0) {
     throw new Error("The production signature cannot be inspected.");
   }
@@ -388,12 +287,9 @@ function verifySignedApp(
   writeFileSync(signedEntitlementsPath, signedEntitlements, "utf8");
   const applicationIdentifier = `${actualTeamIdentifier}.${bundleIdentifier}`;
   if (
-    plistValue(
-      signedEntitlementsPath,
-      "com\\.apple\\.application-identifier",
-    ) !== applicationIdentifier ||
-    plistValue(signedEntitlementsPath, "keychain-access-groups.0") !==
-      applicationIdentifier
+    plistValue(signedEntitlementsPath, "com\\.apple\\.application-identifier") !==
+      applicationIdentifier ||
+    plistValue(signedEntitlementsPath, "keychain-access-groups.0") !== applicationIdentifier
   ) {
     throw new Error("The final production Keychain entitlement is invalid.");
   }
@@ -401,34 +297,21 @@ function verifySignedApp(
   execFileSync("/usr/bin/xcrun", ["stapler", "validate", appPath], {
     stdio: "ignore",
   });
-  execFileSync(
-    "/usr/sbin/spctl",
-    ["--assess", "--type", "execute", "--verbose=4", appPath],
-    { stdio: "ignore" },
-  );
+  execFileSync("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=4", appPath], {
+    stdio: "ignore",
+  });
 }
 
 function signApp(signingIdentity: string, temporaryDirectory: string) {
   const contentsPath = join(appPath, "Contents");
-  const embeddedProfilePath = join(
-    contentsPath,
-    "embedded.provisionprofile",
-  );
+  const embeddedProfilePath = join(contentsPath, "embedded.provisionprofile");
   const helperPath = join(contentsPath, "MacOS", "export_native_contract");
   copyFileSync(profilePath, embeddedProfilePath);
   chmodSync(embeddedProfilePath, 0o644);
   if (existsSync(helperPath)) {
     execFileSync(
       "/usr/bin/codesign",
-      [
-        "--force",
-        "--options",
-        "runtime",
-        "--timestamp",
-        "--sign",
-        signingIdentity,
-        helperPath,
-      ],
+      ["--force", "--options", "runtime", "--timestamp", "--sign", signingIdentity, helperPath],
       { stdio: "ignore" },
     );
   }
@@ -464,19 +347,16 @@ function notarizeAndValidate(temporaryDirectory: string) {
   const issuer = Bun.env.APPLE_API_ISSUER?.trim();
   const keyIdentifier = Bun.env.APPLE_API_KEY?.trim();
   const configuredKeyPath = Bun.env.APPLE_API_KEY_PATH?.trim();
-  const keyPath = configuredKeyPath ||
-    (keyIdentifier
-      ? join(homedir(), "private_keys", `AuthKey_${keyIdentifier}.p8`)
-      : undefined);
+  const keyPath =
+    configuredKeyPath ||
+    (keyIdentifier ? join(homedir(), "private_keys", `AuthKey_${keyIdentifier}.p8`) : undefined);
   if (!issuer || !keyIdentifier || !keyPath || !existsSync(keyPath)) {
     throw new Error("Production notarization credentials are incomplete.");
   }
   const archivePath = join(temporaryDirectory, "TouchGrassBar.zip");
-  execFileSync(
-    "/usr/bin/ditto",
-    ["-c", "-k", "--keepParent", appPath, archivePath],
-    { stdio: "ignore" },
-  );
+  execFileSync("/usr/bin/ditto", ["-c", "-k", "--keepParent", appPath, archivePath], {
+    stdio: "ignore",
+  });
   execFileSync(
     "/usr/bin/xcrun",
     [
@@ -499,34 +379,27 @@ function notarizeAndValidate(temporaryDirectory: string) {
   execFileSync("/usr/bin/xcrun", ["stapler", "validate", appPath], {
     stdio: "inherit",
   });
-  execFileSync(
-    "/usr/sbin/spctl",
-    ["--assess", "--type", "execute", "--verbose=4", appPath],
-    { stdio: "inherit" },
-  );
+  execFileSync("/usr/sbin/spctl", ["--assess", "--type", "execute", "--verbose=4", appPath], {
+    stdio: "inherit",
+  });
 }
 
 async function main() {
   const argumentsList = process.argv.slice(2);
   const mode = argumentsList[0] ?? "--release";
-  if (
-    argumentsList.length > 1 ||
-    !new Set(["--prepare", "--release", "--verify"]).has(mode)
-  ) {
+  if (argumentsList.length > 1 || !new Set(["--prepare", "--release", "--verify"]).has(mode)) {
     throw new Error(`Unknown argument(s): ${process.argv.slice(2).join(", ")}`);
   }
-  const releaseWorkflow = Bun.env.GITHUB_WORKFLOW_REF
-    ?.split("@", 1)[0]
-    ?.endsWith("/.github/workflows/release.yml");
+  const releaseWorkflow = Bun.env.GITHUB_WORKFLOW_REF?.split("@", 1)[0]?.endsWith(
+    "/.github/workflows/release.yml",
+  );
   if (
     Bun.env.CI !== "true" ||
     Bun.env.GITHUB_ACTIONS !== "true" ||
     Bun.env.GITHUB_REF_TYPE !== "tag" ||
     !releaseWorkflow
   ) {
-    throw new Error(
-      "desktop:release is available only in the tagged GitHub release workflow.",
-    );
+    throw new Error("desktop:release is available only in the tagged GitHub release workflow.");
   }
   if (process.platform !== "darwin") {
     throw new Error("The local production app supports macOS only.");
@@ -537,20 +410,11 @@ async function main() {
   }
   requireProfileEnvironment();
   const signingIdentity = resolveProductionIdentity();
-  const temporaryDirectory = mkdtempSync(
-    join(tmpdir(), "touchgrass-prod-sign."),
-  );
+  const temporaryDirectory = mkdtempSync(join(tmpdir(), "touchgrass-prod-sign."));
   try {
-    const teamIdentifier = verifyProfile(
-      signingIdentity,
-      temporaryDirectory,
-    );
+    const teamIdentifier = verifyProfile(signingIdentity, temporaryDirectory);
     console.log("Production provisioning profile: verified");
-    await writeProductionConfiguration(
-      teamIdentifier,
-      mode === "--release",
-      release.version,
-    );
+    await writeProductionConfiguration(teamIdentifier, mode === "--release", release.version);
     if (mode === "--prepare") {
       console.log("Production entitlement binding: prepared");
       return;

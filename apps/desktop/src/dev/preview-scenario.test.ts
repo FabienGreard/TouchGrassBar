@@ -1,28 +1,19 @@
 import { describe, expect, test } from "vitest";
 
-import {
-  resolveDevPreviewScenario,
-  syncPreviewStatuses,
-} from "@/dev/preview-scenario";
+import { resolveDevPreviewScenario, syncPreviewStatuses } from "@/dev/preview-scenario";
 
 describe("development preview scenarios", () => {
   test("resolves explicit panel fixtures and rejects unknown values", () => {
-    expect(resolveDevPreviewScenario("?fixture=current").fixture).toBe(
-      "current",
-    );
+    expect(resolveDevPreviewScenario("?fixture=current").fixture).toBe("current");
     expect(resolveDevPreviewScenario("?fixture=update").fixture).toBe("update");
-    expect(resolveDevPreviewScenario("?fixture=anything-else").fixture).toBe(
-      "unavailable",
-    );
+    expect(resolveDevPreviewScenario("?fixture=anything-else").fixture).toBe("unavailable");
   });
 
   test.each(syncPreviewStatuses)(
     "resolves the $key sync status independently from provider freshness",
     ({ key }) => {
       expect(
-        resolveDevPreviewScenario(
-          `?fixture=stale&syncStatus=${encodeURIComponent(key)}`,
-        ),
+        resolveDevPreviewScenario(`?fixture=stale&syncStatus=${encodeURIComponent(key)}`),
       ).toMatchObject({ fixture: "stale", syncStatus: key });
     },
   );
@@ -59,11 +50,7 @@ describe("development preview scenarios", () => {
   });
 
   test("resolves the Settings-only excluded provider state", () => {
-    expect(
-      resolveDevPreviewScenario(
-        "?window=settings&providerState=excluded",
-      ),
-    ).toMatchObject({
+    expect(resolveDevPreviewScenario("?window=settings&providerState=excluded")).toMatchObject({
       settingsProviderEnabled: false,
       settingsProviderState: "not-installed",
       surface: "settings",
@@ -72,9 +59,8 @@ describe("development preview scenarios", () => {
 
   test("resolves the Profile Pending Settings fixture", () => {
     expect(
-      resolveDevPreviewScenario(
-        "?window=settings&profileState=profile-pending",
-      ).settingsProfileState,
+      resolveDevPreviewScenario("?window=settings&profileState=profile-pending")
+        .settingsProfileState,
     ).toBe("profile-pending");
   });
 });

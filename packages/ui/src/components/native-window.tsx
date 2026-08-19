@@ -30,14 +30,11 @@ function NativeWindowSidebar({ className, ...props }: ComponentProps<"aside">) {
   );
 }
 
-function NativeWindowContent({
-  className,
-  ...props
-}: ComponentProps<"section">) {
+function NativeWindowContent({ className, ...props }: ComponentProps<"section">) {
   return (
     <section
       className={cn(
-        "h-screen min-h-0 min-w-0 overflow-y-auto overscroll-contain px-12 py-11 [scrollbar-color:var(--sheet-muted)_transparent] [scrollbar-gutter:stable] [scrollbar-width:thin] min-[680px]:px-14 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-sheet-ink/15",
+        "h-screen min-h-0 min-w-0 [scrollbar-width:thin] [scrollbar-color:var(--sheet-muted)_transparent] [scrollbar-gutter:stable] overflow-y-auto overscroll-contain px-12 py-11 min-[680px]:px-14 [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-sheet-ink/15",
         className,
       )}
       data-slot="native-window-content"
@@ -57,7 +54,7 @@ function NativeWindowNav({ className, ...props }: ComponentProps<"nav">) {
 }
 
 const nativeWindowNavItemVariants = cva(
-  "group/native-window-nav-item rounded-[8px] text-sheet-muted outline-none select-none transition-colors hover:bg-pearl-ink/5 hover:text-sheet-ink active:bg-pearl-ink/10 focus-visible:ring-3 focus-visible:ring-ring/50 aria-disabled:pointer-events-none aria-disabled:opacity-45",
+  "group/native-window-nav-item rounded-[8px] text-sheet-muted transition-colors outline-none select-none hover:bg-pearl-ink/5 hover:text-sheet-ink focus-visible:ring-3 focus-visible:ring-ring/50 active:bg-pearl-ink/10 aria-disabled:pointer-events-none aria-disabled:opacity-45",
   {
     variants: {
       variant: {

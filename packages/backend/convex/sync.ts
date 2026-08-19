@@ -3,10 +3,7 @@ import { v } from "convex/values";
 import { mutation } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { applyProviderSettings, applyUsageSnapshots } from "./model/sync";
-import {
-  providerValidator,
-  usageSnapshotValidator,
-} from "./model/values";
+import { providerValidator, usageSnapshotValidator } from "./model/values";
 
 const acknowledgement = v.object({
   outcome: v.union(
@@ -21,11 +18,7 @@ const acknowledgement = v.object({
 });
 
 const providerSettingsAcknowledgement = v.object({
-  outcome: v.union(
-    v.literal("committed"),
-    v.literal("idempotent"),
-    v.literal("stale"),
-  ),
+  outcome: v.union(v.literal("committed"), v.literal("idempotent"), v.literal("stale")),
   revision: v.number(),
 });
 

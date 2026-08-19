@@ -71,17 +71,17 @@ Use roll-forward recovery only. If an update fails, keep the current process usa
 
 ## Product policy for issue #14
 
-| Topic | Recommended policy |
-| --- | --- |
-| Public channel | Stable only; latest full GitHub Release. Drafts are QA staging. No beta selector in MVP. |
-| Check cadence | On first panel open, at most once per 24 hours; manual Settings action always available. No polling on every provider refresh. |
-| Normal prompt | Persistent non-modal row with version and short notes; **Install & Relaunch** plus **Later**. Re-offer after 24 hours, not on every panel open. |
-| Install behavior | After explicit consent: show progress, verify signature, install, immediately restart. Never silently auto-install. |
-| Failure | Preserve current UI where possible; offer **Retry** and **Download latest DMG**. Do not loop prompts. |
-| Recovery | Publish a higher SemVer fix. Keep prior releases for audit, but do not advertise downgrade as user recovery. |
+| Topic            | Recommended policy                                                                                                                                                                                                                |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Public channel   | Stable only; latest full GitHub Release. Drafts are QA staging. No beta selector in MVP.                                                                                                                                          |
+| Check cadence    | On first panel open, at most once per 24 hours; manual Settings action always available. No polling on every provider refresh.                                                                                                    |
+| Normal prompt    | Persistent non-modal row with version and short notes; **Install & Relaunch** plus **Later**. Re-offer after 24 hours, not on every panel open.                                                                                   |
+| Install behavior | After explicit consent: show progress, verify signature, install, immediately restart. Never silently auto-install.                                                                                                               |
+| Failure          | Preserve current UI where possible; offer **Retry** and **Download latest DMG**. Do not loop prompts.                                                                                                                             |
+| Recovery         | Publish a higher SemVer fix. Keep prior releases for audit, but do not advertise downgrade as user recovery.                                                                                                                      |
 | Mandatory update | No blanket forced update for local features. A server-owned minimum version may disable only incompatible online/public features and return a typed `upgrade_required` state. Settings and the update path must remain reachable. |
-| Critical update | Persistent warning and emphasized install action. Hard-block online/public features only when protocol or security compatibility requires it. |
-| First install | Landing-page versioned DMG; drag to Applications; normal updater cadence begins after launch. |
+| Critical update  | Persistent warning and emphasized install action. Hard-block online/public features only when protocol or security compatibility requires it.                                                                                     |
+| First install    | Landing-page versioned DMG; drag to Applications; normal updater cadence begins after launch.                                                                                                                                     |
 
 ### Minimum-version metadata
 

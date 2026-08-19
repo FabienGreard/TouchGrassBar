@@ -10,11 +10,7 @@ function SegmentedControl({
   ...props
 }: ComponentProps<typeof Tabs>) {
   return (
-    <Tabs
-      className={cn("w-fit gap-0", className)}
-      data-slot="segmented-control"
-      {...props}
-    >
+    <Tabs className={cn("w-fit gap-0", className)} data-slot="segmented-control" {...props}>
       <TabsList
         aria-label={ariaLabel}
         className="h-auto gap-0.5 rounded-[11px] border border-pearl-ink/[0.07] bg-board-tab-surface p-[3px] shadow-progress-track contrast-more:border-pearl-ink"
@@ -27,10 +23,7 @@ function SegmentedControl({
 
 type SegmentedControlItemProps = ComponentProps<typeof TabsTrigger>;
 
-function SegmentedControlItem({
-  className,
-  ...props
-}: SegmentedControlItemProps) {
+function SegmentedControlItem({ className, ...props }: SegmentedControlItemProps) {
   return (
     <TabsTrigger
       className={cn(

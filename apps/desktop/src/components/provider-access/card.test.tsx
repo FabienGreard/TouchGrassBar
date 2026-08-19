@@ -53,9 +53,7 @@ describe("coding provider access", () => {
         />,
       );
 
-      expect(markup).toContain(
-        `data-coding-provider-access-state="${state.state}"`,
-      );
+      expect(markup).toContain(`data-coding-provider-access-state="${state.state}"`);
       expect(markup).toContain(`>${state.label}<`);
       expect(markup).toContain(state.copy);
       if (state.detail === null) {
@@ -85,10 +83,8 @@ describe("coding provider access", () => {
       />,
     );
 
-    expect(markup).toContain("absolute right-5 top-5");
-    expect(markup).toContain(
-      'aria-label="Show Claude and include its quota and usage in totals"',
-    );
+    expect(markup).toContain("absolute top-5 right-5");
+    expect(markup).toContain('aria-label="Show Claude and include its quota and usage in totals"');
     expect(markup).not.toContain("Show and include");
     expect(markup).toContain('class="-mr-9 flex h-5 items-center"');
     expect(markup).toContain('data-slot="provider-action-spacer"');
@@ -162,9 +158,7 @@ describe("coding provider access", () => {
       );
 
       expect(markup).toContain("min-h-[188px]");
-      expect(markup).toContain(
-        'class="-mr-9 mt-1.5 flex h-5 items-center"',
-      );
+      expect(markup).toContain('class="mt-1.5 -mr-9 flex h-5 items-center"');
       expect(markup).toContain('data-slot="provider-expanded-action"');
       expect(markup).not.toContain(
         'aria-label="Check Claude again" class="absolute bottom-4 right-5"',
@@ -174,26 +168,16 @@ describe("coding provider access", () => {
 
   test("links each missing provider to its official installation guide", () => {
     const claude = renderToStaticMarkup(
-      <CodingProviderAccessCard
-        displayName="Claude"
-        provider="claude"
-        state="not-installed"
-      />,
+      <CodingProviderAccessCard displayName="Claude" provider="claude" state="not-installed" />,
     );
     const codex = renderToStaticMarkup(
-      <CodingProviderAccessCard
-        displayName="Codex"
-        provider="codex"
-        state="not-installed"
-      />,
+      <CodingProviderAccessCard displayName="Codex" provider="codex" state="not-installed" />,
     );
 
     expect(claude).toContain(
       'href="https://docs.anthropic.com/en/docs/claude-code/getting-started"',
     );
-    expect(codex).toContain(
-      'href="https://developers.openai.com/codex/cli/"',
-    );
+    expect(codex).toContain('href="https://developers.openai.com/codex/cli/"');
     expect(claude).toContain('target="_blank"');
     expect(claude).toContain("Official installation guide");
   });

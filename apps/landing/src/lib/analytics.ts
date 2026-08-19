@@ -38,9 +38,7 @@ function capture(event: AnalyticsEvent, properties: AnalyticsProperties) {
 }
 
 function analyticsTarget(target: EventTarget | null) {
-  return target instanceof Element
-    ? target.closest<HTMLElement>("[data-analytics-event]")
-    : null;
+  return target instanceof Element ? target.closest<HTMLElement>("[data-analytics-event]") : null;
 }
 
 function installAnalytics() {

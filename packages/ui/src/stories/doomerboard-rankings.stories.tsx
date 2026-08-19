@@ -3,9 +3,21 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { DoomerboardRankings } from "../index";
 
 const rows = [
-  { displayName: "laura", note: "ABSOLUTELY FINE", rank: 1, tokenScore: "18.2M", touchGrassId: "TG-GOLD01" },
+  {
+    displayName: "laura",
+    note: "ABSOLUTELY FINE",
+    rank: 1,
+    tokenScore: "18.2M",
+    touchGrassId: "TG-GOLD01",
+  },
   { displayName: "you", note: "YOU", rank: 2, tokenScore: "12.8M", touchGrassId: "TG-GRASS2" },
-  { displayName: "max", note: "STILL ONLINE", rank: 3, tokenScore: "9.1M", touchGrassId: "TG-BURN42" },
+  {
+    displayName: "max",
+    note: "STILL ONLINE",
+    rank: 3,
+    tokenScore: "9.1M",
+    touchGrassId: "TG-BURN42",
+  },
   { displayName: "nora", rank: 4, tokenScore: "7.8M", touchGrassId: "TG-NULL77" },
 ] as const;
 

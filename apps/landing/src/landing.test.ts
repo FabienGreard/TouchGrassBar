@@ -95,10 +95,14 @@ describe("production landing contract", () => {
     );
 
     for (const placement of ["header", "hero", "invite", "release"]) {
-      expect(markup).toContain(`data-analytics-event="download clicked" data-analytics-placement="${placement}"`);
+      expect(markup).toContain(
+        `data-analytics-event="download clicked" data-analytics-placement="${placement}"`,
+      );
     }
     for (const placement of ["github", "x"]) {
-      expect(markup).toContain(`data-analytics-event="outbound link clicked" data-analytics-placement="${placement}"`);
+      expect(markup).toContain(
+        `data-analytics-event="outbound link clicked" data-analytics-placement="${placement}"`,
+      );
     }
   });
 
@@ -107,18 +111,9 @@ describe("production landing contract", () => {
       new URL("./components/LandingPage.astro", import.meta.url),
       "utf8",
     );
-    const llmsText = readFileSync(
-      new URL("../public/llms.txt", import.meta.url),
-      "utf8",
-    );
-    const robotsText = readFileSync(
-      new URL("../public/robots.txt", import.meta.url),
-      "utf8",
-    );
-    const sitemapText = readFileSync(
-      new URL("../public/sitemap.xml", import.meta.url),
-      "utf8",
-    );
+    const llmsText = readFileSync(new URL("../public/llms.txt", import.meta.url), "utf8");
+    const robotsText = readFileSync(new URL("../public/robots.txt", import.meta.url), "utf8");
+    const sitemapText = readFileSync(new URL("../public/sitemap.xml", import.meta.url), "utf8");
 
     expect(landingSource).toContain('rel="canonical"');
     expect(landingSource).toContain(
@@ -189,11 +184,30 @@ describe("production landing contract", () => {
 
   test("maps each local hour to the approved garden scene", () => {
     expect(Array.from({ length: 24 }, (_, hour) => gardenTimeForHour(hour))).toEqual([
-      "night", "night", "night", "night", "night",
-      "dawn", "dawn", "dawn", "dawn",
-      "day", "day", "day", "day", "day", "day", "day", "day",
-      "golden", "golden", "golden", "golden",
-      "night", "night", "night",
+      "night",
+      "night",
+      "night",
+      "night",
+      "night",
+      "dawn",
+      "dawn",
+      "dawn",
+      "dawn",
+      "day",
+      "day",
+      "day",
+      "day",
+      "day",
+      "day",
+      "day",
+      "day",
+      "golden",
+      "golden",
+      "golden",
+      "golden",
+      "night",
+      "night",
+      "night",
     ]);
     expect(() => gardenTimeForHour(24)).toThrow(
       "The local hour must be an integer from 0 through 23.",

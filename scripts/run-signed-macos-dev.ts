@@ -1,12 +1,7 @@
 #!/usr/bin/env bun
 
 import { execFileSync } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  mkdirSync,
-  rmSync,
-} from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 function requiredEnvironment(name: string) {
@@ -27,10 +22,7 @@ const generatedDirectory = resolve(
   "src-tauri",
   ".dev-instance",
 );
-if (
-  dirname(appBundlePath) !== generatedDirectory ||
-  !appBundlePath.endsWith(".app")
-) {
+if (dirname(appBundlePath) !== generatedDirectory || !appBundlePath.endsWith(".app")) {
   throw new Error("The development app bundle path is outside the generated directory.");
 }
 
@@ -60,16 +52,10 @@ const signingArguments = [
   appBundlePath,
 ];
 execFileSync("/usr/bin/codesign", signingArguments, { stdio: "inherit" });
-execFileSync(
-  "/usr/bin/codesign",
-  ["--verify", "--deep", "--strict", appBundlePath],
-  { stdio: "inherit" },
-);
+execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", appBundlePath], {
+  stdio: "inherit",
+});
 
 console.log(`Running signed development app: ${basename(appBundlePath)}`);
 // Replace the runner so a Tauri rebuild stops the app instead of orphaning it.
-process.execve(
-  bundledExecutable,
-  [bundledExecutable, ...argumentsList],
-  process.env,
-);
+process.execve(bundledExecutable, [bundledExecutable, ...argumentsList], process.env);

@@ -1,9 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import {
-  createBootstrapDelivery,
-  type BootstrapPort,
-} from "@/native-state/bootstrap-delivery";
+import { createBootstrapDelivery, type BootstrapPort } from "@/native-state/bootstrap-delivery";
 
 const bootstrapState = {
   bootstrap: "required",

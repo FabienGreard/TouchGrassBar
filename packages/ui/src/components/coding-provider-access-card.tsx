@@ -33,8 +33,7 @@ function CodingProviderAccessCard({
   state: CodingProviderAccessState;
 }) {
   const hasExpandedDetail =
-    enabled !== false &&
-    (state === "needs-access" || state === "not-installed");
+    enabled !== false && (state === "needs-access" || state === "not-installed");
   const settingsCardClass =
     enabled === undefined
       ? undefined
@@ -83,24 +82,16 @@ function CodingProviderAccessCard({
         <Switch
           aria-label={`Show ${label} and include its quota and usage in totals`}
           checked={enabled}
-          className="absolute right-5 top-5"
+          className="absolute top-5 right-5"
           disabled={savingEnabled || onEnabledChange === undefined}
           size="sm"
-          {...(onEnabledChange === undefined
-            ? {}
-            : { onCheckedChange: onEnabledChange })}
+          {...(onEnabledChange === undefined ? {} : { onCheckedChange: onEnabledChange })}
         />
         <span
           className={
-            hasExpandedDetail
-              ? "-mr-9 mt-1.5 flex h-5 items-center"
-              : "-mr-9 flex h-5 items-center"
+            hasExpandedDetail ? "mt-1.5 -mr-9 flex h-5 items-center" : "-mr-9 flex h-5 items-center"
           }
-          data-slot={
-            hasExpandedDetail
-              ? "provider-expanded-action"
-              : "provider-action-spacer"
-          }
+          data-slot={hasExpandedDetail ? "provider-expanded-action" : "provider-action-spacer"}
           {...(checkAction === null ? { "aria-hidden": true } : {})}
         >
           {checkAction}
@@ -116,8 +107,7 @@ function CodingProviderAccessCard({
       data-provider-enabled={enabled}
       description={copy}
       detail={
-        enabled === false || state === "unavailable" ? undefined : state ===
-          "needs-access" ? (
+        enabled === false || state === "unavailable" ? undefined : state === "needs-access" ? (
           <div className="mt-3 rounded-[9px] border border-[#e3d1a6] bg-[#fff8e8] px-3 py-2.5">
             <strong className="block text-[10px]">Finish local access</strong>
             <small className="mt-1 block text-[9px] leading-4 text-[#6d5a32]">
@@ -128,8 +118,7 @@ function CodingProviderAccessCard({
           <div className="mt-3 rounded-[9px] border border-sheet-line bg-[#20263d06] px-3 py-2.5">
             <strong className="block text-[10px]">Connect {label}</strong>
             <small className="mt-1 block text-[9px] leading-4 text-sheet-muted">
-              Install {label}, open it once, then return here so TouchGrassBar
-              can detect it.
+              Install {label}, open it once, then return here so TouchGrassBar can detect it.
             </small>
             <Button asChild className="mt-1" size="link" variant="link">
               <a
@@ -149,8 +138,7 @@ function CodingProviderAccessCard({
       status={
         enabled === false
           ? "Excluded"
-          : (codingProviderAccessStates.find(({ key }) => key === state)
-              ?.label ?? state)
+          : (codingProviderAccessStates.find(({ key }) => key === state)?.label ?? state)
       }
       statusTone={statusTone}
     />

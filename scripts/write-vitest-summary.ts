@@ -1,10 +1,7 @@
 import { appendFile, readFile, readdir } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 
-import {
-  parseVitestSummary,
-  renderVitestSummary,
-} from "./vitest-summary";
+import { parseVitestSummary, renderVitestSummary } from "./vitest-summary";
 
 const summaryPath = process.env.GITHUB_STEP_SUMMARY;
 if (!summaryPath) {
@@ -14,9 +11,7 @@ if (!summaryPath) {
 const reportDirectory = resolve(import.meta.dir, "..", ".vitest-reports");
 let reportNames: string[] = [];
 try {
-  reportNames = (await readdir(reportDirectory)).filter((name) =>
-    name.endsWith(".md"),
-  );
+  reportNames = (await readdir(reportDirectory)).filter((name) => name.endsWith(".md"));
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 }

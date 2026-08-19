@@ -2,10 +2,7 @@ import { v } from "convex/values";
 
 import { internal } from "../_generated/api";
 import { internalMutation } from "../_generated/server";
-import {
-  rateLimiter,
-  touchGrassAuthPolicy,
-} from "../model/rateLimits";
+import { rateLimiter, touchGrassAuthPolicy } from "../model/rateLimits";
 
 export const reserveCredentialAttempt = internalMutation({
   args: {
@@ -26,16 +23,11 @@ export const reserveCredentialAttempt = internalMutation({
       ctx.db
         .query("recoveryKeyAttemptReservations")
         .withIndex("by_touch_grass_id_key_and_expires_at", (query) =>
-          query
-            .eq("touchGrassIdKey", args.touchGrassIdKey)
-            .gt("expiresAt", now),
+          query.eq("touchGrassIdKey", args.touchGrassIdKey).gt("expiresAt", now),
         )
         .take(attempts),
     ]);
-    if (
-      ipReservations.length >= attempts ||
-      touchGrassIdReservations.length >= attempts
-    ) {
+    if (ipReservations.length >= attempts || touchGrassIdReservations.length >= attempts) {
       return null;
     }
 
@@ -51,12 +43,11 @@ export const reserveCredentialAttempt = internalMutation({
     ]);
     if (!ipLimit.ok || !touchGrassIdLimit.ok) return null;
 
-    const expiresAt =
-      now + touchGrassAuthPolicy.failedRecoveryKey.reservationMs;
-    const reservationId = await ctx.db.insert(
-      "recoveryKeyAttemptReservations",
-      { ...args, expiresAt },
-    );
+    const expiresAt = now + touchGrassAuthPolicy.failedRecoveryKey.reservationMs;
+    const reservationId = await ctx.db.insert("recoveryKeyAttemptReservations", {
+      ...args,
+      expiresAt,
+    });
     await ctx.scheduler.runAt(
       expiresAt,
       internal.auth.credentialAttempts.expireCredentialAttemptReservation,
@@ -81,11 +72,10 @@ export const finalizeCredentialAttempt = internalMutation({
         key: reservation.ipKey,
         throws: true,
       });
-      await rateLimiter.limit(
-        ctx,
-        "failedRecoveryKeyByTouchGrassId",
-        { key: reservation.touchGrassIdKey, throws: true },
-      );
+      await rateLimiter.limit(ctx, "failedRecoveryKeyByTouchGrassId", {
+        key: reservation.touchGrassIdKey,
+        throws: true,
+      });
     }
     await ctx.db.delete(reservation._id);
     return true;

@@ -40,25 +40,28 @@ export async function installWebMcp(documentObject: Document) {
     await modelContext.registerTool({
       ...downloadTool,
       execute: () => {
-        const downloadLink = documentObject.querySelector<HTMLAnchorElement>(
-          "[data-download-link]",
-        );
+        const downloadLink =
+          documentObject.querySelector<HTMLAnchorElement>("[data-download-link]");
 
         if (!downloadLink) {
           return {
-            content: [{
-              text: "The TouchGrassBar download link is not available on this page.",
-              type: "text",
-            }],
+            content: [
+              {
+                text: "The TouchGrassBar download link is not available on this page.",
+                type: "text",
+              },
+            ],
           };
         }
 
         downloadLink.click();
         return {
-          content: [{
-            text: "The approved TouchGrassBar download for macOS has started.",
-            type: "text",
-          }],
+          content: [
+            {
+              text: "The approved TouchGrassBar download for macOS has started.",
+              type: "text",
+            },
+          ],
         };
       },
     });

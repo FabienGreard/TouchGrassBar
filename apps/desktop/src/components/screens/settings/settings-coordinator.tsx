@@ -17,17 +17,10 @@ function SettingsCoordinator({
   delivery?: SettingsDelivery | undefined;
 }) {
   const [delivery] = useState(
-    () =>
-      suppliedDelivery ?? createSettingsDelivery(createTauriSettingsAdapter()),
+    () => suppliedDelivery ?? createSettingsDelivery(createTauriSettingsAdapter()),
   );
-  const [updates] = useState(() =>
-    createUpdateDelivery(createTauriUpdateAdapter()),
-  );
-  const view = useSyncExternalStore(
-    delivery.subscribe,
-    delivery.getSnapshot,
-    delivery.getSnapshot,
-  );
+  const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
+  const view = useSyncExternalStore(delivery.subscribe, delivery.getSnapshot, delivery.getSnapshot);
   const updateView = useSyncExternalStore(
     updates.subscribe,
     updates.getSnapshot,
@@ -81,9 +74,7 @@ function SettingsCoordinator({
 
   const state = view.snapshot;
   const launchAtLogin =
-    state?.launchAtLogin.availability === "available"
-      ? state.launchAtLogin.enabled
-      : null;
+    state?.launchAtLogin.availability === "available" ? state.launchAtLogin.enabled : null;
   const providers = state?.providers;
   const profile =
     state?.profileProvisioning === "ready" &&
@@ -99,8 +90,7 @@ function SettingsCoordinator({
   return (
     <SettingsScreen
       autoUpdates={
-        updateView.state === null ||
-        updateView.state.update.status === "unavailable"
+        updateView.state === null || updateView.state.update.status === "unavailable"
           ? null
           : updateView.state.automaticChecksEnabled
       }
@@ -129,9 +119,7 @@ function SettingsCoordinator({
       onOpenSource={() => {
         void updates.openSource();
       }}
-      onProfileDisplayNameChange={(displayName) =>
-        delivery.updateDisplayName(displayName)
-      }
+      onProfileDisplayNameChange={(displayName) => delivery.updateDisplayName(displayName)}
       onProviderEnabledChange={(provider, enabled) => {
         void delivery.setProviderEnabled(provider, enabled);
       }}

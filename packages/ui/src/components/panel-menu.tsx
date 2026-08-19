@@ -18,9 +18,7 @@ function PanelMenuTrigger(props: ComponentProps<typeof DropdownMenuTrigger>) {
   return <DropdownMenuTrigger {...props} />;
 }
 
-function PanelMenuRadioGroup(
-  props: ComponentProps<typeof DropdownMenuRadioGroup>,
-) {
+function PanelMenuRadioGroup(props: ComponentProps<typeof DropdownMenuRadioGroup>) {
   return <DropdownMenuRadioGroup {...props} />;
 }
 
@@ -28,16 +26,11 @@ type PanelMenuContentProps = ComponentProps<typeof DropdownMenuContent> & {
   size?: "compact" | "default";
 };
 
-function PanelMenuContent({
-  className,
-  size = "default",
-  style,
-  ...props
-}: PanelMenuContentProps) {
+function PanelMenuContent({ className, size = "default", style, ...props }: PanelMenuContentProps) {
   return (
     <DropdownMenuContent
       className={cn(
-        "backdrop-menu-glass flex flex-col gap-0.5 border border-pearl-border bg-menu-glass p-[5px] text-pearl-ink shadow-menu-glass contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight",
+        "flex flex-col gap-0.5 border border-pearl-border bg-menu-glass p-[5px] text-pearl-ink shadow-menu-glass backdrop-menu-glass contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight",
         className,
       )}
       style={{ minWidth: 0, width: size === "compact" ? 92 : 152, ...style }}

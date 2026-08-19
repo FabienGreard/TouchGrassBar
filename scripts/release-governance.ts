@@ -9,11 +9,7 @@ import { stableUpdaterEndpoint } from "./release-contract";
 
 const repository = "FabienGreard/TouchGrassBar";
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const governancePath = resolve(
-  workspaceRoot,
-  ".github",
-  "release-governance.json",
-);
+const governancePath = resolve(workspaceRoot, ".github", "release-governance.json");
 const governance = JSON.parse(readFileSync(governancePath, "utf8")) as {
   actions: {
     allowed_actions: "selected";
@@ -66,13 +62,7 @@ function command(
 }
 
 function ghApi(endpoint: string, method = "GET", body?: unknown) {
-  const argumentsList = [
-    "api",
-    "-H",
-    "X-GitHub-Api-Version: 2026-03-10",
-    "--method",
-    method,
-  ];
+  const argumentsList = ["api", "-H", "X-GitHub-Api-Version: 2026-03-10", "--method", method];
   if (body !== undefined) argumentsList.push("--input", "-");
   argumentsList.push(endpoint);
   const output = command("gh", argumentsList, {
@@ -85,11 +75,7 @@ function sorted(values: string[]) {
   return [...values].sort((left, right) => left.localeCompare(right));
 }
 
-function assertExactNames(
-  label: string,
-  expected: string[],
-  actual: NameMetadata[],
-) {
+function assertExactNames(label: string, expected: string[], actual: NameMetadata[]) {
   const expectedNames = sorted(expected);
   const actualNames = sorted(actual.map(({ name }) => name));
   if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
@@ -97,18 +83,8 @@ function assertExactNames(
   }
 }
 
-function listConfiguration(
-  type: "secret" | "variable",
-  environment?: string,
-) {
-  const argumentsList = [
-    type,
-    "list",
-    "--repo",
-    repository,
-    "--json",
-    "name,updatedAt",
-  ];
+function listConfiguration(type: "secret" | "variable", environment?: string) {
+  const argumentsList = [type, "list", "--repo", repository, "--json", "name,updatedAt"];
   if (environment) argumentsList.push("--env", environment);
   const output = command("gh", argumentsList);
   return JSON.parse(output ?? "[]") as NameMetadata[];
@@ -133,9 +109,7 @@ function environmentState(environment: string) {
 }
 
 function branchPolicies(environment: string) {
-  return ghApi(
-    `repos/${repository}/environments/${environment}/deployment-branch-policies`,
-  ) as {
+  return ghApi(`repos/${repository}/environments/${environment}/deployment-branch-policies`) as {
     branch_policies?: Array<{ id?: number; name?: string; type?: string }>;
   };
 }
@@ -143,23 +117,17 @@ function branchPolicies(environment: string) {
 function verifyEnvironment(environment: "macos-release" | "public-release") {
   const expected = governance.environments[environment];
   const state = environmentState(environment);
-  const reviewerRule = state.protection_rules?.find(
-    (rule) => rule.type === "required_reviewers",
-  );
+  const reviewerRule = state.protection_rules?.find((rule) => rule.type === "required_reviewers");
   const reviewers =
     reviewerRule?.reviewers?.flatMap((reviewer) =>
-      reviewer.type === "User" && reviewer.reviewer?.login
-        ? [reviewer.reviewer.login]
-        : [],
+      reviewer.type === "User" && reviewer.reviewer?.login ? [reviewer.reviewer.login] : [],
     ) ?? [];
   const waitTimer =
-    state.protection_rules?.find((rule) => rule.type === "wait_timer")
-      ?.wait_timer ?? 0;
+    state.protection_rules?.find((rule) => rule.type === "wait_timer")?.wait_timer ?? 0;
   const policies = branchPolicies(environment).branch_policies ?? [];
   if (
     reviewerRule?.prevent_self_review !== expected.prevent_self_review ||
-    JSON.stringify(sorted(reviewers)) !==
-      JSON.stringify(sorted(expected.required_reviewers)) ||
+    JSON.stringify(sorted(reviewers)) !== JSON.stringify(sorted(expected.required_reviewers)) ||
     waitTimer !== expected.wait_timer_minutes ||
     state.deployment_branch_policy?.custom_branch_policies !== true ||
     state.deployment_branch_policy?.protected_branches !== false ||
@@ -187,25 +155,19 @@ function verifyActions() {
     allowed_actions?: unknown;
     sha_pinning_required?: unknown;
   };
-  const selected = ghApi(
-    `repos/${repository}/actions/permissions/selected-actions`,
-  ) as {
+  const selected = ghApi(`repos/${repository}/actions/permissions/selected-actions`) as {
     github_owned_allowed?: unknown;
     patterns_allowed?: unknown;
     verified_allowed?: unknown;
   };
-  const workflow = ghApi(
-    `repos/${repository}/actions/permissions/workflow`,
-  ) as {
+  const workflow = ghApi(`repos/${repository}/actions/permissions/workflow`) as {
     can_approve_pull_request_reviews?: unknown;
     default_workflow_permissions?: unknown;
   };
   if (
     permissions.allowed_actions !== governance.actions.allowed_actions ||
-    permissions.sha_pinning_required !==
-      governance.actions.sha_pinning_required ||
-    selected.github_owned_allowed !==
-      governance.actions.github_owned_allowed ||
+    permissions.sha_pinning_required !== governance.actions.sha_pinning_required ||
+    selected.github_owned_allowed !== governance.actions.github_owned_allowed ||
     selected.verified_allowed !== governance.actions.verified_allowed ||
     JSON.stringify(sorted((selected.patterns_allowed as string[]) ?? [])) !==
       JSON.stringify(sorted(governance.actions.patterns_allowed)) ||
@@ -221,9 +183,7 @@ function verifyTagRuleset() {
     id?: number;
     name?: string;
   }>;
-  const summary = summaries.find(
-    ({ name }) => name === "Immutable stable release tags",
-  );
+  const summary = summaries.find(({ name }) => name === "Immutable stable release tags");
   if (!summary?.id) throw new Error("The immutable tag ruleset is absent.");
   const ruleset = ghApi(`repos/${repository}/rulesets/${summary.id}`) as {
     bypass_actors?: unknown[];
@@ -251,10 +211,9 @@ function verifyRepositoryScopes() {
       environment.secrets.concat(environment.variables),
     ),
   );
-  const repositoryNames = [
-    ...listConfiguration("secret"),
-    ...listConfiguration("variable"),
-  ].filter(({ name }) => protectedNames.has(name));
+  const repositoryNames = [...listConfiguration("secret"), ...listConfiguration("variable")].filter(
+    ({ name }) => protectedNames.has(name),
+  );
   if (repositoryNames.length > 0) {
     throw new Error("Release configuration has a repository-scoped copy.");
   }
@@ -271,21 +230,11 @@ function verifyImmutableReleases() {
 
 function verifyPublicUpdaterConfiguration() {
   const config = JSON.parse(
-    readFileSync(
-      resolve(
-        workspaceRoot,
-        "apps",
-        "desktop",
-        "src-tauri",
-        "tauri.conf.json",
-      ),
-      "utf8",
-    ),
+    readFileSync(resolve(workspaceRoot, "apps", "desktop", "src-tauri", "tauri.conf.json"), "utf8"),
   ) as { plugins?: { updater?: { endpoints?: unknown; pubkey?: unknown } } };
   const updater = config.plugins?.updater;
   if (
-    JSON.stringify(updater?.endpoints) !==
-      JSON.stringify([stableUpdaterEndpoint]) ||
+    JSON.stringify(updater?.endpoints) !== JSON.stringify([stableUpdaterEndpoint]) ||
     typeof updater?.pubkey !== "string" ||
     updater.pubkey.length === 0 ||
     updater.pubkey.includes("NOT_CONFIGURED")
@@ -295,10 +244,7 @@ function verifyPublicUpdaterConfiguration() {
 }
 
 function verify() {
-  const environments = [
-    verifyEnvironment("macos-release"),
-    verifyEnvironment("public-release"),
-  ];
+  const environments = [verifyEnvironment("macos-release"), verifyEnvironment("public-release")];
   verifyActions();
   verifyTagRuleset();
   verifyRepositoryScopes();
@@ -331,10 +277,7 @@ function assertRemoteMainIsExact() {
   }
 }
 
-function applyEnvironment(
-  environment: "macos-release" | "public-release",
-  reviewerId: number,
-) {
+function applyEnvironment(environment: "macos-release" | "public-release", reviewerId: number) {
   const expected = governance.environments[environment];
   ghApi(`repos/${repository}/environments/${environment}`, "PUT", {
     deployment_branch_policy: {
@@ -347,11 +290,10 @@ function applyEnvironment(
   });
   const policies = branchPolicies(environment).branch_policies ?? [];
   if (policies.length === 0) {
-    ghApi(
-      `repos/${repository}/environments/${environment}/deployment-branch-policies`,
-      "POST",
-      { name: expected.deployment_tag_patterns[0], type: "tag" },
-    );
+    ghApi(`repos/${repository}/environments/${environment}/deployment-branch-policies`, "POST", {
+      name: expected.deployment_tag_patterns[0],
+      type: "tag",
+    });
   } else if (
     JSON.stringify(sorted(policies.map(({ name }) => name ?? ""))) !==
     JSON.stringify(sorted(expected.deployment_tag_patterns))
@@ -365,9 +307,7 @@ function applyTagRuleset() {
     id?: number;
     name?: string;
   }>;
-  const current = summaries.find(
-    ({ name }) => name === "Immutable stable release tags",
-  );
+  const current = summaries.find(({ name }) => name === "Immutable stable release tags");
   const endpoint = current?.id
     ? `repos/${repository}/rulesets/${current.id}`
     : `repos/${repository}/rulesets`;

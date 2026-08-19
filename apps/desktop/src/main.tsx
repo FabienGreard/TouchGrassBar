@@ -29,24 +29,22 @@ function renderNativeSurface(application: ReactNode, surface: DesktopSurface) {
     return;
   }
 
-  void Promise.all([
-    import("@/dev/dev-instance"),
-    import("@/dev/dev-instance-document"),
-  ]).then(([{ currentDevInstance }, documentModule]) => {
-    const instance = currentDevInstance();
-    if (!instance) {
+  void Promise.all([import("@/dev/dev-instance"), import("@/dev/dev-instance-document")]).then(
+    ([{ currentDevInstance }, documentModule]) => {
+      const instance = currentDevInstance();
+      if (!instance) {
+        render(application);
+        return;
+      }
+      documentModule.applyDevInstanceDocument(instance, surface);
       render(application);
-      return;
-    }
-    documentModule.applyDevInstanceDocument(instance, surface);
-    render(application);
-  });
+    },
+  );
 }
 
 if (hasNativeRuntime) {
   const label = getCurrentWindow().label;
-  const surface: DesktopSurface =
-    label === "settings" || label === "onboarding" ? label : "panel";
+  const surface: DesktopSurface = label === "settings" || label === "onboarding" ? label : "panel";
 
   if (surface === "panel") {
     document.documentElement.dataset.nativePanel = "true";

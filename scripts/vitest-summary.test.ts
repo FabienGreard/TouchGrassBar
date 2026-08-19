@@ -24,7 +24,9 @@ describe("Vitest job summary", () => {
     const desktop = parseVitestSummary("desktop", report);
     const contracts = parseVitestSummary(
       "contracts",
-      report.replace("28 passes", "1 pass").replace("28 total", "1 total")
+      report
+        .replace("28 passes", "1 pass")
+        .replace("28 total", "1 total")
         .replace("165 passes", "20 passes")
         .replace("165 total", "20 total")
         .replace("**Other**: 1 skip · 1 total\n", ""),
@@ -35,7 +37,9 @@ describe("Vitest job summary", () => {
     );
     expect(rendered).toContain("| Contracts | ✅ Passed | 1 / 1 | 20 / 20 | — |");
     expect(rendered).toContain("| Desktop | ✅ Passed | 28 / 28 | 165 / 165 | 1 |");
-    expect(rendered).toContain("| **Total** | **✅ Passed** | **29 / 29** | **185 / 185** | **1** |");
+    expect(rendered).toContain(
+      "| **Total** | **✅ Passed** | **29 / 29** | **185 / 185** | **1** |",
+    );
     expect(rendered).toContain("macOS-only runner test on Ubuntu");
   });
 });

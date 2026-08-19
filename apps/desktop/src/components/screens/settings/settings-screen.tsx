@@ -6,11 +6,7 @@ import {
   NativeWindowNavItem,
   NativeWindowSidebar,
 } from "@touchgrass/ui";
-import type {
-  CodingProvider,
-  ProfileProvisioningStatus,
-  UpdateState,
-} from "@touchgrass/contracts";
+import type { CodingProvider, ProfileProvisioningStatus, UpdateState } from "@touchgrass/contracts";
 import { useState } from "react";
 
 import { CodingProviderAccessCard } from "@/components/provider-access/card";
@@ -25,10 +21,7 @@ import {
 import { SettingsToggleRow } from "./settings-toggle-row";
 import { UpdatesSettings } from "./updates-settings";
 
-const settingsSectionDetails: Record<
-  SettingsSection,
-  { description: string; label: string }
-> = {
+const settingsSectionDetails: Record<SettingsSection, { description: string; label: string }> = {
   general: {
     description: "Startup, updates, and app information.",
     label: "General",
@@ -57,9 +50,7 @@ type SettingsScreenProps = {
   onProfileDisplayNameChange?:
     | ((displayName: string) => boolean | Promise<boolean> | void)
     | undefined;
-  onProviderEnabledChange?:
-    | ((provider: CodingProvider, enabled: boolean) => void)
-    | undefined;
+  onProviderEnabledChange?: ((provider: CodingProvider, enabled: boolean) => void) | undefined;
   onHideRecoveryKey?: (() => void) | undefined;
   onRevealRecoveryKey?: (() => void) | undefined;
   onStartRecovery?: (() => void) | undefined;
@@ -106,9 +97,7 @@ function SettingsScreen({
   updateState = null,
 }: SettingsScreenProps) {
   const [localSection, setLocalSection] = useState<SettingsSection>(() =>
-    typeof window === "undefined"
-      ? "general"
-      : resolveSettingsSectionHash(window.location.hash),
+    typeof window === "undefined" ? "general" : resolveSettingsSectionHash(window.location.hash),
   );
   const section = controlledSection ?? localSection;
   const savingProviderSet = new Set(savingProviders);
@@ -123,7 +112,7 @@ function SettingsScreen({
   const detail = settingsSectionDetails[section];
 
   return (
-    <NativeWindow className="relative h-screen min-h-0 w-screen min-w-0 max-w-none min-[680px]:grid-cols-[220px_minmax(0,1fr)]">
+    <NativeWindow className="relative h-screen min-h-0 w-screen max-w-none min-w-0 min-[680px]:grid-cols-[220px_minmax(0,1fr)]">
       <NativeWindowSidebar className="h-full min-h-0 overflow-hidden px-4 py-7">
         <Brand className="px-2" />
         <NativeWindowNav aria-label="Settings sections" className="mt-8">
@@ -147,12 +136,8 @@ function SettingsScreen({
 
       <NativeWindowContent className="h-full min-h-0 overflow-y-auto px-12 py-12">
         <div className="mx-auto max-w-[720px]">
-          <h1 className="m-0 text-[32px] tracking-[-0.045em]">
-            {detail.label}
-          </h1>
-          <p className="mt-2 mb-9 text-[12px] text-sheet-muted">
-            {detail.description}
-          </p>
+          <h1 className="m-0 text-[32px] tracking-[-0.045em]">{detail.label}</h1>
+          <p className="mt-2 mb-9 text-[12px] text-sheet-muted">{detail.description}</p>
           {section === "general" ? (
             <div className="grid gap-6">
               <SettingsToggleRow
@@ -200,8 +185,7 @@ function SettingsScreen({
                   onEnabledChange={
                     onProviderEnabledChange === undefined
                       ? undefined
-                      : (enabled) =>
-                          onProviderEnabledChange(provider.provider, enabled)
+                      : (enabled) => onProviderEnabledChange(provider.provider, enabled)
                   }
                   provider={provider.provider}
                   savingEnabled={savingProviderSet.has(provider.provider)}

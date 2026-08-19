@@ -11,7 +11,8 @@
 :root {
   background: #070d0a;
   color-scheme: dark;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -32,18 +33,19 @@ body {
   overflow-x: hidden;
 }
 
-.direction-d :is(
-  .d-brand,
-  .d-header-download,
-  .d-macos-download,
-  .product-panel-preview,
-  .d-scoreboard-showcase,
-  .d-invite-note-rain,
-  .d-setup-ledger,
-  .d-release-install,
-  img,
-  svg
-) {
+.direction-d
+  :is(
+    .d-brand,
+    .d-header-download,
+    .d-macos-download,
+    .product-panel-preview,
+    .d-scoreboard-showcase,
+    .d-invite-note-rain,
+    .d-setup-ledger,
+    .d-release-install,
+    img,
+    svg
+  ) {
   -webkit-user-select: none;
   user-select: none;
 }

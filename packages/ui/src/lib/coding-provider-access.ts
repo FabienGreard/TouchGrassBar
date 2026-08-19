@@ -1,10 +1,6 @@
-import type {
-  ProviderPresence,
-  SettingsProvider,
-} from "@touchgrass/contracts";
+import type { ProviderPresence, SettingsProvider } from "@touchgrass/contracts";
 
-type CodingProviderAccessState =
-  "detected" | "needs-access" | "not-installed" | "unavailable";
+type CodingProviderAccessState = "detected" | "needs-access" | "not-installed" | "unavailable";
 
 const codingProviderAccessStates = [
   { key: "detected", label: "Ready" },
@@ -13,18 +9,13 @@ const codingProviderAccessStates = [
   { key: "unavailable", label: "Unavailable" },
 ] as const;
 
-function providerAccessStateFromPresence(
-  provider: ProviderPresence,
-): CodingProviderAccessState {
+function providerAccessStateFromPresence(provider: ProviderPresence): CodingProviderAccessState {
   if (provider.status === "detected") return "detected";
   if (provider.status === "not-detected") return "not-installed";
   return "unavailable";
 }
 
-type CodingProviderAccessPresentation = Pick<
-  ProviderPresence,
-  "displayName" | "provider"
-> & {
+type CodingProviderAccessPresentation = Pick<ProviderPresence, "displayName" | "provider"> & {
   state: CodingProviderAccessState;
 };
 

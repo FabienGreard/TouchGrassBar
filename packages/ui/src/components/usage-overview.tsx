@@ -1,8 +1,4 @@
-import type {
-  TopModelUsage,
-  UsagePeriods,
-  UsageTotal,
-} from "@touchgrass/contracts";
+import type { TopModelUsage, UsagePeriods, UsageTotal } from "@touchgrass/contracts";
 
 import {
   MetricCard,
@@ -40,9 +36,7 @@ const currencyFormatter = new Intl.NumberFormat("en", {
 
 type GaugeTone = "month" | "today" | "week";
 
-function evidenceDescription(
-  total: Exclude<UsageTotal, { availability: "unavailable" }>,
-) {
+function evidenceDescription(total: Exclude<UsageTotal, { availability: "unavailable" }>) {
   const basis =
     total.evidenceBasis === "provider-reported"
       ? "provider-reported token evidence"
@@ -50,9 +44,7 @@ function evidenceDescription(
         ? "locally observed token evidence"
         : "mixed token evidence";
   const coverage =
-    total.coverage === "complete"
-      ? "complete period coverage"
-      : "partial period coverage";
+    total.coverage === "complete" ? "complete period coverage" : "partial period coverage";
   const costEvidence =
     total.apiEquivalentCostQuality === "reconciled"
       ? "pricing detail covers the reported tokens"
@@ -71,10 +63,7 @@ function costPresentation(
   scanStatus: UsagePeriods["scanStatus"],
 ) {
   const evidence = evidenceDescription(total);
-  if (
-    total.apiEquivalentCostUsd !== null &&
-    total.apiEquivalentCostUsd !== undefined
-  ) {
+  if (total.apiEquivalentCostUsd !== null && total.apiEquivalentCostUsd !== undefined) {
     const label = `≈ ${currencyFormatter.format(total.apiEquivalentCostUsd)}`;
     return {
       accessibleLabel: total.apiEquivalentCostBasis
@@ -103,10 +92,8 @@ function trendPresentation(
   gaugeFill: number | undefined,
   comparison: string,
 ): UsageMetricPresentation | undefined {
-  if (total.availability === "unavailable" || gaugeFill === undefined)
-    return undefined;
-  if (total.trendPercent === null || total.trendPercent === undefined)
-    return { gaugeFill };
+  if (total.availability === "unavailable" || gaugeFill === undefined) return undefined;
+  if (total.trendPercent === null || total.trendPercent === undefined) return { gaugeFill };
   const rounded = Math.round(total.trendPercent * 10) / 10;
   const trend = `${rounded > 0 ? "+" : ""}${rounded}%`;
   const direction = rounded > 0 ? "Up" : rounded < 0 ? "Down" : "No change";
@@ -122,17 +109,12 @@ function trendPresentation(
 }
 
 function relativeGaugeFills(usage: UsagePeriods) {
-  const values = [usage.today, usage.sevenDays, usage.thirtyDays].map(
-    (total) =>
-      total.availability === "unavailable" ? undefined : total.observedTokens,
+  const values = [usage.today, usage.sevenDays, usage.thirtyDays].map((total) =>
+    total.availability === "unavailable" ? undefined : total.observedTokens,
   );
   const maximum = Math.max(0, ...values.filter((value) => value !== undefined));
   return values.map((value) =>
-    value === undefined
-      ? undefined
-      : maximum === 0
-        ? 0
-        : Math.round((value / maximum) * 100),
+    value === undefined ? undefined : maximum === 0 ? 0 : Math.round((value / maximum) * 100),
   );
 }
 
@@ -155,17 +137,12 @@ function UsageMetric({
       <MetricCard>
         <MetricCardLabel>{label}</MetricCardLabel>
         <MetricCardTrend
-          aria-label={
-            presentation?.trendDescription ?? `${label} trend unavailable`
-          }
+          aria-label={presentation?.trendDescription ?? `${label} trend unavailable`}
           tone={getMetricTrendTone(presentation?.trend)}
         >
           {presentation?.trend ?? "—"}
         </MetricCardTrend>
-        <MetricCardValue
-          aria-label={`${label} usage unavailable`}
-          tone="unavailable"
-        >
+        <MetricCardValue aria-label={`${label} usage unavailable`} tone="unavailable">
           —
         </MetricCardValue>
         <MetricCardDetail>{detail}</MetricCardDetail>
@@ -188,16 +165,12 @@ function UsageMetric({
     <MetricCard>
       <MetricCardLabel>{label}</MetricCardLabel>
       <MetricCardTrend
-        aria-label={
-          presentation?.trendDescription ?? `${label} trend unavailable`
-        }
+        aria-label={presentation?.trendDescription ?? `${label} trend unavailable`}
         tone={getMetricTrendTone(presentation?.trend)}
       >
         {presentation?.trend ?? "—"}
       </MetricCardTrend>
-      <MetricCardValue>
-        {tokenFormatter.format(total.observedTokens)}
-      </MetricCardValue>
+      <MetricCardValue>{tokenFormatter.format(total.observedTokens)}</MetricCardValue>
       <MetricCardDetail
         aria-label={cost.accessibleLabel}
         className="inline-flex items-center gap-0.5"
@@ -229,19 +202,13 @@ function UsageOverview({
 }) {
   const [todayGauge, sevenDayGauge, thirtyDayGauge] = relativeGaugeFills(usage);
   const resolvedPresentation = {
-    today:
-      presentation?.today ??
-      trendPresentation(usage.today, todayGauge, "the previous day"),
+    today: presentation?.today ?? trendPresentation(usage.today, todayGauge, "the previous day"),
     sevenDays:
       presentation?.sevenDays ??
       trendPresentation(usage.sevenDays, sevenDayGauge, "the previous 7 days"),
     thirtyDays:
       presentation?.thirtyDays ??
-      trendPresentation(
-        usage.thirtyDays,
-        thirtyDayGauge,
-        "the previous 30 days",
-      ),
+      trendPresentation(usage.thirtyDays, thirtyDayGauge, "the previous 30 days"),
   };
   const topModelName = topModelUsage?.model;
 

@@ -19,24 +19,15 @@ function smoothStep(progress: number) {
   return progress * progress * (3 - 2 * progress);
 }
 
-export function installInviteParallax(
-  documentObject: Document,
-  windowObject: Window,
-) {
-  const section = documentObject.querySelector<HTMLElement>(
-    ".d-recruit-stage.d-invite-variant-d",
-  );
-  const noticeLayer = section?.querySelector<HTMLElement>(
-    ".d-invite-note-rain",
-  );
+export function installInviteParallax(documentObject: Document, windowObject: Window) {
+  const section = documentObject.querySelector<HTMLElement>(".d-recruit-stage.d-invite-variant-d");
+  const noticeLayer = section?.querySelector<HTMLElement>(".d-invite-note-rain");
   if (!section || !noticeLayer) return () => undefined;
 
   const header = documentObject.querySelector<HTMLElement>(".d-menubar");
   const laptopInvite = windowObject.matchMedia(laptopInviteQuery);
   const reducedMotion = windowObject.matchMedia(reducedMotionQuery);
-  const notices = Array.from(
-    noticeLayer.querySelectorAll<HTMLElement>(":scope > span"),
-  );
+  const notices = Array.from(noticeLayer.querySelectorAll<HTMLElement>(":scope > span"));
   const noticeTravel = new Map<HTMLElement, NoticeTravel>();
   let animationFrame = 0;
   let limitsNeedMeasurement = true;
@@ -61,20 +52,11 @@ export function installInviteParallax(
       const noticeBounds = notice.getBoundingClientRect();
       const travel = {
         start: sectionBounds.top - noticeBounds.top,
-        end: Math.max(
-          0,
-          sectionBounds.bottom - noticeBounds.bottom - noticeShadowClearance,
-        ),
+        end: Math.max(0, sectionBounds.bottom - noticeBounds.bottom - noticeShadowClearance),
       };
       noticeTravel.set(notice, travel);
-      notice.style.setProperty(
-        "--d-note-parallax-start",
-        `${travel.start.toFixed(2)}px`,
-      );
-      notice.style.setProperty(
-        "--d-note-parallax-max",
-        `${travel.end.toFixed(2)}px`,
-      );
+      notice.style.setProperty("--d-note-parallax-start", `${travel.start.toFixed(2)}px`);
+      notice.style.setProperty("--d-note-parallax-max", `${travel.end.toFixed(2)}px`);
     }
     limitsNeedMeasurement = false;
   };
@@ -112,10 +94,7 @@ export function installInviteParallax(
     const sectionCenter = bounds.top + bounds.height / 2;
     const viewportTop = Math.max(
       0,
-      Math.min(
-        windowObject.innerHeight,
-        header?.getBoundingClientRect().bottom ?? 0,
-      ),
+      Math.min(windowObject.innerHeight, header?.getBoundingClientRect().bottom ?? 0),
     );
     const availableHeight = Math.max(windowObject.innerHeight - viewportTop, 1);
     const viewportCenter = viewportTop + availableHeight / 2;

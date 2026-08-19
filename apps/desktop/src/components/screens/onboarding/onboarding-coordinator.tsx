@@ -24,18 +24,10 @@ function OnboardingCoordinator({
   delivery?: BootstrapDelivery | undefined;
 }) {
   const [delivery] = useState(
-    () =>
-      suppliedDelivery ??
-      createBootstrapDelivery(createTauriBootstrapAdapter()),
+    () => suppliedDelivery ?? createBootstrapDelivery(createTauriBootstrapAdapter()),
   );
-  const [updates] = useState(() =>
-    createUpdateDelivery(createTauriUpdateAdapter()),
-  );
-  const view = useSyncExternalStore(
-    delivery.subscribe,
-    delivery.getSnapshot,
-    delivery.getSnapshot,
-  );
+  const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
+  const view = useSyncExternalStore(delivery.subscribe, delivery.getSnapshot, delivery.getSnapshot);
   const updateView = useSyncExternalStore(
     updates.subscribe,
     updates.getSnapshot,
@@ -80,12 +72,8 @@ function OnboardingCoordinator({
 
   const selectStep = (nextStep: OnboardingStep) => {
     setStep(nextStep);
-    const nextIndex = onboardingSteps.findIndex(
-      (candidate) => candidate.key === nextStep,
-    );
-    const furthestIndex = onboardingSteps.findIndex(
-      (candidate) => candidate.key === furthestStep,
-    );
+    const nextIndex = onboardingSteps.findIndex((candidate) => candidate.key === nextStep);
+    const furthestIndex = onboardingSteps.findIndex((candidate) => candidate.key === furthestStep);
     if (nextIndex > furthestIndex) setFurthestStep(nextStep);
   };
 
@@ -108,9 +96,7 @@ function OnboardingCoordinator({
     <OnboardingScreen
       appVersion={updateView.state?.currentVersion}
       busyProviders={checkingProviders}
-      canComplete={
-        view.phase === "ready" && view.snapshot?.persistence === "available"
-      }
+      canComplete={view.phase === "ready" && view.snapshot?.persistence === "available"}
       displayName={displayName}
       furthestStep={furthestStep}
       onCheckProvider={() => {

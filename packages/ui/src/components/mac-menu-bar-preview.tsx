@@ -77,7 +77,7 @@ function MacMenuBarPreview({
           data-icon-source="macos-sf-search"
           src={macosSearchIcon}
         />
-        <span className="flex items-center gap-2 whitespace-nowrap text-[10px] font-medium tracking-[-0.015em] text-white">
+        <span className="flex items-center gap-2 text-[10px] font-medium tracking-[-0.015em] whitespace-nowrap text-white">
           <span>{dateLabel}</span>
           <span>{timeLabel}</span>
         </span>

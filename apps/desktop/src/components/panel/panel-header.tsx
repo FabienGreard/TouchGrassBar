@@ -90,9 +90,7 @@ function PanelHeader({
           data-sync-status={sync.status}
         >
           {sync.label}
-          {sync.detailLabel ? (
-            <span className="sr-only">. {sync.detailLabel}</span>
-          ) : null}
+          {sync.detailLabel ? <span className="sr-only">. {sync.detailLabel}</span> : null}
         </small>
       </div>
 
@@ -106,10 +104,7 @@ function PanelHeader({
             title={updateActionLabel}
             type="button"
           >
-            <DownloadIcon
-              aria-hidden="true"
-              data-icon-source="Download04Icon"
-            />
+            <DownloadIcon aria-hidden="true" data-icon-source="Download04Icon" />
           </Button>
         ) : null}
         <PanelMenu>

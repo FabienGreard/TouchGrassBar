@@ -4,10 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const localEnvironmentPath = join(workspaceRoot, ".env.local");
-const profileServiceEnvironmentNames = [
-  "CONVEX_SITE_URL",
-  "CONVEX_URL",
-] as const;
+const profileServiceEnvironmentNames = ["CONVEX_SITE_URL", "CONVEX_URL"] as const;
 
 type DevelopmentTarget = "cloud development" | "cloud production" | "local";
 
@@ -17,9 +14,7 @@ function readLocalDevelopmentEnvironment() {
     readFileSync(localEnvironmentPath, "utf8")
       .split(/\r?\n/)
       .flatMap((line) => {
-        const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(
-          line,
-        );
+        const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/.exec(line);
         if (!match) return [];
         const value = match[2] ?? "";
         return [[match[1]!, value.replace(/^(['"])(.*)\1$/, "$2")]];
@@ -59,20 +54,14 @@ function validServiceUrl(
     }
     return;
   }
-  const expectedSuffix =
-    name === "CONVEX_URL" ? ".convex.cloud" : ".convex.site";
+  const expectedSuffix = name === "CONVEX_URL" ? ".convex.cloud" : ".convex.site";
   if (url.protocol !== "https:" || !url.hostname.endsWith(expectedSuffix)) {
     throw new Error("The selected cloud deployment has an invalid URL.");
   }
 }
 
-function developmentTarget(
-  environment: Record<string, string | undefined>,
-): DevelopmentTarget {
-  requiredEnvironment(environment, [
-    "CONVEX_DEPLOYMENT",
-    ...profileServiceEnvironmentNames,
-  ]);
+function developmentTarget(environment: Record<string, string | undefined>): DevelopmentTarget {
+  requiredEnvironment(environment, ["CONVEX_DEPLOYMENT", ...profileServiceEnvironmentNames]);
   const deployment = environment.CONVEX_DEPLOYMENT!.trim();
   const convexUrl = environment.CONVEX_URL!.trim();
   const siteUrl = environment.CONVEX_SITE_URL!.trim();
@@ -84,11 +73,9 @@ function developmentTarget(
         ? "cloud development"
         : selectedCloudTarget === "prod"
           ? "cloud production"
-        : (() => {
-            throw new Error(
-              "The selected Convex deployment type is unknown.",
-            );
-          })();
+          : (() => {
+              throw new Error("The selected Convex deployment type is unknown.");
+            })();
   validServiceUrl("CONVEX_URL", convexUrl, target);
   validServiceUrl("CONVEX_SITE_URL", siteUrl, target);
   return target;

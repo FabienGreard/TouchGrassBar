@@ -1,7 +1,4 @@
-import {
-  updateStateSchema,
-  type UpdateState,
-} from "@touchgrass/contracts";
+import { updateStateSchema, type UpdateState } from "@touchgrass/contracts";
 
 type UpdatePortFaultCode =
   | "update-check-unavailable"
@@ -24,12 +21,8 @@ type UpdatePort = {
   openSource: () => Promise<UpdatePortOutcome<void>>;
   read: () => Promise<UpdatePortOutcome<unknown>>;
   retry: () => Promise<UpdatePortOutcome<unknown>>;
-  setAutomaticChecks: (
-    enabled: boolean,
-  ) => Promise<UpdatePortOutcome<unknown>>;
-  subscribe: (
-    receive: () => void,
-  ) => Promise<UpdatePortOutcome<() => void>>;
+  setAutomaticChecks: (enabled: boolean) => Promise<UpdatePortOutcome<unknown>>;
+  subscribe: (receive: () => void) => Promise<UpdatePortOutcome<() => void>>;
 };
 
 type UpdateDeliverySnapshot = {
@@ -103,8 +96,7 @@ function createUpdateDelivery(port: UpdatePort) {
     openSource: async () => (await port.openSource()).ok,
     read,
     retry: () => run(port.retry),
-    setAutomaticChecks: (enabled: boolean) =>
-      run(() => port.setAutomaticChecks(enabled)),
+    setAutomaticChecks: (enabled: boolean) => run(() => port.setAutomaticChecks(enabled)),
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -113,9 +105,4 @@ function createUpdateDelivery(port: UpdatePort) {
 }
 
 export { createUpdateDelivery };
-export type {
-  UpdateDeliverySnapshot,
-  UpdatePort,
-  UpdatePortFaultCode,
-  UpdatePortOutcome,
-};
+export type { UpdateDeliverySnapshot, UpdatePort, UpdatePortFaultCode, UpdatePortOutcome };

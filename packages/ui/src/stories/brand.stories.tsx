@@ -33,17 +33,13 @@ export const Marks: Story = {
       </figure>
       <figure className="m-0 grid justify-items-center gap-2">
         <BrandMark size="sidebar" />
-        <figcaption className="text-[11px] text-pearl-muted">
-          Sidebar
-        </figcaption>
+        <figcaption className="text-[11px] text-pearl-muted">Sidebar</figcaption>
       </figure>
       <figure className="m-0 grid justify-items-center gap-2">
         <span className="grid size-12 place-items-center rounded-[10px] bg-pearl-ink">
           <BrandMark size="sidebar" tone="reversed" />
         </span>
-        <figcaption className="text-[11px] text-pearl-muted">
-          Reversed
-        </figcaption>
+        <figcaption className="text-[11px] text-pearl-muted">Reversed</figcaption>
       </figure>
     </div>
   ),
@@ -60,13 +56,8 @@ export const AppIcon: Story = {
   },
   render: () => (
     <figure className="m-0 grid justify-items-center gap-3">
-      <DesktopAppIcon
-        alt="TouchGrassBar desktop application icon"
-        size="large"
-      />
-      <figcaption className="text-[11px] text-pearl-muted">
-        Desktop application icon
-      </figcaption>
+      <DesktopAppIcon alt="TouchGrassBar desktop application icon" size="large" />
+      <figcaption className="text-[11px] text-pearl-muted">Desktop application icon</figcaption>
     </figure>
   ),
 };

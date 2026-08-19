@@ -24,10 +24,7 @@ type ProfileCardProps = Omit<ComponentProps<"section">, "children"> &
       }
   );
 
-function ProfileCardFrame({
-  className,
-  ...props
-}: ComponentProps<"section">) {
+function ProfileCardFrame({ className, ...props }: ComponentProps<"section">) {
   return (
     <section
       className={cn(

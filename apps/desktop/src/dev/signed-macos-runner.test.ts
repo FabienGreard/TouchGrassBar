@@ -1,10 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import {
-  mkdtempSync,
-  mkdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -12,13 +7,7 @@ import { expect, test } from "vitest";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../../..");
 const runnerPath = join(workspaceRoot, "scripts", "run-signed-macos-dev.ts");
-const generatedDirectory = join(
-  workspaceRoot,
-  "apps",
-  "desktop",
-  "src-tauri",
-  ".dev-instance",
-);
+const generatedDirectory = join(workspaceRoot, "apps", "desktop", "src-tauri", ".dev-instance");
 
 function runningProcessIds(executable: string) {
   const result = spawnSync("/bin/ps", ["-axo", "pid=,command="], {
@@ -36,10 +25,7 @@ function runningProcessIds(executable: string) {
     .map((match) => Number(match[1]));
 }
 
-async function waitFor(
-  predicate: () => boolean,
-  timeoutMilliseconds = 5_000,
-) {
+async function waitFor(predicate: () => boolean, timeoutMilliseconds = 5_000) {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
     if (predicate()) return;
@@ -51,25 +37,12 @@ async function waitFor(
 test.runIf(process.platform === "darwin")(
   "a forced runner restart cannot leave the signed development app alive",
   async () => {
-    const fixtureDirectory = mkdtempSync(
-      join(tmpdir(), "touchgrassbar-signed-runner-"),
-    );
-    const appBundlePath = join(
-      generatedDirectory,
-      `TouchGrassBar Runner Test ${process.pid}.app`,
-    );
-    const bundledExecutable = join(
-      appBundlePath,
-      "Contents",
-      "MacOS",
-      "touchgrassbar",
-    );
+    const fixtureDirectory = mkdtempSync(join(tmpdir(), "touchgrassbar-signed-runner-"));
+    const appBundlePath = join(generatedDirectory, `TouchGrassBar Runner Test ${process.pid}.app`);
+    const bundledExecutable = join(appBundlePath, "Contents", "MacOS", "touchgrassbar");
     const infoPlistPath = join(fixtureDirectory, "Info.plist");
     const entitlementsPath = join(fixtureDirectory, "entitlements.plist");
-    const provisioningProfilePath = join(
-      fixtureDirectory,
-      "embedded.provisionprofile",
-    );
+    const provisioningProfilePath = join(fixtureDirectory, "embedded.provisionprofile");
     const fixtureSourcePath = join(fixtureDirectory, "fixture.c");
     const fixtureExecutablePath = join(fixtureDirectory, "fixture");
 
@@ -96,11 +69,9 @@ test.runIf(process.platform === "darwin")(
       fixtureSourcePath,
       "#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n",
     );
-    const compile = spawnSync(
-      "/usr/bin/clang",
-      [fixtureSourcePath, "-o", fixtureExecutablePath],
-      { encoding: "utf8" },
-    );
+    const compile = spawnSync("/usr/bin/clang", [fixtureSourcePath, "-o", fixtureExecutablePath], {
+      encoding: "utf8",
+    });
     if (compile.status !== 0) {
       throw new Error(`Fixture compilation failed:\n${compile.stderr}`);
     }

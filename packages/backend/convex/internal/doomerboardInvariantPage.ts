@@ -1,7 +1,4 @@
-import {
-  paginationOptsValidator,
-  paginationResultValidator,
-} from "convex/server";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { v } from "convex/values";
 
 import { internalMutation, internalQuery } from "../_generated/server";
@@ -11,10 +8,7 @@ import {
   isStoredDoomerboardKey,
   storedDoomerboardKeyValidator,
 } from "../model/doomerboard";
-import {
-  markDoomerboardChanged,
-  readDoomerboardVersion,
-} from "../model/doomerboardVersion";
+import { markDoomerboardChanged, readDoomerboardVersion } from "../model/doomerboardVersion";
 import { boardKey } from "../model/values";
 
 const publicScoreValidator = v.object({
@@ -28,9 +22,7 @@ export const publicScores = internalQuery({
   args: { paginationOpts: paginationOptsValidator },
   returns: paginationResultValidator(publicScoreValidator),
   handler: async (ctx, args) => {
-    const result = await ctx.db
-      .query("publicUsages")
-      .paginate(args.paginationOpts);
+    const result = await ctx.db.query("publicUsages").paginate(args.paginationOpts);
     return {
       ...result,
       page: result.page.map((row) => ({
@@ -70,10 +62,7 @@ export const repairEntry = internalMutation({
 
     const publicScore = await ctx.db.get(args.id);
     if (!publicScore) return null;
-    const expectedNamespace = boardKey(
-      publicScore.scope,
-      publicScore.windowDays,
-    );
+    const expectedNamespace = boardKey(publicScore.scope, publicScore.windowDays);
     if (publicScore.boardKey !== expectedNamespace) {
       await ctx.db.patch(publicScore._id, {
         boardKey: expectedNamespace,
@@ -81,10 +70,7 @@ export const repairEntry = internalMutation({
     }
     await doomerboard.insertIfDoesNotExist(ctx, {
       id: publicScore._id,
-      key: doomerboardKey(
-        publicScore.tokenScore,
-        publicScore.touchGrassId,
-      ),
+      key: doomerboardKey(publicScore.tokenScore, publicScore.touchGrassId),
       namespace: expectedNamespace,
     });
     await markDoomerboardChanged(ctx);

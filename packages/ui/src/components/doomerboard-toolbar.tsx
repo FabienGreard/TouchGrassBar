@@ -8,10 +8,7 @@ import {
   PanelMenuRadioItem,
   PanelMenuTrigger,
 } from "./panel-menu";
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-} from "./segmented-control";
+import { SegmentedControl, SegmentedControlItem } from "./segmented-control";
 
 const periodOptions = [
   { label: "Today", value: "today" },
@@ -42,8 +39,7 @@ function QuerySelector({
   options: readonly QueryOption[];
   value: string;
 }) {
-  const selectedLabel =
-    options.find((option) => option.value === value)?.label ?? value;
+  const selectedLabel = options.find((option) => option.value === value)?.label ?? value;
 
   return (
     <PanelMenu>
@@ -93,10 +89,7 @@ function CurrentProfileAction({
 
   const profile = `${currentProfile.displayName}${currentProfile.touchGrassId}`;
   return (
-    <span
-      className="inline-flex min-w-0 items-center gap-0.5"
-      data-slot="current-user-profile"
-    >
+    <span className="inline-flex min-w-0 items-center gap-0.5" data-slot="current-user-profile">
       <Button
         aria-label={`Copy current user profile ${profile}`}
         className="max-w-[142px] rounded-[5px] font-mono text-[7px] font-medium"
@@ -122,11 +115,7 @@ function CurrentProfileAction({
         className="font-mono text-[7px] text-pearl-ink"
         data-copy-feedback={copyStatus}
       >
-        {copyStatus === "copied"
-          ? "Copied"
-          : copyStatus === "unavailable"
-            ? "Unavailable"
-            : ""}
+        {copyStatus === "copied" ? "Copied" : copyStatus === "unavailable" ? "Unavailable" : ""}
       </span>
     </span>
   );
@@ -181,7 +170,9 @@ function DoomerboardToolbar({
             options={periodOptions}
             value={period}
           />
-          <span aria-hidden="true" className="text-[8px]">·</span>
+          <span aria-hidden="true" className="text-[8px]">
+            ·
+          </span>
           <QuerySelector
             label="provider"
             onValueChange={onProviderChange}
@@ -193,9 +184,7 @@ function DoomerboardToolbar({
       <div className="mx-3.5 mt-2">
         <SegmentedControl
           aria-label="Leaderboard audience"
-          onValueChange={(value) =>
-            onAudienceChange(value as DoomerboardAudience)
-          }
+          onValueChange={(value) => onAudienceChange(value as DoomerboardAudience)}
           value={audience}
         >
           <SegmentedControlItem value="mine">Friends</SegmentedControlItem>

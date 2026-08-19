@@ -1,20 +1,10 @@
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { workspaceRoot } from "./development-environment";
 
-const developmentRunnerPath = join(
-  workspaceRoot,
-  ".convex",
-  "touchgrass-dev-runner.pid",
-);
+const developmentRunnerPath = join(workspaceRoot, ".convex", "touchgrass-dev-runner.pid");
 
 function processIsRunning(processId: number) {
   try {
@@ -26,11 +16,10 @@ function processIsRunning(processId: number) {
 }
 
 function verifiedDevelopmentRunner(processId: number) {
-  const command = execFileSync(
-    "/bin/ps",
-    ["-p", String(processId), "-o", "command="],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-  ).trim();
+  const command = execFileSync("/bin/ps", ["-p", String(processId), "-o", "command="], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
   if (!command.includes("scripts/run-dev.ts")) return false;
   const workingDirectoryOutput = execFileSync(
     "lsof",
@@ -41,10 +30,7 @@ function verifiedDevelopmentRunner(processId: number) {
     .split(/\r?\n/)
     .find((line) => line.startsWith("n"))
     ?.slice(1);
-  return (
-    workingDirectory !== undefined &&
-    resolve(workingDirectory) === workspaceRoot
-  );
+  return workingDirectory !== undefined && resolve(workingDirectory) === workspaceRoot;
 }
 
 function activeDevelopmentRunnerProcessId() {
@@ -83,10 +69,7 @@ function claimDevelopmentRunnerLease() {
     });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(
-        "This worktree already has an active development command.",
-        { cause: error },
-      );
+      throw new Error("This worktree already has an active development command.", { cause: error });
     }
     throw error;
   }
@@ -94,10 +77,7 @@ function claimDevelopmentRunnerLease() {
 
 function releaseDevelopmentRunnerLease(expectedProcessId: number) {
   try {
-    if (
-      readFileSync(developmentRunnerPath, "utf8") ===
-      String(expectedProcessId)
-    ) {
+    if (readFileSync(developmentRunnerPath, "utf8") === String(expectedProcessId)) {
       unlinkSync(developmentRunnerPath);
     }
   } catch {

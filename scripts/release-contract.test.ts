@@ -28,23 +28,20 @@ const databaseFixtureManifestEntries = [
     tag: "v0.0.9",
   },
 ];
-const databaseFixtures = databaseFixtureManifestEntries.map(
-  ({ database, sha256, tag }) => ({ database, sha256, tag }),
-);
+const databaseFixtures = databaseFixtureManifestEntries.map(({ database, sha256, tag }) => ({
+  database,
+  sha256,
+  tag,
+}));
 
 const hasValueField = (input: unknown): boolean =>
   typeof input === "object" && input !== null
-    ? Object.entries(input).some(
-        ([key, value]) => key === "value" || hasValueField(value),
-      )
+    ? Object.entries(input).some(([key, value]) => key === "value" || hasValueField(value))
     : false;
 
 const protectedStates = (present = true) =>
   Object.fromEntries(
-    [...releaseSecrets, ...releaseEnvironmentVariables].map((name) => [
-      name,
-      present,
-    ]),
+    [...releaseSecrets, ...releaseEnvironmentVariables].map((name) => [name, present]),
   );
 
 describe("release contract", () => {
@@ -53,13 +50,7 @@ describe("release contract", () => {
       tag: "v1.2.3",
       version: "1.2.3",
     });
-    for (const tag of [
-      "1.2.3",
-      "v01.2.3",
-      "v1.2.3-beta.1",
-      "v1.2.3\nnext",
-      "refs/tags/v1.2.3",
-    ]) {
+    for (const tag of ["1.2.3", "v01.2.3", "v1.2.3-beta.1", "v1.2.3\nnext", "refs/tags/v1.2.3"]) {
       expect(() => parseStableReleaseTag(tag)).toThrow(
         "Release tag must have exact vMAJOR.MINOR.PATCH form.",
       );
@@ -111,9 +102,7 @@ describe("release contract", () => {
 
   test("uses versioned assets and one stable updater manifest", () => {
     const names = releaseAssetNames("v1.2.3");
-    expect(names.databaseCompatibility).toBe(
-      "database-compatibility-1.2.3.json",
-    );
+    expect(names.databaseCompatibility).toBe("database-compatibility-1.2.3.json");
     expect(names.dmg).toBe("TouchGrassBar_1.2.3_aarch64.dmg");
     expect(names.updaterArchive).toBe("TouchGrassBar_1.2.3_aarch64.app.tar.gz");
     expect(
@@ -183,34 +172,20 @@ describe("release contract", () => {
 
   test("requires exact official releases and one exact candidate", () => {
     expect(() =>
-      assertDatabaseFixtureReleaseSet(
-        databaseFixtureManifestEntries,
-        "v0.0.9",
-        ["v0.0.8"],
-      ),
+      assertDatabaseFixtureReleaseSet(databaseFixtureManifestEntries, "v0.0.9", ["v0.0.8"]),
     ).not.toThrow();
 
     for (const publishedTags of [[], ["v0.0.7"], ["v0.0.8", "v0.0.8"]]) {
       expect(() =>
-        assertDatabaseFixtureReleaseSet(
-          databaseFixtureManifestEntries,
-          "v0.0.9",
-          publishedTags,
-        ),
-      ).toThrow(
-        "Official database fixtures do not match published stable GitHub Releases.",
-      );
+        assertDatabaseFixtureReleaseSet(databaseFixtureManifestEntries, "v0.0.9", publishedTags),
+      ).toThrow("Official database fixtures do not match published stable GitHub Releases.");
     }
 
     expect(() =>
-      assertDatabaseFixtureReleaseSet(
-        databaseFixtureManifestEntries.slice(1),
-        "v0.0.9",
-        ["v0.0.8"],
-      ),
-    ).toThrow(
-      "Official database fixtures do not match published stable GitHub Releases.",
-    );
+      assertDatabaseFixtureReleaseSet(databaseFixtureManifestEntries.slice(1), "v0.0.9", [
+        "v0.0.8",
+      ]),
+    ).toThrow("Official database fixtures do not match published stable GitHub Releases.");
 
     expect(() =>
       assertDatabaseFixtureReleaseSet(
@@ -273,8 +248,6 @@ describe("release contract", () => {
         tag: "v0.0.9",
         workflowRunId: "456",
       }).fixtures,
-    ).toEqual(
-      databaseFixtures.map((fixture) => ({ ...fixture, result: "PASS" })),
-    );
+    ).toEqual(databaseFixtures.map((fixture) => ({ ...fixture, result: "PASS" })));
   });
 });
