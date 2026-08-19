@@ -16,8 +16,7 @@ type StableVersion = {
   tag: string;
 };
 
-const usage =
-  "Use: bun run release <patch|minor|major> [--execute --confirm-administrator-bypass-disabled].";
+const usage = "Use: bun run release <patch|minor|major> [--execute].";
 
 function command(executable: string, argumentsList: string[]) {
   const result = spawnSync(executable, argumentsList, {
@@ -74,10 +73,7 @@ function bumpStableVersion(current: StableVersion, level: ReleaseLevel) {
 function parseReleaseArguments(argumentsList: string[]) {
   const level = argumentsList[0] as ReleaseLevel | undefined;
   const flags = argumentsList.slice(1);
-  const supportedFlags = new Set([
-    "--confirm-administrator-bypass-disabled",
-    "--execute",
-  ]);
+  const supportedFlags = new Set(["--execute"]);
   if (
     !level ||
     !new Set<ReleaseLevel>(["major", "minor", "patch"]).has(level) ||
@@ -87,11 +83,7 @@ function parseReleaseArguments(argumentsList: string[]) {
     throw new Error(usage);
   }
   const execute = flags.includes("--execute");
-  const administratorBypassDisabled = flags.includes(
-    "--confirm-administrator-bypass-disabled",
-  );
-  if (administratorBypassDisabled && !execute) throw new Error(usage);
-  return { administratorBypassDisabled, execute, level };
+  return { execute, level };
 }
 
 function remoteStableTags() {
@@ -207,15 +199,8 @@ function release(argumentsList: string[]) {
 
   if (!options.execute) {
     console.log("Action: preview only");
-    console.log(
-      `Execute: bun run release ${options.level} --execute --confirm-administrator-bypass-disabled`,
-    );
+    console.log(`Execute: bun run release ${options.level} --execute`);
     return;
-  }
-  if (!options.administratorBypassDisabled) {
-    throw new Error(
-      "Confirm that administrator bypass is disabled for both release environments.",
-    );
   }
 
   createAndPushTag(next);

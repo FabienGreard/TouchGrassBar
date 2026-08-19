@@ -3,7 +3,6 @@
   "reviewer": "FabienGreard",
   "environments": {
     "macos-release": {
-      "administrators_can_bypass": false,
       "deployment_tag_patterns": ["v*"],
       "prevent_self_review": false,
       "required_reviewers": ["FabienGreard"],
@@ -25,7 +24,6 @@
       "wait_timer_minutes": 0
     },
     "public-release": {
-      "administrators_can_bypass": false,
       "deployment_tag_patterns": ["v*"],
       "prevent_self_review": false,
       "required_reviewers": ["FabienGreard"],

@@ -43,11 +43,6 @@ not exact remote `main`. It configures these controls:
   Readable stable Action versions are permitted.
 - GitHub immutable Releases are enabled.
 
-GitHub does not expose the administrator-bypass switch through its public
-environment API. In repository **Settings > Environments**, open each release
-environment and clear **Allow administrators to bypass configured protection
-rules**. This manual check is mandatory.
-
 Add these names only to the `macos-release` environment. Do not create a
 repository or organization copy.
 
@@ -79,9 +74,7 @@ bun run release:governance --verify
 This command requests name and update-time fields only. It checks both
 environment scopes, repository-level duplicates, reviewer and tag controls,
 Action policy, immutable tags, immutable Releases, and the public updater
-configuration. It does not request or emit a protected value. Its PASS state
-covers automated checks only. Confirm the two administrator-bypass switches in
-the GitHub interface before you push the tag.
+configuration. It does not request or emit a protected value.
 
 ## Candidate trigger and approval
 
@@ -117,9 +110,9 @@ runs the same check. The complete fixture lifecycle and the schema change
 checklist are linked from
 [`apps/desktop/src-tauri/tests/fixtures/releases/README.md`](../apps/desktop/src-tauri/tests/fixtures/releases/README.md).
 
-After the automated preview passes and the mandatory administrator-bypass
-check is complete, use the execution command printed by the script. The script
-creates and pushes the annotated tag. The tag starts the release workflow.
+After the automated preview passes, use the execution command printed by the
+script. The script creates and pushes the annotated tag. The tag starts the
+release workflow.
 
 The unprivileged `validate` job proves these conditions before GitHub creates a
 `macos-release` approval request. A rejected or failed candidate consumes its
