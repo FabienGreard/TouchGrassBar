@@ -39,25 +39,25 @@ function quotaPercentage(lane: QuotaLane | null | undefined) {
   return Math.max(0, Math.min(100, (lane.remaining / lane.allowance) * 100));
 }
 
-function quotaLabel(
-  lane: QuotaLane | null,
-  availability: ProviderSnapshot["availability"],
-  referenceTime?: string,
-  timeZone?: string,
-) {
+function quotaLabel(lane: QuotaLane | null, referenceTime?: string, timeZone?: string) {
   if (!lane) return "Quota snapshot unavailable";
-  const freshness = availability === "stale" ? " · stale" : "";
-  if (!lane.resetAt) return `${lane.label}${freshness}`;
+  if (!lane.resetAt) return lane.label;
 
   const resetAt = new Date(lane.resetAt);
-  if (Number.isNaN(resetAt.getTime())) return `${lane.label} · resets ${lane.resetAt}${freshness}`;
+  if (Number.isNaN(resetAt.getTime())) return `${lane.label} · resets ${lane.resetAt}`;
 
   const referenceTimeMilliseconds = referenceTime ? new Date(referenceTime).getTime() : Date.now();
-  const remainingMilliseconds = Math.max(
-    0,
-    resetAt.getTime() -
-      (Number.isNaN(referenceTimeMilliseconds) ? Date.now() : referenceTimeMilliseconds),
-  );
+  const referenceMilliseconds = Number.isNaN(referenceTimeMilliseconds)
+    ? Date.now()
+    : referenceTimeMilliseconds;
+  if (resetAt.getTime() <= referenceMilliseconds) {
+    const reset = /week/i.test(lane.label)
+      ? exactResetDate(resetAt, timeZone)
+      : resetTimeFormatter(timeZone).format(resetAt);
+    return `${lane.label} · reset ${reset}`;
+  }
+
+  const remainingMilliseconds = resetAt.getTime() - referenceMilliseconds;
   const totalMinutes = Math.floor(remainingMilliseconds / 60_000);
   const totalHours = Math.floor(totalMinutes / 60);
   const days = Math.floor(totalHours / 24);
@@ -71,21 +71,15 @@ function quotaLabel(
         : `${minutesLeft}m`;
 
   const time = resetTimeFormatter(timeZone).format(resetAt);
-  if (!/week/i.test(lane.label)) return `${lane.label} · resets ${time}${freshness}`;
+  if (!/week/i.test(lane.label)) return `${lane.label} · resets ${time}`;
 
   const exactReset = exactResetDate(resetAt, timeZone);
-  return `${lane.label} · ${timeLeft} left · ${exactReset}${freshness}`;
+  return `${lane.label} · ${timeLeft} left · ${exactReset}`;
 }
 
-function quotaAriaLabel(
-  label: string,
-  availability: ProviderSnapshot["availability"],
-  percentage: number | null,
-) {
+function quotaAriaLabel(label: string, percentage: number | null) {
   return `${label} quota ${
-    percentage === null
-      ? "unavailable"
-      : `${availability}, ${Math.round(percentage)} percent remaining`
+    percentage === null ? "unavailable" : `${Math.round(percentage)} percent remaining`
   }`;
 }
 
@@ -98,13 +92,11 @@ function orderedQuotaLanes(provider: ProviderSnapshot) {
 
 function ProviderQuotaLane({
   lane,
-  availability,
   provider,
   referenceTime,
   timeZone,
 }: {
   lane: QuotaLane;
-  availability: ProviderSnapshot["availability"];
   provider: ProviderSnapshot["provider"];
   referenceTime?: string | undefined;
   timeZone?: string | undefined;
@@ -117,14 +109,14 @@ function ProviderQuotaLane({
       data-slot="provider-quota-lane"
     >
       <small className="truncate text-[8px] text-pearl-muted contrast-more:text-pearl-ink">
-        {quotaLabel(lane, availability, referenceTime, timeZone)}
+        {quotaLabel(lane, referenceTime, timeZone)}
       </small>
       <strong className={percentage === null ? "text-[9px] text-usage-unavailable" : "text-[9px]"}>
         {percentage === null ? "—" : `${Math.round(percentage)}%`}
       </strong>
       <div className="col-span-2">
         <QuotaProgress
-          aria-label={quotaAriaLabel(lane.label, availability, percentage)}
+          aria-label={quotaAriaLabel(lane.label, percentage)}
           provider={provider}
           size="secondary"
           value={percentage}
@@ -167,11 +159,11 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
             {label}
           </strong>
           <small className="truncate text-[10px] text-pearl-muted contrast-more:text-pearl-ink">
-            {quotaLabel(primaryLane, provider.availability, referenceTime, timeZone)}
+            {quotaLabel(primaryLane, referenceTime, timeZone)}
           </small>
         </span>
         <strong
-          aria-label={quotaAriaLabel(label, provider.availability, percentage)}
+          aria-label={quotaAriaLabel(label, percentage)}
           className={percentage === null ? "text-[21px] text-usage-unavailable" : "text-[21px]"}
         >
           {percentage === null ? "—" : `${Math.round(percentage)}%`}
@@ -180,14 +172,13 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
 
       <div className="mt-3">
         <QuotaProgress
-          aria-label={quotaAriaLabel(label, provider.availability, percentage)}
+          aria-label={quotaAriaLabel(label, percentage)}
           provider={provider.provider}
           value={percentage}
         />
       </div>
       {secondaryLanes.map((lane) => (
         <ProviderQuotaLane
-          availability={provider.availability}
           key={lane.label}
           lane={lane}
           provider={provider.provider}

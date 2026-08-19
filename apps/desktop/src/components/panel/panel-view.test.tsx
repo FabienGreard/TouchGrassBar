@@ -303,8 +303,8 @@ describe("panel states", () => {
     expect(markup).toContain('data-slot="provider-quota-lane"');
     expect(markup.match(/data-quota-tone="codex"/g)).toHaveLength(2);
     expect(markup.match(/data-quota-tone="claude"/g)).toHaveLength(2);
-    expect(markup).toContain('aria-label="Codex quota current, 74 percent remaining"');
-    expect(markup).toContain('aria-label="5-hour limit quota current, 62 percent remaining"');
+    expect(markup).toContain('aria-label="Codex quota 74 percent remaining"');
+    expect(markup).toContain('aria-label="5-hour limit quota 62 percent remaining"');
     expect(markup).toContain('data-quota-value="74"');
     expect(markup).toContain('data-quota-value="18"');
     expect(markup).toContain("--quota-codex-low");
@@ -401,10 +401,8 @@ describe("panel states", () => {
     );
 
     expect(currentMarkup.match(/data-quota-tone="claude"/g)).toHaveLength(2);
-    expect(currentMarkup).toContain('aria-label="Claude quota current, 18 percent remaining"');
-    expect(currentMarkup).toContain(
-      'aria-label="5-hour limit quota current, 43 percent remaining"',
-    );
+    expect(currentMarkup).toContain('aria-label="Claude quota 18 percent remaining"');
+    expect(currentMarkup).toContain('aria-label="5-hour limit quota 43 percent remaining"');
     stop();
   });
 
@@ -612,7 +610,7 @@ describe("panel states", () => {
     expect(markup).toContain('aria-label="API equivalent not ready,');
   });
 
-  test("announces stale Quota Lanes without hiding their last valid values", async () => {
+  test("shows last-known Quota Lanes without exposing their cache state", async () => {
     const staleState = await deliveredBrowserFixture("stale");
     const markup = renderToStaticMarkup(
       <PanelView
@@ -625,14 +623,14 @@ describe("panel states", () => {
     );
 
     expect(markup).toContain('data-provider-availability="stale"');
-    expect(markup).toContain('aria-label="Codex quota stale, 74 percent remaining"');
-    expect(markup).toContain('aria-label="5-hour limit quota stale, 62 percent remaining"');
+    expect(markup).toContain('aria-label="Codex quota 74 percent remaining"');
+    expect(markup).toContain('aria-label="5-hour limit quota 62 percent remaining"');
     expect(markup).toContain(
-      `Weekly limit · 4d 10h left · ${localDateTime("2026-08-10T23:45:00.000Z")} · stale`,
+      `Weekly limit · 4d 10h left · ${localDateTime("2026-08-10T23:45:00.000Z")}`,
     );
-    expect(markup).toContain(
-      `5-hour limit · resets ${localTime("2026-08-06T18:40:00.000Z")} · stale`,
-    );
+    expect(markup).toContain(`5-hour limit · resets ${localTime("2026-08-06T18:40:00.000Z")}`);
+    expect(markup).not.toContain(" · stale");
+    expect(markup).not.toContain("quota stale");
     expect(markup).toContain('data-quota-value="74"');
     expect(markup).toContain('data-quota-value="62"');
   });

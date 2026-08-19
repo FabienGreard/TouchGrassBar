@@ -1622,20 +1622,20 @@ impl CachedProjection {
         ))
     }
 
-    fn commit_refreshed_snapshot(
+    fn commit_transitioned_snapshot(
         &self,
         store: &mut ReadModelStore,
-        refreshed: SanitizedDesktopStateV3,
-        enablement: &dyn ProviderEnablementPolicy,
+        transitioned: SanitizedDesktopStateV3,
         now: OffsetDateTime,
     ) -> Result<SnapshotCommitOutcome, &'static str> {
-        self.commit_refreshed_snapshot_with_completed(
+        let (cached, first_observation_waits) = self.snapshot_with_first_observation_waits()?;
+        self.commit_snapshot_with_force(
             store,
-            refreshed,
-            enablement,
+            transitioned,
+            cached,
+            first_observation_waits,
             now,
-            &BTreeSet::new(),
-            &BTreeMap::new(),
+            SnapshotCommitOptions::default(),
         )
     }
 
@@ -1738,11 +1738,13 @@ impl CachedProjection {
     ) -> Result<SnapshotCommitOutcome, &'static str> {
         let (cached, mut first_observation_waits) = self.snapshot_with_first_observation_waits()?;
         let mut refreshed = cached.clone();
+        let previous_generated_at =
+            OffsetDateTime::parse(&refreshed.generated_at, &Rfc3339).unwrap_or(now);
         if let Some(change) = change
             && change.enabled
             && let Some(presentation) = refreshed.provider_mut(change.provider)
         {
-            let (reenabled, _) = presentation.transition_at(now);
+            let (reenabled, _) = presentation.transition_at(previous_generated_at, now);
             let waits_for_first_observation = !reenabled.has_cached_quota_or_observed_usage()
                 && (first_observation_waits.contains(&change.provider)
                     || reenabled.usage.scan_status != UsageScanStatus::Indexing);
@@ -2500,10 +2502,9 @@ impl CoordinatorWorker {
                 .lock()
                 .map_err(|_| "native state unavailable")
                 .and_then(|mut store| {
-                    self.projection.commit_refreshed_snapshot(
+                    self.projection.commit_transitioned_snapshot(
                         &mut store,
                         transitioned,
-                        self.enablement.as_ref(),
                         self.clock.now(),
                     )
                 });
@@ -2699,13 +2700,8 @@ impl NativeCore {
             state,
             enabled_provider_set(enablement.as_ref()),
         ));
-        if let Some(transitioned) = transition_snapshot_at(&projection.snapshot()?, now) {
-            projection.commit_refreshed_snapshot(
-                &mut store,
-                transitioned,
-                enablement.as_ref(),
-                now,
-            )?;
+        if let Some(transitioned) = restore_snapshot_at(&projection.snapshot()?, now) {
+            projection.commit_transitioned_snapshot(&mut store, transitioned, now)?;
         }
         projection.commit_provider_enablement(&mut store, None, now)?;
         Ok(Self::from_components(
@@ -2862,7 +2858,7 @@ impl NativeCore {
             .collect::<Vec<_>>();
         Ok(RevisionedOverallQuotaHeadroom {
             revision,
-            headroom: overall_quota_headroom(enabled_quotas.iter()),
+            headroom: overall_quota_headroom(enabled_quotas.iter(), self.inner.clock.now()),
         })
     }
 
@@ -3441,7 +3437,7 @@ fn freshness_deadline_after(timestamp: &str, now: OffsetDateTime) -> Option<Offs
 }
 
 impl QuotaLane {
-    fn is_valid_at(&self, now: OffsetDateTime) -> bool {
+    pub(crate) fn is_active_at(&self, now: OffsetDateTime) -> bool {
         self.reset_at.as_deref().is_none_or(|reset_at| {
             OffsetDateTime::parse(reset_at, &Rfc3339).is_ok_and(|reset_at| now < reset_at)
         })
@@ -3452,6 +3448,17 @@ impl QuotaLane {
             .as_deref()
             .and_then(|reset_at| OffsetDateTime::parse(reset_at, &Rfc3339).ok())
             .filter(|reset_at| *reset_at > now)
+    }
+
+    fn reset_crossed_since(
+        &self,
+        previous_generated_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> bool {
+        self.reset_at.as_deref().is_some_and(|reset_at| {
+            OffsetDateTime::parse(reset_at, &Rfc3339)
+                .is_ok_and(|reset_at| previous_generated_at < reset_at && reset_at <= now)
+        })
     }
 }
 
@@ -3474,59 +3481,61 @@ impl ProviderSnapshot {
                 ..
             } => {
                 timestamp_is_due(observed_at, now)
-                    || quota_lanes.iter().any(|lane| !lane.is_valid_at(now))
+                    || quota_lanes.iter().any(|lane| !lane.is_active_at(now))
             }
         }
     }
 
-    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
-        let (provider, observed_at, quota_lanes, current) = match self {
-            Self::Unavailable { .. } => return (self.clone(), false),
+    fn transition_at(
+        &self,
+        previous_generated_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> (Self, bool) {
+        match self {
+            Self::Unavailable { .. } => (self.clone(), false),
+            Self::Stale { quota_lanes, .. }
+                if quota_lanes
+                    .iter()
+                    .any(|lane| lane.reset_crossed_since(previous_generated_at, now)) =>
+            {
+                (self.clone(), true)
+            }
+            Self::Stale { .. } => (self.clone(), false),
             Self::Current {
                 provider,
                 observed_at,
                 quota_lanes,
-            } => (*provider, observed_at, quota_lanes, true),
-            Self::Stale {
+            } if timestamp_is_due(observed_at, now)
+                || quota_lanes.iter().any(|lane| !lane.is_active_at(now)) =>
+            {
+                (
+                    Self::Stale {
+                        provider: *provider,
+                        observed_at: observed_at.clone(),
+                        quota_lanes: quota_lanes.clone(),
+                    },
+                    true,
+                )
+            }
+            Self::Current { .. } => (self.clone(), false),
+        }
+    }
+
+    fn transition_on_restore(&self) -> (Self, bool) {
+        match self {
+            Self::Current {
                 provider,
                 observed_at,
                 quota_lanes,
-            } => (*provider, observed_at, quota_lanes, false),
-        };
-        let valid_lanes = quota_lanes
-            .iter()
-            .filter(|lane| lane.is_valid_at(now))
-            .cloned()
-            .collect::<Vec<_>>();
-        if valid_lanes.is_empty() {
-            return (
-                Self::Unavailable {
-                    provider,
-                    quota_lanes: [],
+            } => (
+                Self::Stale {
+                    provider: *provider,
+                    observed_at: observed_at.clone(),
+                    quota_lanes: quota_lanes.clone(),
                 },
                 true,
-            );
-        }
-        let becomes_stale = current && timestamp_is_due(observed_at, now);
-        let changed = becomes_stale || valid_lanes.len() != quota_lanes.len();
-        if current && !becomes_stale {
-            (
-                Self::Current {
-                    provider,
-                    observed_at: observed_at.clone(),
-                    quota_lanes: valid_lanes,
-                },
-                changed,
-            )
-        } else {
-            (
-                Self::Stale {
-                    provider,
-                    observed_at: observed_at.clone(),
-                    quota_lanes: valid_lanes,
-                },
-                changed,
-            )
+            ),
+            Self::Unavailable { .. } | Self::Stale { .. } => (self.clone(), false),
         }
     }
 
@@ -3614,8 +3623,12 @@ impl ProviderPresentation {
             .any(|usage| usage.needs_refresh(now))
     }
 
-    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
-        let (quota, quota_changed) = self.quota.transition_at(now);
+    fn transition_at(
+        &self,
+        previous_generated_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> (Self, bool) {
+        let (quota, quota_changed) = self.quota.transition_at(previous_generated_at, now);
         let (usage, usage_changed) = transition_periods_at(&self.usage, now);
         let mut transitioned = self.clone();
         transitioned.quota = quota;
@@ -3669,12 +3682,14 @@ fn transition_snapshot_at(
     snapshot: &SanitizedDesktopStateV3,
     now: OffsetDateTime,
 ) -> Option<SanitizedDesktopStateV3> {
+    let previous_generated_at =
+        OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339).unwrap_or(now);
     let mut changed = false;
     let providers = snapshot
         .providers
         .iter()
         .map(|provider| {
-            let (provider, provider_changed) = provider.transition_at(now);
+            let (provider, provider_changed) = provider.transition_at(previous_generated_at, now);
             changed |= provider_changed;
             provider
         })
@@ -3684,6 +3699,32 @@ fn transition_snapshot_at(
         transitioned.providers = providers;
         transitioned.refresh_combined_usage();
         transitioned
+    })
+}
+
+fn restore_snapshot_at(
+    snapshot: &SanitizedDesktopStateV3,
+    now: OffsetDateTime,
+) -> Option<SanitizedDesktopStateV3> {
+    let previous_generated_at =
+        OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339).unwrap_or(now);
+    let mut changed = false;
+    let providers = snapshot
+        .providers
+        .iter()
+        .map(|provider| {
+            let (mut restored, time_changed) = provider.transition_at(previous_generated_at, now);
+            let (quota, restore_changed) = restored.quota.transition_on_restore();
+            restored.quota = quota;
+            changed |= time_changed || restore_changed;
+            restored
+        })
+        .collect::<Vec<_>>();
+    changed.then(|| {
+        let mut restored = snapshot.clone();
+        restored.providers = providers;
+        restored.refresh_combined_usage();
+        restored
     })
 }
 
@@ -4916,7 +4957,7 @@ mod tests {
                 ],
             };
             claude.usage = claude_usage;
-            claude.transition_at(test_time()).0
+            claude.transition_at(test_time(), test_time()).0
         };
         state.refresh_combined_usage();
         let policy = Arc::new(ClaudeTogglePolicy {
@@ -4958,9 +4999,11 @@ mod tests {
                 provider: CodingProvider::Claude,
                 quota_lanes,
                 ..
-            } if quota_lanes.len() == 1
+            } if quota_lanes.len() == 2
                 && quota_lanes[0].label == "Weekly limit"
                 && quota_lanes[0].remaining == Some(50.0)
+                && quota_lanes[1].label == "Expired limit"
+                && quota_lanes[1].remaining == Some(10.0)
         ));
         let UsageTotal::Current {
             observed_tokens,
@@ -4983,7 +5026,7 @@ mod tests {
     }
 
     #[test]
-    fn reenabling_provider_drops_all_expired_cached_quota_lanes_but_keeps_usage() {
+    fn reenabling_provider_keeps_all_expired_claude_quota_lanes_stale() {
         let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
         let mut state = observed_state(test_time(), 42);
         let mut claude_usage = state.provider(CodingProvider::Codex).unwrap().usage.clone();
@@ -5004,7 +5047,7 @@ mod tests {
                 }],
             };
             claude.usage = claude_usage;
-            claude.transition_at(test_time()).0
+            claude.transition_at(test_time(), test_time()).0
         };
         state.refresh_combined_usage();
         let policy = Arc::new(ClaudeTogglePolicy {
@@ -5031,7 +5074,13 @@ mod tests {
         assert_eq!(claude, &expected_claude);
         assert!(matches!(
             &claude.quota,
-            ProviderSnapshot::Unavailable { quota_lanes, .. } if quota_lanes.is_empty()
+            ProviderSnapshot::Stale {
+                provider: CodingProvider::Claude,
+                quota_lanes,
+                ..
+            } if quota_lanes.len() == 1
+                && quota_lanes[0].label == "Expired limit"
+                && quota_lanes[0].remaining == Some(10.0)
         ));
         assert!(matches!(claude.usage.today, UsageTotal::Current { .. }));
         assert_eq!(claude.usage.scan_status, UsageScanStatus::Complete);
@@ -5080,6 +5129,80 @@ mod tests {
                 provider: CodingProvider::Claude,
                 quota_lanes: []
             }
+        ));
+    }
+
+    #[test]
+    fn disabled_provider_restores_stale_quota_before_reenable() {
+        let database = TestDatabase::new();
+        let clock: Arc<dyn Clock> = Arc::new(FixtureClock::new(test_time()));
+        let policy = Arc::new(ClaudeTogglePolicy {
+            enabled: AtomicBool::new(true),
+        });
+        let enablement: Arc<dyn ProviderEnablementPolicy> = policy.clone();
+        let mut observed = observed_state(test_time(), 42);
+        let claude = observed.provider_mut(CodingProvider::Claude).unwrap();
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.quota = ProviderSnapshot::Current {
+            provider: CodingProvider::Claude,
+            observed_at: format_time(test_time()),
+            quota_lanes: vec![QuotaLane {
+                label: "Weekly limit".to_owned(),
+                unit: "percent".to_owned(),
+                allowance: Some(100.0),
+                remaining: Some(50.0),
+                reset_at: Some(format_time(test_time() + TimeDuration::days(7))),
+            }],
+        };
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed))]));
+        let core = NativeCore::open_without_launch_with_enablement(
+            &database.0,
+            Arc::clone(&clock),
+            source.clone(),
+            Arc::clone(&enablement),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        wait_for_completed_runs(source.as_ref(), 1);
+        core.wait_for_refresh_completion().unwrap();
+        policy.enabled.store(false, Ordering::Release);
+        core.provider_enablement_changed(CodingProvider::Claude, false)
+            .unwrap();
+        drop(core);
+
+        let reopened = NativeCore::open_without_launch_with_enablement(
+            &database.0,
+            clock,
+            Arc::new(CachedProjectionRefreshAdapter),
+            Arc::clone(&enablement),
+        )
+        .unwrap();
+        assert!(matches!(
+            &reopened
+                .inner
+                .projection
+                .snapshot()
+                .unwrap()
+                .provider(CodingProvider::Claude)
+                .unwrap()
+                .quota,
+            ProviderSnapshot::Stale { quota_lanes, .. }
+                if quota_lanes.len() == 1 && quota_lanes[0].remaining == Some(50.0)
+        ));
+
+        policy.enabled.store(true, Ordering::Release);
+        reopened
+            .provider_enablement_changed(CodingProvider::Claude, true)
+            .unwrap();
+        assert!(matches!(
+            &reopened
+                .panel_state()
+                .unwrap()
+                .provider(CodingProvider::Claude)
+                .unwrap()
+                .quota,
+            ProviderSnapshot::Stale { quota_lanes, .. }
+                if quota_lanes.len() == 1 && quota_lanes[0].remaining == Some(50.0)
         ));
     }
 
@@ -7379,16 +7502,16 @@ mod tests {
                 row.get::<_, i64>(0)
             })
             .unwrap();
-        assert_eq!(cached.revision, "2");
+        assert_eq!(cached.revision, "3");
         assert_eq!((aggregate_count, outbox_count), (0, 0));
         assert_eq!(relaunched.active_usage_sync_generation().unwrap(), None);
         assert_eq!(
             relaunched.menu_bar_headroom().unwrap(),
             crate::quota_headroom::RevisionedOverallQuotaHeadroom {
-                revision: 2,
+                revision: 3,
                 headroom: expected_headroom(
                     74.0,
-                    crate::quota_headroom::HeadroomFreshness::Current,
+                    crate::quota_headroom::HeadroomFreshness::Stale,
                     crate::quota_headroom::HeadroomCompleteness::Incomplete,
                 ),
             }
@@ -7520,7 +7643,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v2_cache_without_resetting_the_sanitized_snapshot() {
+    fn migrates_v2_cache_and_marks_the_restored_quota_stale() {
         let database = TestDatabase::new();
         let legacy = legacy_observed_state_value(2, test_time(), 42);
         let connection = Connection::open(&database.0).unwrap();
@@ -7562,7 +7685,11 @@ mod tests {
         )
         .unwrap();
         let migrated = core.panel_state().unwrap();
-        assert_eq!(migrated.revision, "1");
+        assert_eq!(migrated.revision, "2");
+        assert!(matches!(
+            &migrated.provider(CodingProvider::Codex).unwrap().quota,
+            ProviderSnapshot::Stale { quota_lanes, .. } if quota_lanes.len() == 1
+        ));
         assert!(matches!(
             &migrated
                 .provider(CodingProvider::Codex)
@@ -7595,7 +7722,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_fixed_v3_cache_to_dynamic_providers_without_a_refresh() {
+    fn migrates_fixed_v3_cache_to_dynamic_providers_as_stale() {
         let database = TestDatabase::new();
         let mut legacy = legacy_observed_state_value(3, test_time(), 42);
         legacy["usage"]["codex"]["scanStatus"] = json!("complete");
@@ -7639,9 +7766,13 @@ mod tests {
         .unwrap();
         let migrated = core.panel_state().unwrap();
 
-        assert_eq!(migrated.revision, "1");
+        assert_eq!(migrated.revision, "2");
         let codex = migrated.provider(CodingProvider::Codex).unwrap();
         assert_eq!(codex.display_name, "Codex");
+        assert!(matches!(
+            &codex.quota,
+            ProviderSnapshot::Stale { quota_lanes, .. } if quota_lanes.len() == 1
+        ));
         assert_eq!(codex.usage.scan_status, UsageScanStatus::Complete);
         assert!(matches!(
             &codex.usage.today,
@@ -8381,7 +8512,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_deadline_expires_only_the_affected_quota_lane() {
+    fn reset_deadline_keeps_the_last_codex_quota_lane_stale() {
         let database = TestDatabase::new();
         let clock = Arc::new(FixtureClock::new(test_time()));
         let mut observed = observed_state(test_time(), 42);
@@ -8422,7 +8553,13 @@ mod tests {
         let after_reset = core.panel_state().unwrap();
         assert!(matches!(
             &after_reset.providers[0].quota,
-            ProviderSnapshot::Unavailable { .. }
+            ProviderSnapshot::Stale {
+                provider: CodingProvider::Codex,
+                quota_lanes,
+                ..
+            } if quota_lanes.len() == 1
+                && quota_lanes[0].label == "Weekly limit"
+                && quota_lanes[0].remaining == Some(74.0)
         ));
         assert_eq!(
             core.menu_bar_headroom().unwrap().headroom,
@@ -8439,6 +8576,145 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn restart_marks_both_quotas_stale_until_network_recovery_replaces_them() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let reset_at = format_time(test_time() + TimeDuration::minutes(1));
+        let mut observed = observed_state(test_time(), 42);
+        let ProviderSnapshot::Current { quota_lanes, .. } =
+            &mut observed.provider_mut(CodingProvider::Codex).unwrap().quota
+        else {
+            panic!("Codex fixture quota must be current");
+        };
+        quota_lanes[0].reset_at = Some(reset_at.clone());
+        let claude = observed.provider_mut(CodingProvider::Claude).unwrap();
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.quota = ProviderSnapshot::Current {
+            provider: CodingProvider::Claude,
+            observed_at: format_time(test_time()),
+            quota_lanes: vec![QuotaLane {
+                label: "Weekly limit".to_owned(),
+                unit: "percent".to_owned(),
+                allowance: Some(100.0),
+                remaining: Some(50.0),
+                reset_at: Some(reset_at),
+            }],
+        };
+
+        let initial_source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed))]));
+        let core =
+            NativeCore::open_without_launch(&database.0, clock.clone(), initial_source.clone())
+                .unwrap();
+        core.request_refresh(RefreshSource::Launch).unwrap();
+        wait_for_completed_runs(initial_source.as_ref(), 1);
+        core.wait_for_refresh_completion().unwrap();
+        drop(core);
+
+        let restored_before_reset = NativeCore::open_without_launch(
+            &database.0,
+            clock.clone(),
+            Arc::new(CachedProjectionRefreshAdapter),
+        )
+        .unwrap();
+        let restored_state = restored_before_reset.panel_state().unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            assert!(matches!(
+                &restored_state.provider(provider).unwrap().quota,
+                ProviderSnapshot::Stale { quota_lanes, .. }
+                    if quota_lanes.len() == 1
+            ));
+        }
+        drop(restored_before_reset);
+
+        clock.advance(Duration::from_secs(2 * 60));
+        let refreshed_at = test_time() + TimeDuration::minutes(2);
+        let mut refreshed = observed_state(refreshed_at, 43);
+        let ProviderSnapshot::Current { quota_lanes, .. } =
+            &mut refreshed.provider_mut(CodingProvider::Codex).unwrap().quota
+        else {
+            panic!("refreshed Codex quota must be current");
+        };
+        quota_lanes[0].remaining = Some(80.0);
+        let refreshed_claude = refreshed.provider_mut(CodingProvider::Claude).unwrap();
+        refreshed_claude.presence = ProviderPresenceStatus::Detected;
+        refreshed_claude.quota = ProviderSnapshot::Current {
+            provider: CodingProvider::Claude,
+            observed_at: format_time(refreshed_at),
+            quota_lanes: vec![QuotaLane {
+                label: "Weekly limit".to_owned(),
+                unit: "percent".to_owned(),
+                allowance: Some(100.0),
+                remaining: Some(60.0),
+                reset_at: Some(format_time(refreshed_at + TimeDuration::days(7))),
+            }],
+        };
+        let recovery_source = Arc::new(ScriptedRefreshSource::new([Ok(Some(refreshed))]));
+        let reopened =
+            NativeCore::open_without_launch(&database.0, clock, recovery_source.clone()).unwrap();
+
+        let restored = reopened.panel_state().unwrap();
+        for provider in [CodingProvider::Codex, CodingProvider::Claude] {
+            assert!(matches!(
+                &restored.provider(provider).unwrap().quota,
+                ProviderSnapshot::Stale { quota_lanes, .. }
+                    if quota_lanes.len() == 1
+            ));
+        }
+
+        reopened
+            .request_refresh(RefreshSource::NetworkRecovery)
+            .unwrap();
+        wait_for_completed_runs(recovery_source.as_ref(), 1);
+        reopened.wait_for_refresh_completion().unwrap();
+        let recovered = reopened.panel_state().unwrap();
+        assert!(matches!(
+            &recovered.provider(CodingProvider::Codex).unwrap().quota,
+            ProviderSnapshot::Current { quota_lanes, .. }
+                if quota_lanes[0].remaining == Some(80.0)
+        ));
+        assert!(matches!(
+            &recovered.provider(CodingProvider::Claude).unwrap().quota,
+            ProviderSnapshot::Current { quota_lanes, .. }
+                if quota_lanes[0].remaining == Some(60.0)
+        ));
+    }
+
+    #[test]
+    fn stale_quota_reset_crossing_requests_one_revision_without_dropping_the_lane() {
+        let reset_at = test_time() + TimeDuration::minutes(1);
+        let mut snapshot = observed_state(test_time(), 42);
+        snapshot.generated_at = format_time(test_time());
+        snapshot.provider_mut(CodingProvider::Codex).unwrap().quota = ProviderSnapshot::Stale {
+            provider: CodingProvider::Codex,
+            observed_at: format_time(test_time()),
+            quota_lanes: vec![QuotaLane {
+                label: "Weekly limit".to_owned(),
+                unit: "percent".to_owned(),
+                allowance: Some(100.0),
+                remaining: Some(74.0),
+                reset_at: Some(format_time(reset_at)),
+            }],
+        };
+
+        assert_eq!(next_refresh_at(&snapshot, test_time()), reset_at);
+        let mut transitioned =
+            transition_snapshot_at(&snapshot, test_time() + TimeDuration::minutes(2))
+                .expect("the reset crossing must request a revision");
+        assert!(matches!(
+            &transitioned.provider(CodingProvider::Codex).unwrap().quota,
+            ProviderSnapshot::Stale { quota_lanes, .. }
+                if quota_lanes.len() == 1
+                    && quota_lanes[0].remaining == Some(74.0)
+        ));
+
+        transitioned.generated_at = format_time(test_time() + TimeDuration::minutes(2));
+        assert!(
+            transition_snapshot_at(&transitioned, test_time() + TimeDuration::minutes(3),)
+                .is_none()
+        );
     }
 
     #[test]
