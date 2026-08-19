@@ -53,6 +53,11 @@ type RecoveryCommitResult = {
 };
 
 export type TouchGrassPolicyPort = {
+  claimRecoveryAuthFinalization: (args: {
+    attemptDigest: string;
+    authSubject: string;
+    claim: string;
+  }) => Promise<boolean>;
   claimRecoveryAttempt: (args: {
     attemptDigest: string;
     authSubject: string;
@@ -67,7 +72,13 @@ export type TouchGrassPolicyPort = {
   finalizeRecoveryAuth: (args: {
     attemptDigest: string;
     authSubject: string;
+    claim: string;
   }) => Promise<boolean>;
+  releaseRecoveryAuthFinalization: (args: {
+    attemptDigest: string;
+    authSubject: string;
+    claim: string;
+  }) => Promise<void>;
   consumeSignupProof: (args: {
     nonceDigest: string;
     touchGrassId: string;
@@ -654,6 +665,20 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             return rejectRecoveryCredential();
           }
           if (!committed.authFinalized) {
+            const authFinalizationClaim = crypto.randomUUID();
+            const authFinalizationClaimed =
+              await policy.claimRecoveryAuthFinalization({
+                attemptDigest,
+                authSubject: user.id,
+                claim: authFinalizationClaim,
+              });
+            if (!authFinalizationClaimed) {
+              await policy.finalizeCredentialAttempt({
+                outcome: "failure",
+                reservationId,
+              });
+              return rejectRecoveryCredential();
+            }
             try {
               if (!replacementKeyIsCurrent) {
                 const password = await ctx.context.password.hash(newRecoveryKey);
@@ -665,9 +690,15 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               const authFinalized = await policy.finalizeRecoveryAuth({
                 attemptDigest,
                 authSubject: user.id,
+                claim: authFinalizationClaim,
               });
               if (!authFinalized) throw new Error("Recovery finalization failed");
             } catch {
+              await policy.releaseRecoveryAuthFinalization({
+                attemptDigest,
+                authSubject: user.id,
+                claim: authFinalizationClaim,
+              });
               await policy.finalizeCredentialAttempt({
                 outcome: "failure",
                 reservationId,

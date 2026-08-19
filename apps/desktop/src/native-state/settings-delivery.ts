@@ -6,7 +6,7 @@ import {
   type SettingsState,
 } from "@touchgrass/contracts";
 
-import type { ProfileRecoveryCredentials } from "@/components/screens/recovery/recovery-dialog";
+import type { ProfileRecoveryCredentials } from "@/components/dialogs/recovery-dialog";
 
 type SettingsPortFaultCode =
   | "display-name-update-unavailable"

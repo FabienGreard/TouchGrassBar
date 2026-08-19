@@ -30,7 +30,7 @@ test("the branded recovery dialog sends the exact trimmed credentials", async ()
     screen.getByRole("heading", { name: "Recover from another Mac" }),
   ).toBeDefined();
   fireEvent.change(screen.getByLabelText("TouchGrass ID"), {
-    target: { value: "  TG-ABC234  " },
+    target: { value: "  tg-abc234  " },
   });
   fireEvent.change(screen.getByLabelText(/Recovery Key/), {
     target: { value: `  ${"R".repeat(48)}  ` },

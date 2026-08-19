@@ -11,7 +11,7 @@ import {
   onboardingSteps,
   type OnboardingStep,
 } from "@/components/screens/onboarding/onboarding-flow";
-import { RecoveryDialog } from "@/components/screens/recovery/recovery-dialog";
+import { RecoveryDialog } from "@/components/dialogs/recovery-dialog";
 import { createBootstrapDelivery } from "@/native-state/bootstrap-delivery";
 import { createTauriBootstrapAdapter } from "@/native-state/tauri-bootstrap-adapter";
 import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
@@ -65,12 +65,12 @@ function OnboardingCoordinator({
 
   useEffect(() => {
     const handler = createNativeWindowKeyboardHandler({
-      enabled: true,
+      enabled: !recoveryOpen,
       hide: () => void delivery.hide(),
     });
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [delivery]);
+  }, [delivery, recoveryOpen]);
 
   const selectStep = (nextStep: OnboardingStep) => {
     setStep(nextStep);

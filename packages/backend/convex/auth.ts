@@ -33,6 +33,11 @@ function touchGrassPolicy(
   const action = () => actionContext(ctx);
 
   return {
+    claimRecoveryAuthFinalization: (args) =>
+      action().runMutation(
+        internal.auth.profileRecovery.claimRecoveryAuthFinalization,
+        args,
+      ),
     claimRecoveryAttempt: (args) =>
       action().runMutation(
         internal.auth.profileRecovery.claimRecoveryAttempt,
@@ -48,6 +53,12 @@ function touchGrassPolicy(
         internal.auth.profileRecovery.finalizeRecoveryAuth,
         args,
       ),
+    releaseRecoveryAuthFinalization: async (args) => {
+      await action().runMutation(
+        internal.auth.profileRecovery.releaseRecoveryAuthFinalization,
+        args,
+      );
+    },
     consumeSignupProof: (args) =>
       action().runMutation(internal.auth.touchgrassSignup.consumeSignupProof, args),
     finalizeCredentialAttempt: (args) =>

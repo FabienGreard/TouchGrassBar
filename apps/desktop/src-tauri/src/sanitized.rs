@@ -3066,6 +3066,9 @@ impl NativeCore {
             .store
             .lock()
             .map_err(|_| "native state unavailable")?;
+        if matches!(&*store, ReadModelStore::Memory) {
+            return Err("native state persistence unavailable");
+        }
         let state = self.inner.projection.snapshot()?;
         let already_committed = state.profile == profile
             && matches!(
@@ -3096,6 +3099,9 @@ impl NativeCore {
                 self.inner.clock.now(),
             )?
         };
+        if outcome.persistence_failed {
+            return Err("native state persistence unavailable");
+        }
         drop(store);
         if let Some(notice) = outcome.notice {
             self.inner.subscribers.publish(notice);
@@ -5744,6 +5750,41 @@ mod tests {
             ReadModelStore::Memory => panic!("Profile recovery fixture requires SQLite"),
         };
         assert_eq!(restored_conflicts, 0);
+    }
+
+    #[test]
+    fn profile_recovery_requires_durable_local_persistence() {
+        let now = test_time();
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now)),
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        let previous_profile = SanitizedProfileOutcome::Ready {
+            display_name: "Previous".to_owned(),
+            touch_grass_id: "TG-ABC234".to_owned(),
+        };
+        core.set_profile_outcome(previous_profile.clone()).unwrap();
+        *core.inner.store.lock().unwrap() = ReadModelStore::Memory;
+
+        let activated_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        assert_eq!(
+            core.recover_profile_authority(
+                SanitizedProfileOutcome::Ready {
+                    display_name: "Recovered".to_owned(),
+                    touch_grass_id: "TG-XYZ234".to_owned(),
+                },
+                2,
+                activated_at,
+            ),
+            Err("native state persistence unavailable")
+        );
+        assert_eq!(
+            core.inner.projection.snapshot().unwrap().profile,
+            previous_profile
+        );
     }
 
     #[test]

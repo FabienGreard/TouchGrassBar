@@ -52,6 +52,8 @@ export default defineSchema({
   profileRecoveryAttempts: defineTable({
     activatedAt: v.optional(v.number()),
     attemptDigest: v.string(),
+    authFinalizationClaim: v.optional(v.string()),
+    authFinalizationLeaseExpiresAt: v.optional(v.number()),
     authFinalizedAt: v.optional(v.number()),
     committedAt: v.optional(v.number()),
     expectedDeviceId: v.id("devices"),

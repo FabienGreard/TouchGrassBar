@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { settingsProviderAccessPresentations } from "@/components/provider-access/presentation";
 import { createNativeWindowKeyboardHandler } from "@/components/screens/native-window-keyboard";
-import { RecoveryDialog } from "@/components/screens/recovery/recovery-dialog";
+import { RecoveryDialog } from "@/components/dialogs/recovery-dialog";
 import { bindRecoveryKeyClearEvents } from "@/components/screens/settings/recovery-key-input";
 import { SettingsScreen } from "@/components/screens/settings/settings-screen";
 import { createSettingsDelivery } from "@/native-state/settings-delivery";
@@ -67,12 +67,12 @@ function SettingsCoordinator({
 
   useEffect(() => {
     const handler = createNativeWindowKeyboardHandler({
-      enabled: true,
+      enabled: !recoveryOpen,
       hide: () => void delivery.hide(),
     });
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [delivery]);
+  }, [delivery, recoveryOpen]);
 
   const state = view.snapshot;
   const launchAtLogin =

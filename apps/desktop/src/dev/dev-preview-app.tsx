@@ -7,8 +7,12 @@ import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitiz
 import { DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
 import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
 import { currentDevInstance } from "@/dev/dev-instance";
-import { RecoverySheetPreview } from "@/dev/recovery-sheet-preview";
-import { currentProfile, currentDoomerboardRows, myTokenmaxxerRows } from "@/dev/panel-fixtures";
+import { RecoveryDialog } from "@/components/dialogs/recovery-dialog";
+import {
+  currentProfile,
+  currentDoomerboardRows,
+  myTokenmaxxerRows,
+} from "@/dev/panel-fixtures";
 import { resolveDevPreviewScenario } from "@/dev/preview-scenario";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
@@ -39,12 +43,16 @@ const defaultProviderEnablement: ProviderEnablement = {
   claude: true,
   codex: true,
 };
-const providerEnablementStorageKey = "touchgrass:dev-provider-enablement:v1";
+const providerEnablementStorageKey =
+  "touchgrass:dev-provider-enablement:v1";
 
 function isProviderEnablement(value: unknown): value is ProviderEnablement {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
-  return typeof candidate.claude === "boolean" && typeof candidate.codex === "boolean";
+  return (
+    typeof candidate.claude === "boolean" &&
+    typeof candidate.codex === "boolean"
+  );
 }
 
 function readProviderEnablement(): ProviderEnablement {
@@ -52,7 +60,9 @@ function readProviderEnablement(): ProviderEnablement {
     const stored = window.sessionStorage.getItem(providerEnablementStorageKey);
     if (stored === null) return { ...defaultProviderEnablement };
     const candidate: unknown = JSON.parse(stored);
-    return isProviderEnablement(candidate) ? candidate : { ...defaultProviderEnablement };
+    return isProviderEnablement(candidate)
+      ? candidate
+      : { ...defaultProviderEnablement };
   } catch {
     return { ...defaultProviderEnablement };
   }
@@ -60,7 +70,10 @@ function readProviderEnablement(): ProviderEnablement {
 
 function persistProviderEnablement(providerEnablement: ProviderEnablement) {
   try {
-    window.sessionStorage.setItem(providerEnablementStorageKey, JSON.stringify(providerEnablement));
+    window.sessionStorage.setItem(
+      providerEnablementStorageKey,
+      JSON.stringify(providerEnablement),
+    );
   } catch {
     // The development preview remains usable when storage is unavailable.
   }
@@ -68,13 +81,19 @@ function persistProviderEnablement(providerEnablement: ProviderEnablement) {
 
 function DevPreviewApp() {
   const surfaceContainerRef = useRef<HTMLDivElement>(null);
-  const [scenario] = useState(() => resolveDevPreviewScenario(window.location.search));
+  const [scenario] = useState(() =>
+    resolveDevPreviewScenario(window.location.search),
+  );
   const [devInstance] = useState(currentDevInstance);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
-  const [providerEnabled, setProviderEnabled] = useState<Record<CodingProvider, boolean>>(() => ({
+  const [providerEnabled, setProviderEnabled] = useState<
+    Record<CodingProvider, boolean>
+  >(() => ({
     ...readProviderEnablement(),
-    ...(scenario.surface === "settings" ? { claude: scenario.settingsProviderEnabled } : {}),
+    ...(scenario.surface === "settings"
+      ? { claude: scenario.settingsProviderEnabled }
+      : {}),
   }));
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [profile, setProfile] = useState({
@@ -109,7 +128,8 @@ function DevPreviewApp() {
         currentProfile,
         doomerboardRows: currentDoomerboardRows,
         tokenmaxxerRows: myTokenmaxxerRows,
-        updateState: scenario.fixture === "update" ? availableUpdate : currentUpdate,
+        updateState:
+          scenario.fixture === "update" ? availableUpdate : currentUpdate,
       }
     : undefined;
 
@@ -167,9 +187,14 @@ function DevPreviewApp() {
               setProfile((current) => ({ ...current, displayName })),
             onStartRecovery: () => setRecoveryOpen(true),
             pendingDisplayName: profile.displayName,
-            profile: scenario.settingsProfileState === "profile-pending" ? null : profile,
+            profile:
+              scenario.settingsProfileState === "profile-pending"
+                ? null
+                : profile,
             profileProvisioning:
-              scenario.settingsProfileState === "profile-pending" ? "profile-pending" : "ready",
+              scenario.settingsProfileState === "profile-pending"
+                ? "profile-pending"
+                : "ready",
             providers: [
               {
                 displayName: "Codex",
@@ -184,7 +209,8 @@ function DevPreviewApp() {
                 state: scenario.settingsProviderState,
               },
             ],
-            updateState: scenario.fixture === "update" ? availableUpdate : currentUpdate,
+            updateState:
+              scenario.fixture === "update" ? availableUpdate : currentUpdate,
           }}
           surface="settings"
         />
@@ -203,15 +229,19 @@ function DevPreviewApp() {
   }
 
   const recoveryPortalContainer = recoveryOpen
-    ? (surfaceContainerRef.current?.querySelector<HTMLElement>('[data-slot="native-window"]') ??
-      null)
+    ? (surfaceContainerRef.current?.querySelector<HTMLElement>(
+        '[data-slot="native-window"]',
+      ) ?? null)
     : null;
 
   return (
     <>
-      <div ref={surfaceContainerRef}>{surface}</div>
-      <RecoverySheetPreview
+      <div ref={surfaceContainerRef}>
+        {surface}
+      </div>
+      <RecoveryDialog
         onOpenChange={setRecoveryOpen}
+        onRecover={() => false}
         open={recoveryOpen}
         portalContainer={recoveryPortalContainer}
       />
@@ -221,16 +251,24 @@ function DevPreviewApp() {
         activeSyncStatus={scenario.syncStatus}
         devInstance={devInstance}
         onboardingCodexPreviewState={
-          scenario.surface === "onboarding" ? scenario.onboarding.codexState : undefined
+          scenario.surface === "onboarding"
+            ? scenario.onboarding.codexState
+            : undefined
         }
         onboardingProviderPreviewState={
-          scenario.surface === "onboarding" ? scenario.onboarding.providerState : undefined
+          scenario.surface === "onboarding"
+            ? scenario.onboarding.providerState
+            : undefined
         }
         onboardingStep={
-          scenario.surface === "onboarding" ? scenario.onboarding.initialStep : undefined
+          scenario.surface === "onboarding"
+            ? scenario.onboarding.initialStep
+            : undefined
         }
         settingsProviderPreviewState={
-          scenario.surface === "settings" ? scenario.settingsProviderState : undefined
+          scenario.surface === "settings"
+            ? scenario.settingsProviderState
+            : undefined
         }
         settingsProviderEnabled={
           scenario.surface === "settings" ? providerEnabled.claude : undefined

@@ -131,7 +131,7 @@ function RecoveryDialog({
               disabled={submitting}
               id={touchGrassIdInputId}
               onChange={(event) => {
-                setTouchGrassId(event.target.value);
+                setTouchGrassId(event.target.value.toUpperCase());
                 setRecoveryFailed(false);
               }}
               onFocus={(event) => event.currentTarget.select()}

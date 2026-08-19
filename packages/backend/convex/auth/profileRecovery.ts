@@ -13,6 +13,7 @@ import { rankingDayAt } from "../model/values";
 
 const RECOVERY_ATTEMPT_LIFETIME_MS = 5 * 60 * 1_000;
 const RECOVERY_COMMIT_GRACE_MS = 60 * 1_000;
+const RECOVERY_AUTH_FINALIZATION_LEASE_MS = 60 * 1_000;
 const MAX_SAFE_GENERATION = Number.MAX_SAFE_INTEGER;
 
 const recoveryCommitResult = v.object({
@@ -67,6 +68,16 @@ export const prepareRecoveryAttempt = internalMutation({
       return null;
     }
     const existing = await recoveryAttemptByDigest(ctx, args.attemptDigest);
+    if (tokenmaxxer.recoveryAttemptId !== undefined) {
+      const activeAttempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
+      if (
+        activeAttempt?.status === "committed" &&
+        activeAttempt.authFinalizedAt === undefined &&
+        existing?._id !== activeAttempt._id
+      ) {
+        return null;
+      }
+    }
     if (existing) {
       if (
         existing.status === "committed" &&
@@ -189,6 +200,7 @@ export const claimRecoveryAttempt = internalMutation({
       if (
         !previousAttempt ||
         previousAttempt.status !== "committed" ||
+        previousAttempt.authFinalizedAt === undefined ||
         previousAttempt.expectedGeneration >= attempt.expectedGeneration
       ) {
         return false;
@@ -296,10 +308,11 @@ export const commitRecoveryAttempt = internalMutation({
   },
 });
 
-export const finalizeRecoveryAuth = internalMutation({
+export const claimRecoveryAuthFinalization = internalMutation({
   args: {
     attemptDigest: v.string(),
     authSubject: v.string(),
+    claim: v.string(),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -309,14 +322,76 @@ export const finalizeRecoveryAuth = internalMutation({
     if (
       !tokenmaxxer ||
       tokenmaxxer.authSubject !== args.authSubject ||
-      tokenmaxxer.recoveryAttemptId !== attempt._id
+      tokenmaxxer.recoveryAttemptId !== attempt._id ||
+      attempt.authFinalizedAt !== undefined ||
+      (attempt.authFinalizationLeaseExpiresAt !== undefined &&
+        attempt.authFinalizationLeaseExpiresAt > Date.now() &&
+        attempt.authFinalizationClaim !== args.claim)
+    ) {
+      return false;
+    }
+    await ctx.db.patch(attempt._id, {
+      authFinalizationClaim: args.claim,
+      authFinalizationLeaseExpiresAt:
+        Date.now() + RECOVERY_AUTH_FINALIZATION_LEASE_MS,
+    });
+    return true;
+  },
+});
+
+export const finalizeRecoveryAuth = internalMutation({
+  args: {
+    attemptDigest: v.string(),
+    authSubject: v.string(),
+    claim: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
+    if (!attempt || attempt.status !== "committed") return false;
+    const tokenmaxxer = await ctx.db.get(attempt.tokenmaxxerId);
+    if (
+      !tokenmaxxer ||
+      tokenmaxxer.authSubject !== args.authSubject ||
+      tokenmaxxer.recoveryAttemptId !== attempt._id ||
+      attempt.authFinalizationClaim !== args.claim
     ) {
       return false;
     }
     if (attempt.authFinalizedAt === undefined) {
-      await ctx.db.patch(attempt._id, { authFinalizedAt: Date.now() });
+      await ctx.db.patch(attempt._id, {
+        authFinalizationClaim: undefined,
+        authFinalizationLeaseExpiresAt: undefined,
+        authFinalizedAt: Date.now(),
+      });
     }
     return true;
+  },
+});
+
+export const releaseRecoveryAuthFinalization = internalMutation({
+  args: {
+    attemptDigest: v.string(),
+    authSubject: v.string(),
+    claim: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
+    if (!attempt || attempt.status !== "committed") return null;
+    const tokenmaxxer = await ctx.db.get(attempt.tokenmaxxerId);
+    if (
+      tokenmaxxer?.authSubject === args.authSubject &&
+      tokenmaxxer.recoveryAttemptId === attempt._id &&
+      attempt.authFinalizedAt === undefined &&
+      attempt.authFinalizationClaim === args.claim
+    ) {
+      await ctx.db.patch(attempt._id, {
+        authFinalizationClaim: undefined,
+        authFinalizationLeaseExpiresAt: undefined,
+      });
+    }
+    return null;
   },
 });
 

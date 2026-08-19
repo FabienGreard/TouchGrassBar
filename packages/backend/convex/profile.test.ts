@@ -738,6 +738,68 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
   expect(JSON.stringify(stored)).not.toContain(attemptId);
 });
 
+test("concurrent identical recovery commits finalize authentication once", async () => {
+  vi.stubEnv(
+    "BETTER_AUTH_SECRET",
+    `${crypto.randomUUID()}${crypto.randomUUID()}`,
+  );
+  vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
+
+  const t = testBackend();
+  const profile = await createRecoverableProfile(t);
+  const attemptId = recoveryAttemptId("J");
+  const newRecoveryKey = replacementRecoveryKey("K");
+  const installationCredential = "M".repeat(52);
+  await prepareRecovery(t, profile, attemptId, newRecoveryKey);
+  const attemptDigest = await recoveryDigest(attemptId);
+  await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
+    attemptDigest,
+    authSubject: profile.user.id,
+    installationCredentialDigest: await installationCredentialDigest(
+      installationCredential,
+    ),
+    replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
+  });
+  await expect(
+    t.mutation(internal.auth.profileRecovery.commitRecoveryAttempt, {
+      attemptDigest,
+      authSubject: profile.user.id,
+      installationCredential,
+    }),
+  ).resolves.toMatchObject({ authFinalized: false });
+
+  const claims = await Promise.all(
+    ["first-concurrent-claim", "second-concurrent-claim"].map((claim) =>
+      t.mutation(
+        internal.auth.profileRecovery.claimRecoveryAuthFinalization,
+        {
+          attemptDigest,
+          authSubject: profile.user.id,
+          claim,
+        },
+      ),
+    ),
+  );
+  expect(claims.filter(Boolean)).toHaveLength(1);
+  const winningClaim = claims[0]
+    ? "first-concurrent-claim"
+    : "second-concurrent-claim";
+  await expect(
+    t.mutation(internal.auth.profileRecovery.finalizeRecoveryAuth, {
+      attemptDigest,
+      authSubject: profile.user.id,
+      claim: winningClaim,
+    }),
+  ).resolves.toBe(true);
+  await expect(
+    t.mutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, {
+      attemptDigest,
+      authSubject: profile.user.id,
+      claim: "late-replay-claim",
+    }),
+  ).resolves.toBe(false);
+});
+
 test("concurrent Profile recoveries are first-valid-commit-wins", async () => {
   vi.stubEnv(
     "BETTER_AUTH_SECRET",
@@ -922,9 +984,33 @@ test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", as
     }),
   ).resolves.toMatchObject({ status: 401 });
   await expect(
+    authFetch(t, "/api/auth/touchgrass/recovery/prepare", {
+      body: JSON.stringify({
+        attemptId: recoveryAttemptId("X"),
+        recoveryKey: profile.recoveryKey,
+        replacementRecoveryKey: replacementRecoveryKey("Y"),
+        touchGrassId: profile.touchGrassId,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  ).resolves.toMatchObject({ status: 401 });
+  const authFinalizationClaim = "unfinalized-recovery-test";
+  await expect(
+    t.mutation(
+      internal.auth.profileRecovery.claimRecoveryAuthFinalization,
+      {
+        attemptDigest,
+        authSubject: profile.user.id,
+        claim: authFinalizationClaim,
+      },
+    ),
+  ).resolves.toBe(true);
+  await expect(
     t.mutation(internal.auth.profileRecovery.finalizeRecoveryAuth, {
       attemptDigest,
       authSubject: profile.user.id,
+      claim: authFinalizationClaim,
     }),
   ).resolves.toBe(true);
 });

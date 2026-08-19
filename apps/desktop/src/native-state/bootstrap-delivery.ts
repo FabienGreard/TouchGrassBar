@@ -1,6 +1,6 @@
 import { bootstrapStateSchema, type BootstrapState } from "@touchgrass/contracts";
 
-import type { ProfileRecoveryCredentials } from "@/components/screens/recovery/recovery-dialog";
+import type { ProfileRecoveryCredentials } from "@/components/dialogs/recovery-dialog";
 
 type BootstrapPortFaultCode =
   | "bootstrap-completion-unavailable"

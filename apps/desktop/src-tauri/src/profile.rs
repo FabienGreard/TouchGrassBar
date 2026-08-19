@@ -325,6 +325,7 @@ struct PreparedProfile {
 
 #[derive(Clone, Debug)]
 struct PreparedRecovery {
+    committed: bool,
     expires_at_ms: u64,
     recovery_proof: Secret,
     touch_grass_id: String,
@@ -333,15 +334,16 @@ struct PreparedRecovery {
 impl PreparedRecovery {
     fn encode(&self) -> Secret {
         Secret::new(format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             self.touch_grass_id,
             self.expires_at_ms,
-            self.recovery_proof.expose()
+            self.recovery_proof.expose(),
+            self.committed
         ))
     }
 
     fn decode(value: &Secret) -> Result<Self, ProfileError> {
-        let mut fields = value.expose().splitn(3, '\n');
+        let mut fields = value.expose().splitn(4, '\n');
         let (Some(touch_grass_id), Some(expires_at), Some(recovery_proof)) =
             (fields.next(), fields.next(), fields.next())
         else {
@@ -354,6 +356,13 @@ impl PreparedRecovery {
             return Err(ProfileError::message("Profile recovery unavailable"));
         }
         Ok(Self {
+            committed: match fields.next() {
+                Some("true") => true,
+                Some("false") | None => false,
+                Some(_) => {
+                    return Err(ProfileError::message("Profile recovery unavailable"));
+                }
+            },
             expires_at_ms,
             recovery_proof: Secret::new(recovery_proof.to_owned()),
             touch_grass_id: touch_grass_id.to_owned(),
@@ -658,6 +667,15 @@ impl ProfileCoordinator {
         recovery_key: &Secret,
     ) -> Result<ProfileProvisioningOutcome, ProfileError> {
         if touch_grass_id.len() > 64 || recovery_key.expose().len() > 128 {
+            let dummy_recovery_key = Secret::new("2".repeat(48));
+            let dummy_replacement_key = Secret::new("3".repeat(48));
+            let dummy_attempt_id = Secret::new("4".repeat(32));
+            let _ = self.transport.prepare_recovery(
+                "TG-222222",
+                &dummy_recovery_key,
+                &dummy_replacement_key,
+                &dummy_attempt_id,
+            );
             return Err(ProfileError::message("Profile recovery unavailable"));
         }
         let staged = match self.custody.read(SecretKind::RecoveryPreparation)? {
@@ -685,6 +703,16 @@ impl ProfileCoordinator {
             recovery_key,
             &replacement_recovery_key,
             &replacement_installation_credential,
+        )?;
+        self.custody.write(
+            SecretKind::RecoveryPreparation,
+            &PreparedRecovery {
+                committed: true,
+                expires_at_ms: prepared.expires_at_ms,
+                recovery_proof: prepared.recovery_proof.clone(),
+                touch_grass_id: prepared.touch_grass_id.clone(),
+            }
+            .encode(),
         )?;
         let session = match self
             .transport
@@ -771,9 +799,9 @@ impl ProfileCoordinator {
     fn clear_recovery_staging(&self) -> Result<(), ProfileError> {
         for kind in [
             SecretKind::RecoveryAttemptId,
-            SecretKind::RecoveryPreparation,
             SecretKind::ReplacementRecoveryKey,
             SecretKind::ReplacementInstallationCredential,
+            SecretKind::RecoveryPreparation,
         ] {
             self.custody.delete(kind)?;
         }
@@ -790,7 +818,9 @@ impl ProfileCoordinator {
         if self
             .custody
             .read(SecretKind::RecoveryPreparation)?
-            .is_some()
+            .map(|prepared| PreparedRecovery::decode(&prepared))
+            .transpose()?
+            .is_some_and(|prepared| prepared.committed)
         {
             return Err(ProfileError::authority_rejected());
         }
@@ -1244,6 +1274,7 @@ impl ProfileTransport for HttpProfileTransport {
             return Err(ProfileError::message("Profile recovery unavailable"));
         }
         Ok(PreparedRecovery {
+            committed: false,
             expires_at_ms: response.expires_at,
             recovery_proof: Secret::new(response.recovery_proof),
             touch_grass_id: touch_grass_id.to_owned(),
@@ -1359,15 +1390,22 @@ mod tests {
     const ACTIVE_MAC_ACTIVATED_AT: u64 = 1_775_908_800_000;
 
     #[derive(Default)]
-    struct FakeCustody(Mutex<BTreeMap<SecretKind, Secret>>);
+    struct FakeCustody {
+        fail_delete: Mutex<Option<SecretKind>>,
+        values: Mutex<BTreeMap<SecretKind, Secret>>,
+    }
 
     impl FakeCustody {
         fn contains(&self, kind: SecretKind) -> bool {
-            self.0.lock().unwrap().contains_key(&kind)
+            self.values.lock().unwrap().contains_key(&kind)
+        }
+
+        fn fail_next_delete(&self, kind: SecretKind) {
+            *self.fail_delete.lock().unwrap() = Some(kind);
         }
 
         fn private_values(&self) -> Vec<String> {
-            self.0
+            self.values
                 .lock()
                 .unwrap()
                 .values()
@@ -1378,12 +1416,17 @@ mod tests {
 
     impl SecretCustody for FakeCustody {
         fn delete(&self, kind: SecretKind) -> Result<(), ProfileError> {
-            self.0.lock().unwrap().remove(&kind);
+            let mut fail_delete = self.fail_delete.lock().unwrap();
+            if *fail_delete == Some(kind) {
+                *fail_delete = None;
+                return Err(ProfileError::message("secure custody unavailable"));
+            }
+            self.values.lock().unwrap().remove(&kind);
             Ok(())
         }
 
         fn read(&self, kind: SecretKind) -> Result<Option<Secret>, ProfileError> {
-            Ok(self.0.lock().unwrap().get(&kind).cloned())
+            Ok(self.values.lock().unwrap().get(&kind).cloned())
         }
 
         fn write(&self, kind: SecretKind, value: &Secret) -> Result<(), ProfileError> {
@@ -1392,7 +1435,7 @@ mod tests {
                     "memory-only credential cannot be stored",
                 ));
             }
-            self.0.lock().unwrap().insert(kind, value.clone());
+            self.values.lock().unwrap().insert(kind, value.clone());
             Ok(())
         }
     }
@@ -1406,6 +1449,7 @@ mod tests {
         exchange_count: AtomicUsize,
         fixed_profile_mutation: AtomicBool,
         fail_recovery_commit: AtomicBool,
+        recovery_prepare_count: AtomicUsize,
         prepared_replacement_recovery_key: Mutex<Option<String>>,
         last_jwt: Mutex<Option<String>>,
         authority_touch_grass_id: Mutex<Option<String>>,
@@ -1431,6 +1475,7 @@ mod tests {
                 exchange_count: AtomicUsize::new(0),
                 fixed_profile_mutation: AtomicBool::new(false),
                 fail_recovery_commit: AtomicBool::new(false),
+                recovery_prepare_count: AtomicUsize::new(0),
                 prepared_replacement_recovery_key: Mutex::new(None),
                 last_jwt: Mutex::new(None),
                 authority_touch_grass_id: Mutex::new(None),
@@ -1466,6 +1511,10 @@ mod tests {
 
         fn sign_in_count(&self) -> usize {
             self.sign_in_count.load(Ordering::SeqCst)
+        }
+
+        fn recovery_prepare_count(&self) -> usize {
+            self.recovery_prepare_count.load(Ordering::SeqCst)
         }
 
         fn used_fixed_profile_mutation(&self) -> bool {
@@ -1526,9 +1575,11 @@ mod tests {
             replacement_recovery_key: &Secret,
             _attempt_id: &Secret,
         ) -> Result<PreparedRecovery, ProfileError> {
+            self.recovery_prepare_count.fetch_add(1, Ordering::SeqCst);
             *self.prepared_replacement_recovery_key.lock().unwrap() =
                 Some(replacement_recovery_key.expose().to_owned());
             Ok(PreparedRecovery {
+                committed: false,
                 expires_at_ms: u64::MAX,
                 recovery_proof: Secret::new(generate_secret(64)?),
                 touch_grass_id: touch_grass_id.to_owned(),
@@ -2192,6 +2243,22 @@ mod tests {
     }
 
     #[test]
+    fn overlong_recovery_credentials_use_the_bounded_server_failure_path() {
+        let fixture = ProfileFixture::new();
+        let recovery_key = Secret::new("R".repeat(129));
+
+        assert!(
+            fixture
+                .coordinator
+                .recover_profile(&"T".repeat(65), &recovery_key)
+                .is_err()
+        );
+        assert_eq!(fixture.transport.recovery_prepare_count(), 1);
+        assert!(!fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(!fixture.custody.contains(SecretKind::RecoveryAttemptId));
+    }
+
+    #[test]
     fn recovery_stages_replacement_secrets_before_commit_and_preserves_old_custody_on_failure() {
         let fixture = ProfileFixture::new();
         fixture.complete_bootstrap();
@@ -2241,6 +2308,7 @@ mod tests {
                 .contains(SecretKind::ReplacementInstallationCredential)
         );
         assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(fixture.coordinator.active_sync_credentials().is_ok());
 
         let staged_replacement = fixture
             .custody
@@ -2252,6 +2320,7 @@ mod tests {
             .write(
                 SecretKind::RecoveryPreparation,
                 &PreparedRecovery {
+                    committed: false,
                     expires_at_ms: 0,
                     recovery_proof: Secret::new(generate_secret(64).unwrap()),
                     touch_grass_id: touch_grass_id.clone(),
@@ -2308,6 +2377,12 @@ mod tests {
             fixture.lifecycle.bootstrap_state().profile_provisioning,
             ProfileProvisioningStatus::Ready
         );
+        fixture
+            .custody
+            .fail_next_delete(SecretKind::ReplacementInstallationCredential);
+        assert!(fixture.coordinator.complete_recovery().is_err());
+        assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(fixture.coordinator.active_sync_credentials().is_err());
         fixture.coordinator.complete_recovery().unwrap();
         assert!(!fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
         assert!(
