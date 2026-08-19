@@ -19,7 +19,10 @@ use serde_json::{Value, json};
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::daily_usage_aggregate::combine_usage_periods;
-use crate::doomerboard::{DOOMERBOARD_CONTRACT_VERSION, doomerboard_view_schema};
+use crate::doomerboard::{
+    ADD_TOKENMAXXER_CONTRACT_VERSION, DOOMERBOARD_CONTRACT_VERSION, add_tokenmaxxer_outcome_schema,
+    doomerboard_view_schema,
+};
 use crate::lifecycle::{
     LIFECYCLE_CONTRACT_VERSION, SETTINGS_CONTRACT_VERSION, SETTINGS_NAVIGATION_EVENT,
     SETTINGS_RECOVERY_CLEAR_EVENT, bootstrap_state_schema, settings_navigation_schema,
@@ -4146,6 +4149,8 @@ pub fn native_contract_schema() -> Schema {
 
 pub fn native_contract_export() -> Value {
     json!({
+        "addTokenmaxxerContractVersion": ADD_TOKENMAXXER_CONTRACT_VERSION,
+        "addTokenmaxxerOutcomeSchema": add_tokenmaxxer_outcome_schema(),
         "bootstrapContractVersion": LIFECYCLE_CONTRACT_VERSION,
         "bootstrapStateSchema": bootstrap_state_schema(),
         "contractVersion": CONTRACT_VERSION,

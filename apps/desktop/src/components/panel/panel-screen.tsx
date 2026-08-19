@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
+import type { AddTokenmaxxerDialogStatus } from "@/components/dialogs/add-tokenmaxxer";
 import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tokenmaxxer";
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
@@ -31,6 +32,8 @@ const compactTokenScore = new Intl.NumberFormat("en-US", {
 
 function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
+  const [addTokenmaxxerStatus, setAddTokenmaxxerStatus] =
+    useState<AddTokenmaxxerDialogStatus>("idle");
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
   const [doomerboard] = useState(() => createDoomerboardDelivery(createTauriDoomerboardAdapter()));
   const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
@@ -89,7 +92,10 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
     let active = true;
     let stop: (() => void) | undefined;
     void subscribeToPanelAddTokenmaxxer(() => {
-      if (active) setAddTokenmaxxerOpen(true);
+      if (active) {
+        setAddTokenmaxxerStatus("idle");
+        setAddTokenmaxxerOpen(true);
+      }
     }).then((stopListening) => {
       if (active) stop = stopListening;
       else stopListening();
@@ -167,6 +173,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   return (
     <PanelView
       addTokenmaxxerOpen={addTokenmaxxerOpen}
+      addTokenmaxxerStatus={addTokenmaxxerStatus}
       currentProfile={currentProfile}
       doomerboardRows={
         presentation.doomerboardRows ??
@@ -175,7 +182,28 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       doomerboardSelection={doomerboardSelection}
       error={deliveryView.phase === "degraded"}
       nativeGlass
-      onAddTokenmaxxerOpenChange={setAddTokenmaxxerOpen}
+      onAddTokenmaxxer={(touchGrassId) => {
+        setAddTokenmaxxerStatus("submitting");
+        void (async () => {
+          const outcome = hasNativeRuntime
+            ? await doomerboard.addTokenmaxxer(touchGrassId)
+            : ({ status: "unavailable" } as const);
+          if (outcome.status === "added" || outcome.status === "already-added") {
+            const nextSelection = { ...doomerboardSelection, audience: "mine" as const };
+            setDoomerboardSelection(nextSelection);
+            setAddTokenmaxxerOpen(false);
+            setAddTokenmaxxerStatus("idle");
+            void doomerboard.read(nextSelection);
+            return;
+          }
+          setAddTokenmaxxerStatus(outcome.status);
+        })();
+      }}
+      onAddTokenmaxxerInputChange={() => setAddTokenmaxxerStatus("idle")}
+      onAddTokenmaxxerOpenChange={(open) => {
+        setAddTokenmaxxerStatus("idle");
+        setAddTokenmaxxerOpen(open);
+      }}
       onDoomerboardSelectionChange={setDoomerboardSelection}
       onRefresh={() => {
         void stateDelivery.requestRefresh();

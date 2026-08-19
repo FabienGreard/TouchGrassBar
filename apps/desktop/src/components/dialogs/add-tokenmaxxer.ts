@@ -1,5 +1,37 @@
+import type { AddTokenmaxxerOutcome } from "@touchgrass/contracts";
+
+type AddTokenmaxxerDialogStatus = AddTokenmaxxerOutcome["status"] | "idle" | "submitting";
+
 function normalizeTouchGrassId(value: string) {
   return value.trim().replace(/^#/, "").toUpperCase();
 }
 
-export { normalizeTouchGrassId };
+function validTouchGrassId(value: string) {
+  return /^TG-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$/.test(value);
+}
+
+function addTokenmaxxerHelpText(status: AddTokenmaxxerDialogStatus) {
+  switch (status) {
+    case "added":
+      return "Tokenmaxxer added.";
+    case "already-added":
+      return "Already in My Tokenmaxxers.";
+    case "invalid":
+      return "Use the format TG-ABC234.";
+    case "limit-reached":
+      return "My Tokenmaxxers is limited to 100.";
+    case "not-found":
+      return "No Tokenmaxxer has that TouchGrass ID.";
+    case "self":
+      return "That is your TouchGrass ID.";
+    case "submitting":
+      return "Adding Tokenmaxxer…";
+    case "unavailable":
+      return "Adding a Tokenmaxxer is unavailable. Try again.";
+    case "idle":
+      return "Ask the Tokenmaxxer for their TouchGrass ID.";
+  }
+}
+
+export { addTokenmaxxerHelpText, normalizeTouchGrassId, validTouchGrassId };
+export type { AddTokenmaxxerDialogStatus };
