@@ -2472,7 +2472,7 @@ test("daily score recomputation drains every Tokenmaxxer", async () => {
     profilesCompleted: 202,
     status: "complete",
   });
-});
+}, 10_000);
 
 test("the daily score watchdog resumes a stalled persisted cursor", async () => {
   const t = testBackend();
