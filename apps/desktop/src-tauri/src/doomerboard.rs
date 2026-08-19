@@ -248,7 +248,7 @@ fn doomerboard_query_arguments(
         ),
         (
             "windowDays".to_owned(),
-            Value::Int64(i64::from(query.window_days)),
+            Value::Float64(f64::from(query.window_days)),
         ),
     ])
 }
@@ -548,7 +548,7 @@ mod tests {
                     Value::String("2026-04-10".to_owned()),
                 ),
                 ("scope".to_owned(), Value::String("claude".to_owned()),),
-                ("windowDays".to_owned(), Value::Int64(30)),
+                ("windowDays".to_owned(), Value::Float64(30.0)),
             ]),
         );
     }
