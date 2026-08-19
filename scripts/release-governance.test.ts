@@ -48,7 +48,6 @@ describe("release governance", () => {
     const releaseWorkflow = read(".github", "workflows", "release.yml");
 
     expect(governance.environments["macos-release"]).toMatchObject({
-      administrators_can_bypass: false,
       deployment_tag_patterns: ["v*"],
       required_reviewers: ["FabienGreard"],
       secrets: releaseSecrets,

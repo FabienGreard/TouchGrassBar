@@ -24,21 +24,13 @@ describe("release command", () => {
 
   test("uses preview mode by default", () => {
     expect(parseReleaseArguments(["patch"])).toEqual({
-      administratorBypassDisabled: false,
       execute: false,
       level: "patch",
     });
   });
 
   test("requires an explicit valid execution request", () => {
-    expect(
-      parseReleaseArguments([
-        "minor",
-        "--execute",
-        "--confirm-administrator-bypass-disabled",
-      ]),
-    ).toEqual({
-      administratorBypassDisabled: true,
+    expect(parseReleaseArguments(["minor", "--execute"])).toEqual({
       execute: true,
       level: "minor",
     });
@@ -47,7 +39,6 @@ describe("release command", () => {
       ["feature"],
       ["patch", "--unknown"],
       ["patch", "--execute", "--execute"],
-      ["patch", "--confirm-administrator-bypass-disabled"],
     ]) {
       expect(() => parseReleaseArguments(argumentsList)).toThrow(
         "Use: bun run release",

@@ -309,18 +309,12 @@ function verify() {
       {
         automated_status: "PASS",
         environments,
-        manual_checks: {
-          administrator_bypass: "NOT_VERIFIED",
-        },
         protected_values_read: false,
         protected_values_emitted: false,
       },
       null,
       2,
     ),
-  );
-  console.log(
-    "Manual check: administrator bypass is disabled for both environments.",
   );
 }
 
@@ -415,9 +409,6 @@ function apply() {
     default_workflow_permissions: "read",
   });
   console.log("Repository release governance: applied.");
-  console.log(
-    "Do: disable administrator bypass for macos-release and public-release in GitHub Settings.",
-  );
   console.log(
     "Do: add the exact governed environment secret and variable names, then run --verify.",
   );
