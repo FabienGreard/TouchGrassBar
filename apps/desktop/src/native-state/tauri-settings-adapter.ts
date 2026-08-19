@@ -61,19 +61,17 @@ function createTauriSettingsAdapter(
         "get_settings_state",
         "settings-state-unavailable",
       ),
-    recoverProfile: async () => {
+    recoverProfile: async (credentials) => {
       const outcome = await closedInvoke(
         bindings,
         "recover_profile",
         "profile-recovery-unavailable",
+        {
+          recoveryKey: credentials.recoveryKey,
+          touchGrassId: credentials.touchGrassId,
+        },
       );
-      if (!outcome.ok || typeof outcome.value !== "boolean") {
-        return {
-          fault: { code: "profile-recovery-unavailable" },
-          ok: false,
-        };
-      }
-      return { ok: true, value: outcome.value };
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
     },
     revealRecoveryKey: async () => {
       const outcome = await closedInvoke(

@@ -1,5 +1,7 @@
 import { bootstrapStateSchema, type BootstrapState } from "@touchgrass/contracts";
 
+import type { ProfileRecoveryCredentials } from "@/components/screens/recovery/recovery-dialog";
+
 type BootstrapPortFaultCode =
   | "bootstrap-completion-unavailable"
   | "bootstrap-state-unavailable"
@@ -14,7 +16,9 @@ type BootstrapPort = {
   complete: (displayName: string) => Promise<BootstrapPortOutcome<unknown>>;
   hide: () => Promise<BootstrapPortOutcome<void>>;
   read: () => Promise<BootstrapPortOutcome<unknown>>;
-  recoverProfile: () => Promise<BootstrapPortOutcome<boolean>>;
+  recoverProfile: (
+    credentials: ProfileRecoveryCredentials,
+  ) => Promise<BootstrapPortOutcome<void>>;
 };
 
 type BootstrapDeliverySnapshot = {
@@ -97,18 +101,14 @@ function createBootstrapDelivery(port: BootstrapPort) {
       await port.hide();
     },
     read,
-    recoverProfile() {
+    recoverProfile(credentials: ProfileRecoveryCredentials) {
       if (submissionInFlight !== null) return submissionInFlight;
       publish({ ...current, submitting: true });
       submissionInFlight = (async () => {
-        const recovered = await port.recoverProfile();
+        const recovered = await port.recoverProfile(credentials);
         if (!recovered.ok) {
           publish({ ...current, phase: "degraded", submitting: false });
           return false;
-        }
-        if (!recovered.value) {
-          publish({ ...current, submitting: false });
-          return true;
         }
         const state = await port.read();
         if (!state.ok || !accept(state.value)) return false;

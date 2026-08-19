@@ -6,6 +6,11 @@ import {
 } from "@/native-state/tauri-settings-adapter";
 
 describe("Tauri Settings adapter", () => {
+  const recoveryCredentials = {
+    recoveryKey: "2".repeat(48),
+    touchGrassId: "TG-234567",
+  };
+
   test("uses exact Settings commands and the bounded navigation event", async () => {
     const fakeRecoveryKey = "2".repeat(48);
     const stops = new Map<string, ReturnType<typeof vi.fn>>();
@@ -17,9 +22,7 @@ describe("Tauri Settings adapter", () => {
       invoke: vi.fn(async (command) =>
         command === "reveal_recovery_key"
           ? fakeRecoveryKey
-          : command === "recover_profile"
-            ? true
-            : { command },
+          : { command },
       ),
       listen: vi.fn(async (event, receive) => {
         listeners.set(event, receive);
@@ -33,7 +36,7 @@ describe("Tauri Settings adapter", () => {
     const clearRecovery = vi.fn();
 
     await adapter.read();
-    await adapter.recoverProfile();
+    await adapter.recoverProfile(recoveryCredentials);
     await adapter.setLaunchAtLogin(true);
     await adapter.updateDisplayName("New name");
     await adapter.setProviderEnabled("claude", false);
@@ -60,7 +63,7 @@ describe("Tauri Settings adapter", () => {
     expect(bindings.invoke).toHaveBeenNthCalledWith(
       2,
       "recover_profile",
-      undefined,
+      recoveryCredentials,
     );
     expect(bindings.invoke).toHaveBeenNthCalledWith(3, "set_launch_at_login", {
       enabled: true,
@@ -114,7 +117,7 @@ describe("Tauri Settings adapter", () => {
       fault: { code: "settings-state-unavailable" },
       ok: false,
     });
-    expect(await adapter.recoverProfile()).toEqual({
+    expect(await adapter.recoverProfile(recoveryCredentials)).toEqual({
       fault: { code: "profile-recovery-unavailable" },
       ok: false,
     });
@@ -158,14 +161,5 @@ describe("Tauri Settings adapter", () => {
       fault: { code: "recovery-key-unavailable" },
       ok: false,
     });
-  });
-
-  test("preserves the native recovery cancellation result", async () => {
-    const adapter = createTauriSettingsAdapter({
-      invoke: vi.fn(async () => false),
-      listen: vi.fn(async () => () => undefined),
-    });
-
-    expect(await adapter.recoverProfile()).toEqual({ ok: true, value: false });
   });
 });

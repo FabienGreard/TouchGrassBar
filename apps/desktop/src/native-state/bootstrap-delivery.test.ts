@@ -14,6 +14,11 @@ const bootstrapState = {
   ],
 } as const;
 
+const recoveryCredentials = {
+  recoveryKey: "2".repeat(48),
+  touchGrassId: "TG-234567",
+};
+
 function port(): BootstrapPort {
   return {
     complete: vi.fn(async () => ({
@@ -29,7 +34,7 @@ function port(): BootstrapPort {
     read: vi.fn(async () => ({ ok: true as const, value: bootstrapState })),
     recoverProfile: vi.fn(async () => ({
       ok: true as const,
-      value: true,
+      value: undefined,
     })),
   };
 }
@@ -136,27 +141,8 @@ describe("bootstrap delivery", () => {
     }));
     const delivery = createBootstrapDelivery(native);
 
-    expect(await delivery.recoverProfile()).toBe(true);
-    expect(native.recoverProfile).toHaveBeenCalledWith();
+    expect(await delivery.recoverProfile(recoveryCredentials)).toBe(true);
+    expect(native.recoverProfile).toHaveBeenCalledWith(recoveryCredentials);
     expect(native.hide).toHaveBeenCalledOnce();
-  });
-
-  test("keeps onboarding unchanged when the recovery sheet is canceled", async () => {
-    const native = port();
-    native.recoverProfile = vi.fn(async () => ({
-      ok: true as const,
-      value: false,
-    }));
-    const delivery = createBootstrapDelivery(native);
-    await delivery.read();
-
-    expect(await delivery.recoverProfile()).toBe(true);
-    expect(native.read).toHaveBeenCalledOnce();
-    expect(native.hide).not.toHaveBeenCalled();
-    expect(delivery.getSnapshot()).toEqual({
-      phase: "ready",
-      snapshot: bootstrapState,
-      submitting: false,
-    });
   });
 });

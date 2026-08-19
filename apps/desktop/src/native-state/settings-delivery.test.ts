@@ -29,6 +29,10 @@ const settingsState = {
 } as const;
 
 const fakeRecoveryKey = "2".repeat(48);
+const recoveryCredentials = {
+  recoveryKey: fakeRecoveryKey,
+  touchGrassId: "TG-234567",
+};
 
 function ignoreNavigation(_payload: unknown) {}
 function ignoreRecoveryClear() {}
@@ -46,7 +50,7 @@ function port(): SettingsPort & {
     read: vi.fn(async () => ({ ok: true as const, value: settingsState })),
     recoverProfile: vi.fn(async () => ({
       ok: true as const,
-      value: true,
+      value: undefined,
     })),
     revealRecoveryKey: vi.fn(async () => ({
       ok: true as const,
@@ -107,8 +111,8 @@ describe("Settings delivery", () => {
     }));
     const delivery = createSettingsDelivery(native);
 
-    expect(await delivery.recoverProfile()).toBe(true);
-    expect(native.recoverProfile).toHaveBeenCalledWith();
+    expect(await delivery.recoverProfile(recoveryCredentials)).toBe(true);
+    expect(native.recoverProfile).toHaveBeenCalledWith(recoveryCredentials);
     expect(delivery.getSnapshot().snapshot).toMatchObject({
       displayName: "Recovered",
       touchGrassId: "TG-234567",
@@ -123,27 +127,10 @@ describe("Settings delivery", () => {
     }));
     const delivery = createSettingsDelivery(native);
 
-    expect(await delivery.recoverProfile()).toBe(false);
+    expect(await delivery.recoverProfile(recoveryCredentials)).toBe(false);
     expect(delivery.getSnapshot()).toMatchObject({
       phase: "degraded",
       recoveryFailed: true,
-    });
-  });
-
-  test("keeps Settings unchanged when the recovery sheet is canceled", async () => {
-    const native = port();
-    native.recoverProfile = vi.fn(async () => ({
-      ok: true as const,
-      value: false,
-    }));
-    const delivery = createSettingsDelivery(native);
-    await delivery.read();
-
-    expect(await delivery.recoverProfile()).toBe(true);
-    expect(native.read).toHaveBeenCalledOnce();
-    expect(delivery.getSnapshot()).toMatchObject({
-      phase: "ready",
-      recoveryFailed: false,
     });
   });
 

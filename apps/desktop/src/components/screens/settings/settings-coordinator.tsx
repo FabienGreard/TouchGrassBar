@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { settingsProviderAccessPresentations } from "@/components/provider-access/presentation";
 import { createNativeWindowKeyboardHandler } from "@/components/screens/native-window-keyboard";
+import { RecoveryDialog } from "@/components/screens/recovery/recovery-dialog";
 import { bindRecoveryKeyClearEvents } from "@/components/screens/settings/recovery-key-input";
 import { SettingsScreen } from "@/components/screens/settings/settings-screen";
 import { createSettingsDelivery } from "@/native-state/settings-delivery";
@@ -27,6 +28,7 @@ function SettingsCoordinator({
     updates.getSnapshot,
   );
   const [checkingProviders, setCheckingProviders] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -88,7 +90,8 @@ function SettingsCoordinator({
       : null;
 
   return (
-    <SettingsScreen
+    <>
+      <SettingsScreen
       autoUpdates={
         updateView.state === null || updateView.state.update.status === "unavailable"
           ? null
@@ -130,7 +133,7 @@ function SettingsCoordinator({
         void delivery.revealRecoveryKey();
       }}
       onStartRecovery={() => {
-        void delivery.recoverProfile();
+        setRecoveryOpen(true);
       }}
       onSectionChange={delivery.selectSection}
       onRetryUpdate={() => {
@@ -146,7 +149,13 @@ function SettingsCoordinator({
       section={state?.section}
       savingProviders={view.savingProviders}
       updateState={updateView.state}
-    />
+      />
+      <RecoveryDialog
+        onOpenChange={setRecoveryOpen}
+        onRecover={(credentials) => delivery.recoverProfile(credentials)}
+        open={recoveryOpen}
+      />
+    </>
   );
 }
 

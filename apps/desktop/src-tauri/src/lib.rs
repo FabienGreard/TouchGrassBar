@@ -9,8 +9,6 @@ mod network;
 pub mod profile;
 mod providers;
 mod quota_headroom;
-#[cfg(target_os = "macos")]
-mod recovery_sheet;
 pub mod sanitized;
 pub mod updater;
 mod usage_sync;
@@ -919,21 +917,17 @@ async fn complete_bootstrap(
 async fn recover_profile(
     window: WebviewWindow,
     profile_runtime: State<'_, ProfileRuntime>,
-) -> Result<bool, String> {
+    touch_grass_id: String,
+    recovery_key: String,
+) -> Result<(), String> {
     require_settings_or_onboarding(&window)?;
-    let Some(credentials) = recovery_sheet::request(&window)
-        .await
-        .map_err(str::to_owned)?
-    else {
-        return Ok(false);
-    };
+    let recovery_key = profile::Secret::new(recovery_key);
     let runtime = profile_runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        runtime.recover_profile(&credentials.touch_grass_id, &credentials.recovery_key)
+        runtime.recover_profile(&touch_grass_id, &recovery_key)
     })
     .await
-    .map_err(|_| "Profile recovery unavailable".to_owned())??;
-    Ok(true)
+    .map_err(|_| "Profile recovery unavailable".to_owned())?
 }
 
 fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {

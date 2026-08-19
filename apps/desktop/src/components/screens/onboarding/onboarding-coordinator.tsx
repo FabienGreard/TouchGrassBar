@@ -11,6 +11,7 @@ import {
   onboardingSteps,
   type OnboardingStep,
 } from "@/components/screens/onboarding/onboarding-flow";
+import { RecoveryDialog } from "@/components/screens/recovery/recovery-dialog";
 import { createBootstrapDelivery } from "@/native-state/bootstrap-delivery";
 import { createTauriBootstrapAdapter } from "@/native-state/tauri-bootstrap-adapter";
 import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
@@ -38,6 +39,7 @@ function OnboardingCoordinator({
   const [displayName, setDisplayName] = useState("");
   const [checkingProviders, setCheckingProviders] = useState(false);
   const [submissionFailed, setSubmissionFailed] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   useEffect(() => {
     void delivery.read();
@@ -93,7 +95,8 @@ function OnboardingCoordinator({
       : "idle";
 
   return (
-    <OnboardingScreen
+    <>
+      <OnboardingScreen
       appVersion={updateView.state?.currentVersion}
       busyProviders={checkingProviders}
       canComplete={view.phase === "ready" && view.snapshot?.persistence === "available"}
@@ -115,16 +118,20 @@ function OnboardingCoordinator({
       }}
       onStartRecovery={() => {
         setSubmissionFailed(false);
-        void delivery.recoverProfile().then((recovered) => {
-          setSubmissionFailed(!recovered);
-        });
+        setRecoveryOpen(true);
       }}
       onStepChange={selectStep}
       providers={providerAccessPresentations(providers)}
       setupState={setupState}
       step={step}
       submissionState={submissionState}
-    />
+      />
+      <RecoveryDialog
+        onOpenChange={setRecoveryOpen}
+        onRecover={(credentials) => delivery.recoverProfile(credentials)}
+        open={recoveryOpen}
+      />
+    </>
   );
 }
 

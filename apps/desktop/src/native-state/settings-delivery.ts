@@ -6,6 +6,8 @@ import {
   type SettingsState,
 } from "@touchgrass/contracts";
 
+import type { ProfileRecoveryCredentials } from "@/components/screens/recovery/recovery-dialog";
+
 type SettingsPortFaultCode =
   | "display-name-update-unavailable"
   | "launch-at-login-unavailable"
@@ -25,7 +27,9 @@ type SettingsPortOutcome<Value> =
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
-  recoverProfile: () => Promise<SettingsPortOutcome<boolean>>;
+  recoverProfile: (
+    credentials: ProfileRecoveryCredentials,
+  ) => Promise<SettingsPortOutcome<void>>;
   revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
   selectSection: (section: SettingsSection) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
@@ -233,17 +237,16 @@ function createSettingsDelivery(port: SettingsPort) {
       return true;
     },
     read,
-    recoverProfile() {
+    recoverProfile(credentials: ProfileRecoveryCredentials) {
       if (recoveryInFlight !== null) return recoveryInFlight;
       clearRecoveryKey();
       publish({ ...current, recoveryFailed: false });
       recoveryInFlight = (async () => {
-        const recovered = await port.recoverProfile();
+        const recovered = await port.recoverProfile(credentials);
         if (!recovered.ok) {
           publish({ ...current, phase: "degraded", recoveryFailed: true });
           return false;
         }
-        if (!recovered.value) return true;
         const state = await port.read();
         const accepted = state.ok && accept(state.value);
         if (!accepted) publish({ ...current, recoveryFailed: true });

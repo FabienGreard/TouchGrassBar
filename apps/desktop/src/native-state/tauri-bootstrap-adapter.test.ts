@@ -6,17 +6,20 @@ import {
 } from "@/native-state/tauri-bootstrap-adapter";
 
 describe("Tauri bootstrap adapter", () => {
+  const recoveryCredentials = {
+    recoveryKey: "2".repeat(48),
+    touchGrassId: "TG-234567",
+  };
+
   test("uses the closed bootstrap commands and exact completion payload", async () => {
     const bindings: TauriBootstrapBindings = {
-      invoke: vi.fn(async (command) =>
-        command === "recover_profile" ? true : { command },
-      ),
+      invoke: vi.fn(async (command) => ({ command })),
     };
     const adapter = createTauriBootstrapAdapter(bindings);
 
     await adapter.read();
     await adapter.complete("Fabien");
-    await adapter.recoverProfile();
+    await adapter.recoverProfile(recoveryCredentials);
     await adapter.hide();
 
     expect(bindings.invoke).toHaveBeenNthCalledWith(
@@ -30,7 +33,7 @@ describe("Tauri bootstrap adapter", () => {
     expect(bindings.invoke).toHaveBeenNthCalledWith(
       3,
       "recover_profile",
-      undefined,
+      recoveryCredentials,
     );
     expect(bindings.invoke).toHaveBeenNthCalledWith(
       4,
@@ -52,7 +55,7 @@ describe("Tauri bootstrap adapter", () => {
       fault: { code: "bootstrap-completion-unavailable" },
       ok: false,
     });
-    expect(await adapter.recoverProfile()).toEqual({
+    expect(await adapter.recoverProfile(recoveryCredentials)).toEqual({
       fault: { code: "profile-recovery-unavailable" },
       ok: false,
     });
@@ -60,13 +63,5 @@ describe("Tauri bootstrap adapter", () => {
       fault: { code: "surface-unavailable" },
       ok: false,
     });
-  });
-
-  test("preserves the native recovery cancellation result", async () => {
-    const adapter = createTauriBootstrapAdapter({
-      invoke: vi.fn(async () => false),
-    });
-
-    expect(await adapter.recoverProfile()).toEqual({ ok: true, value: false });
   });
 });
