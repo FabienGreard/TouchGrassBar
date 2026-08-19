@@ -125,6 +125,7 @@ function PanelView({
         )}
       </PanelShell>
       <AddTokenmaxxerDialog
+        key={addTokenmaxxerOpen ? "open" : "closed"}
         onAddTokenmaxxer={onAddTokenmaxxer}
         onInputChange={onAddTokenmaxxerInputChange}
         onOpenChange={onAddTokenmaxxerOpenChange}

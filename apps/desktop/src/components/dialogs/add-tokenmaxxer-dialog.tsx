@@ -1,5 +1,5 @@
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle, Input } from "@touchgrass/ui";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import { normalizeTouchGrassId } from "./add-tokenmaxxer";
 
@@ -27,13 +27,6 @@ function AddTokenmaxxerDialog({
   const touchGrassIdInputRef = useRef<HTMLInputElement>(null);
   const normalizedId = normalizeTouchGrassId(touchGrassId);
   const valid = /^TG-[A-Z0-9]{6}$/.test(normalizedId);
-
-  useEffect(() => {
-    if (!open) {
-      setTouchGrassId(defaultTouchGrassId);
-      setSubmitted(false);
-    }
-  }, [defaultTouchGrassId, open]);
 
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
