@@ -853,6 +853,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             return ctx.json({
               activeMacActivatedAt: committed.activeMacActivatedAt,
               activeMacGeneration: committed.activeMacGeneration,
+              authFinalized: false,
               displayName: committed.displayName,
               touchGrassId: committed.touchGrassId,
             });
@@ -865,6 +866,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
           return ctx.json({
             activeMacActivatedAt: committed.activeMacActivatedAt,
             activeMacGeneration: committed.activeMacGeneration,
+            authFinalized: true,
             displayName: committed.displayName,
             touchGrassId: committed.touchGrassId,
           });

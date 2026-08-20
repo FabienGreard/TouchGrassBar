@@ -860,7 +860,7 @@ test("concurrent identical recovery commits finalize authentication once", async
   ).resolves.toBe(false);
 });
 
-test("a stale sign-in cannot replace the recovered Profile session fence", async () => {
+test("bounded cleanup retries do not consume the Profile credential limit", async () => {
   vi.stubEnv(
     "BETTER_AUTH_SECRET",
     `${crypto.randomUUID()}${crypto.randomUUID()}`,
@@ -870,7 +870,7 @@ test("a stale sign-in cannot replace the recovered Profile session fence", async
   const t = testBackend();
   const profile = await createRecoverableProfile(t);
   await t.run(async (ctx) => {
-    for (let index = 0; index < 129; index += 1) {
+    for (let index = 0; index < 641; index += 1) {
       await ctx.runMutation(components.betterAuth.adapter.create, {
         input: {
           data: {
@@ -905,25 +905,23 @@ test("a stale sign-in cannot replace the recovered Profile session fence", async
       headers: { "content-type": "application/json" },
       method: "POST",
     });
-  await expect(commit(profile.recoveryKey)).resolves.toMatchObject({
-    status: 200,
-  });
-  await expect(
-    authFetch(t, "/api/auth/sign-in/username", {
-      body: JSON.stringify({
-        password: newRecoveryKey,
-        username: profile.touchGrassId,
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }),
-  ).resolves.toMatchObject({ status: 401 });
-  await expect(commit(newRecoveryKey)).resolves.toMatchObject({ status: 200 });
+  const finalizationStates: boolean[] = [];
+  let currentRecoveryKey = profile.recoveryKey;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const response = await commit(currentRecoveryKey);
+    expect(response.status).toBe(200);
+    const body = await json(response);
+    const authFinalized = body.authFinalized === true;
+    finalizationStates.push(authFinalized);
+    currentRecoveryKey = newRecoveryKey;
+    if (authFinalized) break;
+  }
+  expect(finalizationStates).toEqual([false, false, false, false, false, true]);
   await expect(
     t.run((ctx) =>
       ctx.runQuery(components.betterAuth.adapter.findMany, {
         model: "session",
-        paginationOpts: { cursor: null, numItems: 200 },
+        paginationOpts: { cursor: null, numItems: 700 },
         where: [{ field: "userId", value: profile.user.id }],
       }),
     ),

@@ -334,6 +334,7 @@ struct PreparedRecovery {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RecoveryStage {
     Prepared,
+    CommitSent,
     ServerCommitted,
     LocalCommitted,
 }
@@ -347,6 +348,7 @@ impl PreparedRecovery {
             self.recovery_proof.expose(),
             match self.state {
                 RecoveryStage::Prepared => "prepared",
+                RecoveryStage::CommitSent => "commit-sent",
                 RecoveryStage::ServerCommitted => "server-committed",
                 RecoveryStage::LocalCommitted => "local-committed",
             }
@@ -370,6 +372,7 @@ impl PreparedRecovery {
             state: match fields.next() {
                 Some("local-committed") => RecoveryStage::LocalCommitted,
                 Some("server-committed") | Some("true") => RecoveryStage::ServerCommitted,
+                Some("commit-sent") => RecoveryStage::CommitSent,
                 Some("prepared") | Some("false") | None => RecoveryStage::Prepared,
                 Some(_) => {
                     return Err(ProfileError::message("Profile recovery unavailable"));
@@ -459,6 +462,7 @@ trait ProfileTransport: Send + Sync {
 struct CommittedRecovery {
     active_mac_activated_at: u64,
     active_mac_generation: u64,
+    auth_finalized: bool,
     display_name: String,
     touch_grass_id: String,
 }
@@ -708,9 +712,12 @@ impl ProfileCoordinator {
             self.ensure_secret(SecretKind::ReplacementRecoveryKey, 48)?;
         let replacement_installation_credential =
             self.ensure_secret(SecretKind::ReplacementInstallationCredential, 52)?;
-        let server_committed = staged
-            .as_ref()
-            .is_some_and(|prepared| prepared.state != RecoveryStage::Prepared);
+        let server_committed = staged.as_ref().is_some_and(|prepared| {
+            matches!(
+                prepared.state,
+                RecoveryStage::ServerCommitted | RecoveryStage::LocalCommitted
+            )
+        });
         let prepared = match staged {
             Some(prepared) if prepared.expires_at_ms > unix_time_ms()? => prepared,
             Some(_) if server_committed => self.prepare_recovery(
@@ -718,6 +725,9 @@ impl ProfileCoordinator {
                 &replacement_recovery_key,
                 RecoveryStage::ServerCommitted,
             )?,
+            Some(prepared) if prepared.state == RecoveryStage::CommitSent => {
+                self.prepare_recovery(touch_grass_id, recovery_key, RecoveryStage::CommitSent)?
+            }
             Some(_) | None => {
                 self.prepare_recovery(touch_grass_id, recovery_key, RecoveryStage::Prepared)?
             }
@@ -727,6 +737,18 @@ impl ProfileCoordinator {
         } else {
             recovery_key
         };
+        if prepared.state == RecoveryStage::Prepared {
+            self.custody.write(
+                SecretKind::RecoveryPreparation,
+                &PreparedRecovery {
+                    state: RecoveryStage::CommitSent,
+                    expires_at_ms: prepared.expires_at_ms,
+                    recovery_proof: prepared.recovery_proof.clone(),
+                    touch_grass_id: prepared.touch_grass_id.clone(),
+                }
+                .encode(),
+            )?;
+        }
         let committed = self.transport.commit_recovery(
             &prepared,
             current_recovery_key,
@@ -743,6 +765,9 @@ impl ProfileCoordinator {
             }
             .encode(),
         )?;
+        if !committed.auth_finalized {
+            return Err(ProfileError::message("Profile recovery unavailable"));
+        }
         let session = match self
             .transport
             .sign_in(&committed.touch_grass_id, &replacement_recovery_key)?
@@ -845,7 +870,7 @@ impl ProfileCoordinator {
             .read(SecretKind::RecoveryPreparation)?
             .ok_or(ProfileError::message("Profile recovery unavailable"))?;
         let mut prepared = PreparedRecovery::decode(&prepared)?;
-        if prepared.state == RecoveryStage::Prepared {
+        if prepared.state != RecoveryStage::ServerCommitted {
             return Err(ProfileError::message("Profile recovery unavailable"));
         }
         prepared.state = RecoveryStage::LocalCommitted;
@@ -1244,6 +1269,7 @@ struct PrepareRecoveryResponse {
 struct CommitRecoveryResponse {
     active_mac_activated_at: u64,
     active_mac_generation: u64,
+    auth_finalized: bool,
     display_name: String,
     touch_grass_id: String,
 }
@@ -1403,6 +1429,7 @@ impl ProfileTransport for HttpProfileTransport {
         Ok(CommittedRecovery {
             active_mac_activated_at: response.active_mac_activated_at,
             active_mac_generation: response.active_mac_generation,
+            auth_finalized: response.auth_finalized,
             display_name: response.display_name,
             touch_grass_id: response.touch_grass_id,
         })
@@ -1529,6 +1556,7 @@ mod tests {
         exchange_count: AtomicUsize,
         fixed_profile_mutation: AtomicBool,
         fail_recovery_commit: AtomicBool,
+        recovery_auth_finalized: AtomicBool,
         recovery_prepare_count: AtomicUsize,
         last_recovery_prepare_current: Mutex<Option<String>>,
         prepared_replacement_recovery_key: Mutex<Option<String>>,
@@ -1556,6 +1584,7 @@ mod tests {
                 exchange_count: AtomicUsize::new(0),
                 fixed_profile_mutation: AtomicBool::new(false),
                 fail_recovery_commit: AtomicBool::new(false),
+                recovery_auth_finalized: AtomicBool::new(true),
                 recovery_prepare_count: AtomicUsize::new(0),
                 last_recovery_prepare_current: Mutex::new(None),
                 prepared_replacement_recovery_key: Mutex::new(None),
@@ -1585,6 +1614,10 @@ mod tests {
 
         fn fail_next_recovery_commit(&self) {
             self.fail_recovery_commit.store(true, Ordering::SeqCst);
+        }
+
+        fn keep_recovery_auth_pending(&self) {
+            self.recovery_auth_finalized.store(false, Ordering::SeqCst);
         }
 
         fn exchange_count(&self) -> usize {
@@ -1696,6 +1729,7 @@ mod tests {
             Ok(CommittedRecovery {
                 active_mac_activated_at: ACTIVE_MAC_ACTIVATED_AT + 1_000,
                 active_mac_generation: 2,
+                auth_finalized: self.recovery_auth_finalized.load(Ordering::SeqCst),
                 display_name: "Fabien".to_owned(),
                 touch_grass_id: prepared.touch_grass_id.clone(),
             })
@@ -2407,7 +2441,26 @@ mod tests {
                 .contains(SecretKind::ReplacementInstallationCredential)
         );
         assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
-        assert!(fixture.coordinator.active_sync_credentials().is_ok());
+        let commit_sent = fixture
+            .custody
+            .read(SecretKind::RecoveryPreparation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            PreparedRecovery::decode(&commit_sent).unwrap().state,
+            RecoveryStage::CommitSent
+        );
+        let Err(error) = fixture.coordinator.active_sync_credentials() else {
+            panic!("commit-uncertain recovery must defer synchronization");
+        };
+        assert!(!error.is_authority_rejected());
+        assert!(
+            fixture
+                .coordinator
+                .recover_profile("TG-ZZZZ22", &supplied_recovery_key)
+                .is_err()
+        );
+        assert!(fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
 
         let staged_replacement = fixture
             .custody
@@ -2419,7 +2472,7 @@ mod tests {
             .write(
                 SecretKind::RecoveryPreparation,
                 &PreparedRecovery {
-                    state: RecoveryStage::Prepared,
+                    state: RecoveryStage::CommitSent,
                     expires_at_ms: 0,
                     recovery_proof: Secret::new(generate_secret(64).unwrap()),
                     touch_grass_id: touch_grass_id.clone(),
@@ -2525,6 +2578,7 @@ mod tests {
     #[test]
     fn committed_recovery_keeps_replacement_custody_until_auth_cleanup_finishes() {
         let fixture = ProfileFixture::new();
+        fixture.transport.keep_recovery_auth_pending();
         let supplied_recovery_key = Secret::new("R".repeat(48));
         let touch_grass_id = fixture.transport.touch_grass_id().to_owned();
 
@@ -2541,6 +2595,7 @@ mod tests {
             .unwrap();
         let staged = PreparedRecovery::decode(&staged).unwrap();
         assert_eq!(staged.state, RecoveryStage::ServerCommitted);
+        assert_eq!(fixture.transport.sign_in_count(), 0);
         let replacement_recovery_key = fixture
             .custody
             .read(SecretKind::ReplacementRecoveryKey)
