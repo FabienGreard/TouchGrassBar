@@ -352,6 +352,12 @@ pub enum SanitizedProfileOutcome {
     },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UsageSyncAuthorityIdentity {
+    active_mac_generation: Option<u64>,
+    touch_grass_id: Option<String>,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(
@@ -3150,6 +3156,7 @@ impl NativeCore {
         self.install_usage_sync_authority(active_mac_generation, activated_at)
     }
 
+    #[cfg(test)]
     pub(crate) fn active_usage_sync_generation(&self) -> Result<Option<u64>, &'static str> {
         let store = self
             .inner
@@ -3160,6 +3167,30 @@ impl NativeCore {
             ReadModelStore::Persistent(persistent) => Ok(persistent.active_mac_generation),
             ReadModelStore::Memory => Ok(None),
         }
+    }
+
+    pub(crate) fn usage_sync_authority_identity(
+        &self,
+    ) -> Result<UsageSyncAuthorityIdentity, &'static str> {
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let active_mac_generation = match &*store {
+            ReadModelStore::Persistent(persistent) => persistent.active_mac_generation,
+            ReadModelStore::Memory => None,
+        };
+        let touch_grass_id = match self.inner.projection.snapshot()?.profile {
+            SanitizedProfileOutcome::Ready { touch_grass_id, .. } => Some(touch_grass_id),
+            SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
+                None
+            }
+        };
+        Ok(UsageSyncAuthorityIdentity {
+            active_mac_generation,
+            touch_grass_id,
+        })
     }
 
     #[cfg(test)]
@@ -3308,7 +3339,7 @@ impl NativeCore {
 
     pub(crate) fn reject_usage_sync_authority_if_current(
         &self,
-        expected_active_mac_generation: Option<u64>,
+        expected_authority: &UsageSyncAuthorityIdentity,
     ) -> Result<(), &'static str> {
         let mut store = self
             .inner
@@ -3319,7 +3350,18 @@ impl NativeCore {
             ReadModelStore::Persistent(persistent) => persistent.active_mac_generation,
             ReadModelStore::Memory => None,
         };
-        if active_mac_generation != expected_active_mac_generation {
+        let touch_grass_id = match self.inner.projection.snapshot()?.profile {
+            SanitizedProfileOutcome::Ready { touch_grass_id, .. } => Some(touch_grass_id),
+            SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
+                None
+            }
+        };
+        if *expected_authority
+            != (UsageSyncAuthorityIdentity {
+                active_mac_generation,
+                touch_grass_id,
+            })
+        {
             return Ok(());
         }
         if self.inner.projection.snapshot()?.sync.status == SyncStatus::AuthorityRejected {
@@ -3356,7 +3398,7 @@ impl NativeCore {
 
     #[cfg(test)]
     pub(crate) fn reject_active_usage_sync_authority(&self) -> Result<(), &'static str> {
-        self.reject_usage_sync_authority_if_current(self.active_usage_sync_generation()?)
+        self.reject_usage_sync_authority_if_current(&self.usage_sync_authority_identity()?)
     }
 
     #[cfg(test)]
@@ -5763,7 +5805,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_authority_rejection_does_not_block_recovered_generation() {
+    fn stale_authority_rejection_does_not_block_recovered_same_generation() {
         let now = test_time();
         let database = TestDatabase::new();
         let core = NativeCore::open_without_launch(
@@ -5777,7 +5819,8 @@ mod tests {
             touch_grass_id: "TG-ABC234".to_owned(),
         })
         .unwrap();
-        core.activate_usage_sync_generation(1).unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let previous_authority = core.usage_sync_authority_identity().unwrap();
 
         let activated_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
         core.recover_profile_authority(
@@ -5790,7 +5833,7 @@ mod tests {
         )
         .unwrap();
 
-        core.reject_usage_sync_authority_if_current(Some(1))
+        core.reject_usage_sync_authority_if_current(&previous_authority)
             .unwrap();
 
         assert_eq!(core.active_usage_sync_generation().unwrap(), Some(2));

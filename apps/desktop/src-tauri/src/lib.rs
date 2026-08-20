@@ -382,6 +382,10 @@ impl ProfileRuntime {
         let Some(_attempt) = self.admission.try_start(None) else {
             return Err("Profile recovery unavailable".to_owned());
         };
+        let _usage_pause = self
+            .usage_sync
+            .pause_for_update()
+            .map_err(|_| "Profile recovery unavailable".to_owned())?;
         let recovered = {
             let coordinator = self
                 .coordinator

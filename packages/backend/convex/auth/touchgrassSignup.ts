@@ -850,7 +850,12 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               outcome: "success",
               reservationId,
             });
-            return rejectRecoveryCredential();
+            return ctx.json({
+              activeMacActivatedAt: committed.activeMacActivatedAt,
+              activeMacGeneration: committed.activeMacGeneration,
+              displayName: committed.displayName,
+              touchGrassId: committed.touchGrassId,
+            });
           }
           const finalized = await policy.finalizeCredentialAttempt({
             outcome: "success",

@@ -18,17 +18,19 @@ cloud migration or schema deployment.
 
 ## Execution plan
 
-1. Add a bounded, resumable migration that sets a missing active session to
+1. Widen `activeAuthSessionId` to an optional string-or-null field and deploy
+   that compatibility schema through the approved workflow.
+2. Add a bounded, resumable migration that sets a missing active session to
    `null` and copies the current Active Mac generation to a missing session
    generation.
-2. Rehearse the migration on disposable, production-shaped local data.
-3. Record the approved deployment before any remote action.
-4. Run the migration in bounded batches until it completes.
-5. Verify that no Profile document is missing either field.
-6. Run the migration and the missing-field check again.
-7. Change both schema fields from optional to required and keep the active
+3. Rehearse the migration on disposable, production-shaped local data.
+4. Record the approved deployment before any remote action.
+5. Run the migration in bounded batches until it completes.
+6. Verify that no Profile document is missing either field.
+7. Run the migration and the missing-field check again.
+8. Change both schema fields from optional to required and keep the active
    session field nullable.
-8. Remove the migration, compatibility checks, regression tests, maintenance
+9. Remove the migration, compatibility checks, regression tests, maintenance
    text, and this entry in the same cleanup change.
 
 ## Verification

@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 
 use crate::{
     profile::{ActiveMacActivation, ActiveSyncCredentials, ProfileCoordinator, Secret},
-    sanitized::{NativeCore, SanitizedProfileOutcome},
+    sanitized::{NativeCore, SanitizedProfileOutcome, UsageSyncAuthorityIdentity},
     updater::OnlineFeatureGate,
 };
 
@@ -61,11 +61,11 @@ trait PendingUsageSnapshotState: Send + Sync {
         result: UsageSyncAttemptResult,
     ) -> Result<(), &'static str>;
 
-    fn active_generation(&self) -> Result<Option<u64>, &'static str>;
+    fn authority_identity(&self) -> Result<UsageSyncAuthorityIdentity, &'static str>;
 
     fn reject_authority_if_current(
         &self,
-        active_mac_generation: Option<u64>,
+        authority: &UsageSyncAuthorityIdentity,
     ) -> Result<(), &'static str>;
 
     fn install_usage_sync_request(
@@ -112,16 +112,15 @@ impl PendingUsageSnapshotState for NativePendingUsageSnapshotState {
         self.core.finish_usage_sync_attempt(batch, result)
     }
 
-    fn active_generation(&self) -> Result<Option<u64>, &'static str> {
-        self.core.active_usage_sync_generation()
+    fn authority_identity(&self) -> Result<UsageSyncAuthorityIdentity, &'static str> {
+        self.core.usage_sync_authority_identity()
     }
 
     fn reject_authority_if_current(
         &self,
-        active_mac_generation: Option<u64>,
+        authority: &UsageSyncAuthorityIdentity,
     ) -> Result<(), &'static str> {
-        self.core
-            .reject_usage_sync_authority_if_current(active_mac_generation)
+        self.core.reject_usage_sync_authority_if_current(authority)
     }
 
     fn install_usage_sync_request(
@@ -310,8 +309,8 @@ impl RuntimeInner {
             return;
         }
 
-        let observed_generation = match self.environment.state.active_generation() {
-            Ok(generation) => generation,
+        let observed_authority = match self.environment.state.authority_identity() {
+            Ok(authority) => authority,
             Err(_) => return,
         };
         let mut authority = match self.environment.authority.acquire() {
@@ -320,7 +319,7 @@ impl RuntimeInner {
                 let _ = self
                     .environment
                     .state
-                    .reject_authority_if_current(observed_generation);
+                    .reject_authority_if_current(&observed_authority);
                 return;
             }
             ActiveMacAuthorityOutcome::Unavailable => return,
@@ -331,6 +330,10 @@ impl RuntimeInner {
         ) {
             Ok(Some(batch)) => batch,
             Ok(None) | Err(_) => return,
+        };
+        let attempted_authority = match self.environment.state.authority_identity() {
+            Ok(authority) => authority,
+            Err(_) => return,
         };
         let mut outcome =
             self.environment
@@ -357,7 +360,7 @@ impl RuntimeInner {
                     let _ = self
                         .environment
                         .state
-                        .reject_authority_if_current(Some(authority.active_mac_generation));
+                        .reject_authority_if_current(&attempted_authority);
                     return;
                 }
                 ActiveMacSessionRefreshOutcome::Unavailable => {
@@ -399,7 +402,7 @@ impl RuntimeInner {
                     let _ = self
                         .environment
                         .state
-                        .reject_authority_if_current(Some(authority.active_mac_generation));
+                        .reject_authority_if_current(&attempted_authority);
                 } else {
                     let _ = self
                         .environment
@@ -1300,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn acquire_rejection_does_not_block_a_recovered_generation() {
+    fn acquire_rejection_does_not_block_a_recovered_same_generation() {
         let now = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
         let database = TestDatabase::new();
         let clock = Arc::new(FixedSynchronizationClock(now));
@@ -1316,7 +1319,7 @@ mod tests {
             touch_grass_id: "TG-ABC234".to_owned(),
         })
         .unwrap();
-        core.activate_usage_sync_generation(1).unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
         let (recovered, observed_recovery) = mpsc::sync_channel(1);
         let runtime = PendingUsageSynchronization::start(SynchronizationEnvironment {
             state: Arc::new(NativePendingUsageSnapshotState { core: core.clone() }),

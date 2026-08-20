@@ -906,8 +906,18 @@ test("a stale sign-in cannot replace the recovered Profile session fence", async
       method: "POST",
     });
   await expect(commit(profile.recoveryKey)).resolves.toMatchObject({
-    status: 401,
+    status: 200,
   });
+  await expect(
+    authFetch(t, "/api/auth/sign-in/username", {
+      body: JSON.stringify({
+        password: newRecoveryKey,
+        username: profile.touchGrassId,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  ).resolves.toMatchObject({ status: 401 });
   await expect(commit(newRecoveryKey)).resolves.toMatchObject({ status: 200 });
   await expect(
     t.run((ctx) =>

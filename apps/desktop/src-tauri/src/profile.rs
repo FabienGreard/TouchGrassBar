@@ -708,13 +708,28 @@ impl ProfileCoordinator {
             self.ensure_secret(SecretKind::ReplacementRecoveryKey, 48)?;
         let replacement_installation_credential =
             self.ensure_secret(SecretKind::ReplacementInstallationCredential, 52)?;
+        let server_committed = staged
+            .as_ref()
+            .is_some_and(|prepared| prepared.state != RecoveryStage::Prepared);
         let prepared = match staged {
             Some(prepared) if prepared.expires_at_ms > unix_time_ms()? => prepared,
-            Some(_) | None => self.prepare_recovery(touch_grass_id, recovery_key)?,
+            Some(_) if server_committed => self.prepare_recovery(
+                touch_grass_id,
+                &replacement_recovery_key,
+                RecoveryStage::ServerCommitted,
+            )?,
+            Some(_) | None => {
+                self.prepare_recovery(touch_grass_id, recovery_key, RecoveryStage::Prepared)?
+            }
+        };
+        let current_recovery_key = if server_committed {
+            &replacement_recovery_key
+        } else {
+            recovery_key
         };
         let committed = self.transport.commit_recovery(
             &prepared,
-            recovery_key,
+            current_recovery_key,
             &replacement_recovery_key,
             &replacement_installation_credential,
         )?;
@@ -749,13 +764,14 @@ impl ProfileCoordinator {
         &self,
         touch_grass_id: &str,
         recovery_key: &Secret,
+        state: RecoveryStage,
     ) -> Result<PreparedRecovery, ProfileError> {
         let attempt_id = self.ensure_secret(SecretKind::RecoveryAttemptId, 32)?;
         let replacement_recovery_key =
             self.ensure_secret(SecretKind::ReplacementRecoveryKey, 48)?;
         let _replacement_installation_credential =
             self.ensure_secret(SecretKind::ReplacementInstallationCredential, 52)?;
-        let prepared = self.transport.prepare_recovery(
+        let mut prepared = self.transport.prepare_recovery(
             touch_grass_id,
             recovery_key,
             &replacement_recovery_key,
@@ -764,6 +780,7 @@ impl ProfileCoordinator {
         if prepared.touch_grass_id != touch_grass_id {
             return Err(ProfileError::authority_rejected());
         }
+        prepared.state = state;
         self.custody
             .write(SecretKind::RecoveryPreparation, &prepared.encode())?;
         Ok(prepared)
@@ -1513,6 +1530,7 @@ mod tests {
         fixed_profile_mutation: AtomicBool,
         fail_recovery_commit: AtomicBool,
         recovery_prepare_count: AtomicUsize,
+        last_recovery_prepare_current: Mutex<Option<String>>,
         prepared_replacement_recovery_key: Mutex<Option<String>>,
         last_jwt: Mutex<Option<String>>,
         authority_touch_grass_id: Mutex<Option<String>>,
@@ -1539,6 +1557,7 @@ mod tests {
                 fixed_profile_mutation: AtomicBool::new(false),
                 fail_recovery_commit: AtomicBool::new(false),
                 recovery_prepare_count: AtomicUsize::new(0),
+                last_recovery_prepare_current: Mutex::new(None),
                 prepared_replacement_recovery_key: Mutex::new(None),
                 last_jwt: Mutex::new(None),
                 authority_touch_grass_id: Mutex::new(None),
@@ -1578,6 +1597,10 @@ mod tests {
 
         fn recovery_prepare_count(&self) -> usize {
             self.recovery_prepare_count.load(Ordering::SeqCst)
+        }
+
+        fn last_recovery_prepare_current(&self) -> Option<String> {
+            self.last_recovery_prepare_current.lock().unwrap().clone()
         }
 
         fn used_fixed_profile_mutation(&self) -> bool {
@@ -1634,11 +1657,13 @@ mod tests {
         fn prepare_recovery(
             &self,
             touch_grass_id: &str,
-            _recovery_key: &Secret,
+            recovery_key: &Secret,
             replacement_recovery_key: &Secret,
             _attempt_id: &Secret,
         ) -> Result<PreparedRecovery, ProfileError> {
             self.recovery_prepare_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_recovery_prepare_current.lock().unwrap() =
+                Some(recovery_key.expose().to_owned());
             *self.prepared_replacement_recovery_key.lock().unwrap() =
                 Some(replacement_recovery_key.expose().to_owned());
             Ok(PreparedRecovery {
@@ -2495,5 +2520,73 @@ mod tests {
         );
         assert!(!fixture.custody.contains(SecretKind::RecoveryPreparation));
         assert!(fixture.coordinator.active_sync_credentials().is_ok());
+    }
+
+    #[test]
+    fn committed_recovery_keeps_replacement_custody_until_auth_cleanup_finishes() {
+        let fixture = ProfileFixture::new();
+        let supplied_recovery_key = Secret::new("R".repeat(48));
+        let touch_grass_id = fixture.transport.touch_grass_id().to_owned();
+
+        assert!(
+            fixture
+                .coordinator
+                .recover_profile(&touch_grass_id, &supplied_recovery_key)
+                .is_err()
+        );
+        let staged = fixture
+            .custody
+            .read(SecretKind::RecoveryPreparation)
+            .unwrap()
+            .unwrap();
+        let staged = PreparedRecovery::decode(&staged).unwrap();
+        assert_eq!(staged.state, RecoveryStage::ServerCommitted);
+        let replacement_recovery_key = fixture
+            .custody
+            .read(SecretKind::ReplacementRecoveryKey)
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            fixture
+                .coordinator
+                .recover_profile("TG-ZZZZ22", &supplied_recovery_key)
+                .is_err()
+        );
+        assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
+
+        fixture
+            .custody
+            .write(
+                SecretKind::RecoveryPreparation,
+                &PreparedRecovery {
+                    state: RecoveryStage::ServerCommitted,
+                    expires_at_ms: 0,
+                    recovery_proof: staged.recovery_proof,
+                    touch_grass_id: touch_grass_id.clone(),
+                }
+                .encode(),
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .coordinator
+                .recover_profile(&touch_grass_id, &supplied_recovery_key)
+                .is_err()
+        );
+        assert_eq!(
+            fixture.transport.last_recovery_prepare_current().as_deref(),
+            Some(replacement_recovery_key.expose())
+        );
+        let refreshed = fixture
+            .custody
+            .read(SecretKind::RecoveryPreparation)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            PreparedRecovery::decode(&refreshed).unwrap().state,
+            RecoveryStage::ServerCommitted
+        );
     }
 }
