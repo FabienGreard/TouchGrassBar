@@ -299,7 +299,7 @@ impl DoomerboardRuntime {
                     .coordinator
                     .lock()
                     .ok()
-                    .and_then(|coordinator| coordinator.refresh_active_sync_session().ok())
+                    .and_then(|coordinator| coordinator.refresh_active_sync_session(&session).ok())
                     .flatten();
                 match refreshed
                     .as_ref()

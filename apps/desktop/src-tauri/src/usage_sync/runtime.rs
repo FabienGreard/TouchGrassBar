@@ -61,9 +61,12 @@ trait PendingUsageSnapshotState: Send + Sync {
         result: UsageSyncAttemptResult,
     ) -> Result<(), &'static str>;
 
-    fn reject_current_authority(&self) -> Result<(), &'static str>;
+    fn active_generation(&self) -> Result<Option<u64>, &'static str>;
 
-    fn reject_authority_if_current(&self, active_mac_generation: u64) -> Result<(), &'static str>;
+    fn reject_authority_if_current(
+        &self,
+        active_mac_generation: Option<u64>,
+    ) -> Result<(), &'static str>;
 
     fn install_usage_sync_request(
         &self,
@@ -109,11 +112,14 @@ impl PendingUsageSnapshotState for NativePendingUsageSnapshotState {
         self.core.finish_usage_sync_attempt(batch, result)
     }
 
-    fn reject_current_authority(&self) -> Result<(), &'static str> {
-        self.core.reject_active_usage_sync_authority()
+    fn active_generation(&self) -> Result<Option<u64>, &'static str> {
+        self.core.active_usage_sync_generation()
     }
 
-    fn reject_authority_if_current(&self, active_mac_generation: u64) -> Result<(), &'static str> {
+    fn reject_authority_if_current(
+        &self,
+        active_mac_generation: Option<u64>,
+    ) -> Result<(), &'static str> {
         self.core
             .reject_usage_sync_authority_if_current(active_mac_generation)
     }
@@ -304,10 +310,17 @@ impl RuntimeInner {
             return;
         }
 
+        let observed_generation = match self.environment.state.active_generation() {
+            Ok(generation) => generation,
+            Err(_) => return,
+        };
         let mut authority = match self.environment.authority.acquire() {
             ActiveMacAuthorityOutcome::Ready(authority) => authority,
             ActiveMacAuthorityOutcome::Rejected => {
-                let _ = self.environment.state.reject_current_authority();
+                let _ = self
+                    .environment
+                    .state
+                    .reject_authority_if_current(observed_generation);
                 return;
             }
             ActiveMacAuthorityOutcome::Unavailable => return,
@@ -327,7 +340,11 @@ impl RuntimeInner {
             outcome,
             PendingUsageSnapshotDeliveryOutcome::SessionRejected
         ) {
-            match self.environment.authority.refresh_session() {
+            match self
+                .environment
+                .authority
+                .refresh_session(&authority.session)
+            {
                 ActiveMacSessionRefreshOutcome::Refreshed(session) => {
                     authority.session = session;
                     outcome = self.environment.delivery.deliver(
@@ -340,7 +357,7 @@ impl RuntimeInner {
                     let _ = self
                         .environment
                         .state
-                        .reject_authority_if_current(authority.active_mac_generation);
+                        .reject_authority_if_current(Some(authority.active_mac_generation));
                     return;
                 }
                 ActiveMacSessionRefreshOutcome::Unavailable => {
@@ -365,7 +382,7 @@ impl RuntimeInner {
                 let _ = self
                     .environment
                     .state
-                    .reject_authority_if_current(authority.active_mac_generation);
+                    .finish(&batch, UsageSyncAttemptResult::Deferred);
             }
             PendingUsageSnapshotDeliveryOutcome::Deferred => {
                 let _ = self
@@ -374,10 +391,21 @@ impl RuntimeInner {
                     .finish(&batch, UsageSyncAttemptResult::Deferred);
             }
             PendingUsageSnapshotDeliveryOutcome::AuthorityRejected => {
-                let _ = self
+                if self
                     .environment
-                    .state
-                    .reject_authority_if_current(authority.active_mac_generation);
+                    .authority
+                    .is_current_session(&authority.session)
+                {
+                    let _ = self
+                        .environment
+                        .state
+                        .reject_authority_if_current(Some(authority.active_mac_generation));
+                } else {
+                    let _ = self
+                        .environment
+                        .state
+                        .finish(&batch, UsageSyncAttemptResult::Deferred);
+                }
             }
         }
     }
@@ -589,7 +617,10 @@ impl SynchronizationAdmission {
 
 trait ActiveMacAuthoritySource: Send + Sync {
     fn acquire(&self) -> ActiveMacAuthorityOutcome;
-    fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome;
+    fn refresh_session(&self, rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome;
+    fn is_current_session(&self, _session: &Secret) -> bool {
+        true
+    }
 }
 
 struct ActiveMacAuthority {
@@ -628,16 +659,24 @@ impl ActiveMacAuthoritySource for ProfileActiveMacAuthority {
         }
     }
 
-    fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
+    fn refresh_session(&self, rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
         let Ok(profile) = self.profile.lock() else {
             return ActiveMacSessionRefreshOutcome::Unavailable;
         };
-        match profile.refresh_active_sync_session() {
+        match profile.refresh_active_sync_session(rejected_session) {
             Ok(Some(session)) => ActiveMacSessionRefreshOutcome::Refreshed(session),
             Ok(None) => ActiveMacSessionRefreshOutcome::Unavailable,
             Err(error) if error.is_authority_rejected() => ActiveMacSessionRefreshOutcome::Rejected,
             Err(_) => ActiveMacSessionRefreshOutcome::Unavailable,
         }
+    }
+
+    fn is_current_session(&self, session: &Secret) -> bool {
+        self.profile
+            .lock()
+            .ok()
+            .and_then(|profile| profile.is_active_sync_session(session).ok())
+            .unwrap_or(false)
     }
 }
 
@@ -710,8 +749,12 @@ impl ActiveMacAuthoritySource for NoActiveMacAuthority {
         ActiveMacAuthorityOutcome::Unavailable
     }
 
-    fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
+    fn refresh_session(&self, _rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
         ActiveMacSessionRefreshOutcome::Unavailable
+    }
+
+    fn is_current_session(&self, _session: &Secret) -> bool {
+        false
     }
 }
 
@@ -829,7 +872,7 @@ mod tests {
             })
         }
 
-        fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
+        fn refresh_session(&self, _rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
             ActiveMacSessionRefreshOutcome::Refreshed(Secret::test_only())
         }
     }
@@ -846,9 +889,30 @@ mod tests {
             })
         }
 
-        fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
+        fn refresh_session(&self, _rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
             let _ = self.0.send(());
             ActiveMacSessionRefreshOutcome::Refreshed(Secret::test_only())
+        }
+    }
+
+    struct ReplacedSessionAuthority;
+
+    impl ActiveMacAuthoritySource for ReplacedSessionAuthority {
+        fn acquire(&self) -> ActiveMacAuthorityOutcome {
+            ActiveMacAuthorityOutcome::Ready(ActiveMacAuthority {
+                active_mac_activated_at: 0,
+                active_mac_generation: 1,
+                installation_credential: Secret::test_only(),
+                session: Secret::new("replaced-session".to_owned()),
+            })
+        }
+
+        fn refresh_session(&self, _rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
+            ActiveMacSessionRefreshOutcome::Unavailable
+        }
+
+        fn is_current_session(&self, _session: &Secret) -> bool {
+            false
         }
     }
 
@@ -996,6 +1060,20 @@ mod tests {
         }
     }
 
+    struct SignallingRejectingDelivery(SyncSender<()>);
+
+    impl PendingUsageSnapshotDelivery for SignallingRejectingDelivery {
+        fn deliver(
+            &self,
+            _authority: &ActiveMacAuthority,
+            _batch: &PendingUsageBatch,
+            _now: OffsetDateTime,
+        ) -> PendingUsageSnapshotDeliveryOutcome {
+            let _ = self.0.send(());
+            PendingUsageSnapshotDeliveryOutcome::AuthorityRejected
+        }
+    }
+
     struct RejectingSessionDelivery {
         calls: SyncSender<usize>,
         count: AtomicUsize,
@@ -1122,7 +1200,7 @@ mod tests {
             ActiveMacAuthorityOutcome::Unavailable
         }
 
-        fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
+        fn refresh_session(&self, _rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
             ActiveMacSessionRefreshOutcome::Unavailable
         }
     }
@@ -1131,6 +1209,36 @@ mod tests {
         activated_at: u64,
         acquired: SyncSender<()>,
         release: Mutex<Option<Receiver<()>>>,
+    }
+
+    struct RecoveringRejectedAuthority {
+        core: NativeCore,
+        first: AtomicBool,
+        recovered: SyncSender<()>,
+    }
+
+    impl ActiveMacAuthoritySource for RecoveringRejectedAuthority {
+        fn acquire(&self) -> ActiveMacAuthorityOutcome {
+            if !self.first.swap(false, Ordering::AcqRel) {
+                return ActiveMacAuthorityOutcome::Unavailable;
+            }
+            self.core
+                .recover_profile_authority(
+                    SanitizedProfileOutcome::Ready {
+                        display_name: "Recovered".to_owned(),
+                        touch_grass_id: "TG-XYZ234".to_owned(),
+                    },
+                    2,
+                    2,
+                )
+                .unwrap();
+            let _ = self.recovered.send(());
+            ActiveMacAuthorityOutcome::Rejected
+        }
+
+        fn refresh_session(&self, _rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
+            ActiveMacSessionRefreshOutcome::Unavailable
+        }
     }
 
     impl ActiveMacAuthoritySource for DelayedTransferredAuthority {
@@ -1147,7 +1255,7 @@ mod tests {
             })
         }
 
-        fn refresh_session(&self) -> ActiveMacSessionRefreshOutcome {
+        fn refresh_session(&self, _rejected_session: &Secret) -> ActiveMacSessionRefreshOutcome {
             ActiveMacSessionRefreshOutcome::Refreshed(Secret::test_only())
         }
     }
@@ -1189,6 +1297,57 @@ mod tests {
 
         runtime.shutdown();
         runtime.shutdown();
+    }
+
+    #[test]
+    fn acquire_rejection_does_not_block_a_recovered_generation() {
+        let now = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixedSynchronizationClock(now));
+        let core = NativeCore::open_with(
+            &database.0,
+            clock.clone(),
+            Arc::new(OneObservation(Mutex::new(Some(observed_state(now))))),
+        )
+        .unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.set_profile_outcome(SanitizedProfileOutcome::Ready {
+            display_name: "Previous".to_owned(),
+            touch_grass_id: "TG-ABC234".to_owned(),
+        })
+        .unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let (recovered, observed_recovery) = mpsc::sync_channel(1);
+        let runtime = PendingUsageSynchronization::start(SynchronizationEnvironment {
+            state: Arc::new(NativePendingUsageSnapshotState { core: core.clone() }),
+            online_gate: OnlineFeatureGate::default(),
+            authority: Arc::new(RecoveringRejectedAuthority {
+                core: core.clone(),
+                first: AtomicBool::new(true),
+                recovered,
+            }),
+            delivery: Arc::new(NoPendingUsageSnapshotDelivery),
+            clock,
+            retry_interval: Duration::from_secs(60),
+        })
+        .unwrap();
+
+        runtime.request();
+        assert_eq!(
+            observed_recovery.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        let pause = runtime.pause_for_update().unwrap();
+
+        assert_eq!(core.active_usage_sync_generation().unwrap(), Some(2));
+        assert_ne!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        drop(pause);
+
+        runtime.shutdown();
+        core.shutdown();
     }
 
     #[test]
@@ -1517,7 +1676,48 @@ mod tests {
     }
 
     #[test]
-    fn refreshed_session_rejection_stops_after_one_retry() {
+    fn stale_session_authority_rejection_does_not_block_current_generation() {
+        let now = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixedSynchronizationClock(now));
+        let core = NativeCore::open_with(
+            &database.0,
+            clock.clone(),
+            Arc::new(OneObservation(Mutex::new(Some(observed_state(now))))),
+        )
+        .unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let (rejected, observed_rejection) = mpsc::sync_channel(1);
+        let runtime = PendingUsageSynchronization::start(SynchronizationEnvironment {
+            state: Arc::new(NativePendingUsageSnapshotState { core: core.clone() }),
+            online_gate: OnlineFeatureGate::default(),
+            authority: Arc::new(ReplacedSessionAuthority),
+            delivery: Arc::new(SignallingRejectingDelivery(rejected)),
+            clock,
+            retry_interval: Duration::from_secs(60),
+        })
+        .unwrap();
+
+        runtime.request();
+        assert_eq!(
+            observed_rejection.recv_timeout(Duration::from_secs(1)),
+            Ok(())
+        );
+        let pause = runtime.pause_for_update().unwrap();
+
+        assert_eq!(core.active_usage_sync_generation().unwrap(), Some(1));
+        assert_ne!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        drop(pause);
+
+        runtime.shutdown();
+        core.shutdown();
+    }
+
+    #[test]
+    fn refreshed_session_rejection_defers_after_one_retry() {
         let now = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
         let database = TestDatabase::new();
         let clock = Arc::new(FixedSynchronizationClock(now));
@@ -1563,14 +1763,12 @@ mod tests {
                 .is_err()
         );
         assert!(observed_refresh.try_recv().is_err());
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while core.panel_state().unwrap().sync.status != SyncStatus::AuthorityRejected {
-            assert!(
-                Instant::now() < deadline,
-                "authentication rejection did not commit"
-            );
-            thread::yield_now();
-        }
+        let pause = runtime.pause_for_update().unwrap();
+        assert_ne!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        drop(pause);
 
         runtime.shutdown();
         core.shutdown();

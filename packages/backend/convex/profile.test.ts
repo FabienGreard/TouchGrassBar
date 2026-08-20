@@ -894,17 +894,21 @@ test("a stale sign-in cannot replace the recovered Profile session fence", async
     attemptId,
     newRecoveryKey,
   );
-  const committed = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
-    body: JSON.stringify({
-      currentRecoveryKey: profile.recoveryKey,
-      installationCredential,
-      newRecoveryKey,
-      recoveryProof,
-    }),
-    headers: { "content-type": "application/json" },
-    method: "POST",
+  const commit = (currentRecoveryKey: string) =>
+    authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+      body: JSON.stringify({
+        currentRecoveryKey,
+        installationCredential,
+        newRecoveryKey,
+        recoveryProof,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+  await expect(commit(profile.recoveryKey)).resolves.toMatchObject({
+    status: 401,
   });
-  expect(committed.status).toBe(200);
+  await expect(commit(newRecoveryKey)).resolves.toMatchObject({ status: 200 });
   await expect(
     t.run((ctx) =>
       ctx.runQuery(components.betterAuth.adapter.findMany, {

@@ -26,6 +26,7 @@ const DUMMY_RECOVERY_CREDENTIAL = "2".repeat(48);
 const RECOVERY_FINALIZATION_WAIT_ATTEMPTS = 200;
 const RECOVERY_FINALIZATION_WAIT_MS = 25;
 const RECOVERY_SESSION_DELETE_BATCH = 64;
+const RECOVERY_SESSION_DELETE_MAX_BATCHES = 2;
 
 type PreparationPayload = {
   expiresAt: number;
@@ -689,6 +690,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             });
             return rejectRecoveryCredential();
           }
+          let sessionCleanupPending = false;
           if (!committed.authFinalized) {
             const authFinalizationClaim = crypto.randomUUID();
             let authFinalizationClaimed = false;
@@ -738,7 +740,11 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                     authSubject: user.id,
                     claim: authFinalizationClaim,
                   });
-                while (stillOwnsFinalization) {
+                let deletedSessionBatches = 0;
+                while (
+                  stillOwnsFinalization &&
+                  deletedSessionBatches < RECOVERY_SESSION_DELETE_MAX_BATCHES
+                ) {
                   const priorSessions = await ctx.context.adapter.findMany<{
                     token: string;
                   }>({
@@ -759,6 +765,35 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                   await ctx.context.internalAdapter.deleteSessions(
                     priorSessions.map((session) => session.token),
                   );
+                  deletedSessionBatches += 1;
+                }
+                if (
+                  stillOwnsFinalization &&
+                  deletedSessionBatches === RECOVERY_SESSION_DELETE_MAX_BATCHES
+                ) {
+                  const remainingSessions = await ctx.context.adapter.findMany<{
+                    token: string;
+                  }>({
+                    limit: 1,
+                    model: "session",
+                    select: ["token"],
+                    where: [{ field: "userId", value: user.id }],
+                  });
+                  stillOwnsFinalization =
+                    await policy.claimRecoveryAuthFinalization({
+                      attemptDigest,
+                      authSubject: user.id,
+                      claim: authFinalizationClaim,
+                    });
+                  sessionCleanupPending =
+                    stillOwnsFinalization && remainingSessions.length > 0;
+                  if (sessionCleanupPending) {
+                    await policy.releaseRecoveryAuthFinalization({
+                      attemptDigest,
+                      authSubject: user.id,
+                      claim: authFinalizationClaim,
+                    });
+                  }
                 }
                 if (!stillOwnsFinalization) {
                   for (
@@ -786,7 +821,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                     });
                     return rejectRecoveryCredential();
                   }
-                } else {
+                } else if (!sessionCleanupPending) {
                   const authFinalized = await policy.finalizeRecoveryAuth({
                     attemptDigest,
                     authSubject: user.id,
@@ -809,6 +844,13 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                 return rejectRecoveryCredential();
               }
             }
+          }
+          if (sessionCleanupPending) {
+            await policy.finalizeCredentialAttempt({
+              outcome: "success",
+              reservationId,
+            });
+            return rejectRecoveryCredential();
           }
           const finalized = await policy.finalizeCredentialAttempt({
             outcome: "success",

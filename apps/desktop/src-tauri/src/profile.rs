@@ -936,14 +936,32 @@ impl ProfileCoordinator {
         }))
     }
 
-    /// Replace an expired Better Auth session with one Recovery Key sign-in.
-    pub(crate) fn refresh_active_sync_session(&self) -> Result<Option<Secret>, ProfileError> {
+    /// Reuse a newer session or replace the rejected session with one Recovery Key sign-in.
+    pub(crate) fn refresh_active_sync_session(
+        &self,
+        rejected_session: &Secret,
+    ) -> Result<Option<Secret>, ProfileError> {
         let SanitizedProfileOutcome::Ready { touch_grass_id, .. } =
             self.lifecycle.sanitized_profile_outcome()
         else {
             return Ok(None);
         };
+        if let Some(current_session) = self.custody.read(SecretKind::BetterAuthSession)?
+            && current_session.expose() != rejected_session.expose()
+        {
+            return Ok(Some(current_session));
+        }
         self.refresh_session_for(&touch_grass_id).map(Some)
+    }
+
+    pub(crate) fn is_active_sync_session(
+        &self,
+        expected_session: &Secret,
+    ) -> Result<bool, ProfileError> {
+        Ok(self
+            .custody
+            .read(SecretKind::BetterAuthSession)?
+            .is_some_and(|session| session.expose() == expected_session.expose()))
     }
 
     fn refresh_session_for(&self, touch_grass_id: &str) -> Result<Secret, ProfileError> {
@@ -2087,7 +2105,7 @@ mod tests {
 
         let refreshed = fixture
             .coordinator
-            .refresh_active_sync_session()
+            .refresh_active_sync_session(&previous)
             .unwrap()
             .unwrap();
         let stored = fixture
@@ -2103,6 +2121,17 @@ mod tests {
         assert!(previous.expose() != refreshed.expose());
         assert!(stored.expose() == refreshed.expose());
         assert_eq!(fixture.transport.exchange_count(), 1);
+
+        let reused = fixture
+            .coordinator
+            .refresh_active_sync_session(&previous)
+            .unwrap()
+            .unwrap();
+        assert!(reused.expose() == refreshed.expose());
+        assert_eq!(
+            fixture.transport.sign_in_count(),
+            sign_ins_before_refresh + 1
+        );
     }
 
     #[test]

@@ -3150,7 +3150,6 @@ impl NativeCore {
         self.install_usage_sync_authority(active_mac_generation, activated_at)
     }
 
-    #[cfg(test)]
     pub(crate) fn active_usage_sync_generation(&self) -> Result<Option<u64>, &'static str> {
         let store = self
             .inner
@@ -3307,18 +3306,7 @@ impl NativeCore {
         Ok(())
     }
 
-    pub(crate) fn reject_active_usage_sync_authority(&self) -> Result<(), &'static str> {
-        self.reject_usage_sync_authority(None)
-    }
-
     pub(crate) fn reject_usage_sync_authority_if_current(
-        &self,
-        active_mac_generation: u64,
-    ) -> Result<(), &'static str> {
-        self.reject_usage_sync_authority(Some(active_mac_generation))
-    }
-
-    fn reject_usage_sync_authority(
         &self,
         expected_active_mac_generation: Option<u64>,
     ) -> Result<(), &'static str> {
@@ -3331,9 +3319,7 @@ impl NativeCore {
             ReadModelStore::Persistent(persistent) => persistent.active_mac_generation,
             ReadModelStore::Memory => None,
         };
-        if expected_active_mac_generation.is_some()
-            && expected_active_mac_generation != active_mac_generation
-        {
+        if active_mac_generation != expected_active_mac_generation {
             return Ok(());
         }
         if self.inner.projection.snapshot()?.sync.status == SyncStatus::AuthorityRejected {
@@ -3366,6 +3352,11 @@ impl NativeCore {
             self.inner.subscribers.publish(notice);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reject_active_usage_sync_authority(&self) -> Result<(), &'static str> {
+        self.reject_usage_sync_authority_if_current(self.active_usage_sync_generation()?)
     }
 
     #[cfg(test)]
@@ -5799,7 +5790,8 @@ mod tests {
         )
         .unwrap();
 
-        core.reject_usage_sync_authority_if_current(1).unwrap();
+        core.reject_usage_sync_authority_if_current(Some(1))
+            .unwrap();
 
         assert_eq!(core.active_usage_sync_generation().unwrap(), Some(2));
         assert_ne!(
