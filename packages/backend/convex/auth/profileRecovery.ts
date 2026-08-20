@@ -6,7 +6,10 @@ import {
   internalQuery,
   type MutationCtx,
 } from "../_generated/server";
-import { installationCredentialDigest } from "../model/profile";
+import {
+  installationCredentialDigest,
+  profileSessionIsAuthorized,
+} from "../model/profile";
 import { rateLimiter } from "../model/rateLimits";
 import { freezeTransferDayUsage } from "../model/sync";
 import { rankingDayAt } from "../model/values";
@@ -291,7 +294,11 @@ export const commitRecoveryAttempt = internalMutation({
       newDeviceId,
       transferDay,
     );
-    await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: newDeviceId });
+    await ctx.db.patch(tokenmaxxer._id, {
+      activeAuthSessionId: undefined,
+      activeDeviceId: newDeviceId,
+      authSessionGeneration: generation,
+    });
     await ctx.db.patch(attempt._id, {
       activatedAt,
       committedAt: activatedAt,
@@ -411,6 +418,59 @@ export const recoveryAuthPending = internalQuery({
       attempt?.status === "committed" && attempt.authFinalizedAt === undefined
     );
   },
+});
+
+export const authorizeProfileSession = internalMutation({
+  args: {
+    activeMacGeneration: v.number(),
+    authSubject: v.string(),
+    sessionId: v.string(),
+    touchGrassId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (query) =>
+        query.eq("publicId", args.touchGrassId),
+      )
+      .unique();
+    if (
+      !tokenmaxxer?.activeDeviceId ||
+      tokenmaxxer.authSubject !== args.authSubject
+    ) {
+      return false;
+    }
+    if (tokenmaxxer.recoveryAttemptId) {
+      const attempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
+      if (
+        attempt?.status === "committed" &&
+        attempt.authFinalizedAt === undefined
+      ) {
+        return false;
+      }
+    }
+    const activeDevice = await ctx.db.get(tokenmaxxer.activeDeviceId);
+    if (
+      activeDevice?.tokenmaxxerId !== tokenmaxxer._id ||
+      activeDevice.revokedAt !== undefined ||
+      activeDevice.generation !== args.activeMacGeneration
+    ) {
+      return false;
+    }
+    await ctx.db.patch(tokenmaxxer._id, {
+      activeAuthSessionId: args.sessionId,
+      authSessionGeneration: args.activeMacGeneration,
+    });
+    return true;
+  },
+});
+
+export const profileSessionAuthorized = internalQuery({
+  args: { authSubject: v.string(), sessionId: v.string() },
+  returns: v.boolean(),
+  handler: (ctx, args) =>
+    profileSessionIsAuthorized(ctx, args.authSubject, args.sessionId),
 });
 
 export const profileAuthGeneration = internalQuery({

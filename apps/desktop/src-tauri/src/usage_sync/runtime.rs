@@ -61,7 +61,9 @@ trait PendingUsageSnapshotState: Send + Sync {
         result: UsageSyncAttemptResult,
     ) -> Result<(), &'static str>;
 
-    fn reject_authority(&self) -> Result<(), &'static str>;
+    fn reject_current_authority(&self) -> Result<(), &'static str>;
+
+    fn reject_authority_if_current(&self, active_mac_generation: u64) -> Result<(), &'static str>;
 
     fn install_usage_sync_request(
         &self,
@@ -107,8 +109,13 @@ impl PendingUsageSnapshotState for NativePendingUsageSnapshotState {
         self.core.finish_usage_sync_attempt(batch, result)
     }
 
-    fn reject_authority(&self) -> Result<(), &'static str> {
+    fn reject_current_authority(&self) -> Result<(), &'static str> {
         self.core.reject_active_usage_sync_authority()
+    }
+
+    fn reject_authority_if_current(&self, active_mac_generation: u64) -> Result<(), &'static str> {
+        self.core
+            .reject_usage_sync_authority_if_current(active_mac_generation)
     }
 
     fn install_usage_sync_request(
@@ -300,7 +307,7 @@ impl RuntimeInner {
         let mut authority = match self.environment.authority.acquire() {
             ActiveMacAuthorityOutcome::Ready(authority) => authority,
             ActiveMacAuthorityOutcome::Rejected => {
-                let _ = self.environment.state.reject_authority();
+                let _ = self.environment.state.reject_current_authority();
                 return;
             }
             ActiveMacAuthorityOutcome::Unavailable => return,
@@ -330,7 +337,10 @@ impl RuntimeInner {
                     );
                 }
                 ActiveMacSessionRefreshOutcome::Rejected => {
-                    let _ = self.environment.state.reject_authority();
+                    let _ = self
+                        .environment
+                        .state
+                        .reject_authority_if_current(authority.active_mac_generation);
                     return;
                 }
                 ActiveMacSessionRefreshOutcome::Unavailable => {
@@ -352,7 +362,10 @@ impl RuntimeInner {
                     .finish(&batch, UsageSyncAttemptResult::Offline);
             }
             PendingUsageSnapshotDeliveryOutcome::SessionRejected => {
-                let _ = self.environment.state.reject_authority();
+                let _ = self
+                    .environment
+                    .state
+                    .reject_authority_if_current(authority.active_mac_generation);
             }
             PendingUsageSnapshotDeliveryOutcome::Deferred => {
                 let _ = self
@@ -361,7 +374,10 @@ impl RuntimeInner {
                     .finish(&batch, UsageSyncAttemptResult::Deferred);
             }
             PendingUsageSnapshotDeliveryOutcome::AuthorityRejected => {
-                let _ = self.environment.state.reject_authority();
+                let _ = self
+                    .environment
+                    .state
+                    .reject_authority_if_current(authority.active_mac_generation);
             }
         }
     }

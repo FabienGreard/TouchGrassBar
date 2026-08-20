@@ -3,7 +3,11 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { rejectAuthority } from "./model/authority";
-import { claimActiveDevice, ensureTokenmaxxer, tokenmaxxerForAuthUser } from "./model/profile";
+import {
+  claimActiveDevice,
+  ensureTokenmaxxer,
+  tokenmaxxerForAuthUser,
+} from "./model/profile";
 import { MAX_SAVED_TOKENMAXXERS } from "./model/values";
 
 const publicTokenmaxxer = v.object({
@@ -24,7 +28,10 @@ function cleanDisplayName(displayName: string) {
 }
 
 function touchGrassIdForAuthUser(user: { username?: unknown }) {
-  if (typeof user.username !== "string" || !/^TG-[A-HJ-NP-Z2-9]{6}$/.test(user.username)) {
+  if (
+    typeof user.username !== "string" ||
+    !/^TG-[A-HJ-NP-Z2-9]{6}$/.test(user.username)
+  ) {
     return rejectAuthority();
   }
   return user.username;
@@ -49,8 +56,19 @@ export const ensureProfile = mutation({
       cleanDisplayName(args.displayName),
       touchGrassId,
     );
-    const activeDevice = await claimActiveDevice(ctx, tokenmaxxer._id, args.installationCredential);
-    if (!Number.isSafeInteger(activeDevice.createdAt) || activeDevice.createdAt < 0) {
+    const activeDevice = await claimActiveDevice(
+      ctx,
+      tokenmaxxer._id,
+      args.installationCredential,
+    );
+    await ctx.db.patch(tokenmaxxer._id, {
+      activeAuthSessionId: authUser.sessionId,
+      authSessionGeneration: activeDevice.generation,
+    });
+    if (
+      !Number.isSafeInteger(activeDevice.createdAt) ||
+      activeDevice.createdAt < 0
+    ) {
       return rejectAuthority();
     }
     return {
@@ -74,7 +92,9 @@ export const updateDisplayName = mutation({
     const displayName = cleanDisplayName(args.displayName);
     const publicUsages = await ctx.db
       .query("publicUsages")
-      .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxer._id))
+      .withIndex("by_tokenmaxxer_id", (q) =>
+        q.eq("tokenmaxxerId", tokenmaxxer._id),
+      )
       .take(20);
     await ctx.db.patch(tokenmaxxer._id, { displayName });
     for (const publicUsage of publicUsages) {

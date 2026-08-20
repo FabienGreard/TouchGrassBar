@@ -11,6 +11,44 @@ export type AuthUserReference = {
   id: string;
 };
 
+export async function profileSessionIsAuthorized(
+  ctx: QueryCtx | MutationCtx,
+  authSubject: string,
+  sessionId: string,
+) {
+  const tokenmaxxer = await ctx.db
+    .query("tokenmaxxers")
+    .withIndex("by_auth_subject", (query) =>
+      query.eq("authSubject", authSubject),
+    )
+    .unique();
+  if (!tokenmaxxer) {
+    return true;
+  }
+  if (
+    tokenmaxxer.authSessionGeneration === undefined ||
+    tokenmaxxer.activeAuthSessionId !== sessionId ||
+    !tokenmaxxer.activeDeviceId
+  ) {
+    return false;
+  }
+  if (tokenmaxxer.recoveryAttemptId) {
+    const recoveryAttempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
+    if (
+      recoveryAttempt?.status === "committed" &&
+      recoveryAttempt.authFinalizedAt === undefined
+    ) {
+      return false;
+    }
+  }
+  const activeDevice = await ctx.db.get(tokenmaxxer.activeDeviceId);
+  return (
+    activeDevice?.tokenmaxxerId === tokenmaxxer._id &&
+    activeDevice.revokedAt === undefined &&
+    activeDevice.generation === tokenmaxxer.authSessionGeneration
+  );
+}
+
 function assertInstallationCredential(installationCredential: string) {
   if (!INSTALLATION_CREDENTIAL_PATTERN.test(installationCredential)) {
     rejectAuthority();

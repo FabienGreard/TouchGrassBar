@@ -25,6 +25,7 @@ const RECOVERY_KEY_PATTERN =
 const DUMMY_RECOVERY_CREDENTIAL = "2".repeat(48);
 const RECOVERY_FINALIZATION_WAIT_ATTEMPTS = 200;
 const RECOVERY_FINALIZATION_WAIT_MS = 25;
+const RECOVERY_SESSION_DELETE_BATCH = 64;
 
 type PreparationPayload = {
   expiresAt: number;
@@ -55,6 +56,12 @@ type RecoveryCommitResult = {
 };
 
 export type TouchGrassPolicyPort = {
+  authorizeProfileSession: (args: {
+    activeMacGeneration: number;
+    authSubject: string;
+    sessionId: string;
+    touchGrassId: string;
+  }) => Promise<boolean>;
   claimRecoveryAuthFinalization: (args: {
     attemptDigest: string;
     authSubject: string;
@@ -104,6 +111,10 @@ export type TouchGrassPolicyPort = {
   profileAuthGeneration: (args: {
     touchGrassId: string;
   }) => Promise<number | null>;
+  profileSessionAuthorized: (args: {
+    authSubject: string;
+    sessionId: string;
+  }) => Promise<boolean>;
   recoveryAuthPending: (args: { touchGrassId: string }) => Promise<boolean>;
   reserveCredentialAttempt: (
     keys: FailedCredentialKeys,
@@ -721,14 +732,34 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                     password,
                   });
                 }
-                const priorSessions =
-                  await ctx.context.internalAdapter.listSessions(user.id);
-                const stillOwnsFinalization =
+                let stillOwnsFinalization =
                   await policy.claimRecoveryAuthFinalization({
                     attemptDigest,
                     authSubject: user.id,
                     claim: authFinalizationClaim,
                   });
+                while (stillOwnsFinalization) {
+                  const priorSessions = await ctx.context.adapter.findMany<{
+                    token: string;
+                  }>({
+                    limit: RECOVERY_SESSION_DELETE_BATCH,
+                    model: "session",
+                    select: ["token"],
+                    where: [{ field: "userId", value: user.id }],
+                  });
+                  stillOwnsFinalization =
+                    await policy.claimRecoveryAuthFinalization({
+                      attemptDigest,
+                      authSubject: user.id,
+                      claim: authFinalizationClaim,
+                    });
+                  if (!stillOwnsFinalization || priorSessions.length === 0) {
+                    break;
+                  }
+                  await ctx.context.internalAdapter.deleteSessions(
+                    priorSessions.map((session) => session.token),
+                  );
+                }
                 if (!stillOwnsFinalization) {
                   for (
                     let waitAttempt = 0;
@@ -756,14 +787,6 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
                     return rejectRecoveryCredential();
                   }
                 } else {
-                  const priorSessionTokens = priorSessions.map(
-                    (session) => session.token,
-                  );
-                  if (priorSessionTokens.length > 0) {
-                    await ctx.context.internalAdapter.deleteSessions(
-                      priorSessionTokens,
-                    );
-                  }
                   const authFinalized = await policy.finalizeRecoveryAuth({
                     attemptDigest,
                     authSubject: user.id,
@@ -879,15 +902,22 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             if (!reservationId) rejectRateLimitedCredential();
             const signInAuthority = signInAuthorityFromHookContext(ctx);
             if (!isAPIError(ctx.context.returned) && signInAuthority) {
-              const currentGeneration = await policy.profileAuthGeneration({
-                touchGrassId: signInAuthority.touchGrassId,
-              });
-              if (currentGeneration !== signInAuthority.generation) {
-                const newSessionToken = ctx.context.newSession?.session.token;
-                if (newSessionToken) {
-                  await ctx.context.internalAdapter.deleteSession(
-                    newSessionToken,
-                  );
+              const newSession = ctx.context.newSession;
+              const authorized =
+                newSession &&
+                (await policy
+                  .authorizeProfileSession({
+                    activeMacGeneration: signInAuthority.generation,
+                    authSubject: newSession.user.id,
+                    sessionId: newSession.session.id,
+                    touchGrassId: signInAuthority.touchGrassId,
+                  })
+                  .catch(() => false));
+              if (!authorized) {
+                if (newSession) {
+                  await ctx.context.internalAdapter
+                    .deleteSession(newSession.session.token)
+                    .catch(() => undefined);
                 }
                 await policy.finalizeCredentialAttempt({
                   outcome: "failure",
@@ -905,6 +935,20 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               })
               .catch(() => false);
             if (!completed) rejectRateLimitedCredential();
+          }),
+        },
+        {
+          matcher: (context) => context.path === "/convex/token",
+          handler: createAuthMiddleware(async (ctx) => {
+            const session = ctx.context.session;
+            if (!session) return;
+            const authorized = await policy
+              .profileSessionAuthorized({
+                authSubject: session.user.id,
+                sessionId: session.session.id,
+              })
+              .catch(() => false);
+            if (!authorized) rejectRecoveryCredential();
           }),
         },
       ],

@@ -170,7 +170,10 @@ async function transferActiveDevice(
       tokenmaxxerId: tokenmaxxer._id,
       usageBackfillCompletedAt: null,
     });
-    await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: deviceId });
+    await ctx.db.patch(tokenmaxxer._id, {
+      activeDeviceId: deviceId,
+      authSessionGeneration: generation,
+    });
     return activeMacActivatedAt;
   });
 }

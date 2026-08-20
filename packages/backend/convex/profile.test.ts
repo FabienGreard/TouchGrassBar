@@ -113,6 +113,7 @@ async function createRecoverableProfile(
     displayName,
     recoveryKey,
     session,
+    sessionId: String(payload.sessionId),
     touchGrassId,
     user,
   };
@@ -857,6 +858,92 @@ test("concurrent identical recovery commits finalize authentication once", async
       claim: "late-replay-claim",
     }),
   ).resolves.toBe(false);
+});
+
+test("a stale sign-in cannot replace the recovered Profile session fence", async () => {
+  vi.stubEnv(
+    "BETTER_AUTH_SECRET",
+    `${crypto.randomUUID()}${crypto.randomUUID()}`,
+  );
+  vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
+
+  const t = testBackend();
+  const profile = await createRecoverableProfile(t);
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 129; index += 1) {
+      await ctx.runMutation(components.betterAuth.adapter.create, {
+        input: {
+          data: {
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 60_000,
+            token: `bounded-recovery-session-${index}`,
+            updatedAt: Date.now(),
+            userId: profile.user.id,
+          },
+          model: "session",
+        },
+      });
+    }
+  });
+  const attemptId = recoveryAttemptId("S");
+  const newRecoveryKey = replacementRecoveryKey("T");
+  const installationCredential = "U".repeat(52);
+  const recoveryProof = await prepareRecovery(
+    t,
+    profile,
+    attemptId,
+    newRecoveryKey,
+  );
+  const committed = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify({
+      currentRecoveryKey: profile.recoveryKey,
+      installationCredential,
+      newRecoveryKey,
+      recoveryProof,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+  expect(committed.status).toBe(200);
+  await expect(
+    t.run((ctx) =>
+      ctx.runQuery(components.betterAuth.adapter.findMany, {
+        model: "session",
+        paginationOpts: { cursor: null, numItems: 200 },
+        where: [{ field: "userId", value: profile.user.id }],
+      }),
+    ),
+  ).resolves.toMatchObject({ isDone: true, page: [] });
+
+  await expect(
+    t.mutation(internal.auth.profileRecovery.authorizeProfileSession, {
+      activeMacGeneration: 1,
+      authSubject: profile.user.id,
+      sessionId: profile.sessionId,
+      touchGrassId: profile.touchGrassId,
+    }),
+  ).resolves.toBe(false);
+  await expect(
+    t.query(internal.auth.profileRecovery.profileSessionAuthorized, {
+      authSubject: profile.user.id,
+      sessionId: profile.sessionId,
+    }),
+  ).resolves.toBe(false);
+
+  await expect(
+    t.mutation(internal.auth.profileRecovery.authorizeProfileSession, {
+      activeMacGeneration: 2,
+      authSubject: profile.user.id,
+      sessionId: "recovered-session-id",
+      touchGrassId: profile.touchGrassId,
+    }),
+  ).resolves.toBe(true);
+  await expect(
+    t.query(internal.auth.profileRecovery.profileSessionAuthorized, {
+      authSubject: profile.user.id,
+      sessionId: "recovered-session-id",
+    }),
+  ).resolves.toBe(true);
 });
 
 test("concurrent Profile recoveries are first-valid-commit-wins", async () => {

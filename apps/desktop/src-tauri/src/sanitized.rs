@@ -3308,6 +3308,20 @@ impl NativeCore {
     }
 
     pub(crate) fn reject_active_usage_sync_authority(&self) -> Result<(), &'static str> {
+        self.reject_usage_sync_authority(None)
+    }
+
+    pub(crate) fn reject_usage_sync_authority_if_current(
+        &self,
+        active_mac_generation: u64,
+    ) -> Result<(), &'static str> {
+        self.reject_usage_sync_authority(Some(active_mac_generation))
+    }
+
+    fn reject_usage_sync_authority(
+        &self,
+        expected_active_mac_generation: Option<u64>,
+    ) -> Result<(), &'static str> {
         let mut store = self
             .inner
             .store
@@ -3317,6 +3331,11 @@ impl NativeCore {
             ReadModelStore::Persistent(persistent) => persistent.active_mac_generation,
             ReadModelStore::Memory => None,
         };
+        if expected_active_mac_generation.is_some()
+            && expected_active_mac_generation != active_mac_generation
+        {
+            return Ok(());
+        }
         if self.inner.projection.snapshot()?.sync.status == SyncStatus::AuthorityRejected {
             match active_mac_generation {
                 Some(active_mac_generation)
@@ -5750,6 +5769,44 @@ mod tests {
             ReadModelStore::Memory => panic!("Profile recovery fixture requires SQLite"),
         };
         assert_eq!(restored_conflicts, 0);
+    }
+
+    #[test]
+    fn stale_authority_rejection_does_not_block_recovered_generation() {
+        let now = test_time();
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now)),
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        core.set_profile_outcome(SanitizedProfileOutcome::Ready {
+            display_name: "Previous".to_owned(),
+            touch_grass_id: "TG-ABC234".to_owned(),
+        })
+        .unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+
+        let activated_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        core.recover_profile_authority(
+            SanitizedProfileOutcome::Ready {
+                display_name: "Recovered".to_owned(),
+                touch_grass_id: "TG-XYZ234".to_owned(),
+            },
+            2,
+            activated_at,
+        )
+        .unwrap();
+
+        core.reject_usage_sync_authority_if_current(1).unwrap();
+
+        assert_eq!(core.active_usage_sync_generation().unwrap(), Some(2));
+        assert_ne!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        assert!(core.pending_usage_sync_batch(2).unwrap().is_some());
     }
 
     #[test]
