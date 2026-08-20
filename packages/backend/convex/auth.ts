@@ -76,6 +76,11 @@ function touchGrassPolicy(
         internal.auth.profileRecovery.prepareRecoveryAttempt,
         args,
       ),
+    profileAuthGeneration: (args) =>
+      action().runQuery(
+        internal.auth.profileRecovery.profileAuthGeneration,
+        args,
+      ),
     recoveryAuthPending: (args) =>
       action().runQuery(
         internal.auth.profileRecovery.recoveryAuthPending,

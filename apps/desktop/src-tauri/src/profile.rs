@@ -695,9 +695,11 @@ impl ProfileCoordinator {
                 let prepared = PreparedRecovery::decode(&value)?;
                 if prepared.touch_grass_id == touch_grass_id {
                     Some(prepared)
-                } else {
+                } else if prepared.state == RecoveryStage::Prepared {
                     self.clear_recovery_staging()?;
                     None
+                } else {
+                    return Err(ProfileError::message("Profile recovery unavailable"));
                 }
             }
             None => None,
@@ -2392,6 +2394,14 @@ mod tests {
             panic!("server-committed recovery must defer synchronization");
         };
         assert!(!error.is_authority_rejected());
+        assert!(
+            fixture
+                .coordinator
+                .recover_profile("TG-ZZZZ22", &supplied_recovery_key)
+                .is_err()
+        );
+        assert!(fixture.custody.contains(SecretKind::RecoveryPreparation));
+        assert!(fixture.custody.contains(SecretKind::ReplacementRecoveryKey));
         assert_ne!(
             fixture
                 .custody

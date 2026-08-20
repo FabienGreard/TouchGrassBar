@@ -757,6 +757,11 @@ test("concurrent identical recovery commits finalize authentication once", async
     newRecoveryKey,
   );
   const attemptDigest = await recoveryDigest(attemptId);
+  await expect(
+    t.query(internal.auth.profileRecovery.profileAuthGeneration, {
+      touchGrassId: profile.touchGrassId,
+    }),
+  ).resolves.toBe(1);
   await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
     attemptDigest,
     authSubject: profile.user.id,
@@ -772,6 +777,11 @@ test("concurrent identical recovery commits finalize authentication once", async
       installationCredential,
     }),
   ).resolves.toMatchObject({ authFinalized: false });
+  await expect(
+    t.query(internal.auth.profileRecovery.profileAuthGeneration, {
+      touchGrassId: profile.touchGrassId,
+    }),
+  ).resolves.toBe(2);
 
   const claims = await Promise.all(
     ["first-concurrent-claim", "second-concurrent-claim"].map((claim) =>

@@ -101,6 +101,9 @@ export type TouchGrassPolicyPort = {
     authSubject: string;
     touchGrassId: string;
   }) => Promise<{ expectedGeneration: number; expiresAt: number } | null>;
+  profileAuthGeneration: (args: {
+    touchGrassId: string;
+  }) => Promise<number | null>;
   recoveryAuthPending: (args: { touchGrassId: string }) => Promise<boolean>;
   reserveCredentialAttempt: (
     keys: FailedCredentialKeys,
@@ -382,6 +385,15 @@ function reservationIdFromHookContext(
   );
   return typeof reservationId === "string"
     ? (reservationId as Id<"recoveryKeyAttemptReservations">)
+    : null;
+}
+
+function signInAuthorityFromHookContext(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const generation = Reflect.get(value, "touchGrassSignInGeneration");
+  const touchGrassId = Reflect.get(value, "touchGrassSignInId");
+  return typeof generation === "number" && typeof touchGrassId === "string"
+    ? { generation, touchGrassId }
     : null;
 }
 
@@ -836,6 +848,9 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               ctx.body.username.length <= 9
                 ? ctx.body.username.toUpperCase()
                 : "";
+            const signInGeneration = touchGrassId
+              ? await policy.profileAuthGeneration({ touchGrassId })
+              : null;
             if (
               touchGrassId &&
               (await policy.recoveryAuthPending({ touchGrassId }))
@@ -847,7 +862,11 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
               return rejectRecoveryCredential();
             }
             return {
-              context: { touchGrassRecoveryReservationId: reservationId },
+              context: {
+                touchGrassRecoveryReservationId: reservationId,
+                touchGrassSignInGeneration: signInGeneration,
+                touchGrassSignInId: touchGrassId,
+              },
             };
           }),
         },
@@ -858,6 +877,25 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
           handler: createAuthMiddleware(async (ctx) => {
             const reservationId = reservationIdFromHookContext(ctx);
             if (!reservationId) rejectRateLimitedCredential();
+            const signInAuthority = signInAuthorityFromHookContext(ctx);
+            if (!isAPIError(ctx.context.returned) && signInAuthority) {
+              const currentGeneration = await policy.profileAuthGeneration({
+                touchGrassId: signInAuthority.touchGrassId,
+              });
+              if (currentGeneration !== signInAuthority.generation) {
+                const newSessionToken = ctx.context.newSession?.session.token;
+                if (newSessionToken) {
+                  await ctx.context.internalAdapter.deleteSession(
+                    newSessionToken,
+                  );
+                }
+                await policy.finalizeCredentialAttempt({
+                  outcome: "failure",
+                  reservationId,
+                });
+                return rejectRecoveryCredential();
+              }
+            }
             const completed = await policy
               .finalizeCredentialAttempt({
                 outcome: isAPIError(ctx.context.returned)

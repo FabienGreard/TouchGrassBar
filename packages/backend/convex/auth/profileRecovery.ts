@@ -413,6 +413,25 @@ export const recoveryAuthPending = internalQuery({
   },
 });
 
+export const profileAuthGeneration = internalQuery({
+  args: { touchGrassId: v.string() },
+  returns: v.union(v.number(), v.null()),
+  handler: async (ctx, args) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (query) =>
+        query.eq("publicId", args.touchGrassId),
+      )
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) return null;
+    const device = await ctx.db.get(tokenmaxxer.activeDeviceId);
+    return device?.tokenmaxxerId === tokenmaxxer._id &&
+      device.revokedAt === undefined
+      ? device.generation
+      : null;
+  },
+});
+
 export const expireRecoveryAttempt = internalMutation({
   args: { recoveryAttemptId: v.id("profileRecoveryAttempts") },
   returns: v.null(),
