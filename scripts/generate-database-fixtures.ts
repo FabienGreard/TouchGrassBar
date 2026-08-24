@@ -23,7 +23,7 @@ type FixtureDefinition = {
   revision: string;
   lifecycleVersion: 4 | 5;
   updateStateVersion: 1 | 2 | 3;
-  codexUsageIndexVersion: 2 | 6 | 7 | 8;
+  codexUsageIndexVersion: 2 | 6 | 7 | 8 | 9;
   hasClaudeUsageIndex: boolean;
   hasTopModelUsage: boolean;
   hasExplicitVersions: boolean;
@@ -39,7 +39,7 @@ type FixtureManifestEntry = {
     databaseFormat: number;
     lifecycle: number;
     sanitizedDesktopState: 4 | 5 | 6 | 7;
-    codexUsageIndex: 2 | 3 | 6 | 7 | 8;
+    codexUsageIndex: 2 | 3 | 6 | 7 | 8 | 9;
     claudeUsageIndex: 3 | 4 | 7 | null;
     updateState: 1 | 2 | 3;
     databaseCoordinator: 1 | null;
@@ -205,12 +205,24 @@ const definitions: FixtureDefinition[] = [
   },
   {
     tag: "v0.0.12",
-    sourceCommit: "candidate",
-    releaseStatus: "candidate",
+    sourceCommit: "696c12c8be762f3714e7d91b900f19544d2fcd09",
+    releaseStatus: "official",
     revision: "312",
     lifecycleVersion: 5,
     updateStateVersion: 3,
     codexUsageIndexVersion: 8,
+    hasClaudeUsageIndex: true,
+    hasTopModelUsage: true,
+    hasExplicitVersions: true,
+  },
+  {
+    tag: "v0.0.13",
+    sourceCommit: "candidate",
+    releaseStatus: "candidate",
+    revision: "313",
+    lifecycleVersion: 5,
+    updateStateVersion: 3,
+    codexUsageIndexVersion: 9,
     hasClaudeUsageIndex: true,
     hasTopModelUsage: true,
     hasExplicitVersions: true,
@@ -228,7 +240,7 @@ function readModelContractVersion(definition: FixtureDefinition): 3 | 4 {
   return definition.hasExplicitVersions ? 4 : 3;
 }
 
-function codexUsageVersion(definition: FixtureDefinition): 2 | 6 | 7 | 8 {
+function codexUsageVersion(definition: FixtureDefinition): 2 | 6 | 7 | 8 | 9 {
   return definition.codexUsageIndexVersion;
 }
 
@@ -487,6 +499,12 @@ function createCodexUsageSchema(database: Database, definition: FixtureDefinitio
   const accountDayTimestampColumn =
     definition.codexUsageIndexVersion >= 8 ? ",\n      observed_at TEXT NOT NULL" : "";
   const activeTurnColumn = definition.hasExplicitVersions ? ",\n      active_turn_id TEXT" : "";
+  const versionNineFileColumns =
+    definition.codexUsageIndexVersion >= 9
+      ? `,
+      task_counter_reset_pending INTEGER NOT NULL DEFAULT 0,
+      provider_ordinal_mode TEXT NOT NULL DEFAULT 'unknown'`
+      : "";
   const currentFileColumns = definition.hasExplicitVersions
     ? `,
       lineage_mode TEXT NOT NULL DEFAULT 'unknown',
@@ -511,7 +529,7 @@ function createCodexUsageSchema(database: Database, definition: FixtureDefinitio
       accounting_ready INTEGER NOT NULL DEFAULT 0,
       parser_error_seen INTEGER NOT NULL DEFAULT 0,
       snapshot_last_timestamp_ns INTEGER,
-      snapshot_timestamp_regressed INTEGER NOT NULL DEFAULT 0`
+      snapshot_timestamp_regressed INTEGER NOT NULL DEFAULT 0${versionNineFileColumns}`
     : "";
   const pricingModeColumn = definition.hasExplicitVersions
     ? `,

@@ -8,8 +8,8 @@ use std::{
 };
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Deserialize;
 use serde::de::IgnoredAny;
+use serde::{Deserialize, Deserializer};
 use time::{
     Date, Duration, Month, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339,
 };
@@ -39,11 +39,11 @@ const TOKEN_HISTORY_RETENTION_DAYS: i64 = 60;
 const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
-const ROLLOUT_PARSER_VERSION: i64 = 16;
+const ROLLOUT_PARSER_VERSION: i64 = 17;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
-pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 8;
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 9;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -950,9 +950,39 @@ impl LocalUsageObservation {
     }
 }
 
+#[derive(Default)]
+enum RequiredWhenPresent<T> {
+    #[default]
+    Missing,
+    Present(T),
+}
+
+impl<'de, T> Deserialize<'de> for RequiredWhenPresent<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(Self::Present)
+    }
+}
+
+impl<T> RequiredWhenPresent<T> {
+    fn as_ref(&self) -> Option<&T> {
+        match self {
+            Self::Missing => None,
+            Self::Present(value) => Some(value),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRolloutHeader {
+    #[serde(default)]
+    ordinal: RequiredWhenPresent<u64>,
     timestamp: String,
     #[serde(rename = "type")]
     record_type: String,
@@ -964,6 +994,8 @@ struct RawRolloutHeader {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawEventLine {
+    #[serde(default, rename = "ordinal")]
+    _ordinal: RequiredWhenPresent<u64>,
     timestamp: IgnoredAny,
     #[serde(rename = "type")]
     record_type: IgnoredAny,
@@ -975,6 +1007,8 @@ struct RawEventLine {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawTurnContextLine {
+    #[serde(default, rename = "ordinal")]
+    _ordinal: RequiredWhenPresent<u64>,
     timestamp: IgnoredAny,
     #[serde(rename = "type")]
     record_type: IgnoredAny,
@@ -984,6 +1018,8 @@ struct RawTurnContextLine {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSessionMetaLine {
+    #[serde(default, rename = "ordinal")]
+    _ordinal: RequiredWhenPresent<u64>,
     timestamp: String,
     #[serde(rename = "type")]
     record_type: IgnoredAny,
@@ -993,6 +1029,8 @@ struct RawSessionMetaLine {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawInterAgentCommunicationLine {
+    #[serde(default, rename = "ordinal")]
+    _ordinal: RequiredWhenPresent<u64>,
     timestamp: IgnoredAny,
     #[serde(rename = "type")]
     record_type: IgnoredAny,
@@ -1055,6 +1093,10 @@ struct RawTurnContext {
 struct RawSessionMeta {
     cli_version: String,
     #[serde(default)]
+    history_mode: Option<String>,
+    #[serde(default)]
+    history_base: RequiredWhenPresent<RawHistoryBase>,
+    #[serde(default)]
     id: Option<String>,
     #[serde(default)]
     timestamp: Option<String>,
@@ -1066,6 +1108,16 @@ struct RawSessionMeta {
     source: Option<RawThreadSource>,
     #[serde(default)]
     subagent_history_start_ordinal: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHistoryBase {
+    #[serde(rename = "thread_id")]
+    _thread_id: String,
+    end_ordinal_exclusive: u64,
+    #[serde(rename = "end_byte_offset")]
+    _end_byte_offset: u64,
 }
 
 #[derive(Deserialize)]
@@ -1144,6 +1196,33 @@ impl LineageMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ProviderOrdinalMode {
+    #[default]
+    Unknown,
+    Legacy,
+    Provider,
+}
+
+impl ProviderOrdinalMode {
+    fn as_stored(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Legacy => "legacy",
+            Self::Provider => "provider",
+        }
+    }
+
+    fn from_stored(value: &str) -> Result<Self, ()> {
+        match value {
+            "unknown" => Ok(Self::Unknown),
+            "legacy" => Ok(Self::Legacy),
+            "provider" => Ok(Self::Provider),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct RolloutScanState {
     active_model: Option<String>,
@@ -1151,6 +1230,7 @@ struct RolloutScanState {
     baseline_is_inherited: Option<bool>,
     history_start_ordinal: Option<u64>,
     record_ordinal: u64,
+    provider_ordinal_mode: ProviderOrdinalMode,
     exclude_usage: bool,
     previous: Option<TokenUsage>,
     schema_supported: bool,
@@ -1171,6 +1251,7 @@ struct RolloutScanState {
     parser_error_seen: bool,
     snapshot_last_timestamp_ns: Option<i64>,
     snapshot_timestamp_regressed: bool,
+    task_counter_reset_pending: bool,
 }
 
 fn normalized_session_id(value: Option<String>) -> Option<String> {
@@ -1464,6 +1545,103 @@ fn record_precedes_parent_fork(state: &RolloutScanState, timestamp_ns: Option<i6
             .is_some_and(|(fork, timestamp)| timestamp < fork)
 }
 
+fn reviewed_provider_ordinal_origin(line: &[u8], record_type: &str, ordinal: u64) -> bool {
+    if record_type != "session_meta" {
+        return false;
+    }
+    let Ok(line) = serde_json::from_slice::<RawSessionMetaLine>(line) else {
+        return false;
+    };
+    let metadata = line.payload;
+    let is_codex_0_148 = metadata
+        .cli_version
+        .split('.')
+        .nth(1)
+        .is_some_and(|minor| minor == "148");
+    if !is_codex_0_148 || metadata.history_mode.as_deref() != Some("paginated") {
+        return false;
+    }
+    match metadata.history_base.as_ref() {
+        Some(base) => base.end_ordinal_exclusive == ordinal,
+        None => ordinal == 0,
+    }
+}
+
+fn reviewed_legacy_ordinal_origin(line: &[u8], record_type: &str) -> bool {
+    if record_type != "session_meta" {
+        return false;
+    }
+    let Ok(line) = serde_json::from_slice::<RawSessionMetaLine>(line) else {
+        return false;
+    };
+    let metadata = line.payload;
+    if metadata.history_base.as_ref().is_some() {
+        return false;
+    }
+    let minor = metadata
+        .cli_version
+        .split('.')
+        .nth(1)
+        .and_then(|minor| minor.parse::<u16>().ok());
+    match minor {
+        Some(148) => metadata.history_mode.as_deref() == Some("legacy"),
+        Some(130..=147) => metadata
+            .history_mode
+            .as_deref()
+            .is_none_or(|mode| mode == "legacy"),
+        _ => {
+            metadata
+                .thread_source
+                .as_ref()
+                .into_iter()
+                .chain(metadata.source.as_ref())
+                .any(RawThreadSource::is_subagent)
+                && metadata
+                    .history_mode
+                    .as_deref()
+                    .is_none_or(|mode| mode == "legacy")
+        }
+    }
+}
+
+fn effective_record_ordinal(
+    expected: u64,
+    provider_ordinal: RequiredWhenPresent<u64>,
+    line_starts_file: bool,
+    record_type: &str,
+    line: &[u8],
+    mode: &mut ProviderOrdinalMode,
+) -> Result<u64, ()> {
+    match (*mode, provider_ordinal) {
+        (ProviderOrdinalMode::Unknown, RequiredWhenPresent::Present(ordinal))
+            if line_starts_file
+                && expected == 0
+                && ordinal < u64::MAX
+                && reviewed_provider_ordinal_origin(line, record_type, ordinal) =>
+        {
+            *mode = ProviderOrdinalMode::Provider;
+            Ok(ordinal)
+        }
+        (ProviderOrdinalMode::Unknown, RequiredWhenPresent::Missing)
+            if line_starts_file
+                && expected == 0
+                && reviewed_legacy_ordinal_origin(line, record_type) =>
+        {
+            *mode = ProviderOrdinalMode::Legacy;
+            Ok(expected)
+        }
+        (ProviderOrdinalMode::Provider, RequiredWhenPresent::Present(ordinal))
+            if ordinal == expected && ordinal < u64::MAX =>
+        {
+            Ok(ordinal)
+        }
+        (ProviderOrdinalMode::Legacy, RequiredWhenPresent::Missing) if expected < u64::MAX => {
+            Ok(expected)
+        }
+        _ => Err(()),
+    }
+}
+
 fn is_supported_cli_version(version: &str) -> bool {
     let mut parts = version.split('.');
     let Some("0") = parts.next() else {
@@ -1473,7 +1651,7 @@ fn is_supported_cli_version(version: &str) -> bool {
         return false;
     };
     let remainder = parts.collect::<Vec<_>>().join(".");
-    (130..=147).contains(&minor)
+    (130..=148).contains(&minor)
         && !remainder.is_empty()
         && remainder
             .bytes()
@@ -1557,6 +1735,7 @@ fn scan_rollout_reader(
 ) -> bool {
     let mut state = RolloutScanState::default();
     let mut complete = true;
+    let mut next_line_starts_file = true;
     for line in reader.split(b'\n') {
         let Ok(line) = line else {
             return false;
@@ -1564,19 +1743,38 @@ fn scan_rollout_reader(
         if line.is_empty() {
             continue;
         }
-        let record_ordinal = state.record_ordinal;
-        state.record_ordinal = state.record_ordinal.saturating_add(1);
+        let line_starts_file = next_line_starts_file;
+        next_line_starts_file = false;
+        let expected_ordinal = state.record_ordinal;
         if line.len() > MAX_ROLLOUT_LINE_BYTES {
+            state.record_ordinal = expected_ordinal.saturating_add(1);
             complete = false;
             continue;
         }
         let header: RawRolloutHeader = match serde_json::from_slice(&line) {
             Ok(header) => header,
             Err(_) => {
+                state.record_ordinal = expected_ordinal.saturating_add(1);
                 complete = false;
                 continue;
             }
         };
+        let record_ordinal = match effective_record_ordinal(
+            expected_ordinal,
+            header.ordinal,
+            line_starts_file,
+            &header.record_type,
+            &line,
+            &mut state.provider_ordinal_mode,
+        ) {
+            Ok(record_ordinal) => record_ordinal,
+            Err(()) => {
+                state.record_ordinal = expected_ordinal.saturating_add(1);
+                complete = false;
+                continue;
+            }
+        };
+        state.record_ordinal = record_ordinal.saturating_add(1);
         let _ = header.payload;
         let timestamp = match parse_rollout_timestamp(&header.timestamp) {
             Ok(timestamp) => timestamp,
@@ -1653,12 +1851,29 @@ fn scan_rollout_reader(
                     continue;
                 };
                 let RawEventLine {
+                    _ordinal: _,
                     timestamp: event_timestamp,
                     record_type,
                     payload,
                     model: root_model,
                 } = line;
                 let _ = (event_timestamp, record_type);
+                if let RawEventPayload::TaskStarted {
+                    turn_id,
+                    model_context_window,
+                    collaboration_mode_kind,
+                    started_at,
+                } = payload
+                {
+                    let _ = (
+                        turn_id,
+                        model_context_window,
+                        collaboration_mode_kind,
+                        started_at,
+                    );
+                    state.task_counter_reset_pending = state.lineage_mode == LineageMode::Root;
+                    continue;
+                }
                 let RawEventPayload::TokenCount {
                     info,
                     turn_id,
@@ -1732,10 +1947,17 @@ fn scan_rollout_reader(
                         continue;
                     }
                 };
-                let allow_strong_reset = state.baseline_is_inherited == Some(true)
-                    && state
-                        .history_start_ordinal
-                        .is_some_and(|history_start| history_start <= record_ordinal);
+                let task_counter_reset = state.lineage_mode == LineageMode::Root
+                    && state.task_counter_reset_pending
+                    && state.previous.is_some_and(|previous| {
+                        current.total != previous.total && last == Some(current)
+                    });
+                state.task_counter_reset_pending = false;
+                let allow_strong_reset = task_counter_reset
+                    || state.baseline_is_inherited == Some(true)
+                        && state
+                            .history_start_ordinal
+                            .is_some_and(|history_start| history_start <= record_ordinal);
                 let mut next_previous = current;
                 let delta = match state.previous {
                     Some(previous)
@@ -1747,6 +1969,7 @@ fn scan_rollout_reader(
                         next_previous = previous;
                         Ok(TokenUsage::default())
                     }
+                    Some(_) if task_counter_reset => current.delta_from(TokenUsage::default()),
                     Some(previous) => cumulative_delta(current, last, previous, allow_strong_reset),
                     None if state
                         .history_start_ordinal
@@ -2325,15 +2548,26 @@ struct IndexedLineOutput<'a> {
     snapshots: &'a mut Vec<TokenSnapshot>,
 }
 
-fn process_index_line(
-    line: &[u8],
+struct IndexLineContext {
     cutoff: Date,
     today: Date,
     record_ordinal: u64,
+    line_starts_file: bool,
+}
+
+fn process_index_line(
+    line: &[u8],
+    context: IndexLineContext,
     state: &mut RolloutScanState,
     output: &mut IndexedLineOutput<'_>,
     fast_turn_index: &mut FastTurnIndex<'_>,
 ) -> IndexLineOutcome {
+    let IndexLineContext {
+        cutoff,
+        today,
+        record_ordinal,
+        line_starts_file,
+    } = context;
     if line.len() > MAX_ROLLOUT_LINE_BYTES {
         debug_parser_failure("line_too_large", None);
         return IndexLineOutcome::Processed(false);
@@ -2345,6 +2579,21 @@ fn process_index_line(
             return IndexLineOutcome::Processed(false);
         }
     };
+    let record_ordinal = match effective_record_ordinal(
+        record_ordinal,
+        header.ordinal,
+        line_starts_file,
+        &header.record_type,
+        line,
+        &mut state.provider_ordinal_mode,
+    ) {
+        Ok(record_ordinal) => record_ordinal,
+        Err(()) => {
+            debug_parser_failure("record_ordinal", None);
+            return IndexLineOutcome::Processed(false);
+        }
+    };
+    state.record_ordinal = record_ordinal;
     let timestamp = match parse_rollout_timestamp(&header.timestamp) {
         Ok(timestamp) => timestamp,
         Err(_) => {
@@ -2442,6 +2691,7 @@ fn process_index_line(
                 return IndexLineOutcome::Processed(false);
             };
             let RawEventLine {
+                _ordinal: _,
                 timestamp: event_timestamp,
                 record_type,
                 payload,
@@ -2457,6 +2707,7 @@ fn process_index_line(
             {
                 let _ = (model_context_window, collaboration_mode_kind, started_at);
                 state.active_turn_id = turn_id.filter(|value| valid_turn_id(value));
+                state.task_counter_reset_pending = state.lineage_mode == LineageMode::Root;
                 return IndexLineOutcome::Processed(true);
             }
             let RawEventPayload::TokenCount {
@@ -2619,7 +2870,14 @@ fn process_index_line(
                 }
                 return IndexLineOutcome::Processed(true);
             }
-            let allow_strong_reset = state.lineage_mode == LineageMode::ParentResolved
+            let task_counter_reset = state.lineage_mode == LineageMode::Root
+                && state.task_counter_reset_pending
+                && state.previous.is_some_and(|previous| {
+                    current.total != previous.total && last == Some(current)
+                });
+            state.task_counter_reset_pending = false;
+            let allow_strong_reset = task_counter_reset
+                || state.lineage_mode == LineageMode::ParentResolved
                 || (state.baseline_is_inherited == Some(true)
                     && state
                         .history_start_ordinal
@@ -2638,6 +2896,7 @@ fn process_index_line(
                     }
                     Ok(TokenUsage::default())
                 }
+                Some(_) if task_counter_reset => current.delta_from(TokenUsage::default()),
                 Some(previous) => cumulative_delta(current, last, previous, allow_strong_reset),
                 None if state
                     .history_start_ordinal
@@ -2999,7 +3258,9 @@ fn ensure_index_schema(
                accounting_ready INTEGER NOT NULL DEFAULT 0,
                parser_error_seen INTEGER NOT NULL DEFAULT 0,
                snapshot_last_timestamp_ns INTEGER,
-               snapshot_timestamp_regressed INTEGER NOT NULL DEFAULT 0
+               snapshot_timestamp_regressed INTEGER NOT NULL DEFAULT 0,
+               task_counter_reset_pending INTEGER NOT NULL DEFAULT 0,
+               provider_ordinal_mode TEXT NOT NULL DEFAULT 'unknown'
              );
              CREATE TABLE IF NOT EXISTS codex_usage_token_snapshots (
                path TEXT NOT NULL,
@@ -3093,6 +3354,30 @@ fn ensure_index_schema(
         transaction
             .execute(
                 "ALTER TABLE codex_usage_files ADD COLUMN record_ordinal INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
+    if !file_columns
+        .iter()
+        .any(|column| column == "task_counter_reset_pending")
+    {
+        transaction
+            .execute(
+                "ALTER TABLE codex_usage_files
+                 ADD COLUMN task_counter_reset_pending INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
+    if !file_columns
+        .iter()
+        .any(|column| column == "provider_ordinal_mode")
+    {
+        transaction
+            .execute(
+                "ALTER TABLE codex_usage_files
+                 ADD COLUMN provider_ordinal_mode TEXT NOT NULL DEFAULT 'unknown'",
                 [],
             )
             .map_err(|_| ())?;
@@ -3837,7 +4122,8 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                     marker_based_boundary, marker_candidate_invalidated,
                     marker_local_confirmation
                     , accounting_ready, parser_error_seen, snapshot_last_timestamp_ns,
-                    snapshot_timestamp_regressed
+                    snapshot_timestamp_regressed, task_counter_reset_pending,
+                    provider_ordinal_mode
              FROM codex_usage_files WHERE path = ?1",
             [path],
             |row| {
@@ -3933,6 +4219,11 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                         parser_error_seen: row.get(41)?,
                         snapshot_last_timestamp_ns: row.get(42)?,
                         snapshot_timestamp_regressed: row.get(43)?,
+                        task_counter_reset_pending: row.get(44)?,
+                        provider_ordinal_mode: ProviderOrdinalMode::from_stored(
+                            &row.get::<_, String>(45)?,
+                        )
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                     },
                 })
             },
@@ -4068,7 +4359,9 @@ fn commit_file_progress(
                marker_based_boundary = ?18, marker_candidate_invalidated = ?19,
                marker_local_confirmation = ?20, accounting_ready = ?21,
                parser_error_seen = ?22, snapshot_last_timestamp_ns = ?23,
-               snapshot_timestamp_regressed = ?24
+               snapshot_timestamp_regressed = ?24,
+               task_counter_reset_pending = ?25,
+               provider_ordinal_mode = ?26
              WHERE path = ?1",
             params![
                 path,
@@ -4123,6 +4416,8 @@ fn commit_file_progress(
                 cursor.parser_state.parser_error_seen,
                 cursor.parser_state.snapshot_last_timestamp_ns,
                 cursor.parser_state.snapshot_timestamp_regressed,
+                cursor.parser_state.task_counter_reset_pending,
+                cursor.parser_state.provider_ordinal_mode.as_stored(),
             ],
         )
         .map_err(|_| ())?;
@@ -4569,6 +4864,8 @@ fn reset_dependent_accounting(
                    previous_total = NULL, lineage_mode = 'parent-resolved',
                    snapshot_last_timestamp_ns = NULL,
                    snapshot_timestamp_regressed = 0,
+                   task_counter_reset_pending = 0,
+                   provider_ordinal_mode = 'unknown',
                    parent_dependency_key = ?2, parent_baseline_input = ?3,
                    parent_baseline_cached_input = ?4,
                    parent_baseline_cache_write_input = ?5, parent_baseline_output = ?6,
@@ -4599,7 +4896,8 @@ fn reset_dependent_accounting(
                    parent_baseline_input = NULL, parent_baseline_cached_input = NULL,
                    parent_baseline_cache_write_input = NULL, parent_baseline_output = NULL,
                    parent_baseline_reasoning_output = NULL, parent_baseline_total = NULL,
-                   last_turn_context_is_first = 0, marker_local_confirmation = NULL
+                   last_turn_context_is_first = 0, marker_local_confirmation = NULL,
+                   task_counter_reset_pending = 0
                  WHERE path = ?1",
                 [path],
             )
@@ -4781,8 +5079,11 @@ fn index_file(
             let hit_line_limit =
                 read_limit == (MAX_ROLLOUT_LINE_BYTES as u64) + 1 && bytes == read_limit;
             if hit_line_limit {
-                cursor.parser_state.record_ordinal =
-                    cursor.parser_state.record_ordinal.saturating_add(1);
+                cursor.parser_state.record_ordinal = cursor
+                    .parser_state
+                    .record_ordinal
+                    .checked_add(1)
+                    .ok_or(())?;
                 if !oversized_record_is_ignorable(&line) {
                     parser_complete = false;
                     cursor.parser_state.parser_error_seen = true;
@@ -4804,6 +5105,7 @@ fn index_file(
             cursor.parsed_offset = cursor.parsed_offset.checked_add(bytes).ok_or(())?;
         } else {
             let record_ordinal = cursor.parser_state.record_ordinal;
+            let line_starts_file = cursor.parsed_offset == 0;
             let mut output = IndexedLineOutput {
                 rows: &mut rows,
                 snapshots: &mut snapshots,
@@ -4815,16 +5117,22 @@ fn index_file(
             };
             match process_index_line(
                 &line,
-                context.cutoff,
-                context.today,
-                record_ordinal,
+                IndexLineContext {
+                    cutoff: context.cutoff,
+                    today: context.today,
+                    record_ordinal,
+                    line_starts_file,
+                },
                 &mut cursor.parser_state,
                 &mut output,
                 &mut fast_turn_index,
             ) {
                 IndexLineOutcome::Processed(processed) => {
-                    cursor.parser_state.record_ordinal =
-                        cursor.parser_state.record_ordinal.saturating_add(1);
+                    cursor.parser_state.record_ordinal = cursor
+                        .parser_state
+                        .record_ordinal
+                        .checked_add(1)
+                        .ok_or(())?;
                     parser_complete &= processed;
                     cursor.parser_state.parser_error_seen |= !processed;
                     *remaining_bytes -= bytes;
@@ -4906,8 +5214,10 @@ fn index_file(
             cursor.parser_state.active_turn_id = None;
             cursor.parser_state.previous = None;
             cursor.parser_state.record_ordinal = 0;
+            cursor.parser_state.provider_ordinal_mode = ProviderOrdinalMode::Unknown;
             cursor.parser_state.snapshot_last_timestamp_ns = None;
             cursor.parser_state.snapshot_timestamp_regressed = false;
+            cursor.parser_state.task_counter_reset_pending = false;
             cursor.parser_state.lineage_mode = LineageMode::ExplicitBoundary;
             cursor.parser_state.exclude_usage = false;
             cursor.parsed_offset = 0;
@@ -4935,8 +5245,10 @@ fn index_file(
             cursor.parser_state.active_turn_id = None;
             cursor.parser_state.previous = None;
             cursor.parser_state.record_ordinal = 0;
+            cursor.parser_state.provider_ordinal_mode = ProviderOrdinalMode::Unknown;
             cursor.parser_state.snapshot_last_timestamp_ns = None;
             cursor.parser_state.snapshot_timestamp_regressed = false;
+            cursor.parser_state.task_counter_reset_pending = false;
             cursor.parser_state.marker_based_boundary = false;
             cursor.parser_state.marker_candidate_invalidated = true;
             cursor.parser_state.marker_local_confirmation = None;
@@ -4947,9 +5259,11 @@ fn index_file(
             cursor.parser_state.active_turn_id = None;
             cursor.parser_state.previous = None;
             cursor.parser_state.record_ordinal = 0;
+            cursor.parser_state.provider_ordinal_mode = ProviderOrdinalMode::Unknown;
             cursor.parser_state.last_turn_context_is_first = false;
             cursor.parser_state.snapshot_last_timestamp_ns = None;
             cursor.parser_state.snapshot_timestamp_regressed = false;
+            cursor.parser_state.task_counter_reset_pending = false;
             if !parser_complete || cursor.parser_state.lineage_invalid {
                 rows.clear();
                 turn_ids.clear();
@@ -6451,6 +6765,104 @@ mod tests {
         })
     }
 
+    fn with_ordinal(mut line: serde_json::Value, ordinal: u64) -> serde_json::Value {
+        line["ordinal"] = json!(ordinal);
+        line
+    }
+
+    fn reviewed_codex_0_148_root_rollout(total: u64) -> String {
+        jsonl([
+            json!({
+                "ordinal": 0,
+                "timestamp": "2026-08-24T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "cli_version": "0.148.0-alpha.21",
+                    "context_window": { "window_id": "fixture-window" },
+                    "history_mode": "paginated"
+                }
+            }),
+            json!({
+                "ordinal": 1,
+                "timestamp": "2026-08-24T10:00:00Z",
+                "type": "inter_agent_communication_metadata",
+                "payload": { "trigger_turn": false }
+            }),
+            json!({
+                "ordinal": 2,
+                "timestamp": "2026-08-24T10:00:01Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+            with_ordinal(token_count_line("2026-08-24T10:01:00Z", total, total), 3),
+        ])
+    }
+
+    fn codex_0_148_task_reset_prefix() -> Vec<serde_json::Value> {
+        let previous = token_usage(1_000, 200, 0, 100);
+        vec![
+            json!({
+                "ordinal": 0,
+                "timestamp": "2026-08-24T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "cli_version": "0.148.0-alpha.21",
+                    "context_window": { "window_id": "fixture-window" },
+                    "history_mode": "paginated"
+                }
+            }),
+            json!({
+                "ordinal": 1,
+                "timestamp": "2026-08-24T10:00:01Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+            with_ordinal(
+                token_count_usage_line("2026-08-24T10:01:00Z", previous, previous),
+                2,
+            ),
+            json!({
+                "ordinal": 3,
+                "timestamp": "2026-08-24T10:01:01Z",
+                "type": "event_msg",
+                "payload": { "type": "task_complete" }
+            }),
+            json!({
+                "ordinal": 4,
+                "timestamp": "2026-08-24T10:01:02Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_started",
+                    "turn_id": "fixture-new-turn",
+                    "model_context_window": 1_050_000,
+                    "collaboration_mode_kind": "default"
+                }
+            }),
+            json!({
+                "ordinal": 5,
+                "timestamp": "2026-08-24T10:01:03Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+        ]
+    }
+
+    fn codex_0_148_task_reset_counters() -> [serde_json::Value; 2] {
+        let first = token_usage(100, 20, 0, 10);
+        let current = token_usage(150, 30, 0, 15);
+        let last = token_usage(50, 10, 0, 5);
+        [
+            with_ordinal(
+                token_count_usage_line("2026-08-24T10:02:00Z", first, first),
+                6,
+            ),
+            with_ordinal(
+                token_count_usage_line("2026-08-24T10:03:00Z", current, last),
+                7,
+            ),
+        ]
+    }
+
     fn set_modified_at(path: &Path, timestamp: OffsetDateTime) {
         let modified = std::time::UNIX_EPOCH
             + std::time::Duration::from_secs(u64::try_from(timestamp.unix_timestamp()).unwrap());
@@ -7077,6 +7489,208 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_index_counts_reviewed_codex_cli_0_148_usage() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let observed = token_usage(80, 10, 20, 20);
+        let mut token_count = token_count_usage_line("2026-08-24T10:01:00Z", observed, observed);
+        token_count["ordinal"] = json!(3);
+        fs::write(
+            &fixture.rollout,
+            jsonl([
+                json!({
+                    "ordinal": 0,
+                    "timestamp": "2026-08-24T10:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "cli_version": "0.148.0-alpha.21",
+                        "context_window": { "window_id": "fixture-window" },
+                        "history_mode": "paginated",
+                        "id": "reviewed-0-148-root",
+                        "source": "cli",
+                        "thread_source": "cli",
+                        "timestamp": "2026-08-24T10:00:00Z"
+                    }
+                }),
+                json!({
+                    "ordinal": 1,
+                    "timestamp": "2026-08-24T10:00:00Z",
+                    "type": "inter_agent_communication_metadata",
+                    "payload": { "trigger_turn": false }
+                }),
+                json!({
+                    "ordinal": 2,
+                    "timestamp": "2026-08-24T10:00:01Z",
+                    "type": "turn_context",
+                    "payload": { "model": "gpt-5.6-sol" }
+                }),
+                token_count,
+            ]),
+        )
+        .unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("the reviewed Codex 0.148 usage must index");
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+    }
+
+    #[test]
+    fn sqlite_index_counts_a_reviewed_root_counter_reset_after_task_started() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let mut records = codex_0_148_task_reset_prefix();
+        records.extend(codex_0_148_task_reset_counters());
+        fs::write(&fixture.rollout, jsonl(records)).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("the reviewed root counter reset must index");
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_265);
+    }
+
+    #[test]
+    fn sqlite_index_persists_a_pending_root_counter_reset_across_scan_passes() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let prefix = jsonl(codex_0_148_task_reset_prefix());
+        let suffix = jsonl(codex_0_148_task_reset_counters());
+        fs::write(&fixture.rollout, format!("{prefix}{suffix}")).unwrap();
+        let prefix_bytes = u64::try_from(prefix.len()).unwrap();
+
+        index_local_usage_with_budget(
+            &fixture.database,
+            &fixture.root,
+            now,
+            ScanBudget {
+                max_bytes: prefix_bytes,
+                max_file_bytes: prefix_bytes,
+                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let reset_pending: bool = connection
+            .query_row(
+                "SELECT task_counter_reset_pending FROM codex_usage_files",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(reset_pending);
+        drop(connection);
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_265);
+    }
+
+    #[test]
+    fn sqlite_index_keeps_monotonic_counters_after_task_started() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let mut records = codex_0_148_task_reset_prefix();
+        records.push(with_ordinal(
+            token_count_usage_line(
+                "2026-08-24T10:02:00Z",
+                token_usage(1_100, 220, 0, 100),
+                token_usage(90, 20, 0, 10),
+            ),
+            6,
+        ));
+        fs::write(&fixture.rollout, jsonl(records)).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_200);
+    }
+
+    #[test]
+    fn sqlite_index_does_not_reset_for_only_lower_nested_counters() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let mut records = codex_0_148_task_reset_prefix();
+        let nested_replay = TokenUsage {
+            input: 1_000,
+            cached_input: 190,
+            cache_write_input: 0,
+            output: 100,
+            reasoning_output: 0,
+            total: 1_100,
+        };
+        records.push(with_ordinal(
+            token_count_usage_line("2026-08-24T10:02:00Z", nested_replay, nested_replay),
+            6,
+        ));
+        fs::write(&fixture.rollout, jsonl(records)).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_100);
+    }
+
+    #[test]
+    fn sqlite_index_accepts_a_larger_first_counter_after_root_task_started() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let mut records = codex_0_148_task_reset_prefix();
+        let new_epoch = token_usage(1_200, 250, 0, 200);
+        records.push(with_ordinal(
+            token_count_usage_line("2026-08-24T10:02:00Z", new_epoch, new_epoch),
+            6,
+        ));
+        fs::write(&fixture.rollout, jsonl(records)).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 2_500);
+    }
+
+    #[test]
+    fn sqlite_index_retries_the_v16_terminal_error_after_the_parser_update() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(&fixture.rollout, reviewed_codex_0_148_root_rollout(100)).unwrap();
+        let metadata = fs::metadata(&fixture.rollout).unwrap();
+        let mut connection = Connection::open(&fixture.database).unwrap();
+        ensure_index_schema(&mut connection, Some(&fixture.database)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO codex_usage_files(
+                   path, file_identity, size_bytes, modified_ns, parsed_offset,
+                   parser_version, completion_state, schema_supported,
+                   parser_error_seen, accounting_ready
+                 ) VALUES(?1, ?2, ?3, ?4, ?3, 16, 'error', 0, 1, 0)",
+                params![
+                    fixture.rollout.to_string_lossy().as_ref(),
+                    file_identity(&metadata),
+                    i64::try_from(metadata.len()).unwrap(),
+                    file_modified_ns(&metadata).unwrap(),
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("the parser update must retry the settled v16 error row");
+
+        assert_eq!(
+            indexed
+                .daily
+                .get(&now.date())
+                .map(|day| day.observed_tokens),
+            Some(100)
+        );
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+    }
+
+    #[test]
     fn pending_parse_work_precedes_a_settled_dependency_recheck() {
         let fixture = TempUsage::new();
         let pending = fixture.root.join("sessions/pending-current.jsonl");
@@ -7391,7 +8005,7 @@ mod tests {
             "timestamp": "2026-08-06T10:00:00Z",
             "type": "session_meta",
             "payload": {
-                "cli_version": "0.148.0-alpha.1",
+                "cli_version": "0.149.0-alpha.1",
                 "source": { "subagent": { "thread_spawn": {} } }
             }
         })
@@ -7494,6 +8108,138 @@ mod tests {
             .unwrap();
         assert!(history_start.is_some());
         assert!(!excluded);
+    }
+
+    #[test]
+    fn sqlite_index_resumes_a_paginated_child_from_nonzero_provider_ordinals() {
+        let fixture = TempUsage::new();
+        let with_ordinal = |mut line: serde_json::Value, ordinal: u64| {
+            line["ordinal"] = json!(ordinal);
+            line
+        };
+        let rollout = jsonl([
+            json!({
+                "ordinal": 41,
+                "timestamp": "2026-08-06T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "cli_version": "0.148.0-alpha.21",
+                    "history_base": {
+                        "thread_id": "fixture-thread",
+                        "end_ordinal_exclusive": 41,
+                        "end_byte_offset": 0
+                    },
+                    "history_mode": "paginated",
+                    "source": "subagent",
+                    "subagent_history_start_ordinal": 44
+                }
+            }),
+            json!({
+                "ordinal": 42,
+                "timestamp": "2026-08-06T09:00:00Z",
+                "type": "response_item",
+                "payload": { "type": "message", "role": "assistant" }
+            }),
+            with_ordinal(token_count_line("2026-08-06T09:01:00Z", 1_000, 100), 43),
+            json!({
+                "ordinal": 44,
+                "timestamp": "2026-08-06T10:00:01Z",
+                "type": "event_msg",
+                "payload": { "type": "thread_settings_applied" }
+            }),
+            json!({
+                "ordinal": 45,
+                "timestamp": "2026-08-06T10:00:02Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+        ]);
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+
+        let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert!(first.daily.is_empty());
+        assert_eq!(first.scan_status, UsageScanStatus::Complete);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&fixture.rollout)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            with_ordinal(token_count_line("2026-08-06T10:01:00Z", 1_100, 100), 46)
+        )
+        .unwrap();
+        drop(file);
+
+        let second = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(second.daily[&now.date()].observed_tokens, 100);
+        assert_eq!(second.scan_status, UsageScanStatus::Complete);
+        let connection = Connection::open(&fixture.database).unwrap();
+        let next_ordinal: u64 = connection
+            .query_row("SELECT record_ordinal FROM codex_usage_files", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(next_ordinal, 47);
+    }
+
+    #[test]
+    fn sqlite_index_rejects_a_missing_ordinal_after_a_paginated_resume() {
+        let fixture = TempUsage::new();
+        let rollout = jsonl([
+            json!({
+                "ordinal": 41,
+                "timestamp": "2026-08-06T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "cli_version": "0.148.0-alpha.21",
+                    "history_base": {
+                        "thread_id": "fixture-thread",
+                        "end_ordinal_exclusive": 41,
+                        "end_byte_offset": 12
+                    },
+                    "history_mode": "paginated"
+                }
+            }),
+            json!({
+                "ordinal": 42,
+                "timestamp": "2026-08-06T10:00:01Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+            with_ordinal(token_count_line("2026-08-06T10:01:00Z", 100, 100), 43),
+        ]);
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+
+        let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(first.scan_status, UsageScanStatus::Complete);
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&fixture.rollout)
+            .unwrap();
+        writeln!(
+            file,
+            "{}",
+            token_count_line("2026-08-06T10:02:00Z", 200, 100)
+        )
+        .unwrap();
+        drop(file);
+
+        let second = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(second.scan_status, UsageScanStatus::Unavailable);
+        let completion: String = Connection::open(&fixture.database)
+            .unwrap()
+            .query_row(
+                "SELECT completion_state FROM codex_usage_files",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(completion, "error");
     }
 
     #[test]
@@ -10069,8 +10815,9 @@ mod tests {
         assert!(is_supported_cli_version("0.145.0"));
         assert!(is_supported_cli_version("0.146.0-alpha.9.2"));
         assert!(is_supported_cli_version("0.147.0-alpha.6.5"));
+        assert!(is_supported_cli_version("0.148.0-alpha.21"));
         assert!(!is_supported_cli_version("0.129.9"));
-        assert!(!is_supported_cli_version("0.148.0"));
+        assert!(!is_supported_cli_version("0.149.0"));
         assert!(!is_supported_cli_version("1.0.0"));
         assert!(!is_supported_cli_version("private value"));
     }
@@ -11507,6 +12254,263 @@ mod tests {
 
         assert!(scan_rollout_reader(fixture.as_bytes(), day, day, &mut days));
         assert_eq!(days[&day].observed_tokens, 100);
+    }
+
+    #[test]
+    fn rollout_scan_uses_nonzero_ordinals_for_paginated_subagent_history() {
+        let fixture = [
+            json!({
+                "ordinal": 500,
+                "timestamp": "2026-08-06T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "cli_version": "0.148.0-alpha.21",
+                    "history_base": {
+                        "thread_id": "fixture-thread",
+                        "end_ordinal_exclusive": 500,
+                        "end_byte_offset": 0
+                    },
+                    "history_mode": "paginated",
+                    "subagent_history_start_ordinal": 503,
+                    "thread_source": "subagent"
+                }
+            }),
+            json!({
+                "ordinal": 501,
+                "timestamp": "2026-08-06T09:00:00Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+            json!({
+                "ordinal": 502,
+                "timestamp": "2026-08-06T09:01:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 700,
+                            "cached_input_tokens": 200,
+                            "output_tokens": 300,
+                            "reasoning_output_tokens": 100,
+                            "total_tokens": 1000
+                        },
+                        "model_context_window": 1_050_000,
+                        "total_token_usage": {
+                            "input_tokens": 700,
+                            "cached_input_tokens": 200,
+                            "output_tokens": 300,
+                            "reasoning_output_tokens": 100,
+                            "total_tokens": 1000
+                        }
+                    },
+                    "rate_limits": null
+                }
+            }),
+            json!({
+                "ordinal": 503,
+                "timestamp": "2026-08-06T10:01:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 70,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 30,
+                            "reasoning_output_tokens": 10,
+                            "total_tokens": 100
+                        },
+                        "model_context_window": 1_050_000,
+                        "total_token_usage": {
+                            "input_tokens": 770,
+                            "cached_input_tokens": 220,
+                            "output_tokens": 330,
+                            "reasoning_output_tokens": 110,
+                            "total_tokens": 1100
+                        }
+                    },
+                    "rate_limits": null
+                }
+            }),
+        ]
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+            + "\n";
+        let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        let mut days = BTreeMap::new();
+
+        assert!(scan_rollout_reader(fixture.as_bytes(), day, day, &mut days));
+        assert_eq!(days[&day].observed_tokens, 100);
+    }
+
+    #[test]
+    fn rollout_scan_rejects_malformed_or_mismatched_provider_ordinals() {
+        let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        for invalid_ordinal in [json!("501"), json!(502), json!(null)] {
+            let fixture = [
+                json!({
+                    "ordinal": 500,
+                    "timestamp": "2026-08-06T10:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "cli_version": "0.148.0-alpha.21",
+                        "history_base": {
+                            "thread_id": "fixture-thread",
+                            "end_ordinal_exclusive": 500,
+                            "end_byte_offset": 7
+                        },
+                        "history_mode": "paginated"
+                    }
+                }),
+                json!({
+                    "ordinal": invalid_ordinal,
+                    "timestamp": "2026-08-06T10:00:01Z",
+                    "type": "turn_context",
+                    "payload": { "model": "gpt-5.6-sol" }
+                }),
+            ]
+            .into_iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+                + "\n";
+            let mut days = BTreeMap::new();
+
+            assert!(!scan_rollout_reader(
+                fixture.as_bytes(),
+                day,
+                day,
+                &mut days
+            ));
+        }
+
+        let missing_ordinal = jsonl([
+            json!({
+                "ordinal": 0,
+                "timestamp": "2026-08-06T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "cli_version": "0.148.0-alpha.21",
+                    "history_mode": "paginated"
+                }
+            }),
+            json!({
+                "timestamp": "2026-08-06T10:00:01Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+        ]);
+        let mut days = BTreeMap::new();
+        assert!(!scan_rollout_reader(
+            missing_ordinal.as_bytes(),
+            day,
+            day,
+            &mut days,
+        ));
+    }
+
+    #[test]
+    fn rollout_scan_rejects_unreviewed_provider_ordinal_origins() {
+        let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        for payload in [
+            json!({
+                "cli_version": "0.148.0-alpha.21",
+                "history_mode": "legacy"
+            }),
+            json!({
+                "cli_version": "0.148.0-alpha.21",
+                "history_mode": "paginated"
+            }),
+            json!({
+                "cli_version": "0.148.0-alpha.21",
+                "history_base": null,
+                "history_mode": "paginated"
+            }),
+            json!({
+                "cli_version": "0.148.0-alpha.21",
+                "history_base": {
+                    "thread_id": "fixture-thread",
+                    "end_ordinal_exclusive": 499,
+                    "end_byte_offset": 7
+                },
+                "history_mode": "paginated"
+            }),
+        ] {
+            let fixture = jsonl([json!({
+                "ordinal": 500,
+                "timestamp": "2026-08-06T10:00:00Z",
+                "type": "session_meta",
+                "payload": payload
+            })]);
+            let mut days = BTreeMap::new();
+            assert!(!scan_rollout_reader(
+                fixture.as_bytes(),
+                day,
+                day,
+                &mut days,
+            ));
+        }
+
+        let non_session_origin = jsonl([json!({
+            "ordinal": 500,
+            "timestamp": "2026-08-06T10:00:00Z",
+            "type": "turn_context",
+            "payload": { "model": "gpt-5.6-sol" }
+        })]);
+        let mut days = BTreeMap::new();
+        assert!(!scan_rollout_reader(
+            non_session_origin.as_bytes(),
+            day,
+            day,
+            &mut days,
+        ));
+
+        let legacy_non_session_origin = jsonl([json!({
+            "timestamp": "2026-08-06T10:00:00Z",
+            "type": "turn_context",
+            "payload": { "model": "gpt-5.6-sol" }
+        })]);
+        let mut days = BTreeMap::new();
+        assert!(!scan_rollout_reader(
+            legacy_non_session_origin.as_bytes(),
+            day,
+            day,
+            &mut days,
+        ));
+
+        let current_without_provider_ordinal = jsonl([json!({
+            "timestamp": "2026-08-06T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "cli_version": "0.148.0-alpha.21",
+                "history_mode": "paginated"
+            }
+        })]);
+        let mut days = BTreeMap::new();
+        assert!(!scan_rollout_reader(
+            current_without_provider_ordinal.as_bytes(),
+            day,
+            day,
+            &mut days,
+        ));
+    }
+
+    #[test]
+    fn rollout_scan_keeps_reviewed_codex_0_148_legacy_records_without_ordinals() {
+        let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
+        for version in ["0.148.0-alpha.9", "0.148.0-alpha.15", "0.148.0-alpha.21"] {
+            let fixture = root_rollout(100).replace(
+                r#""cli_version":"0.145.0""#,
+                &format!(r#""cli_version":"{version}","history_mode":"legacy""#),
+            );
+            let mut days = BTreeMap::new();
+
+            assert!(scan_rollout_reader(fixture.as_bytes(), day, day, &mut days));
+            assert_eq!(days[&day].observed_tokens, 100);
+        }
     }
 
     #[test]

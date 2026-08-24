@@ -92,7 +92,7 @@ fn prepares_one_complete_versioned_database() {
         versions,
         vec![
             ("claude-usage-index".to_owned(), 7),
-            ("codex-usage-index".to_owned(), 8),
+            ("codex-usage-index".to_owned(), 9),
             ("database-coordinator".to_owned(), 1),
             ("desktop-lifecycle".to_owned(), 5),
             ("sanitized-desktop-state".to_owned(), 7),
@@ -149,6 +149,8 @@ fn coordinator_upgrades_the_codex_v6_file_turn_shape_with_daily_references() {
                singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
                observed_at TEXT NOT NULL
              );
+             ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
+             ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
              UPDATE touchgrassbar_schema_versions SET version = 6
              WHERE module = 'codex-usage-index';
              PRAGMA journal_mode = DELETE;",
@@ -244,6 +246,8 @@ fn coordinator_upgrades_the_codex_v7_account_cache_without_rebuilding_rollouts()
              INSERT INTO codex_account_usage_meta(singleton, observed_at)
                SELECT singleton, refreshed_at FROM codex_account_usage_meta_v8;
              DROP TABLE codex_account_usage_meta_v8;
+             ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
+             ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
              UPDATE touchgrassbar_schema_versions SET version = 7
              WHERE module = 'codex-usage-index';
              PRAGMA journal_mode = DELETE;",
@@ -288,6 +292,56 @@ fn coordinator_upgrades_the_codex_v7_account_cache_without_rebuilding_rollouts()
             .expect("read retained rollout metadata"),
         "retained-sentinel"
     );
+}
+
+#[test]
+fn coordinator_adds_the_codex_v9_parser_state_without_losing_rollouts() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare current database");
+    let connection = Connection::open(&database.0).expect("open current database");
+    connection
+        .execute_batch(
+            "INSERT INTO codex_usage_files(
+               path, file_identity, size_bytes, modified_ns, parsed_offset,
+               parser_version, completion_state, active_model, schema_supported
+             ) VALUES(
+               'private-rollout', '1:2', 10, 20, 10, 17, 'complete',
+               'gpt-5.6-sol', 1
+             );
+             ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
+             ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
+             UPDATE touchgrassbar_schema_versions SET version = 8
+             WHERE module = 'codex-usage-index';
+             PRAGMA journal_mode = DELETE;",
+        )
+        .expect("make a known Codex v8 source");
+    drop(connection);
+
+    prepare(&database.0).expect("upgrade the Codex v8 source");
+
+    let connection = Connection::open(&database.0).expect("open upgraded database");
+    assert_eq!(
+        providers::codex_usage_schema_version(&connection).expect("Codex schema version"),
+        providers::CODEX_USAGE_SCHEMA_VERSION
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT file_identity, task_counter_reset_pending, provider_ordinal_mode
+                 FROM codex_usage_files WHERE path = 'private-rollout'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .expect("read migrated rollout cursor"),
+        ("1:2".to_owned(), false, "unknown".to_owned())
+    );
+    verify_invariants(&connection).expect("verify upgraded database");
 }
 
 #[test]
@@ -1048,6 +1102,84 @@ fn rejects_non_calendar_ranking_days() {
 
     assert_eq!(
         prepare(&database.0).expect_err("reject invalid day"),
+        DatabaseOpenError::InvariantFailed {
+            invariant: "codex-usage-values"
+        }
+    );
+}
+
+#[test]
+fn rejects_an_invalid_pending_codex_counter_reset_marker() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare database");
+    Connection::open(&database.0)
+        .expect("open database")
+        .execute_batch(
+            "INSERT INTO codex_usage_files(
+               path, file_identity, size_bytes, modified_ns, parsed_offset,
+               parser_version, completion_state, schema_supported,
+               task_counter_reset_pending
+             ) VALUES(
+               'fixture.jsonl', 'fixture', 0, 0, 0,
+               17, 'indexing', 1, 2
+             );",
+        )
+        .expect("write invalid reset marker");
+
+    assert_eq!(
+        prepare(&database.0).expect_err("reject invalid reset marker"),
+        DatabaseOpenError::InvariantFailed {
+            invariant: "codex-usage-values"
+        }
+    );
+}
+
+#[test]
+fn rejects_a_pending_codex_counter_reset_on_nonroot_lineage() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare database");
+    Connection::open(&database.0)
+        .expect("open database")
+        .execute_batch(
+            "INSERT INTO codex_usage_files(
+               path, file_identity, size_bytes, modified_ns, parsed_offset,
+               parser_version, completion_state, schema_supported,
+               lineage_mode, task_counter_reset_pending
+             ) VALUES(
+               'fixture.jsonl', 'fixture', 0, 0, 0,
+               17, 'indexing', 1, 'independent', 1
+             );",
+        )
+        .expect("write reset marker on nonroot lineage");
+
+    assert_eq!(
+        prepare(&database.0).expect_err("reject reset marker on nonroot lineage"),
+        DatabaseOpenError::InvariantFailed {
+            invariant: "codex-usage-values"
+        }
+    );
+}
+
+#[test]
+fn rejects_an_invalid_codex_provider_ordinal_mode() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare database");
+    Connection::open(&database.0)
+        .expect("open database")
+        .execute_batch(
+            "INSERT INTO codex_usage_files(
+               path, file_identity, size_bytes, modified_ns, parsed_offset,
+               parser_version, completion_state, schema_supported,
+               provider_ordinal_mode
+             ) VALUES(
+               'fixture.jsonl', 'fixture', 0, 0, 0,
+               17, 'indexing', 1, 'mixed'
+             );",
+        )
+        .expect("write invalid provider ordinal mode");
+
+    assert_eq!(
+        prepare(&database.0).expect_err("reject invalid provider ordinal mode"),
         DatabaseOpenError::InvariantFailed {
             invariant: "codex-usage-values"
         }

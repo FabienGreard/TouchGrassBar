@@ -22,7 +22,7 @@ use crate::{
 const CURRENT_DATABASE_FORMAT: i64 = 7;
 const CURRENT_MODULE_VERSIONS: &[(&str, i64)] = &[
     ("claude-usage-index", 7),
-    ("codex-usage-index", 8),
+    ("codex-usage-index", 9),
     ("database-coordinator", 1),
     ("desktop-lifecycle", 5),
     ("sanitized-desktop-state", 7),
@@ -335,7 +335,7 @@ fn source_requires_upgrade(source: &SourceSchema) -> bool {
     source.database_format != CURRENT_DATABASE_FORMAT
         || source.lifecycle != 5
         || source.sanitized_desktop_state != 7
-        || source.codex_usage_index != 8
+        || source.codex_usage_index != 9
         || source.claude_usage_index != Some(7)
         || source.update_state != 3
         || source.database_coordinator != Some(1)
@@ -493,6 +493,35 @@ fn assert_provider_facts_preserved(
             table_row_count(&connection, &table),
             0,
             "{} invented durable facts in historical provider table {table}",
+            fixture.tag
+        );
+    }
+
+    if fixture.source_schema.codex_usage_index < 9 {
+        let pending_reset_rows = connection
+            .query_row(
+                "SELECT COUNT(*) FROM codex_usage_files
+                 WHERE task_counter_reset_pending != 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count migrated pending counter resets");
+        assert_eq!(
+            pending_reset_rows, 0,
+            "{} invented a pending Codex counter reset",
+            fixture.tag
+        );
+        let provider_ordinal_rows = connection
+            .query_row(
+                "SELECT COUNT(*) FROM codex_usage_files
+                 WHERE provider_ordinal_mode != 'unknown'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count migrated provider ordinal modes");
+        assert_eq!(
+            provider_ordinal_rows, 0,
+            "{} invented a Codex provider ordinal mode",
             fixture.tag
         );
     }

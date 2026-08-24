@@ -30,13 +30,13 @@ const MAX_TRANSCRIPT_SCAN_MILLIS: u128 = 2_000;
 const RESUME_ANCHOR_BYTES: u64 = 64 * 1024;
 const TOKEN_HISTORY_RETENTION_DAYS: i64 = 60;
 const COST_DETAIL_RETENTION_DAYS: i64 = 30;
-const SUPPORTED_CLAUDE_CODE_VERSIONS: [&str; 2] = ["2.1.223", "2.1.224"];
+const SUPPORTED_CLAUDE_CODE_VERSIONS: [&str; 3] = ["2.1.223", "2.1.224", "2.1.241"];
 const MAX_SUPERSEDED_FRAMES: usize = 64;
 const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 4;
+const TRANSCRIPT_PARSER_VERSION: i64 = 5;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -165,8 +165,13 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
         || line.message.message_type != "message"
         || line.message.role != "assistant"
         || !valid_provider_identifier(&line.message.id)
-        || !valid_model_name(&line.message.model)
     {
+        return TranscriptLineOutcome::FrameOnly(frame);
+    }
+    if line.message.model == "<synthetic>" && is_reviewed_zero_usage_api_error(_line) {
+        return TranscriptLineOutcome::Ignored;
+    }
+    if !valid_model_name(&line.message.model) {
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     let cache_creation_known = line.message.usage.cache_creation_input_tokens.is_some();
@@ -317,6 +322,215 @@ struct RawServerToolUsage {
     web_fetch_requests: Option<u64>,
     #[serde(flatten)]
     unknown: BTreeMap<String, IgnoredAny>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct DiscardedString {
+    non_empty: bool,
+}
+
+impl DiscardedString {
+    fn is_non_empty(self) -> bool {
+        self.non_empty
+    }
+}
+
+impl<'de> Deserialize<'de> for DiscardedString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_string(DiscardedStringVisitor)
+    }
+}
+
+struct DiscardedStringVisitor;
+
+impl Visitor<'_> for DiscardedStringVisitor {
+    type Value = DiscardedString;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string that is discarded after validation")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(DiscardedString {
+            non_empty: !value.is_empty(),
+        })
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(&value)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedApiErrorEnvelope {
+    cwd: DiscardedString,
+    entrypoint: DiscardedString,
+    error: DiscardedString,
+    #[serde(rename = "gitBranch")]
+    git_branch: DiscardedString,
+    #[serde(rename = "isApiErrorMessage")]
+    is_api_error_message: bool,
+    #[serde(rename = "isSidechain")]
+    is_sidechain: bool,
+    message: ReviewedApiErrorMessage,
+    #[serde(rename = "parentUuid")]
+    parent_uuid: DiscardedString,
+    #[serde(rename = "sessionId")]
+    session_id_camel: DiscardedString,
+    session_id: DiscardedString,
+    timestamp: DiscardedString,
+    #[serde(rename = "type")]
+    record_type: String,
+    #[serde(rename = "userType")]
+    user_type: DiscardedString,
+    uuid: DiscardedString,
+    version: String,
+}
+
+impl ReviewedApiErrorEnvelope {
+    fn is_reviewed(&self) -> bool {
+        [
+            self.cwd,
+            self.entrypoint,
+            self.error,
+            self.git_branch,
+            self.parent_uuid,
+            self.session_id_camel,
+            self.session_id,
+            self.timestamp,
+            self.user_type,
+            self.uuid,
+        ]
+        .into_iter()
+        .all(DiscardedString::is_non_empty)
+            && self.is_api_error_message
+            && !self.is_sidechain
+            && self.record_type == "assistant"
+            && self.version == "2.1.241"
+            && self.message.is_reviewed()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedApiErrorMessage {
+    #[serde(rename = "container")]
+    _container: (),
+    content: [ReviewedApiErrorTextBlock; 1],
+    #[serde(rename = "context_management")]
+    _context_management: (),
+    #[serde(rename = "diagnostics")]
+    _diagnostics: (),
+    id: DiscardedString,
+    model: String,
+    role: String,
+    #[serde(rename = "stop_details")]
+    _stop_details: (),
+    stop_reason: String,
+    stop_sequence: String,
+    #[serde(rename = "type")]
+    message_type: String,
+    usage: ReviewedApiErrorUsage,
+}
+
+impl ReviewedApiErrorMessage {
+    fn is_reviewed(&self) -> bool {
+        self.id.is_non_empty()
+            && self.model == "<synthetic>"
+            && self.role == "assistant"
+            && self.stop_reason == "stop_sequence"
+            && self.stop_sequence.is_empty()
+            && self.message_type == "message"
+            && self.content[0].is_reviewed()
+            && self.usage.is_zero()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedApiErrorTextBlock {
+    text: DiscardedString,
+    #[serde(rename = "type")]
+    block_type: String,
+}
+
+impl ReviewedApiErrorTextBlock {
+    fn is_reviewed(&self) -> bool {
+        self.text.is_non_empty() && self.block_type == "text"
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedApiErrorUsage {
+    cache_creation: ReviewedApiErrorCacheCreation,
+    cache_creation_input_tokens: u64,
+    cache_read_input_tokens: u64,
+    #[serde(rename = "inference_geo")]
+    _inference_geo: (),
+    input_tokens: u64,
+    #[serde(rename = "iterations")]
+    _iterations: (),
+    output_tokens: u64,
+    #[serde(rename = "output_tokens_details")]
+    _output_tokens_details: (),
+    server_tool_use: ReviewedApiErrorServerToolUse,
+    #[serde(rename = "service_tier")]
+    _service_tier: (),
+    #[serde(rename = "speed")]
+    _speed: (),
+}
+
+impl ReviewedApiErrorUsage {
+    fn is_zero(&self) -> bool {
+        self.cache_creation_input_tokens == 0
+            && self.cache_read_input_tokens == 0
+            && self.input_tokens == 0
+            && self.output_tokens == 0
+            && self.cache_creation.is_zero()
+            && self.server_tool_use.is_zero()
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedApiErrorCacheCreation {
+    ephemeral_1h_input_tokens: u64,
+    ephemeral_5m_input_tokens: u64,
+}
+
+impl ReviewedApiErrorCacheCreation {
+    fn is_zero(&self) -> bool {
+        self.ephemeral_1h_input_tokens == 0 && self.ephemeral_5m_input_tokens == 0
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedApiErrorServerToolUse {
+    web_fetch_requests: u64,
+    web_search_requests: u64,
+}
+
+impl ReviewedApiErrorServerToolUse {
+    fn is_zero(&self) -> bool {
+        self.web_fetch_requests == 0 && self.web_search_requests == 0
+    }
+}
+
+fn is_reviewed_zero_usage_api_error(line: &[u8]) -> bool {
+    serde_json::from_slice::<ReviewedApiErrorEnvelope>(line)
+        .is_ok_and(|envelope| envelope.is_reviewed())
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3097,6 +3311,20 @@ mod tests {
         )
     }
 
+    fn api_error_transcript_line() -> String {
+        format!(
+            r#"{{"cwd":"/PRIVATE/PATH","entrypoint":"cli","error":"PRIVATE-API-ERROR","gitBranch":"PRIVATE-BRANCH","isApiErrorMessage":true,"isSidechain":false,"message":{{"container":null,"content":[{{"text":"PRIVATE-CONTENT","type":"text"}}],"context_management":null,"diagnostics":null,"id":"PRIVATE-API-MESSAGE-ID","model":"<synthetic>","role":"assistant","stop_details":null,"stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{{"cache_creation":{{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0}},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"inference_geo":null,"input_tokens":0,"iterations":null,"output_tokens":0,"output_tokens_details":null,"server_tool_use":{{"web_fetch_requests":0,"web_search_requests":0}},"service_tier":null,"speed":null}}}},"parentUuid":"PRIVATE-PARENT","sessionId":"PRIVATE-SESSION","session_id":"PRIVATE-SESSION","timestamp":"{}","type":"assistant","userType":"external","uuid":"PRIVATE-API-FRAME-ID","version":"2.1.241"}}"#,
+            (now() - Duration::minutes(4)).format(&Rfc3339).unwrap()
+        )
+    }
+
+    fn claude_code_2_1_241_transcript_line() -> String {
+        format!(
+            r#"{{"cwd":"/PRIVATE/PATH","effort":"medium","entrypoint":"cli","gitBranch":"PRIVATE-BRANCH","isSidechain":false,"message":{{"content":[{{"text":"PRIVATE-CONTENT","type":"text"}}],"diagnostics":null,"id":"PRIVATE-VALID-MESSAGE-ID","model":"claude-sonnet-4-20250514","role":"assistant","stop_details":null,"stop_reason":"end_turn","stop_sequence":null,"type":"message","usage":{{"cache_creation":{{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20}},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"inference_geo":"not_available","input_tokens":10,"iterations":[{{"cache_creation":{{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20}},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"input_tokens":10,"output_tokens":40,"type":"message"}}],"output_tokens":40,"output_tokens_details":{{"thinking_tokens":15}},"server_tool_use":{{"web_fetch_requests":0,"web_search_requests":0}},"service_tier":"standard","speed":"standard"}}}},"parentUuid":"PRIVATE-PARENT","requestId":"PRIVATE-REQUEST","sessionId":"PRIVATE-SESSION","session_id":"PRIVATE-SESSION","timestamp":"{}","type":"assistant","userType":"external","uuid":"PRIVATE-VALID-FRAME-ID","version":"2.1.241"}}"#,
+            (now() - Duration::minutes(5)).format(&Rfc3339).unwrap()
+        )
+    }
+
     fn write_transcript(path: &Path, lines: &[String]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, format!("{}\n", lines.join("\n"))).unwrap();
@@ -3640,6 +3868,42 @@ mod tests {
     }
 
     #[test]
+    fn parser_ignores_only_the_reviewed_zero_usage_api_error_shape() {
+        let reviewed = api_error_transcript_line();
+        assert_eq!(
+            parse_transcript_line(reviewed.as_bytes(), &SALT),
+            TranscriptLineOutcome::Ignored
+        );
+
+        for unreviewed in [
+            reviewed.replacen("\"input_tokens\":0", "\"input_tokens\":1", 1),
+            reviewed.replacen("\"error\":\"PRIVATE-API-ERROR\",", "", 1),
+            reviewed.replacen("<synthetic>", "<different>", 1),
+            reviewed.replacen(
+                "\"input_tokens\":0",
+                "\"future_paid_tokens\":0,\"input_tokens\":0",
+                1,
+            ),
+            reviewed.replacen("\"iterations\":null", "\"iterations\":[]", 1),
+            reviewed.replacen(
+                "\"text\":\"PRIVATE-CONTENT\",\"type\":\"text\"",
+                "\"future_cost\":0,\"text\":\"PRIVATE-CONTENT\",\"type\":\"text\"",
+                1,
+            ),
+            reviewed.replacen(
+                "\"timestamp\"",
+                "\"supersedes\":[\"frame-other\"],\"timestamp\"",
+                1,
+            ),
+        ] {
+            assert!(matches!(
+                parse_transcript_line(unreviewed.as_bytes(), &SALT),
+                TranscriptLineOutcome::FrameOnly(_)
+            ));
+        }
+    }
+
+    #[test]
     fn parser_marks_aborted_wrappers_partial() {
         let aborted = br#"{
           "type":"assistant",
@@ -3733,6 +3997,149 @@ mod tests {
         assert_eq!(coverage, UsageCoverage::Complete);
         assert_eq!(observed_tokens, 100);
         assert_eq!(stored_message_count(&fixture.database()), 1);
+    }
+
+    #[test]
+    fn scan_publishes_reviewed_claude_code_2_1_241_usage() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let message = claude_code_2_1_241_transcript_line();
+        let TranscriptLineOutcome::Usage(parsed) = parse_transcript_line(message.as_bytes(), &SALT)
+        else {
+            panic!("the reviewed Claude Code 2.1.241 schema must parse");
+        };
+        assert_eq!(parsed.usage, usage(10, 20, 30, 40));
+        assert_eq!(parsed.usage.observed_tokens(), Some(100));
+        write_transcript(&config.join("projects/project-a/session.jsonl"), &[message]);
+
+        let local = scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("reviewed Claude Code 2.1.241 usage must publish");
+        let UsageTotal::Current {
+            evidence_basis,
+            coverage,
+            observed_tokens,
+            ..
+        } = project_usage_periods(Some(&local), now()).today
+        else {
+            panic!("today must be available");
+        };
+
+        assert_eq!(local.scan_status, UsageScanStatus::Complete);
+        assert_eq!(evidence_basis, UsageEvidenceBasis::LocallyDerived);
+        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(observed_tokens, 100);
+    }
+
+    #[test]
+    fn scan_ignores_a_reviewed_api_error_without_losing_valid_usage() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let valid = transcript_line(
+            "fixture-valid-before-api-error",
+            now() - Duration::minutes(5),
+            "claude-sonnet-4-20250514",
+            usage(10, 20, 30, 40),
+        )
+        .replacen("\"version\":\"2.1.224\"", "\"version\":\"2.1.241\"", 1);
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[valid, api_error_transcript_line()],
+        );
+
+        let local = scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("the reviewed API error must not withhold valid usage");
+        let UsageTotal::Current {
+            coverage,
+            observed_tokens,
+            ..
+        } = project_usage_periods(Some(&local), now()).today
+        else {
+            panic!("today must be available");
+        };
+
+        assert_eq!(local.scan_status, UsageScanStatus::Complete);
+        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(observed_tokens, 100);
+        assert_eq!(stored_message_count(&fixture.database()), 1);
+        assert_eq!(stored_frame_count(&fixture.database()), 1);
+        let report = debug_usage_report(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("the sanitized Claude report must render");
+        for forbidden in [
+            "/PRIVATE/PATH",
+            "PRIVATE-API-ERROR",
+            "PRIVATE-API-FRAME-ID",
+            "PRIVATE-API-MESSAGE-ID",
+            "PRIVATE-BRANCH",
+            "PRIVATE-CONTENT",
+            "PRIVATE-PARENT",
+            "PRIVATE-SESSION",
+        ] {
+            assert_sqlite_artifacts_exclude(&fixture.database(), forbidden);
+            assert!(!report.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn parser_upgrade_reindexes_claude_code_2_1_241_error_into_today() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let database = fixture.database();
+        let transcript = config.join("projects/project-a/session.jsonl");
+        let message = transcript_line(
+            "fixture-retry-claude-code-2-1-241",
+            now() - Duration::minutes(5),
+            "claude-sonnet-4-20250514",
+            usage(10, 20, 30, 40),
+        )
+        .replacen("\"version\":\"2.1.224\"", "\"version\":\"2.1.241\"", 1);
+        write_transcript(&transcript, &[message]);
+        prepare_database(&database).expect("the Claude index must prepare");
+        let metadata = fs::metadata(&transcript).unwrap();
+        let resume_anchor = file_resume_anchor(&transcript, metadata.len()).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute(
+                "INSERT INTO claude_usage_files(
+                   path, file_identity, size_bytes, modified_ns, parsed_offset,
+                   resume_anchor, parser_version, completion_state
+                 ) VALUES(?1, ?2, ?3, ?4, ?3, ?5, 4, 'error')",
+                params![
+                    transcript.to_string_lossy().as_ref(),
+                    file_identity(&metadata),
+                    i64::try_from(metadata.len()).unwrap(),
+                    file_modified_ns(&metadata).unwrap(),
+                    resume_anchor,
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO claude_usage_index_meta(key, value) VALUES(?1, '4')",
+                [USAGE_AGGREGATE_PARSER_VERSION_KEY],
+            )
+            .unwrap();
+        drop(connection);
+
+        let local = scan_local_usage_at(&database, &config, &fixture.probe(), now())
+            .expect("the parser update must restart the old error checkpoint");
+        let UsageTotal::Current {
+            coverage,
+            observed_tokens,
+            ..
+        } = project_usage_periods(Some(&local), now()).today
+        else {
+            panic!("today must be available");
+        };
+
+        assert_eq!(local.scan_status, UsageScanStatus::Complete);
+        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(observed_tokens, 100);
+        assert_eq!(local.correction, None);
+        let connection = Connection::open(database).unwrap();
+        assert_eq!(
+            stored_usage_aggregate_parser_version(&connection).unwrap(),
+            Some(TRANSCRIPT_PARSER_VERSION)
+        );
     }
 
     #[test]

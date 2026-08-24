@@ -172,7 +172,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         "codex_usage_file_days",
     ];
     let codex_table_count = count_tables(connection, &codex_tables)?;
-    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7 | 8)
+    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7 | 8 | 9)
         || (codex_version == 0 && codex_table_count != 0)
         || (codex_version >= 2 && codex_table_count != codex_tables.len())
     {
@@ -337,6 +337,27 @@ fn inspect_known_table_columns(
             ("usage_sync_generation_activations", 6, _, _) => LEGACY_USAGE_SYNC_ACTIVATION_COLUMNS,
             ("codex_usage_file_model_days", _, 2 | 3, _) => LEGACY_CODEX_MODEL_DAY_COLUMNS,
             ("codex_usage_files", _, 2 | 3, _) => LEGACY_CODEX_FILE_COLUMNS,
+            ("codex_usage_files", _, 6..=8, _) => {
+                let Some((ordinal_mode_column, without_ordinal_mode)) = expected.split_last()
+                else {
+                    return Err(DatabaseOpenError::MigrationFailed {
+                        stage: "inspect-table-columns",
+                    });
+                };
+                let Some((reset_column, legacy_columns)) = without_ordinal_mode.split_last() else {
+                    return Err(DatabaseOpenError::MigrationFailed {
+                        stage: "inspect-table-columns",
+                    });
+                };
+                if *reset_column != "task_counter_reset_pending"
+                    || *ordinal_mode_column != "provider_ordinal_mode"
+                {
+                    return Err(DatabaseOpenError::MigrationFailed {
+                        stage: "inspect-table-columns",
+                    });
+                }
+                legacy_columns
+            }
             ("codex_usage_file_turns", _, 6, _) => LEGACY_CODEX_FILE_TURN_COLUMNS,
             ("codex_account_usage_days", _, 2 | 3 | 6 | 7, _) => LEGACY_CODEX_ACCOUNT_DAY_COLUMNS,
             ("codex_account_usage_meta", _, 2 | 3 | 6 | 7, _) => LEGACY_CODEX_ACCOUNT_META_COLUMNS,
@@ -612,12 +633,12 @@ fn inspect_known_object_definitions(
             },
             ("table", "codex_account_usage_days") => match versions.codex {
                 2 | 3 | 6 | 7 => !definition.contains("observed_attextnotnull"),
-                8 => definition.contains("observed_attextnotnull"),
+                8 | 9 => definition.contains("observed_attextnotnull"),
                 _ => false,
             },
             ("table", "codex_account_usage_meta") => match versions.codex {
                 2 | 3 | 6 | 7 => definition.contains("observed_attextnotnull"),
-                8 => definition.contains("refreshed_attextnotnull"),
+                8 | 9 => definition.contains("refreshed_attextnotnull"),
                 _ => false,
             },
             ("table", "touchgrassbar_update_state") => match versions.update {

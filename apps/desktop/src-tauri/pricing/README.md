@@ -104,6 +104,11 @@ Use these primary sources for a Claude update:
 - [Claude release notes](https://platform.claude.com/docs/en/release-notes/overview)
 - [Anthropic TypeScript SDK usage types](https://github.com/anthropics/anthropic-sdk-typescript/blob/3b45cd3b69c956ac63384fdb09ce1d8109f3fa80/src/resources/beta/messages/messages.ts#L4053-L4105)
 
-The Claude transcript allow-list is verified against Claude Code `2.1.224`
-and `@anthropic-ai/claude-agent-sdk` `0.3.224`. A different transcript version
-is partial or unavailable until controlled fixtures prove that schema.
+The Claude transcript allow-list has three verified pairs: Claude Code
+`2.1.223` with `@anthropic-ai/claude-agent-sdk` `0.3.223`, Claude Code `2.1.224`
+with `@anthropic-ai/claude-agent-sdk` `0.3.224`, and Claude Code `2.1.241` with
+`@anthropic-ai/claude-agent-sdk` `0.3.241`. It ignores a Claude Code `2.1.241`
+synthetic API-error record only when the reviewed wrapper, message, content,
+zero-token counters, zero paid-tool counters, and null extended usage fields
+match exactly. A different API-error shape fails closed. A different transcript
+version is partial or unavailable until controlled fixtures prove that schema.

@@ -717,6 +717,9 @@ fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError
                   OR accounting_ready NOT IN (0, 1)
                   OR parser_error_seen NOT IN (0, 1)
                   OR snapshot_timestamp_regressed NOT IN (0, 1)
+                  OR task_counter_reset_pending NOT IN (0, 1)
+                  OR (task_counter_reset_pending = 1 AND lineage_mode != 'root')
+                  OR provider_ordinal_mode NOT IN ('unknown', 'legacy', 'provider')
              ) OR EXISTS(
                SELECT 1 FROM codex_usage_token_snapshots
                WHERE record_ordinal < 0 OR timestamp_ns < 0
