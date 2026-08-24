@@ -1,0 +1,14 @@
+{
+  "extends": "../../packages/tooling/tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["bun"]
+  },
+  "include": [
+    "../backend-readiness.test.ts",
+    "./**/*.ts",
+    "../bind-production-backend-readiness.ts",
+    "../run-backend-readiness-local.ts",
+    "../run-production-backend-readiness.ts"
+  ]
+}

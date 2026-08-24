@@ -182,4 +182,11 @@ export default defineSchema({
   })
     .index("by_owner_id", ["ownerId"])
     .index("by_owner_id_and_added_id", ["ownerId", "addedId"]),
+
+  readinessCanaries: defineTable({
+    createdAt: v.number(),
+    displayName: v.string(),
+    expiresAt: v.number(),
+    touchGrassId: v.string(),
+  }).index("by_touch_grass_id", ["touchGrassId"]),
 });

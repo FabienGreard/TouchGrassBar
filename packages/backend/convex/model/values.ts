@@ -1,6 +1,9 @@
 import { type Infer, v } from "convex/values";
 
-export const MAX_SAVED_TOKENMAXXERS = 100;
+import { backendPolicy } from "./policy";
+
+export const MAX_SAVED_TOKENMAXXERS = backendPolicy.doomerboards.savedTokenmaxxers;
+export const BOARD_KEY_VERSION = "tokens-v1";
 export const providerValidator = v.union(v.literal("codex"), v.literal("claude"));
 export const scoreScopeValidator = v.union(providerValidator, v.literal("combined"));
 export const scoreWindowValidator = v.union(v.literal(1), v.literal(7), v.literal(30));
@@ -58,7 +61,7 @@ export const WINDOWS: readonly ScoreWindow[] = [1, 7, 30];
 export const SCOPES: readonly ScoreScope[] = ["codex", "claude", "combined"];
 
 export function boardKey(scope: ScoreScope, windowDays: ScoreWindow) {
-  return `tokens-v1:${scope}:${windowDays}d`;
+  return `${BOARD_KEY_VERSION}:${scope}:${windowDays}d`;
 }
 
 export function assertUsageSnapshot(

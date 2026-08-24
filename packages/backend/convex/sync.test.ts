@@ -7,10 +7,12 @@ import rateLimiterTest from "@convex-dev/rate-limiter/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import { api, internal } from "./_generated/api";
+import { api, components, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
 import { doomerboard, doomerboardKey, type DoomerboardKey } from "./model/doomerboard";
 import { installationCredentialDigest } from "./model/profile";
+import { backendPolicy } from "./model/policy";
+import { rateLimiter } from "./model/rateLimits";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
 
@@ -74,19 +76,29 @@ function installationCredential(character: string) {
   return character.repeat(52);
 }
 
-async function authenticateProfile(t: ReturnType<typeof testBackend>, displayName: string) {
+function oracleSegmentKey(profileIndex: number, generation: number, provider: string) {
+  return `${profileIndex}:${generation}:${provider}`;
+}
+
+async function authenticateProfile(
+  t: ReturnType<typeof testBackend>,
+  displayName: string,
+  beforeSignup?: (prepared: { touchGrassId: string }) => Promise<unknown>,
+) {
   const preparation = await authFetch(t, "/api/auth/touchgrass/prepare", {
     method: "POST",
   });
   expect(preparation.status).toBe(200);
   const prepared = await json(preparation);
+  const touchGrassId = String(prepared.touchGrassId);
+  await beforeSignup?.({ touchGrassId });
   const recoveryKey = `${crypto.randomUUID()}${crypto.randomUUID()}`;
   const signup = await authFetch(t, "/api/auth/sign-up/email", {
     body: JSON.stringify({
-      email: `${String(prepared.touchGrassId).toLowerCase()}@profile.touchgrass.invalid`,
+      email: `${touchGrassId.toLowerCase()}@profile.touchgrass.invalid`,
       name: displayName,
       password: recoveryKey,
-      username: prepared.touchGrassId,
+      username: touchGrassId,
     }),
     headers: {
       "content-type": "application/json",
@@ -99,7 +111,7 @@ async function authenticateProfile(t: ReturnType<typeof testBackend>, displayNam
   const signIn = await authFetch(t, "/api/auth/sign-in/username", {
     body: JSON.stringify({
       password: recoveryKey,
-      username: prepared.touchGrassId,
+      username: touchGrassId,
     }),
     headers: { "content-type": "application/json" },
     method: "POST",
@@ -120,7 +132,7 @@ async function authenticateProfile(t: ReturnType<typeof testBackend>, displayNam
   return {
     authenticated,
     sessionToken,
-    touchGrassId: String(prepared.touchGrassId),
+    touchGrassId,
   };
 }
 
@@ -1274,6 +1286,260 @@ test("My Tokenmaxxers reads require authenticated Profile authority", async () =
   ).rejects.toThrow("authority-rejected");
 });
 
+test("the production canary cleanup removes only its Profile and is idempotent", async () => {
+  const t = testBackend();
+  const canaryCredential = installationCredential("A");
+  const canaryDisplayName = "Readiness Canary AAAAAAAAAAAA";
+  const canary = await authenticateProfile(t, canaryDisplayName, ({ touchGrassId }) =>
+    t.mutation(internal.internal.readiness.registerCanary, {
+      displayName: canaryDisplayName,
+      touchGrassId,
+    }),
+  );
+  await canary.authenticated.mutation(api.tokenmaxxers.ensureProfile, {
+    displayName: canaryDisplayName,
+    expectedTouchGrassId: canary.touchGrassId,
+    installationCredential: canaryCredential,
+  });
+  const peer = await createProfile(t, installationCredential("B"), "Peer");
+  await canary.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: peer.touchGrassId,
+  });
+  await expect(
+    peer.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: canary.touchGrassId,
+    }),
+  ).resolves.toEqual({ status: "not-found" });
+  await canary.authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: canaryCredential,
+    profileBackfillAnchor: null,
+    snapshots: [usageSnapshot()],
+  });
+  const canaryAuthority = await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", canary.touchGrassId))
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) throw new Error("Canary Active Mac missing");
+    const device = await ctx.db.get(tokenmaxxer.activeDeviceId);
+    if (!device) throw new Error("Canary Active Mac missing");
+    return { deviceId: device._id, generation: device.generation, tokenmaxxerId: tokenmaxxer._id };
+  });
+  await t.action(async (ctx) => {
+    await rateLimiter.limit(ctx, "successfulProfileRecovery", {
+      key: String(canaryAuthority.tokenmaxxerId),
+      throws: true,
+    });
+  });
+  const rateLimitValues = () =>
+    t.action(async (ctx) => ({
+      recovery: (
+        await rateLimiter.getValue(ctx, "successfulProfileRecovery", {
+          key: String(canaryAuthority.tokenmaxxerId),
+        })
+      ).value,
+      sync: (
+        await rateLimiter.getValue(ctx, "syncDailyUsage", {
+          key: `${canaryAuthority.tokenmaxxerId}:${canaryAuthority.deviceId}:${canaryAuthority.generation}`,
+        })
+      ).value,
+    }));
+  await expect(rateLimitValues()).resolves.toEqual({ recovery: 2, sync: 179 });
+
+  await expect(
+    t.mutation(internal.internal.readiness.cleanupCanary, {
+      displayName: "Peer",
+      touchGrassId: peer.touchGrassId,
+    }),
+  ).rejects.toThrow("cleanup marker rejected");
+
+  await expect(
+    t.mutation(internal.internal.readiness.cleanupCanary, {
+      displayName: canaryDisplayName,
+      touchGrassId: canary.touchGrassId,
+    }),
+  ).resolves.toEqual({
+    aggregateEntriesRemoved: 9,
+    appRecordsRemoved: 15,
+    authRecordsRemoved: 3,
+    cleanupComplete: true,
+    rateLimitKeysReset: 2,
+  });
+  await expect(
+    t.mutation(internal.internal.readiness.cleanupCanary, {
+      displayName: canaryDisplayName,
+      touchGrassId: canary.touchGrassId,
+    }),
+  ).resolves.toEqual({
+    aggregateEntriesRemoved: 0,
+    appRecordsRemoved: 0,
+    authRecordsRemoved: 0,
+    cleanupComplete: true,
+    rateLimitKeysReset: 0,
+  });
+  await expect(rateLimitValues()).resolves.toEqual({ recovery: 3, sync: 180 });
+
+  await expect(
+    t.query(components.betterAuth.adapter.findOne, {
+      model: "user",
+      where: [{ field: "username", value: canary.touchGrassId }],
+    }),
+  ).resolves.toBeNull();
+  await expect(
+    peer.authenticated.query(api.doomerboards.myTokenmaxxers, {
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).resolves.toEqual([]);
+  expect(
+    await t.run(async (ctx) => ({
+      addedTokenmaxxers: await ctx.db.query("addedTokenmaxxers").collect(),
+      devices: await ctx.db.query("devices").collect(),
+      publicUsages: await ctx.db.query("publicUsages").collect(),
+      readinessCanaries: await ctx.db.query("readinessCanaries").collect(),
+      tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
+      usageBuckets: await ctx.db.query("usageBuckets").collect(),
+    })),
+  ).toMatchObject({
+    addedTokenmaxxers: [],
+    devices: [expect.objectContaining({ tokenmaxxerId: expect.any(String) })],
+    publicUsages: [],
+    readinessCanaries: [],
+    tokenmaxxers: [expect.objectContaining({ publicId: peer.touchGrassId })],
+    usageBuckets: [],
+  });
+});
+
+test("a stored canary marker cleans an interrupted canary after expiry", async () => {
+  const t = testBackend();
+  const displayName = "Readiness Canary BBBBBBBBBBBB";
+  const credential = installationCredential("C");
+  const canary = await authenticateProfile(t, displayName, ({ touchGrassId }) =>
+    t.mutation(internal.internal.readiness.registerCanary, { displayName, touchGrassId }),
+  );
+  await canary.authenticated.mutation(api.tokenmaxxers.ensureProfile, {
+    displayName,
+    expectedTouchGrassId: canary.touchGrassId,
+    installationCredential: credential,
+  });
+  await canary.authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: null,
+    snapshots: [usageSnapshot()],
+  });
+  await expect(
+    canary.authenticated.query(api.doomerboards.currentGlobal, {
+      limit: 100,
+      rankingDay: TODAY,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).resolves.toEqual(
+    expect.arrayContaining([expect.objectContaining({ touchGrassId: canary.touchGrassId })]),
+  );
+
+  vi.setSystemTime(NOW.getTime() + backendPolicy.authentication.canaryLifetimeMs + 1);
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+  await expect(
+    t.query(components.betterAuth.adapter.findOne, {
+      model: "user",
+      where: [{ field: "username", value: canary.touchGrassId }],
+    }),
+  ).resolves.toBeNull();
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
+    aggregateEntries: 0,
+    extraEntries: 0,
+    invalidEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+    publicScores: 0,
+  });
+  await expect(
+    t.run(async (ctx) => ({
+      marker: await ctx.db.query("readinessCanaries").unique(),
+      profile: await ctx.db
+        .query("tokenmaxxers")
+        .withIndex("by_public_id", (q) => q.eq("publicId", canary.touchGrassId))
+        .unique(),
+    })),
+  ).resolves.toEqual({ marker: null, profile: null });
+});
+
+test("canary registration rejects an existing Better Auth username", async () => {
+  const t = testBackend();
+  const existing = await authenticateProfile(t, "Existing Better Auth User");
+
+  await expect(
+    t.mutation(internal.internal.readiness.registerCanary, {
+      displayName: "Readiness Canary CCCCCCCCCCCC",
+      touchGrassId: existing.touchGrassId,
+    }),
+  ).rejects.toThrow("marker rejected");
+  await expect(
+    t.run(async (ctx) => ctx.db.query("readinessCanaries").unique()),
+  ).resolves.toBeNull();
+});
+
+test("the production health inspection returns only binding and count evidence", async () => {
+  const t = testBackend();
+  const profile = await createProfile(t, installationCredential("A"), "Readiness Health");
+  await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (query) => query.eq("publicId", profile.touchGrassId))
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) throw new Error("Active Mac missing");
+    const device = await ctx.db.get(tokenmaxxer.activeDeviceId);
+    if (!device) throw new Error("Active Mac missing");
+    const {
+      _creationTime,
+      _id,
+      usageBackfillCompletedAt: _usageBackfillCompletedAt,
+      ...legacyDevice
+    } = device;
+    expect(_creationTime).toBeGreaterThan(0);
+    await ctx.db.replace(_id, legacyDevice);
+  });
+
+  await expect(t.action(internal.internal.readiness.inspectHealth, {})).resolves.toEqual({
+    canaryResidue: { markers: 0 },
+    componentChecks: {
+      betterAuth: true,
+      doomerboard: true,
+      migrations: false,
+      rateLimiter: true,
+    },
+    deviceMigration: {
+      devices: 1,
+      missingCompletionFields: 1,
+    },
+    doomerboardInvariant: {
+      aggregateEntries: 0,
+      extraEntries: 0,
+      invalidEntries: 0,
+      mismatchedEntries: 0,
+      missingEntries: 0,
+      publicScores: 0,
+    },
+    requiredEnvironment: {
+      backendBinding: false,
+      betterAuthSecret: true,
+      productionDeployment: false,
+    },
+    runtimeBinding: {
+      boardKeyVersion: "tokens-v1",
+      commit: "unbound",
+      lockHash: "unbound",
+      policyVersion: "backend-policy-v1",
+      schemaHash: "unbound",
+    },
+    productionDeployment: "unbound",
+  });
+});
+
 test("the current My Tokenmaxxers Doomerboard selects its provider and period", async () => {
   const t = testBackend();
   const owner = await createProfile(t, installationCredential("A"), "Owner");
@@ -1785,6 +2051,137 @@ test("the device completion migration preserves pending Profile authority", asyn
   ).resolves.toEqual([]);
 });
 
+test("production-shaped migrations resume after interruption and stay idempotent", async () => {
+  const t = testBackend();
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 7; index += 1) {
+      const touchGrassId = publicIdFor(index + 500);
+      const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+        activeAuthSessionId: null,
+        authSessionGeneration: 0,
+        authSubject: `migration-rehearsal-${index}`,
+        createdAt: NOW.getTime(),
+        displayName: `Migration Rehearsal ${index}`,
+        publicId: touchGrassId,
+      });
+      const deviceId = await ctx.db.insert("devices", {
+        createdAt: NOW.getTime(),
+        generation: 1,
+        installationCredentialDigest: `sha256:${String(index).padStart(64, "0")}`,
+        lastSeenAt: NOW.getTime(),
+        tokenmaxxerId,
+      });
+      await ctx.db.patch(tokenmaxxerId, { activeDeviceId: deviceId });
+      const publicUsageId = await ctx.db.insert("publicUsages", {
+        apiEquivalentCost: null,
+        boardKey: "tokens-v1:combined:1d",
+        computedAt: NOW.getTime(),
+        displayName: `Migration Rehearsal ${index}`,
+        scope: "combined",
+        tokenmaxxerId,
+        tokenScore: 100 + index,
+        touchGrassId,
+        windowDays: 1,
+      });
+      await doomerboard.insert(ctx, {
+        id: publicUsageId,
+        key: 100 + index,
+        namespace: "tokens-v1:combined:1d",
+      });
+    }
+  });
+
+  let deviceCursor: string | null = null;
+  let deviceDone = false;
+  let devicePages = 0;
+  while (!deviceDone) {
+    const page: { continueCursor: string; isDone: boolean } = await t.mutation(
+      internal.internal.migrations.backfillDeviceUsageCompletion,
+      {
+        batchSize: 2,
+        cursor: deviceCursor,
+        dryRun: false,
+        oneBatchOnly: true,
+      },
+    );
+    deviceCursor = page.continueCursor;
+    deviceDone = page.isDone;
+    devicePages += 1;
+  }
+  expect(devicePages).toBeGreaterThan(1);
+
+  let doomerboardCursor: string | null = null;
+  let doomerboardDone = false;
+  let doomerboardPages = 0;
+  while (!doomerboardDone) {
+    const page: { continueCursor: string; isDone: boolean } = await t.mutation(
+      internal.internal.migrations.backfillDoomerboard,
+      {
+        batchSize: 2,
+        cursor: doomerboardCursor,
+        dryRun: false,
+        oneBatchOnly: true,
+      },
+    );
+    doomerboardCursor = page.continueCursor;
+    doomerboardDone = page.isDone;
+    doomerboardPages += 1;
+  }
+  expect(doomerboardPages).toBeGreaterThan(1);
+  expect(
+    await t.run(
+      async (ctx) =>
+        (await ctx.db.query("devices").collect()).filter(
+          (device) => device.usageBackfillCompletedAt === undefined,
+        ).length,
+    ),
+  ).toBe(0);
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
+    aggregateEntries: 7,
+    extraEntries: 0,
+    invalidEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+    publicScores: 7,
+  });
+
+  const domainStateBeforeRepeat = await t.run(async (ctx) => ({
+    devices: await ctx.db.query("devices").collect(),
+    publicUsages: await ctx.db.query("publicUsages").collect(),
+  }));
+  await t.mutation(internal.internal.migrations.backfillDeviceUsageCompletion, {
+    batchSize: 2,
+    reset: true,
+  });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  await t.mutation(internal.internal.migrations.backfillDoomerboard, {
+    batchSize: 2,
+    reset: true,
+  });
+  await t.finishAllScheduledFunctions(vi.runAllTimers);
+  expect(
+    await t.run(async (ctx) => ({
+      devices: await ctx.db.query("devices").collect(),
+      publicUsages: await ctx.db.query("publicUsages").collect(),
+    })),
+  ).toEqual(domainStateBeforeRepeat);
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toMatchObject({
+    extraEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+  });
+  await expect(t.action(internal.internal.readiness.inspectHealth, {})).resolves.toMatchObject({
+    canaryResidue: { markers: 0 },
+    componentChecks: {
+      betterAuth: true,
+      doomerboard: true,
+      migrations: true,
+      rateLimiter: true,
+    },
+    deviceMigration: { devices: 7, missingCompletionFields: 0 },
+  });
+});
+
 test("Active Mac authority is isolated by Profile, credential, generation, and revocation", async () => {
   const t = testBackend();
   const aliceCredential = installationCredential("A");
@@ -1968,6 +2365,171 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
     tokenScore: 425,
   });
   expect(combinedUsage?.apiEquivalentCost?.coveragePercent).toBeCloseTo(76.470_588);
+});
+
+test("a seeded independent oracle matches randomized corrections, transfer, and ranks", async () => {
+  const t = testBackend();
+  const profiles = await Promise.all(
+    ["A", "B", "C", "D"].map((character, index) =>
+      createProfile(t, installationCredential(character), `Oracle ${index}`),
+    ),
+  );
+  const credentials = ["A", "B", "C", "D"].map(installationCredential);
+  const generations = [1, 1, 1, 1];
+  const segments = new Map<string, number>();
+  const revisions = new Map<string, number>();
+  const providers = ["codex", "claude"] as const;
+  for (let profileIndex = 0; profileIndex < profiles.length; profileIndex += 1) {
+    const snapshots = providers.map((provider, providerIndex) => {
+      const observedTokens = (profileIndex + 1) * 100 + providerIndex * 25;
+      segments.set(oracleSegmentKey(profileIndex, 1, provider), observedTokens);
+      revisions.set(oracleSegmentKey(profileIndex, 1, provider), 1);
+      return usageSnapshot({ apiEquivalentCost: null, observedTokens, provider });
+    });
+    await profiles[profileIndex]!.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credentials[profileIndex]!,
+      profileBackfillAnchor: null,
+      snapshots,
+    });
+  }
+
+  let state = 0x5eed_1234;
+  const nextRandom = () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+
+  for (let step = 0; step < 40; step += 1) {
+    if (step === 17) {
+      const newCredential = installationCredential("Z");
+      const activeMacActivatedAt = await transferActiveDevice(
+        t,
+        profiles[0]!.touchGrassId,
+        newCredential,
+        2,
+      );
+      await profiles[0]!.authenticated.mutation(api.tokenmaxxers.ensureProfile, {
+        displayName: "Oracle 0",
+        expectedTouchGrassId: profiles[0]!.touchGrassId,
+        installationCredential: newCredential,
+      });
+      expect(activeMacActivatedAt).toBe(NOW.getTime());
+      credentials[0] = newCredential;
+      generations[0] = 2;
+    }
+
+    const profileIndex = nextRandom() % profiles.length;
+    const provider = providers[nextRandom() % providers.length]!;
+    const generation = generations[profileIndex]!;
+    const key = oracleSegmentKey(profileIndex, generation, provider);
+    const previousTokens = segments.get(key);
+    const revision = (revisions.get(key) ?? 0) + 1;
+    const observedTokens = nextRandom() % 1_000;
+    const isDecrease = previousTokens !== undefined && observedTokens < previousTokens;
+    const snapshot = usageSnapshot({
+      apiEquivalentCost: null,
+      correctionReason: isDecrease ? "parser-correction" : null,
+      correctionRevision: isDecrease ? revision : null,
+      observedTokens,
+      provider,
+      revision,
+    });
+    await profiles[profileIndex]!.authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: generation,
+      installationCredential: credentials[profileIndex]!,
+      profileBackfillAnchor: null,
+      snapshots: [snapshot],
+    });
+    segments.set(key, observedTokens);
+    revisions.set(key, revision);
+  }
+
+  const expectedProviderScore = (profileIndex: number, provider: string) =>
+    [...segments.entries()]
+      .filter(([key]) => key.startsWith(`${profileIndex}:`) && key.endsWith(`:${provider}`))
+      .reduce((total, [, tokens]) => total + tokens, 0);
+  const expectedScore = (profileIndex: number, scope: string) =>
+    scope === "combined"
+      ? providers.reduce(
+          (total, provider) => total + expectedProviderScore(profileIndex, provider),
+          0,
+        )
+      : expectedProviderScore(profileIndex, scope);
+
+  const stored = await t.run(async (ctx) => ({
+    publicUsages: await ctx.db.query("publicUsages").collect(),
+    tokenmaxxers: await ctx.db.query("tokenmaxxers").collect(),
+    userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
+  }));
+  for (let profileIndex = 0; profileIndex < profiles.length; profileIndex += 1) {
+    const touchGrassId = profiles[profileIndex]!.touchGrassId;
+    const tokenmaxxer = stored.tokenmaxxers.find((row) => row.publicId === touchGrassId);
+    if (!tokenmaxxer) throw new Error("Oracle Profile missing");
+    for (const provider of providers) {
+      expect(
+        stored.userDailyUsage.find(
+          (row) => row.tokenmaxxerId === tokenmaxxer._id && row.provider === provider,
+        )?.observedTokens,
+      ).toBe(expectedProviderScore(profileIndex, provider));
+    }
+    for (const scope of ["codex", "claude", "combined"] as const) {
+      for (const windowDays of [1, 7, 30] as const) {
+        expect(
+          stored.publicUsages.find(
+            (row) =>
+              row.tokenmaxxerId === tokenmaxxer._id &&
+              row.scope === scope &&
+              row.windowDays === windowDays,
+          )?.tokenScore,
+        ).toBe(expectedScore(profileIndex, scope));
+      }
+    }
+  }
+
+  const reader = profiles[1]!.authenticated;
+  for (const scope of ["codex", "claude", "combined"] as const) {
+    const expectedRows = profiles
+      .map((profile, profileIndex) => ({
+        tokenScore: expectedScore(profileIndex, scope),
+        touchGrassId: profile.touchGrassId,
+      }))
+      .sort(
+        (left, right) =>
+          right.tokenScore - left.tokenScore || left.touchGrassId.localeCompare(right.touchGrassId),
+      )
+      .map((row, index, rows) => ({
+        rank:
+          index === 0 || row.tokenScore !== rows[index - 1]!.tokenScore
+            ? index + 1
+            : rows
+                .slice(0, index)
+                .findIndex((candidate) => candidate.tokenScore === row.tokenScore) + 1,
+        tokenScore: row.tokenScore,
+        touchGrassId: row.touchGrassId,
+      }));
+    for (const windowDays of [1, 7, 30] as const) {
+      const rows = await reader.query(api.doomerboards.currentGlobal, {
+        limit: 100,
+        rankingDay: TODAY,
+        scope,
+        windowDays,
+      });
+      expect(
+        rows.map(({ rank, tokenScore, touchGrassId }) => ({ rank, tokenScore, touchGrassId })),
+      ).toEqual(expectedRows);
+    }
+  }
+  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
+    aggregateEntries: 36,
+    extraEntries: 0,
+    invalidEntries: 0,
+    mismatchedEntries: 0,
+    missingEntries: 0,
+    publicScores: 36,
+  });
 });
 
 test("a rollover accepts a zero transfer carryover after activation", async () => {

@@ -129,6 +129,11 @@ export const addToMyTokenmaxxers = mutation({
     if (!validTouchGrassId(args.touchGrassId)) {
       return { status: "invalid" as const };
     }
+    const readinessCanary = await ctx.db
+      .query("readinessCanaries")
+      .withIndex("by_touch_grass_id", (q) => q.eq("touchGrassId", args.touchGrassId))
+      .unique();
+    if (readinessCanary) return { status: "not-found" as const };
     const added = await ctx.db
       .query("tokenmaxxers")
       .withIndex("by_public_id", (q) => q.eq("publicId", args.touchGrassId))

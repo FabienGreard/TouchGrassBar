@@ -5,6 +5,7 @@ import { query, type QueryCtx } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { doomerboard, type DoomerboardKey, type LegacyDoomerboardKey } from "./model/doomerboard";
 import { rejectAuthority } from "./model/authority";
+import { backendPolicy } from "./model/policy";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
   apiEquivalentCostValidator,
@@ -25,9 +26,9 @@ const doomerboardRow = v.object({
   touchGrassId: v.string(),
 });
 
-const CURRENT_GLOBAL_SCAN_LIMIT = 640;
+const CURRENT_GLOBAL_SCAN_LIMIT = backendPolicy.doomerboards.globalScanRows;
 const SCAN_ROWS_PER_KEY_FORMAT = CURRENT_GLOBAL_SCAN_LIMIT / 2;
-const MAX_LEGACY_COMPATIBILITY_ROWS = CURRENT_GLOBAL_SCAN_LIMIT;
+const MAX_LEGACY_COMPATIBILITY_ROWS = backendPolicy.doomerboards.legacyCompatibilityRows;
 const canonicalKeyBounds = {
   lower: {
     inclusive: true,
@@ -115,7 +116,10 @@ async function globalRows(
   requiredComputedRankingDay?: string,
 ) {
   await requireDoomerboardProfile(ctx);
-  const limit = Math.min(Math.max(Math.floor(requestedLimit ?? 50), 1), 100);
+  const limit = Math.min(
+    Math.max(Math.floor(requestedLimit ?? 50), 1),
+    backendPolicy.doomerboards.globalResultLimit,
+  );
   const scanLimit = requiredComputedRankingDay === undefined ? limit : SCAN_ROWS_PER_KEY_FORMAT;
   const namespace = boardKey(scope, windowDays);
   const [canonicalPage, legacyItems] = await Promise.all([

@@ -3,13 +3,11 @@ import { v } from "convex/values";
 import { internal } from "../_generated/api";
 import { internalMutation, internalQuery, type MutationCtx } from "../_generated/server";
 import { installationCredentialDigest, profileSessionIsAuthorized } from "../model/profile";
+import { backendPolicy } from "../model/policy";
 import { rateLimiter } from "../model/rateLimits";
 import { freezeTransferDayUsage } from "../model/sync";
 import { rankingDayAt } from "../model/values";
 
-const RECOVERY_ATTEMPT_LIFETIME_MS = 5 * 60 * 1_000;
-const RECOVERY_COMMIT_GRACE_MS = 60 * 1_000;
-const RECOVERY_AUTH_FINALIZATION_LEASE_MS = 60 * 1_000;
 const MAX_SAFE_GENERATION = Number.MAX_SAFE_INTEGER;
 
 const recoveryCommitResult = v.object({
@@ -66,7 +64,7 @@ export const prepareRecoveryAttempt = internalMutation({
     }
     if (existing) {
       if (existing.status === "committed" && tokenmaxxer.recoveryAttemptId === existing._id) {
-        const expiresAt = Date.now() + RECOVERY_ATTEMPT_LIFETIME_MS;
+        const expiresAt = Date.now() + backendPolicy.recovery.attemptLifetimeMs;
         await ctx.db.patch(existing._id, { expiresAt });
         await ctx.scheduler.runAt(expiresAt, internal.auth.profileRecovery.expireRecoveryAttempt, {
           recoveryAttemptId: existing._id,
@@ -82,7 +80,7 @@ export const prepareRecoveryAttempt = internalMutation({
         existing.expectedDeviceId === activeDevice._id &&
         existing.expectedGeneration === activeDevice.generation
       ) {
-        const expiresAt = Date.now() + RECOVERY_ATTEMPT_LIFETIME_MS;
+        const expiresAt = Date.now() + backendPolicy.recovery.attemptLifetimeMs;
         await ctx.db.patch(existing._id, { expiresAt });
         await ctx.scheduler.runAt(expiresAt, internal.auth.profileRecovery.expireRecoveryAttempt, {
           recoveryAttemptId: existing._id,
@@ -104,7 +102,7 @@ export const prepareRecoveryAttempt = internalMutation({
       };
     }
 
-    const expiresAt = Date.now() + RECOVERY_ATTEMPT_LIFETIME_MS;
+    const expiresAt = Date.now() + backendPolicy.recovery.attemptLifetimeMs;
     const recoveryAttemptId = await ctx.db.insert("profileRecoveryAttempts", {
       attemptDigest: args.attemptDigest,
       expectedDeviceId: activeDevice._id,
@@ -291,7 +289,7 @@ export const claimRecoveryAuthFinalization = internalMutation({
     }
     await ctx.db.patch(attempt._id, {
       authFinalizationClaim: args.claim,
-      authFinalizationLeaseExpiresAt: Date.now() + RECOVERY_AUTH_FINALIZATION_LEASE_MS,
+      authFinalizationLeaseExpiresAt: Date.now() + backendPolicy.recovery.authFinalizationLeaseMs,
     });
     return true;
   },
@@ -427,7 +425,7 @@ export const expireRecoveryAttempt = internalMutation({
     if (!attempt || attempt.status === "committed") return null;
     const removeAt =
       attempt.status === "committing"
-        ? attempt.expiresAt + RECOVERY_COMMIT_GRACE_MS
+        ? attempt.expiresAt + backendPolicy.recovery.commitGraceMs
         : attempt.expiresAt;
     if (removeAt > Date.now()) {
       await ctx.scheduler.runAt(

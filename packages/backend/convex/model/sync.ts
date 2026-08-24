@@ -3,6 +3,7 @@ import type { GenericId } from "convex/values";
 import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { rateLimiter } from "./rateLimits";
+import { backendPolicy } from "./policy";
 import { requireActiveDevice, type AuthUserReference } from "./profile";
 import { calculateScore, recomputeScores } from "./scores";
 import {
@@ -37,12 +38,7 @@ type CorrectionLineage = {
   revision: number;
 };
 
-// One initial generation plus the transfer policy limit of three per hour.
-const MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY = 73;
-const MAX_TRANSFER_DAY_CARRYOVERS = 2;
 const PROVIDERS = ["codex", "claude"] as const satisfies readonly Provider[];
-const PROFILE_BACKFILL_DAYS = 30;
-const RETAINED_USAGE_DAYS = 60;
 
 async function upsertDailyUsage(
   ctx: MutationCtx,
@@ -58,8 +54,8 @@ async function upsertDailyUsage(
         .eq("provider", snapshot.provider)
         .eq("rankingDay", snapshot.rankingDay),
     )
-    .take(MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY + 1);
-  if (segments.length > MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY) {
+    .take(backendPolicy.synchronization.maxActiveMacSegmentsPerProviderDay + 1);
+  if (segments.length > backendPolicy.synchronization.maxActiveMacSegmentsPerProviderDay) {
     throw new Error("Daily Usage has too many Active Mac segments");
   }
   const dailyUsage = calculateScore(segments, snapshot.provider, 1, snapshot.rankingDay);
@@ -166,10 +162,16 @@ export async function freezeTransferDayUsage(
 }
 
 function assertBatchSize(snapshots: UsageSnapshot[], profileBackfillAnchor: string | null) {
-  if (profileBackfillAnchor !== null && snapshots.length > 60) {
+  if (
+    profileBackfillAnchor !== null &&
+    snapshots.length > backendPolicy.synchronization.maxProfileBackfillSnapshots
+  ) {
     throw new Error("a Profile backfill must contain at most 60 Daily Usage Snapshots");
   }
-  if (snapshots.length > 62 || (snapshots.length === 0 && profileBackfillAnchor === null)) {
+  if (
+    snapshots.length > backendPolicy.synchronization.maxSnapshotsPerRequest ||
+    (snapshots.length === 0 && profileBackfillAnchor === null)
+  ) {
     throw new Error("sync must contain between 1 and 62 Daily Usage Snapshots");
   }
 }
@@ -248,7 +250,10 @@ function validateBatch(
   const firstProfileBackfillDay =
     profileBackfillAnchor === null
       ? null
-      : subtractRankingDays(profileBackfillAnchor, PROFILE_BACKFILL_DAYS - 1);
+      : subtractRankingDays(
+          profileBackfillAnchor,
+          backendPolicy.synchronization.profileBackfillDays - 1,
+        );
   for (const snapshot of snapshots) {
     if (
       profileBackfillAnchor !== null &&
@@ -267,19 +272,22 @@ function validateBatch(
         throw new Error("transfer-day evidence must be observed after Active Mac activation");
       }
     } else if (device.generation === 1) {
-      const firstRetainedDay = subtractRankingDays(today, RETAINED_USAGE_DAYS - 1);
+      const firstRetainedDay = subtractRankingDays(
+        today,
+        backendPolicy.synchronization.retainedUsageDays - 1,
+      );
       if (snapshot.rankingDay < firstRetainedDay || snapshot.rankingDay >= today) {
         throw new Error("historical snapshot is outside the retained UTC window");
       }
       assertUsageSnapshot(snapshot, snapshot.rankingDay, now, true);
       profileBackfillSnapshots += 1;
-      if (profileBackfillSnapshots > 60) {
+      if (profileBackfillSnapshots > backendPolicy.synchronization.maxProfileBackfillSnapshots) {
         throw new Error("sync contains too many Profile backfill snapshots");
       }
     } else {
       assertTransferDayCarryover(snapshot, device, today, now);
       transferDayCarryovers += 1;
-      if (transferDayCarryovers > MAX_TRANSFER_DAY_CARRYOVERS) {
+      if (transferDayCarryovers > backendPolicy.synchronization.maxTransferDayCarryovers) {
         throw new Error("sync contains too many Active Mac transfer carryovers");
       }
     }
@@ -300,7 +308,10 @@ function assertHistoricalAdmission(
   if (device.generation !== 1) return;
   const backfillIsComplete = typeof device.usageBackfillCompletedAt === "number";
   const anchorDay = rankingDayAt(device.createdAt);
-  const firstBackfillDay = subtractRankingDays(anchorDay, PROFILE_BACKFILL_DAYS - 1);
+  const firstBackfillDay = subtractRankingDays(
+    anchorDay,
+    backendPolicy.synchronization.profileBackfillDays - 1,
+  );
   for (const plan of plans) {
     if (plan.snapshot.rankingDay === today) continue;
     if (!backfillIsComplete && !plan.existing && profileBackfillAnchor === null) {

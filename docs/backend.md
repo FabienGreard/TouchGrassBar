@@ -179,7 +179,7 @@ An automated hostile-input suite rejects oversized payloads, invalid or future R
 
 ## Production readiness contract
 
-Backend readiness is binary and automated. Local or development results do not qualify. Every mandatory check must pass; failed, skipped, or stale evidence blocks launch. Auth, privacy, authorization, data-integrity, migration, and canary failures cannot be waived.
+Backend canary readiness is binary and automated. Local or development results do not qualify. Every mandatory check must pass; failed, skipped, or stale evidence blocks launch. Auth, privacy, authorization, data-integrity, migration, and canary failures cannot be waived. A complete production canary can report `canary-ready`, but its `productionReadiness` remains `not-ready` until separate real-traffic evidence exists.
 
 The automated evidence set contains:
 
@@ -196,4 +196,9 @@ The resulting Backend Readiness Evidence is one machine-readable CI artifact con
 
 ## Validation
 
-This document defines the target contract; it does not claim launch readiness. The issue 26 and issue 27 implementations have a typed current-day mutation, a bounded first-Profile backfill, live Better Auth authorization, Active Mac generation checks, correction provenance, and a native latest-revision outbox. Local tests do not prove a production deployment, authenticated canary, production Active Mac transfer or backfill, rollover completion, or release approval. Those items and regenerated Backend Readiness Evidence remain separate gates.
+The implementation and the manual workflow are described in
+[`backend-readiness.md`](./backend-readiness.md). Their presence does not claim
+launch readiness. Local tests do not prove a production deployment. A fresh,
+approved workflow run must produce `canary-ready` evidence for the exact
+deployment. Production readiness, desktop release approval, and real-traffic
+evidence remain separate gates.

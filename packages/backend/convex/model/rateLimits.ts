@@ -1,20 +1,21 @@
 import { MINUTE, RateLimiter } from "@convex-dev/rate-limiter";
 
 import { components } from "../_generated/api";
+import { backendPolicy } from "./policy";
 
 export const touchGrassAuthPolicy = {
   failedRecoveryKey: {
-    attempts: 5,
-    reservationMs: 15 * MINUTE,
-    windowMs: 15 * MINUTE,
+    attempts: backendPolicy.recovery.failedAttempts,
+    reservationMs: backendPolicy.recovery.failedAttemptReservationMs,
+    windowMs: backendPolicy.recovery.failedAttemptWindowMs,
   },
   profilePreparation: {
-    attempts: 5,
-    windowMs: MINUTE,
+    attempts: backendPolicy.authentication.profilePreparationAttempts,
+    windowMs: backendPolicy.authentication.profilePreparationWindowMs,
   },
   successfulProfileRecovery: {
-    attempts: 3,
-    windowMs: 60 * MINUTE,
+    attempts: backendPolicy.recovery.successfulTransfers,
+    windowMs: backendPolicy.recovery.successfulTransferWindowMs,
   },
 } as const;
 
@@ -38,10 +39,10 @@ export const rateLimiter = new RateLimiter(components.rateLimiter, {
     start: 0,
   },
   syncDailyUsage: {
-    capacity: 180,
+    capacity: backendPolicy.synchronization.rateCapacity,
     kind: "token bucket",
     period: MINUTE,
-    rate: 60,
+    rate: backendPolicy.synchronization.ratePerMinute,
   },
   successfulProfileRecovery: {
     kind: "fixed window",

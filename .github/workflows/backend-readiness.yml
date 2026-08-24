@@ -1,0 +1,88 @@
+name: Governed production backend readiness
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-backend-readiness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Prove the clean source locally
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install exact dependencies
+        run: bun install --frozen-lockfile
+      - name: Run the automated suite and migration rehearsal
+        run: bun backend:readiness:local --output "$RUNNER_TEMP/backend-readiness-preflight.json"
+      - name: Upload the source-bound preflight
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-readiness-preflight
+          path: ${{ runner.temp }}/backend-readiness-preflight.json
+          if-no-files-found: error
+          retention-days: 30
+
+  production:
+    name: Deploy and prove the exact production backend
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: production-backend
+    env:
+      TOUCHGRASS_PRODUCTION_CONVEX_URL: ${{ vars.TOUCHGRASS_PRODUCTION_CONVEX_URL }}
+      TOUCHGRASS_PRODUCTION_DEPLOYMENT: ${{ vars.TOUCHGRASS_PRODUCTION_DEPLOYMENT }}
+      TOUCHGRASS_PRODUCTION_SITE_URL: ${{ vars.TOUCHGRASS_PRODUCTION_SITE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - name: Install exact dependencies
+        run: bun install --frozen-lockfile
+      - name: Download the exact-source preflight
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-readiness-preflight
+          path: ${{ runner.temp }}/backend-readiness-preflight
+      - name: Bind the production runtime to this source
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+        run: >-
+          bun backend:readiness:bind
+          --preflight "$RUNNER_TEMP/backend-readiness-preflight/backend-readiness-preflight.json"
+      - name: Deploy the bound backend
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+        run: bun convex:deploy
+      - name: Run the disposable authenticated canary and health proof
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+        run: >-
+          bun backend:readiness:production
+          --preflight "$RUNNER_TEMP/backend-readiness-preflight/backend-readiness-preflight.json"
+          --output "$RUNNER_TEMP/backend-readiness.json"
+      - name: Upload Backend Readiness Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-readiness-evidence
+          path: ${{ runner.temp }}/backend-readiness.json
+          if-no-files-found: warn
+          retention-days: 30
