@@ -6,6 +6,11 @@ import {
 } from "@/native-state/tauri-settings-adapter";
 
 describe("Tauri Settings adapter", () => {
+  const recoveryCredentials = {
+    recoveryKey: "2".repeat(48),
+    touchGrassId: "TG-234567",
+  };
+
   test("uses exact Settings commands and the bounded navigation event", async () => {
     const fakeRecoveryKey = "2".repeat(48);
     const stops = new Map<string, ReturnType<typeof vi.fn>>();
@@ -26,6 +31,7 @@ describe("Tauri Settings adapter", () => {
     const clearRecovery = vi.fn();
 
     await adapter.read();
+    await adapter.recoverProfile(recoveryCredentials);
     await adapter.setLaunchAtLogin(true);
     await adapter.updateDisplayName("New name");
     await adapter.setProviderEnabled("claude", false);
@@ -44,20 +50,21 @@ describe("Tauri Settings adapter", () => {
     });
 
     expect(bindings.invoke).toHaveBeenNthCalledWith(1, "get_settings_state", undefined);
-    expect(bindings.invoke).toHaveBeenNthCalledWith(2, "set_launch_at_login", {
+    expect(bindings.invoke).toHaveBeenNthCalledWith(2, "recover_profile", recoveryCredentials);
+    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "set_launch_at_login", {
       enabled: true,
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "update_profile_display_name", {
+    expect(bindings.invoke).toHaveBeenNthCalledWith(4, "update_profile_display_name", {
       displayName: "New name",
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(4, "set_provider_enabled", {
+    expect(bindings.invoke).toHaveBeenNthCalledWith(5, "set_provider_enabled", {
       enabled: false,
       provider: "claude",
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(5, "select_settings_section", {
+    expect(bindings.invoke).toHaveBeenNthCalledWith(6, "select_settings_section", {
       section: "profile",
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(6, "reveal_recovery_key", undefined);
+    expect(bindings.invoke).toHaveBeenNthCalledWith(7, "reveal_recovery_key", undefined);
     expect(bindings.listen).toHaveBeenCalledWith(
       "settings-navigation-requested",
       expect.any(Function),
@@ -83,6 +90,10 @@ describe("Tauri Settings adapter", () => {
 
     expect(await adapter.read()).toEqual({
       fault: { code: "settings-state-unavailable" },
+      ok: false,
+    });
+    expect(await adapter.recoverProfile(recoveryCredentials)).toEqual({
+      fault: { code: "profile-recovery-unavailable" },
       ok: false,
     });
     expect(await adapter.setLaunchAtLogin(true)).toEqual({

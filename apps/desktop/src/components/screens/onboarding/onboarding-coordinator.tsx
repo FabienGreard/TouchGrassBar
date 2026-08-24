@@ -11,6 +11,7 @@ import {
   onboardingSteps,
   type OnboardingStep,
 } from "@/components/screens/onboarding/onboarding-flow";
+import { RecoveryDialog } from "@/components/dialogs/recovery-dialog";
 import { createBootstrapDelivery } from "@/native-state/bootstrap-delivery";
 import { createTauriBootstrapAdapter } from "@/native-state/tauri-bootstrap-adapter";
 import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
@@ -38,6 +39,7 @@ function OnboardingCoordinator({
   const [displayName, setDisplayName] = useState("");
   const [checkingProviders, setCheckingProviders] = useState(false);
   const [submissionFailed, setSubmissionFailed] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   useEffect(() => {
     void delivery.read();
@@ -63,12 +65,12 @@ function OnboardingCoordinator({
 
   useEffect(() => {
     const handler = createNativeWindowKeyboardHandler({
-      enabled: true,
+      enabled: !recoveryOpen,
       hide: () => void delivery.hide(),
     });
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [delivery]);
+  }, [delivery, recoveryOpen]);
 
   const selectStep = (nextStep: OnboardingStep) => {
     setStep(nextStep);
@@ -93,32 +95,43 @@ function OnboardingCoordinator({
       : "idle";
 
   return (
-    <OnboardingScreen
-      appVersion={updateView.state?.currentVersion}
-      busyProviders={checkingProviders}
-      canComplete={view.phase === "ready" && view.snapshot?.persistence === "available"}
-      displayName={displayName}
-      furthestStep={furthestStep}
-      onCheckProvider={() => {
-        setCheckingProviders(true);
-        void delivery.read().finally(() => setCheckingProviders(false));
-      }}
-      onDisplayNameChange={(nextDisplayName) => {
-        setSubmissionFailed(false);
-        setDisplayName(nextDisplayName);
-      }}
-      onFinish={(nextDisplayName) => {
-        setSubmissionFailed(false);
-        void delivery.complete(nextDisplayName).then((completed) => {
-          setSubmissionFailed(!completed);
-        });
-      }}
-      onStepChange={selectStep}
-      providers={providerAccessPresentations(providers)}
-      setupState={setupState}
-      step={step}
-      submissionState={submissionState}
-    />
+    <>
+      <OnboardingScreen
+        appVersion={updateView.state?.currentVersion}
+        busyProviders={checkingProviders}
+        canComplete={view.phase === "ready" && view.snapshot?.persistence === "available"}
+        displayName={displayName}
+        furthestStep={furthestStep}
+        onCheckProvider={() => {
+          setCheckingProviders(true);
+          void delivery.read().finally(() => setCheckingProviders(false));
+        }}
+        onDisplayNameChange={(nextDisplayName) => {
+          setSubmissionFailed(false);
+          setDisplayName(nextDisplayName);
+        }}
+        onFinish={(nextDisplayName) => {
+          setSubmissionFailed(false);
+          void delivery.complete(nextDisplayName).then((completed) => {
+            setSubmissionFailed(!completed);
+          });
+        }}
+        onStartRecovery={() => {
+          setSubmissionFailed(false);
+          setRecoveryOpen(true);
+        }}
+        onStepChange={selectStep}
+        providers={providerAccessPresentations(providers)}
+        setupState={setupState}
+        step={step}
+        submissionState={submissionState}
+      />
+      <RecoveryDialog
+        onOpenChange={setRecoveryOpen}
+        onRecover={(credentials) => delivery.recoverProfile(credentials)}
+        open={recoveryOpen}
+      />
+    </>
   );
 }
 

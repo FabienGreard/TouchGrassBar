@@ -40,13 +40,14 @@ type CorrectionLineage = {
 // One initial generation plus the transfer policy limit of three per hour.
 const MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY = 73;
 const MAX_TRANSFER_DAY_CARRYOVERS = 2;
+const PROVIDERS = ["codex", "claude"] as const satisfies readonly Provider[];
 const PROFILE_BACKFILL_DAYS = 30;
 const RETAINED_USAGE_DAYS = 60;
 
 async function upsertDailyUsage(
   ctx: MutationCtx,
   tokenmaxxerId: GenericId<"tokenmaxxers">,
-  snapshot: UsageSnapshot,
+  snapshot: Pick<UsageSnapshot, "provider" | "rankingDay">,
   costUnavailable: boolean,
 ) {
   const segments = await ctx.db
@@ -87,6 +88,81 @@ async function upsertDailyUsage(
     rankingDay: snapshot.rankingDay,
     tokenmaxxerId,
   });
+}
+
+export async function freezeTransferDayUsage(
+  ctx: MutationCtx,
+  tokenmaxxerId: GenericId<"tokenmaxxers">,
+  previousDeviceId: GenericId<"devices">,
+  newDeviceId: GenericId<"devices">,
+  transferDay: string,
+) {
+  const oldSegments = (
+    await Promise.all(
+      PROVIDERS.map((provider) =>
+        ctx.db
+          .query("usageBuckets")
+          .withIndex("by_device_id_and_provider_and_ranking_day", (query) =>
+            query
+              .eq("deviceId", previousDeviceId)
+              .eq("provider", provider)
+              .eq("rankingDay", transferDay),
+          )
+          .unique(),
+      ),
+    )
+  ).filter((segment): segment is Doc<"usageBuckets"> => segment !== null);
+  const providerSettings = await ctx.db
+    .query("deviceProviderSettings")
+    .withIndex("by_device_id", (query) => query.eq("deviceId", previousDeviceId))
+    .unique();
+  if (
+    providerSettings?.tokenmaxxerId !== undefined &&
+    providerSettings.tokenmaxxerId !== tokenmaxxerId
+  ) {
+    throw new Error("Active Mac provider settings owner is invalid");
+  }
+  const affectedProviders = new Set<Provider>(
+    providerSettings
+      ? [
+          ...(providerSettings.codexEnabled ? (["codex"] as const) : []),
+          ...(providerSettings.claudeEnabled ? (["claude"] as const) : []),
+        ]
+      : PROVIDERS,
+  );
+  for (const segment of oldSegments) {
+    if (segment.coverage !== "partial") {
+      await ctx.db.patch(segment._id, { coverage: "partial" });
+      affectedProviders.add(segment.provider);
+    }
+  }
+  for (const provider of affectedProviders) {
+    const existingBoundary = await ctx.db
+      .query("usageTransferBoundaries")
+      .withIndex("by_tokenmaxxer_id_and_provider_and_ranking_day", (query) =>
+        query
+          .eq("tokenmaxxerId", tokenmaxxerId)
+          .eq("provider", provider)
+          .eq("rankingDay", transferDay),
+      )
+      .unique();
+    if (!existingBoundary) {
+      await ctx.db.insert("usageTransferBoundaries", {
+        createdAt: Date.now(),
+        newDeviceId,
+        previousDeviceId,
+        provider,
+        rankingDay: transferDay,
+        tokenmaxxerId,
+      });
+    }
+  }
+  for (const provider of affectedProviders) {
+    await upsertDailyUsage(ctx, tokenmaxxerId, { provider, rankingDay: transferDay }, false);
+  }
+  if (affectedProviders.size > 0) {
+    await recomputeScores(ctx, tokenmaxxerId, transferDay);
+  }
 }
 
 function assertBatchSize(snapshots: UsageSnapshot[], profileBackfillAnchor: string | null) {
@@ -183,6 +259,13 @@ function validateBatch(
     }
     if (snapshot.rankingDay === today) {
       assertUsageSnapshot(snapshot, today, now);
+      if (
+        device.generation > 1 &&
+        snapshot.rankingDay === rankingDayAt(device.createdAt) &&
+        snapshot.observedAt < device.createdAt
+      ) {
+        throw new Error("transfer-day evidence must be observed after Active Mac activation");
+      }
     } else if (device.generation === 1) {
       const firstRetainedDay = subtractRankingDays(today, RETAINED_USAGE_DAYS - 1);
       if (snapshot.rankingDay < firstRetainedDay || snapshot.rankingDay >= today) {
@@ -529,7 +612,12 @@ export async function applyUsageSnapshots(
     throws: true,
   });
   validateBatch(snapshots, device, today, now, profileBackfillAnchor);
-  const plans = await planSnapshots(ctx, device._id, snapshots);
+  const acceptedSnapshots = snapshots.map((snapshot) =>
+    device.generation > 1 && snapshot.rankingDay === rankingDayAt(device.createdAt)
+      ? { ...snapshot, coverage: "partial" as const }
+      : snapshot,
+  );
+  const plans = await planSnapshots(ctx, device._id, acceptedSnapshots);
   assertHistoricalAdmission(plans, device, today, profileBackfillAnchor);
   const committed = plans.filter(({ acknowledgement }) => acknowledgement.outcome === "committed");
   for (const plan of committed) {

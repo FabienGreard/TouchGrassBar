@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-Convex receives authenticated daily usage snapshots from the Rust native core and owns every public score. It never receives prompts, conversations, credentials, cookies, raw logs, or local paths. React has no Convex client or authentication material.
+Convex receives authenticated daily usage snapshots from the Rust native core and owns every public score. It never receives prompts, conversations, provider credentials, cookies, raw logs, or local paths. React has no Convex client, JWT, or session material. The shared Profile recovery dialog may hold the entered Recovery Key only in volatile component state until it sends one narrow native recovery command.
 
 The deployed flow is:
 
@@ -179,7 +179,7 @@ Backend readiness is binary and automated. Local or development results do not q
 
 The automated evidence set contains:
 
-- generated-credential tests for one-time signup-proof expiry and replay rejection, Recovery Key hashing, session and JWT claims, immediate revocation, and secret exclusion from Convex data, logs, React, and artifacts;
+- generated-credential tests for one-time signup-proof expiry and replay rejection, Recovery Key hashing, session and JWT claims, immediate revocation, and secret exclusion from Convex data, logs, React persistence, previews, and artifacts;
 - authorization tests for absent, expired, revoked, and mismatched sessions; wrong installations; stale Active Mac generations; and transfer/sync races;
 - atomic synchronization tests for retries, duplicate and concurrent delivery, valid corrections, rollback, same-day transfer segmentation, and abandoned old-generation work;
 - fake-clock UTC rollover tests across month, year, leap-day, and daylight-saving boundaries, plus a complete paginated-drain test;

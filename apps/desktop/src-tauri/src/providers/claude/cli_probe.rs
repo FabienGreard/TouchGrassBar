@@ -555,7 +555,7 @@ fn parse_clock(value: &str) -> Result<(u32, u32), ()> {
     } else {
         return Err(());
     };
-    let (hour, minute) = clock.split_once(':').map_or((clock, "0"), |parts| parts);
+    let (hour, minute) = clock.split_once(':').unwrap_or((clock, "0"));
     let mut hour = hour.parse::<u32>().map_err(|_| ())?;
     let minute = minute.parse::<u32>().map_err(|_| ())?;
     if !(1..=12).contains(&hour) || minute > 59 {

@@ -40,6 +40,18 @@ function createTauriBootstrapAdapter(
       return outcome.ok ? { ok: true, value: undefined } : outcome;
     },
     read: () => closedInvoke(bindings, "get_bootstrap_state", "bootstrap-state-unavailable"),
+    recoverProfile: async (credentials) => {
+      const outcome = await closedInvoke(
+        bindings,
+        "recover_profile",
+        "profile-recovery-unavailable",
+        {
+          recoveryKey: credentials.recoveryKey,
+          touchGrassId: credentials.touchGrassId,
+        },
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
   };
 }
 

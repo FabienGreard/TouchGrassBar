@@ -104,7 +104,7 @@ describe("panel sync status", () => {
   test.each([
     ["stale", "Synchronization is delayed"],
     ["offline", "Synchronization is offline"],
-    ["authority-rejected", "Mac authorization is required"],
+    ["authority-rejected", "Active Mac transferred"],
   ] as const)("reports the loaded %s detail outside the headline", (status, detail) => {
     const markup = renderHeader({ state: stateWithSync(status) });
 
@@ -172,7 +172,7 @@ describe("panel sync status", () => {
     const markup = renderHeader({ state });
 
     expect(markup).toContain(">Live<span");
-    expect(markup).toContain("Mac authorization is required");
+    expect(markup).toContain("Active Mac transferred");
     expect(markup).not.toContain("sentinel-");
   });
 });

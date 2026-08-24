@@ -371,6 +371,62 @@ impl ProfileRuntime {
         self.attempt()
     }
 
+    fn recover_profile(
+        &self,
+        touch_grass_id: &str,
+        recovery_key: &profile::Secret,
+    ) -> Result<(), String> {
+        if self.online_gate.is_paused() {
+            return Err("Profile recovery unavailable".to_owned());
+        }
+        let Some(_attempt) = self.admission.try_start(None) else {
+            return Err("Profile recovery unavailable".to_owned());
+        };
+        let _usage_pause = self
+            .usage_sync
+            .pause_for_update()
+            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        let recovered = {
+            let coordinator = self
+                .coordinator
+                .lock()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+            if coordinator
+                .complete_local_recovery_if_ready(touch_grass_id)
+                .map_err(|_| "Profile recovery unavailable".to_owned())?
+            {
+                self.usage_sync.request();
+                return Ok(());
+            }
+            coordinator
+                .recover_profile(touch_grass_id, recovery_key)
+                .map_err(|_| "Profile recovery unavailable".to_owned())?
+        };
+        match &recovered.profile {
+            SanitizedProfileOutcome::Ready { .. } => {}
+            SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
+                return Err("Profile recovery unavailable".to_owned());
+            }
+        }
+        self.usage_sync
+            .recover_authority(recovered.profile, recovered.activation)
+            .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        {
+            let coordinator = self
+                .coordinator
+                .lock()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+            coordinator
+                .mark_recovery_locally_committed()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+            coordinator
+                .complete_recovery()
+                .map_err(|_| "Profile recovery unavailable".to_owned())?;
+        }
+        self.usage_sync.request();
+        Ok(())
+    }
+
     fn reveal_recovery_key(
         &self,
         authorization: SettingsProfileAuthorization,
@@ -873,6 +929,23 @@ async fn complete_bootstrap(
     Ok(state)
 }
 
+#[tauri::command]
+async fn recover_profile(
+    window: WebviewWindow,
+    profile_runtime: State<'_, ProfileRuntime>,
+    touch_grass_id: String,
+    recovery_key: String,
+) -> Result<(), String> {
+    require_settings_or_onboarding(&window)?;
+    let recovery_key = profile::Secret::new(recovery_key);
+    let runtime = profile_runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        runtime.recover_profile(&touch_grass_id, &recovery_key)
+    })
+    .await
+    .map_err(|_| "Profile recovery unavailable".to_owned())?
+}
+
 fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
     #[cfg(debug_assertions)]
     if dev_instance::DevelopmentInstance::from_environment().is_some() {
@@ -1100,6 +1173,7 @@ pub fn run() {
             open_source_repository,
             open_settings,
             request_refresh,
+            recover_profile,
             resize_panel,
             reveal_recovery_key,
             retry_update,

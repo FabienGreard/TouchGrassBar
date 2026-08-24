@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { settingsProviderAccessPresentations } from "@/components/provider-access/presentation";
 import { createNativeWindowKeyboardHandler } from "@/components/screens/native-window-keyboard";
+import { RecoveryDialog } from "@/components/dialogs/recovery-dialog";
 import { bindRecoveryKeyClearEvents } from "@/components/screens/settings/recovery-key-input";
 import { SettingsScreen } from "@/components/screens/settings/settings-screen";
 import { createSettingsDelivery } from "@/native-state/settings-delivery";
@@ -27,6 +28,7 @@ function SettingsCoordinator({
     updates.getSnapshot,
   );
   const [checkingProviders, setCheckingProviders] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   useEffect(() => {
     let disposed = false;
@@ -65,12 +67,12 @@ function SettingsCoordinator({
 
   useEffect(() => {
     const handler = createNativeWindowKeyboardHandler({
-      enabled: true,
+      enabled: !recoveryOpen,
       hide: () => void delivery.hide(),
     });
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [delivery]);
+  }, [delivery, recoveryOpen]);
 
   const state = view.snapshot;
   const launchAtLogin =
@@ -88,61 +90,72 @@ function SettingsCoordinator({
       : null;
 
   return (
-    <SettingsScreen
-      autoUpdates={
-        updateView.state === null || updateView.state.update.status === "unavailable"
-          ? null
-          : updateView.state.automaticChecksEnabled
-      }
-      busyProviders={checkingProviders}
-      launchAtLogin={launchAtLogin}
-      launchAtLoginSaving={view.savingLaunchAtLogin}
-      onCheckProviders={() => {
-        setCheckingProviders(true);
-        void delivery.read().finally(() => setCheckingProviders(false));
-      }}
-      onCheckForUpdates={() => {
-        void updates.check();
-      }}
-      onAutoUpdatesChange={(enabled) => {
-        void updates.setAutomaticChecks(enabled);
-      }}
-      onInstallUpdate={() => {
-        void updates.install();
-      }}
-      onLaunchAtLoginChange={(enabled) => {
-        void delivery.setLaunchAtLogin(enabled);
-      }}
-      onOpenLatestDmg={() => {
-        void updates.openLatestDmg();
-      }}
-      onOpenSource={() => {
-        void updates.openSource();
-      }}
-      onProfileDisplayNameChange={(displayName) => delivery.updateDisplayName(displayName)}
-      onProviderEnabledChange={(provider, enabled) => {
-        void delivery.setProviderEnabled(provider, enabled);
-      }}
-      onHideRecoveryKey={() => {
-        void delivery.hideRecoveryKey();
-      }}
-      onRevealRecoveryKey={() => {
-        void delivery.revealRecoveryKey();
-      }}
-      onSectionChange={delivery.selectSection}
-      onRetryUpdate={() => {
-        void updates.retry();
-      }}
-      pendingDisplayName={state?.displayName}
-      profile={profile}
-      profileProvisioning={state?.profileProvisioning}
-      providers={settingsProviderAccessPresentations(providers)}
-      recoveryKey={view.recoveryKey}
-      revealingRecoveryKey={view.revealingRecoveryKey}
-      section={state?.section}
-      savingProviders={view.savingProviders}
-      updateState={updateView.state}
-    />
+    <>
+      <SettingsScreen
+        autoUpdates={
+          updateView.state === null || updateView.state.update.status === "unavailable"
+            ? null
+            : updateView.state.automaticChecksEnabled
+        }
+        busyProviders={checkingProviders}
+        launchAtLogin={launchAtLogin}
+        launchAtLoginSaving={view.savingLaunchAtLogin}
+        onCheckProviders={() => {
+          setCheckingProviders(true);
+          void delivery.read().finally(() => setCheckingProviders(false));
+        }}
+        onCheckForUpdates={() => {
+          void updates.check();
+        }}
+        onAutoUpdatesChange={(enabled) => {
+          void updates.setAutomaticChecks(enabled);
+        }}
+        onInstallUpdate={() => {
+          void updates.install();
+        }}
+        onLaunchAtLoginChange={(enabled) => {
+          void delivery.setLaunchAtLogin(enabled);
+        }}
+        onOpenLatestDmg={() => {
+          void updates.openLatestDmg();
+        }}
+        onOpenSource={() => {
+          void updates.openSource();
+        }}
+        onProfileDisplayNameChange={(displayName) => delivery.updateDisplayName(displayName)}
+        onProviderEnabledChange={(provider, enabled) => {
+          void delivery.setProviderEnabled(provider, enabled);
+        }}
+        onHideRecoveryKey={() => {
+          void delivery.hideRecoveryKey();
+        }}
+        onRevealRecoveryKey={() => {
+          void delivery.revealRecoveryKey();
+        }}
+        onStartRecovery={() => {
+          setRecoveryOpen(true);
+        }}
+        onSectionChange={delivery.selectSection}
+        onRetryUpdate={() => {
+          void updates.retry();
+        }}
+        pendingDisplayName={state?.displayName}
+        profile={profile}
+        profileProvisioning={state?.profileProvisioning}
+        providers={settingsProviderAccessPresentations(providers)}
+        recoveryFailed={view.recoveryFailed}
+        recoveryKey={view.recoveryKey}
+        revealingRecoveryKey={view.revealingRecoveryKey}
+        section={state?.section}
+        savingProviders={view.savingProviders}
+        updateState={updateView.state}
+      />
+      <RecoveryDialog
+        onOpenChange={setRecoveryOpen}
+        onRecover={(credentials) => delivery.recoverProfile(credentials)}
+        open={recoveryOpen}
+      />
+    </>
   );
 }
 

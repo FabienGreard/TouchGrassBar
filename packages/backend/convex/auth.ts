@@ -7,10 +7,11 @@ import { username } from "better-auth/plugins/username";
 
 import { components, internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
-import { env, type ActionCtx } from "./_generated/server";
+import { env, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server";
 import authConfig from "./auth.config";
 import { touchGrassSignup, type TouchGrassPolicyPort } from "./auth/touchgrassSignup";
 import { rejectAuthority } from "./model/authority";
+import { profileSessionIsAuthorized } from "./model/profile";
 import { rateLimiter } from "./model/rateLimits";
 
 declare const process: {
@@ -33,6 +34,22 @@ function touchGrassPolicy(
   const action = () => actionContext(ctx);
 
   return {
+    claimRecoveryAuthFinalization: (args) =>
+      action().runMutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, args),
+    authorizeProfileSession: (args) =>
+      action().runMutation(internal.auth.profileRecovery.authorizeProfileSession, args),
+    claimRecoveryAttempt: (args) =>
+      action().runMutation(internal.auth.profileRecovery.claimRecoveryAttempt, args),
+    commitRecoveryAttempt: (args) =>
+      action().runMutation(internal.auth.profileRecovery.commitRecoveryAttempt, args),
+    finalizeRecoveryAuth: (args) =>
+      action().runMutation(internal.auth.profileRecovery.finalizeRecoveryAuth, args),
+    releaseRecoveryAuthFinalization: async (args) => {
+      await action().runMutation(
+        internal.auth.profileRecovery.releaseRecoveryAuthFinalization,
+        args,
+      );
+    },
     consumeSignupProof: (args) =>
       action().runMutation(internal.auth.touchgrassSignup.consumeSignupProof, args),
     finalizeCredentialAttempt: (args) =>
@@ -45,6 +62,14 @@ function touchGrassPolicy(
       return limit.ok;
     },
     requestIpAddress,
+    prepareRecoveryAttempt: (args) =>
+      action().runMutation(internal.auth.profileRecovery.prepareRecoveryAttempt, args),
+    profileAuthGeneration: (args) =>
+      action().runQuery(internal.auth.profileRecovery.profileAuthGeneration, args),
+    profileSessionAuthorized: (args) =>
+      action().runQuery(internal.auth.profileRecovery.profileSessionAuthorized, args),
+    recoveryAuthPending: (args) =>
+      action().runQuery(internal.auth.profileRecovery.recoveryAuthPending, args),
     reserveCredentialAttempt: (args) =>
       action().runMutation(internal.auth.credentialAttempts.reserveCredentialAttempt, args),
   };
@@ -106,12 +131,17 @@ export const createAuth = (ctx: GenericCtx<DataModel>) =>
     return metadata.ip;
   });
 
-export async function requireAuthUser(ctx: GenericCtx<DataModel>) {
+export async function requireAuthUser(ctx: QueryCtx | MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) return rejectAuthority();
+  const sessionId = identity.sessionId;
+  if (typeof sessionId !== "string") return rejectAuthority();
   try {
     const user = await authComponent.getAuthUser(ctx);
-    return { ...user, id: user._id };
+    if (!(await profileSessionIsAuthorized(ctx, user._id, sessionId))) {
+      return rejectAuthority();
+    }
+    return { ...user, id: user._id, sessionId };
   } catch (error) {
     if (error instanceof ConvexError && error.data === "Unauthenticated") {
       return rejectAuthority();

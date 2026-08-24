@@ -170,7 +170,10 @@ async function transferActiveDevice(
       tokenmaxxerId: tokenmaxxer._id,
       usageBackfillCompletedAt: null,
     });
-    await ctx.db.patch(tokenmaxxer._id, { activeDeviceId: deviceId });
+    await ctx.db.patch(tokenmaxxer._id, {
+      activeDeviceId: deviceId,
+      authSessionGeneration: generation,
+    });
     return activeMacActivatedAt;
   });
 }
@@ -1813,6 +1816,11 @@ test("same-day Active Mac transfer freezes and adds both provider segments", asy
     userDailyUsage: await ctx.db.query("userDailyUsage").collect(),
   }));
   expect(stored.usageBuckets).toHaveLength(4);
+  expect(
+    stored.usageBuckets
+      .filter((row) => row.observedTokens === 50 || row.observedTokens === 75)
+      .every((row) => row.coverage === "partial"),
+  ).toBe(true);
   expect(
     stored.usageBuckets
       .filter((row) => row.provider === "codex")

@@ -1,8 +1,11 @@
 import { bootstrapStateSchema, type BootstrapState } from "@touchgrass/contracts";
 
+import type { ProfileRecoveryCredentials } from "@/components/dialogs/recovery-dialog";
+
 type BootstrapPortFaultCode =
   | "bootstrap-completion-unavailable"
   | "bootstrap-state-unavailable"
+  | "profile-recovery-unavailable"
   | "surface-unavailable";
 
 type BootstrapPortOutcome<Value> =
@@ -13,6 +16,7 @@ type BootstrapPort = {
   complete: (displayName: string) => Promise<BootstrapPortOutcome<unknown>>;
   hide: () => Promise<BootstrapPortOutcome<void>>;
   read: () => Promise<BootstrapPortOutcome<unknown>>;
+  recoverProfile: (credentials: ProfileRecoveryCredentials) => Promise<BootstrapPortOutcome<void>>;
 };
 
 type BootstrapDeliverySnapshot = {
@@ -95,6 +99,29 @@ function createBootstrapDelivery(port: BootstrapPort) {
       await port.hide();
     },
     read,
+    recoverProfile(credentials: ProfileRecoveryCredentials) {
+      if (submissionInFlight !== null) return submissionInFlight;
+      publish({ ...current, submitting: true });
+      submissionInFlight = (async () => {
+        const recovered = await port.recoverProfile(credentials);
+        if (!recovered.ok) {
+          publish({ ...current, phase: "degraded", submitting: false });
+          return false;
+        }
+        const state = await port.read();
+        if (!state.ok || !accept(state.value)) return false;
+        if (current.snapshot?.profileProvisioning !== "ready") return false;
+        const hidden = await port.hide();
+        if (!hidden.ok) {
+          publish({ ...current, phase: "degraded", submitting: false });
+          return false;
+        }
+        return true;
+      })().finally(() => {
+        submissionInFlight = null;
+      });
+      return submissionInFlight;
+    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);

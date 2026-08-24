@@ -14,6 +14,11 @@ const bootstrapState = {
   ],
 } as const;
 
+const recoveryCredentials = {
+  recoveryKey: "2".repeat(48),
+  touchGrassId: "TG-234567",
+};
+
 function port(): BootstrapPort {
   return {
     complete: vi.fn(async () => ({
@@ -27,6 +32,10 @@ function port(): BootstrapPort {
     })),
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
     read: vi.fn(async () => ({ ok: true as const, value: bootstrapState })),
+    recoverProfile: vi.fn(async () => ({
+      ok: true as const,
+      value: undefined,
+    })),
   };
 }
 
@@ -115,6 +124,25 @@ describe("bootstrap delivery", () => {
     await delivery.read();
 
     expect(await delivery.complete("Fabien")).toBe(false);
+    expect(native.hide).toHaveBeenCalledOnce();
+  });
+
+  test("recovers through native custody and closes only after Ready", async () => {
+    const native = port();
+    native.read = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        ...bootstrapState,
+        bootstrap: "completed" as const,
+        displayName: "Recovered",
+        profileProvisioning: "ready" as const,
+        touchGrassId: "TG-234567",
+      },
+    }));
+    const delivery = createBootstrapDelivery(native);
+
+    expect(await delivery.recoverProfile(recoveryCredentials)).toBe(true);
+    expect(native.recoverProfile).toHaveBeenCalledWith(recoveryCredentials);
     expect(native.hide).toHaveBeenCalledOnce();
   });
 });

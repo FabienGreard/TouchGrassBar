@@ -7,7 +7,7 @@ import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitiz
 import { DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
 import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
 import { currentDevInstance } from "@/dev/dev-instance";
-import { RecoverySheetPreview } from "@/dev/recovery-sheet-preview";
+import { RecoveryDialog } from "@/components/dialogs/recovery-dialog";
 import { currentProfile, currentDoomerboardRows, myTokenmaxxerRows } from "@/dev/panel-fixtures";
 import { resolveDevPreviewScenario } from "@/dev/preview-scenario";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
@@ -210,8 +210,9 @@ function DevPreviewApp() {
   return (
     <>
       <div ref={surfaceContainerRef}>{surface}</div>
-      <RecoverySheetPreview
+      <RecoveryDialog
         onOpenChange={setRecoveryOpen}
+        onRecover={() => false}
         open={recoveryOpen}
         portalContainer={recoveryPortalContainer}
       />

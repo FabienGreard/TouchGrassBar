@@ -50,6 +50,10 @@ export const ensureProfile = mutation({
       touchGrassId,
     );
     const activeDevice = await claimActiveDevice(ctx, tokenmaxxer._id, args.installationCredential);
+    await ctx.db.patch(tokenmaxxer._id, {
+      activeAuthSessionId: authUser.sessionId,
+      authSessionGeneration: activeDevice.generation,
+    });
     if (!Number.isSafeInteger(activeDevice.createdAt) || activeDevice.createdAt < 0) {
       return rejectAuthority();
     }

@@ -6,6 +6,11 @@ import {
 } from "@/native-state/tauri-bootstrap-adapter";
 
 describe("Tauri bootstrap adapter", () => {
+  const recoveryCredentials = {
+    recoveryKey: "2".repeat(48),
+    touchGrassId: "TG-234567",
+  };
+
   test("uses the closed bootstrap commands and exact completion payload", async () => {
     const bindings: TauriBootstrapBindings = {
       invoke: vi.fn(async (command) => ({ command })),
@@ -14,13 +19,15 @@ describe("Tauri bootstrap adapter", () => {
 
     await adapter.read();
     await adapter.complete("Fabien");
+    await adapter.recoverProfile(recoveryCredentials);
     await adapter.hide();
 
     expect(bindings.invoke).toHaveBeenNthCalledWith(1, "get_bootstrap_state", undefined);
     expect(bindings.invoke).toHaveBeenNthCalledWith(2, "complete_bootstrap", {
       displayName: "Fabien",
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "hide_surface", undefined);
+    expect(bindings.invoke).toHaveBeenNthCalledWith(3, "recover_profile", recoveryCredentials);
+    expect(bindings.invoke).toHaveBeenNthCalledWith(4, "hide_surface", undefined);
   });
 
   test("contains raw native failures behind bounded fault codes", async () => {
@@ -34,6 +41,10 @@ describe("Tauri bootstrap adapter", () => {
     });
     expect(await adapter.complete("Fabien")).toEqual({
       fault: { code: "bootstrap-completion-unavailable" },
+      ok: false,
+    });
+    expect(await adapter.recoverProfile(recoveryCredentials)).toEqual({
+      fault: { code: "profile-recovery-unavailable" },
       ok: false,
     });
     expect(await adapter.hide()).toEqual({

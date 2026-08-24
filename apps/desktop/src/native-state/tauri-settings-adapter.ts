@@ -42,6 +42,18 @@ function createTauriSettingsAdapter(
       return outcome.ok ? { ok: true, value: undefined } : outcome;
     },
     read: () => closedInvoke(bindings, "get_settings_state", "settings-state-unavailable"),
+    recoverProfile: async (credentials) => {
+      const outcome = await closedInvoke(
+        bindings,
+        "recover_profile",
+        "profile-recovery-unavailable",
+        {
+          recoveryKey: credentials.recoveryKey,
+          touchGrassId: credentials.touchGrassId,
+        },
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
     revealRecoveryKey: async () => {
       const outcome = await closedInvoke(
         bindings,

@@ -12,7 +12,7 @@ describe("native Settings and onboarding keyboard contract", () => {
     const preventDefault = vi.fn();
     const handler = createNativeWindowKeyboardHandler({ enabled: true, hide });
 
-    handler({ key, metaKey, preventDefault });
+    handler({ defaultPrevented: false, key, metaKey, preventDefault });
 
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(hide).toHaveBeenCalledOnce();
@@ -27,8 +27,34 @@ describe("native Settings and onboarding keyboard contract", () => {
       hide,
     });
 
-    enabled({ key: "w", metaKey: false, preventDefault });
-    disabled({ key: "Escape", metaKey: false, preventDefault });
+    enabled({
+      defaultPrevented: false,
+      key: "w",
+      metaKey: false,
+      preventDefault,
+    });
+    disabled({
+      defaultPrevented: false,
+      key: "Escape",
+      metaKey: false,
+      preventDefault,
+    });
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(hide).not.toHaveBeenCalled();
+  });
+
+  test("ignores a dismissal that a dialog already handled", () => {
+    const hide = vi.fn();
+    const preventDefault = vi.fn();
+    const handler = createNativeWindowKeyboardHandler({ enabled: true, hide });
+
+    handler({
+      defaultPrevented: true,
+      key: "Escape",
+      metaKey: false,
+      preventDefault,
+    });
 
     expect(preventDefault).not.toHaveBeenCalled();
     expect(hide).not.toHaveBeenCalled();

@@ -69,7 +69,7 @@ describe("onboarding screen", () => {
     expect(profileMarkup).toContain(
       "They cannot see your prompts, conversations, credentials, logs, or files.",
     );
-    expect(profileMarkup).toContain('data-profile-recovery-state="planned"');
+    expect(profileMarkup).toContain('data-profile-recovery-state="native"');
     expect(profileMarkup).toContain('data-profile-recovery-layout="step-actions"');
     expect(profileMarkup).not.toContain("Already have a Profile?");
     expect(profileMarkup).not.toContain("Restore it with your TouchGrass ID and Recovery Key.");

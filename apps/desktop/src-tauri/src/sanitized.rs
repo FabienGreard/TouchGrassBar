@@ -25,6 +25,7 @@ use crate::lifecycle::{
     SETTINGS_RECOVERY_CLEAR_EVENT, bootstrap_state_schema, settings_navigation_schema,
     settings_state_schema,
 };
+use crate::profile::ActiveMacActivation;
 pub use crate::providers::{CodingProvider, ProviderPresenceStatus};
 use crate::providers::{
     PROVIDER_REGISTRY, ProviderCorrection, ProviderEnablementPolicy, all_providers_enabled_policy,
@@ -45,7 +46,7 @@ use crate::usage_sync::{
     load_active_usage_sync_generation, load_next_pending_usage_batch,
     load_usage_sync_generation_state, mark_generation_authority_rejected,
     migrate_usage_sync_schema_from_v6, queue_provider_settings, queue_usage_for_commit,
-    stage_usage_sync_corrections,
+    replace_profile_generation, stage_usage_sync_corrections,
 };
 
 pub const CONTRACT_VERSION: u8 = 4;
@@ -349,6 +350,12 @@ pub enum SanitizedProfileOutcome {
         display_name: String,
         touch_grass_id: String,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UsageSyncAuthorityIdentity {
+    active_mac_generation: Option<u64>,
+    touch_grass_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -791,6 +798,10 @@ enum UsageSyncCommit<'a> {
         activated_at: OffsetDateTime,
         generation: u64,
     },
+    ReplaceAuthority {
+        activated_at: OffsetDateTime,
+        generation: u64,
+    },
     Acknowledge {
         acknowledgements: &'a UsageSyncAcknowledgements,
         batch: &'a PendingUsageBatch,
@@ -1137,6 +1148,38 @@ impl SqliteReadModelStore {
                 generation,
             } => {
                 activate_generation(&transaction, generation)
+                    .map_err(|_| "native state persistence unavailable")?;
+                capture_generation_baselines(&transaction, generation, state, activated_at, now)
+                    .map_err(|_| "native state persistence unavailable")?;
+                self.active_mac_generation = Some(generation);
+                pending_usage_changed |=
+                    queue_provider_settings(&transaction, generation, enabled_providers)
+                        .map_err(|_| "native state persistence unavailable")?;
+                state.sync.status = SyncStatus::Pending;
+                let anchor_day = activated_at.to_offset(time::UtcOffset::UTC).date();
+                let updates = queue_usage_for_commit(
+                    &transaction,
+                    generation,
+                    state,
+                    now,
+                    enabled_providers,
+                    UsageQueueRequest::ProfileActivation { anchor_day },
+                )
+                .map_err(|_| "native state persistence unavailable")?;
+                apply_queue_status(
+                    &transaction,
+                    generation,
+                    state,
+                    now,
+                    &updates,
+                    enabled_providers,
+                )?;
+            }
+            UsageSyncCommit::ReplaceAuthority {
+                activated_at,
+                generation,
+            } => {
+                replace_profile_generation(&transaction, generation)
                     .map_err(|_| "native state persistence unavailable")?;
                 capture_generation_baselines(&transaction, generation, state, activated_at, now)
                     .map_err(|_| "native state persistence unavailable")?;
@@ -1727,6 +1770,55 @@ impl CachedProjection {
             first_observation_waits,
             now,
             SnapshotCommitOptions::default(),
+        )
+    }
+
+    fn commit_profile_recovery(
+        &self,
+        store: &mut ReadModelStore,
+        profile: SanitizedProfileOutcome,
+        activation: ActiveMacActivation,
+        now: OffsetDateTime,
+    ) -> Result<SnapshotCommitOutcome, &'static str> {
+        let (cached, first_observation_waits) = self.snapshot_with_first_observation_waits()?;
+        let replaces_profile = matches!(
+            (&cached.profile, &profile),
+            (
+                SanitizedProfileOutcome::Ready {
+                    touch_grass_id: previous,
+                    ..
+                },
+                SanitizedProfileOutcome::Ready {
+                    touch_grass_id: recovered,
+                    ..
+                }
+            ) if previous != recovered
+        );
+        let mut refreshed = cached.clone();
+        refreshed.profile = profile;
+        let activated_at = active_mac_activation_time(activation.activated_at)?;
+        let usage_sync = if replaces_profile {
+            UsageSyncCommit::ReplaceAuthority {
+                activated_at,
+                generation: activation.generation,
+            }
+        } else {
+            UsageSyncCommit::Activate {
+                activated_at,
+                generation: activation.generation,
+            }
+        };
+        self.commit_snapshot_with_usage_sync(
+            store,
+            refreshed,
+            cached,
+            first_observation_waits,
+            now,
+            SnapshotCommitOptions {
+                force_revision: true,
+                ..SnapshotCommitOptions::default()
+            },
+            usage_sync,
         )
     }
 
@@ -2964,6 +3056,68 @@ impl NativeCore {
         Ok(())
     }
 
+    pub(crate) fn recover_profile_authority(
+        &self,
+        profile: SanitizedProfileOutcome,
+        active_mac_generation: u64,
+        active_mac_activated_at: u64,
+    ) -> Result<(), &'static str> {
+        let activation = ActiveMacActivation {
+            activated_at: active_mac_activated_at,
+            generation: active_mac_generation,
+        };
+        let active_mac_activated_at = active_mac_activation_time(active_mac_activated_at)?;
+        let mut store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        if matches!(&*store, ReadModelStore::Memory) {
+            return Err("native state persistence unavailable");
+        }
+        let state = self.inner.projection.snapshot()?;
+        let already_committed = state.profile == profile
+            && matches!(
+                &*store,
+                ReadModelStore::Persistent(persistent)
+                    if persistent.active_mac_generation == Some(active_mac_generation)
+            );
+        let outcome = if already_committed {
+            let ReadModelStore::Persistent(persistent) = &mut *store else {
+                return Err("native state persistence unavailable");
+            };
+            persistent.confirm_active_mac_activation(
+                active_mac_generation,
+                active_mac_activated_at,
+                self.inner.clock.now(),
+                &state,
+            )?;
+            SnapshotCommitOutcome {
+                notice: None,
+                pending_usage_changed: false,
+                persistence_failed: false,
+            }
+        } else {
+            self.inner.projection.commit_profile_recovery(
+                &mut store,
+                profile,
+                activation,
+                self.inner.clock.now(),
+            )?
+        };
+        if outcome.persistence_failed {
+            return Err("native state persistence unavailable");
+        }
+        drop(store);
+        if let Some(notice) = outcome.notice {
+            self.inner.subscribers.publish(notice);
+        }
+        if outcome.pending_usage_changed {
+            self.inner.usage_sync_requests.request();
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_usage_sync_attempt(
         &self,
         active_mac_generation: u64,
@@ -3013,6 +3167,30 @@ impl NativeCore {
             ReadModelStore::Persistent(persistent) => Ok(persistent.active_mac_generation),
             ReadModelStore::Memory => Ok(None),
         }
+    }
+
+    pub(crate) fn usage_sync_authority_identity(
+        &self,
+    ) -> Result<UsageSyncAuthorityIdentity, &'static str> {
+        let store = self
+            .inner
+            .store
+            .lock()
+            .map_err(|_| "native state unavailable")?;
+        let active_mac_generation = match &*store {
+            ReadModelStore::Persistent(persistent) => persistent.active_mac_generation,
+            ReadModelStore::Memory => None,
+        };
+        let touch_grass_id = match self.inner.projection.snapshot()?.profile {
+            SanitizedProfileOutcome::Ready { touch_grass_id, .. } => Some(touch_grass_id),
+            SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
+                None
+            }
+        };
+        Ok(UsageSyncAuthorityIdentity {
+            active_mac_generation,
+            touch_grass_id,
+        })
     }
 
     #[cfg(test)]
@@ -3159,7 +3337,10 @@ impl NativeCore {
         Ok(())
     }
 
-    pub(crate) fn reject_active_usage_sync_authority(&self) -> Result<(), &'static str> {
+    pub(crate) fn reject_usage_sync_authority_if_current(
+        &self,
+        expected_authority: &UsageSyncAuthorityIdentity,
+    ) -> Result<(), &'static str> {
         let mut store = self
             .inner
             .store
@@ -3169,6 +3350,20 @@ impl NativeCore {
             ReadModelStore::Persistent(persistent) => persistent.active_mac_generation,
             ReadModelStore::Memory => None,
         };
+        let touch_grass_id = match self.inner.projection.snapshot()?.profile {
+            SanitizedProfileOutcome::Ready { touch_grass_id, .. } => Some(touch_grass_id),
+            SanitizedProfileOutcome::NotAuthorized | SanitizedProfileOutcome::ProfilePending => {
+                None
+            }
+        };
+        if *expected_authority
+            != (UsageSyncAuthorityIdentity {
+                active_mac_generation,
+                touch_grass_id,
+            })
+        {
+            return Ok(());
+        }
         if self.inner.projection.snapshot()?.sync.status == SyncStatus::AuthorityRejected {
             match active_mac_generation {
                 Some(active_mac_generation)
@@ -3199,6 +3394,11 @@ impl NativeCore {
             self.inner.subscribers.publish(notice);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reject_active_usage_sync_authority(&self) -> Result<(), &'static str> {
+        self.reject_usage_sync_authority_if_current(&self.usage_sync_authority_identity()?)
     }
 
     #[cfg(test)]
@@ -5515,6 +5715,168 @@ mod tests {
             next_day.date().to_string()
         );
         assert_eq!(current.snapshots()[0].observed_tokens, 25);
+    }
+
+    #[test]
+    fn profile_recovery_atomically_replaces_a_same_generation_ledger() {
+        let now = test_time();
+        let database = TestDatabase::new();
+        let source = Arc::new(ScriptedRefreshSource::new([]));
+        let clock = Arc::new(FixtureClock::new(now));
+        let core = NativeCore::open_without_launch(&database.0, clock, source).unwrap();
+        let previous_profile = SanitizedProfileOutcome::Ready {
+            display_name: "Previous".to_owned(),
+            touch_grass_id: "TG-ABC234".to_owned(),
+        };
+        core.set_profile_outcome(previous_profile).unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let old_conflicts = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => {
+                store
+                    .connection
+                    .execute(
+                        "INSERT INTO usage_sync_terminal_conflicts(
+                             active_generation, provider, ranking_day, revision
+                         ) VALUES(2, 'codex', '2026-04-05', 99)",
+                        [],
+                    )
+                    .unwrap();
+                store
+                    .connection
+                    .query_row(
+                        "SELECT count(*) FROM usage_sync_terminal_conflicts",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap()
+            }
+            ReadModelStore::Memory => panic!("Profile recovery fixture requires SQLite"),
+        };
+        assert_eq!(old_conflicts, 1);
+
+        let recovered_profile = SanitizedProfileOutcome::Ready {
+            display_name: "Recovered".to_owned(),
+            touch_grass_id: "TG-XYZ234".to_owned(),
+        };
+        let activated_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        core.recover_profile_authority(recovered_profile.clone(), 2, activated_at)
+            .unwrap();
+
+        assert_eq!(
+            core.inner.projection.snapshot().unwrap().profile,
+            recovered_profile
+        );
+        let remaining_conflicts = match &*core.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_terminal_conflicts",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("Profile recovery fixture requires SQLite"),
+        };
+        assert_eq!(remaining_conflicts, 0);
+        drop(core);
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now)),
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.inner.projection.snapshot().unwrap().profile,
+            recovered_profile
+        );
+        let restored_conflicts = match &*restored.inner.store.lock().unwrap() {
+            ReadModelStore::Persistent(store) => store
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM usage_sync_terminal_conflicts",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            ReadModelStore::Memory => panic!("Profile recovery fixture requires SQLite"),
+        };
+        assert_eq!(restored_conflicts, 0);
+    }
+
+    #[test]
+    fn stale_authority_rejection_does_not_block_recovered_same_generation() {
+        let now = test_time();
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now)),
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        core.set_profile_outcome(SanitizedProfileOutcome::Ready {
+            display_name: "Previous".to_owned(),
+            touch_grass_id: "TG-ABC234".to_owned(),
+        })
+        .unwrap();
+        core.activate_usage_sync_generation(2).unwrap();
+        let previous_authority = core.usage_sync_authority_identity().unwrap();
+
+        let activated_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        core.recover_profile_authority(
+            SanitizedProfileOutcome::Ready {
+                display_name: "Recovered".to_owned(),
+                touch_grass_id: "TG-XYZ234".to_owned(),
+            },
+            2,
+            activated_at,
+        )
+        .unwrap();
+
+        core.reject_usage_sync_authority_if_current(&previous_authority)
+            .unwrap();
+
+        assert_eq!(core.active_usage_sync_generation().unwrap(), Some(2));
+        assert_ne!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::AuthorityRejected
+        );
+        assert!(core.pending_usage_sync_batch(2).unwrap().is_some());
+    }
+
+    #[test]
+    fn profile_recovery_requires_durable_local_persistence() {
+        let now = test_time();
+        let database = TestDatabase::new();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            Arc::new(FixtureClock::new(now)),
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        let previous_profile = SanitizedProfileOutcome::Ready {
+            display_name: "Previous".to_owned(),
+            touch_grass_id: "TG-ABC234".to_owned(),
+        };
+        core.set_profile_outcome(previous_profile.clone()).unwrap();
+        *core.inner.store.lock().unwrap() = ReadModelStore::Memory;
+
+        let activated_at = u64::try_from(now.unix_timestamp_nanos() / 1_000_000).unwrap();
+        assert_eq!(
+            core.recover_profile_authority(
+                SanitizedProfileOutcome::Ready {
+                    display_name: "Recovered".to_owned(),
+                    touch_grass_id: "TG-XYZ234".to_owned(),
+                },
+                2,
+                activated_at,
+            ),
+            Err("native state persistence unavailable")
+        );
+        assert_eq!(
+            core.inner.projection.snapshot().unwrap().profile,
+            previous_profile
+        );
     }
 
     #[test]

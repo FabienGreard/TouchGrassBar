@@ -6,10 +6,13 @@ import {
   type SettingsState,
 } from "@touchgrass/contracts";
 
+import type { ProfileRecoveryCredentials } from "@/components/dialogs/recovery-dialog";
+
 type SettingsPortFaultCode =
   | "display-name-update-unavailable"
   | "launch-at-login-unavailable"
   | "navigation-stream-unavailable"
+  | "profile-recovery-unavailable"
   | "provider-setting-unavailable"
   | "recovery-clear-stream-unavailable"
   | "recovery-key-unavailable"
@@ -24,6 +27,7 @@ type SettingsPortOutcome<Value> =
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
+  recoverProfile: (credentials: ProfileRecoveryCredentials) => Promise<SettingsPortOutcome<void>>;
   revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
   selectSection: (section: SettingsSection) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;
@@ -40,6 +44,7 @@ type SettingsPort = {
 
 type SettingsDeliverySnapshot = {
   phase: "degraded" | "loading" | "ready";
+  recoveryFailed: boolean;
   recoveryKey: string | null;
   revealingRecoveryKey: boolean;
   savingLaunchAtLogin: boolean;
@@ -51,6 +56,7 @@ function createSettingsDelivery(port: SettingsPort) {
   let activationRevision = 0;
   let current: SettingsDeliverySnapshot = {
     phase: "loading",
+    recoveryFailed: false,
     recoveryKey: null,
     revealingRecoveryKey: false,
     savingLaunchAtLogin: false,
@@ -59,6 +65,7 @@ function createSettingsDelivery(port: SettingsPort) {
   };
   let readInFlight: Promise<void> | null = null;
   let recoveryClearAvailable = false;
+  let recoveryInFlight: Promise<boolean> | null = null;
   let revealInFlight: Promise<boolean> | null = null;
   let recoveryRevision = 0;
   let saveInFlight: Promise<boolean> | null = null;
@@ -130,6 +137,7 @@ function createSettingsDelivery(port: SettingsPort) {
     }
     publish({
       phase: "ready",
+      recoveryFailed: current.recoveryFailed,
       recoveryKey: current.recoveryKey,
       revealingRecoveryKey: current.revealingRecoveryKey,
       savingLaunchAtLogin,
@@ -227,6 +235,25 @@ function createSettingsDelivery(port: SettingsPort) {
       return true;
     },
     read,
+    recoverProfile(credentials: ProfileRecoveryCredentials) {
+      if (recoveryInFlight !== null) return recoveryInFlight;
+      clearRecoveryKey();
+      publish({ ...current, recoveryFailed: false });
+      recoveryInFlight = (async () => {
+        const recovered = await port.recoverProfile(credentials);
+        if (!recovered.ok) {
+          publish({ ...current, phase: "degraded", recoveryFailed: true });
+          return false;
+        }
+        const state = await port.read();
+        const accepted = state.ok && accept(state.value);
+        if (!accepted) publish({ ...current, recoveryFailed: true });
+        return accepted;
+      })().finally(() => {
+        recoveryInFlight = null;
+      });
+      return recoveryInFlight;
+    },
     revealRecoveryKey() {
       if (!recoveryClearAvailable) return Promise.resolve(false);
       if (revealInFlight !== null) return revealInFlight;

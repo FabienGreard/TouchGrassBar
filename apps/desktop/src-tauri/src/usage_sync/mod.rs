@@ -3369,6 +3369,28 @@ pub(crate) fn activate_generation(
         .ok_or(UsageSyncError::STORAGE_UNAVAILABLE)
 }
 
+/// Start one Profile's synchronization ledger without retaining another Profile's rows.
+pub(crate) fn replace_profile_generation(
+    transaction: &Transaction<'_>,
+    active_mac_generation: u64,
+) -> Result<(), UsageSyncError> {
+    validate_generation(active_mac_generation)?;
+    transaction.execute("DELETE FROM usage_sync_transfer_day_carryovers", [])?;
+    transaction.execute("DELETE FROM usage_sync_terminal_conflicts", [])?;
+    transaction.execute("DELETE FROM usage_sync_latest_outbox", [])?;
+    transaction.execute("DELETE FROM usage_sync_provider_settings_outbox", [])?;
+    transaction.execute("DELETE FROM usage_sync_generation_baselines", [])?;
+    transaction.execute("DELETE FROM usage_sync_generation_activations", [])?;
+    transaction.execute("DELETE FROM usage_sync_daily_aggregates", [])?;
+    transaction.execute("DELETE FROM usage_sync_generations", [])?;
+    transaction.execute(
+        "UPDATE usage_sync_correction_lineage SET consumed_generation = NULL",
+        [],
+    )?;
+    activate_generation(transaction, active_mac_generation)?;
+    Ok(())
+}
+
 fn aggregate_from_total(
     provider: CodingProvider,
     ranking_day: String,
@@ -6028,6 +6050,68 @@ mod tests {
                 .snapshots()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn profile_replacement_discards_the_prior_profiles_sync_ledger() {
+        let mut connection = connection();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        queue_daily_aggregate(&transaction, 7, aggregate(CodingProvider::Codex, 10, 1_000))
+            .unwrap();
+        queue_provider_settings(&transaction, 7, &BTreeSet::from([CodingProvider::Codex])).unwrap();
+        transaction
+            .execute(
+                "INSERT INTO usage_sync_correction_lineage(
+                     provider, ranking_day, source_revision, reason, consumed_generation
+                 ) VALUES('codex', '2026-08-08', 1, 'parser-correction', 7)",
+                [],
+            )
+            .unwrap();
+
+        replace_profile_generation(&transaction, 2).unwrap();
+        transaction.commit().unwrap();
+
+        let generations = connection
+            .prepare("SELECT active_generation, queue_state FROM usage_sync_generations")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(generations, vec![(2, "active".to_owned())]);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM usage_sync_latest_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM usage_sync_provider_settings_outbox",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT consumed_generation FROM usage_sync_correction_lineage",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap(),
+            None
         );
     }
 

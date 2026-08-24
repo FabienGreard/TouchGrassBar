@@ -514,7 +514,10 @@ impl SqliteLifecycleStore {
             (BootstrapStatus::Completed, ProfileProvisioningStatus::Ready) => {
                 result.public_participation_authorized
                     && !result.profile_retry_pending
-                    && result.backfill_window_days == Some(PUBLIC_BACKFILL_WINDOW_DAYS)
+                    && matches!(
+                        result.backfill_window_days,
+                        None | Some(PUBLIC_BACKFILL_WINDOW_DAYS)
+                    )
                     && result.display_name.is_some()
                     && result.touch_grass_id.is_some()
             }
@@ -572,6 +575,41 @@ impl SqliteLifecycleStore {
                  WHERE singleton = 1
                    AND profile_provisioning = 'profile-pending'",
                 [touch_grass_id],
+            )
+            .map_err(|_| "lifecycle persistence unavailable")?;
+        (updated == 1)
+            .then_some(())
+            .ok_or("profile lifecycle unavailable")
+    }
+
+    fn recover_profile(
+        &self,
+        display_name: &str,
+        touch_grass_id: &str,
+    ) -> Result<(), &'static str> {
+        let display_name = display_name.trim();
+        if display_name.is_empty()
+            || display_name.chars().count() > 40
+            || !crate::profile::valid_touch_grass_id(touch_grass_id)
+        {
+            return Err("profile lifecycle unavailable");
+        }
+        let updated = self
+            .connection
+            .lock()
+            .map_err(|_| "lifecycle persistence unavailable")?
+            .execute(
+                "UPDATE lifecycle_state
+                 SET bootstrap_completed = 1,
+                     profile_provisioning = 'ready',
+                     public_participation_authorized = 1,
+                     profile_retry_pending = 0,
+                     backfill_window_days = NULL,
+                     display_name = ?1,
+                     touch_grass_id = ?2,
+                     recovery_disclosure_pending = 0
+                 WHERE singleton = 1",
+                params![display_name, touch_grass_id],
             )
             .map_err(|_| "lifecycle persistence unavailable")?;
         (updated == 1)
@@ -800,6 +838,19 @@ impl DesktopLifecycle {
     pub(crate) fn mark_profile_ready(&self, touch_grass_id: &str) -> Result<(), &'static str> {
         match &self.inner.store {
             LifecycleStore::Persistent(store) => store.mark_profile_ready(touch_grass_id),
+            LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
+        }
+    }
+
+    pub(crate) fn recover_profile(
+        &self,
+        display_name: &str,
+        touch_grass_id: &str,
+    ) -> Result<(), &'static str> {
+        match &self.inner.store {
+            LifecycleStore::Persistent(store) => {
+                store.recover_profile(display_name, touch_grass_id)
+            }
             LifecycleStore::Unavailable => Err("lifecycle persistence unavailable"),
         }
     }

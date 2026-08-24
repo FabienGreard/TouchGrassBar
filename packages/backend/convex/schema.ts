@@ -28,11 +28,14 @@ export default defineSchema({
 
   tokenmaxxers: defineTable({
     activeDeviceId: v.optional(v.id("devices")),
+    activeAuthSessionId: v.optional(v.string()),
+    authSessionGeneration: v.optional(v.number()),
     authSubject: v.string(),
     displayName: v.string(),
     publicId: v.string(),
     createdAt: v.number(),
     lastSyncedAt: v.optional(v.number()),
+    recoveryAttemptId: v.optional(v.id("profileRecoveryAttempts")),
   })
     .index("by_auth_subject", ["authSubject"])
     .index("by_public_id", ["publicId"])
@@ -47,6 +50,25 @@ export default defineSchema({
     revokedAt: v.optional(v.number()),
     usageBackfillCompletedAt: v.optional(v.union(v.number(), v.null())),
   }).index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
+
+  profileRecoveryAttempts: defineTable({
+    activatedAt: v.optional(v.number()),
+    attemptDigest: v.string(),
+    authFinalizationClaim: v.optional(v.string()),
+    authFinalizationLeaseExpiresAt: v.optional(v.number()),
+    authFinalizedAt: v.optional(v.number()),
+    committedAt: v.optional(v.number()),
+    expectedDeviceId: v.id("devices"),
+    expectedGeneration: v.number(),
+    expiresAt: v.number(),
+    installationCredentialDigest: v.optional(v.string()),
+    newDeviceId: v.optional(v.id("devices")),
+    replacementRecoveryKeyDigest: v.optional(v.string()),
+    status: v.union(v.literal("prepared"), v.literal("committing"), v.literal("committed")),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+  })
+    .index("by_attempt_digest", ["attemptDigest"])
+    .index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
 
   usageBuckets: defineTable({
     deviceId: v.id("devices"),
@@ -72,6 +94,19 @@ export default defineSchema({
       "provider",
       "rankingDay",
     ]),
+
+  usageTransferBoundaries: defineTable({
+    createdAt: v.number(),
+    newDeviceId: v.id("devices"),
+    previousDeviceId: v.id("devices"),
+    provider,
+    rankingDay: v.string(),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+  }).index("by_tokenmaxxer_id_and_provider_and_ranking_day", [
+    "tokenmaxxerId",
+    "provider",
+    "rankingDay",
+  ]),
 
   usageCorrectionAudits: defineTable({
     bucketId: v.id("usageBuckets"),

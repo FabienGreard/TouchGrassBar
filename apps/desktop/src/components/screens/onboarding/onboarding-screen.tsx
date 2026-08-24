@@ -123,7 +123,7 @@ function StepActions({
       <div className="flex items-center gap-3">
         <span aria-live="polite" className="text-[9px] text-sheet-muted">
           {submissionState === "failed"
-            ? "Profile creation could not finish. Try again."
+            ? "Profile setup could not finish. Try again."
             : submissionState === "submitting"
               ? "Creating your Profile…"
               : ""}
@@ -131,7 +131,7 @@ function StepActions({
         {step === "profile" ? (
           <Button
             data-profile-recovery-layout="step-actions"
-            data-profile-recovery-state="planned"
+            data-profile-recovery-state="native"
             disabled={onStartRecovery === undefined}
             onClick={onStartRecovery}
             size="link"

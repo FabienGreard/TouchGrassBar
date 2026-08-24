@@ -29,6 +29,10 @@ const settingsState = {
 } as const;
 
 const fakeRecoveryKey = "2".repeat(48);
+const recoveryCredentials = {
+  recoveryKey: fakeRecoveryKey,
+  touchGrassId: "TG-234567",
+};
 
 function ignoreNavigation(_payload: unknown) {}
 function ignoreRecoveryClear() {}
@@ -44,6 +48,10 @@ function port(): SettingsPort & {
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
     navigate: (payload) => navigate(payload),
     read: vi.fn(async () => ({ ok: true as const, value: settingsState })),
+    recoverProfile: vi.fn(async () => ({
+      ok: true as const,
+      value: undefined,
+    })),
     revealRecoveryKey: vi.fn(async () => ({
       ok: true as const,
       value: fakeRecoveryKey,
@@ -89,6 +97,43 @@ function port(): SettingsPort & {
 }
 
 describe("Settings delivery", () => {
+  test("recovers through native custody and refreshes the Profile", async () => {
+    const native = port();
+    native.read = vi.fn(async () => ({
+      ok: true as const,
+      value: {
+        ...settingsState,
+        displayName: "Recovered",
+        profileProvisioning: "ready" as const,
+        section: "profile" as const,
+        touchGrassId: "TG-234567",
+      },
+    }));
+    const delivery = createSettingsDelivery(native);
+
+    expect(await delivery.recoverProfile(recoveryCredentials)).toBe(true);
+    expect(native.recoverProfile).toHaveBeenCalledWith(recoveryCredentials);
+    expect(delivery.getSnapshot().snapshot).toMatchObject({
+      displayName: "Recovered",
+      touchGrassId: "TG-234567",
+    });
+  });
+
+  test("contains recovery failure details behind one delivery state", async () => {
+    const native = port();
+    native.recoverProfile = vi.fn(async () => ({
+      fault: { code: "profile-recovery-unavailable" as const },
+      ok: false as const,
+    }));
+    const delivery = createSettingsDelivery(native);
+
+    expect(await delivery.recoverProfile(recoveryCredentials)).toBe(false);
+    expect(delivery.getSnapshot()).toMatchObject({
+      phase: "degraded",
+      recoveryFailed: true,
+    });
+  });
+
   test("subscribes before loading and accepts bounded native navigation", async () => {
     const native = port();
     const delivery = createSettingsDelivery(native);
