@@ -150,6 +150,16 @@ The `backfillDeviceUsageCompletion` migration adds an explicit `null` pending
 state to older Device documents before `usageBackfillCompletedAt` becomes a
 required schema field. Missing and `null` use the same fail-closed behavior
 during this bounded migration.
+The count-only `backfillProfileAuthSessionFence` migration processes at most 25
+Profiles in each call. It changes a missing active Auth Session ID to the
+explicit denied `null` state. It copies the current Active Mac generation when
+the Auth Session generation is missing. It does not change a Profile that has
+invalid Active Mac authority. The result reports only processed, changed, and
+invalid counts and a resume cursor. Each count-only invariant call checks at
+most 100 Profiles and returns page counts with a resume cursor. It has no fixed
+total Profile limit. Both fields stay optional until every approved deployment
+reports zero missing and invalid counts and a repeated migration changes zero
+Profiles.
 
 This feature requires the credential-based Active Mac and current usage schemas
 directly. It has no compatibility migration for an earlier feature shape.
