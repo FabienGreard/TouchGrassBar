@@ -541,6 +541,30 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
       headers: bearer(profile.session),
     }),
   ).resolves.toMatchObject({ status: 200 });
+  await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (query) => query.eq("publicId", profile.touchGrassId))
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) throw new Error("Active Mac is missing");
+    for (let index = 0; index < 121; index += 1) {
+      await ctx.db.insert("usageBuckets", {
+        apiEquivalentCost: null,
+        correctionReason: null,
+        correctionRevision: null,
+        coverage: "complete",
+        deviceId: tokenmaxxer.activeDeviceId,
+        evidenceBasis: "locally-derived",
+        observedAt: Date.now(),
+        observedTokens: index + 1,
+        provider: index % 2 === 0 ? "codex" : "claude",
+        rankingDay: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+        revision: 1,
+        syncedAt: Date.now(),
+        tokenmaxxerId: tokenmaxxer._id,
+      });
+    }
+  });
   await profile.authenticated.mutation(api.sync.dailyUsage, {
     activeMacGeneration: 1,
     installationCredential: INSTALLATION_CREDENTIAL,
@@ -706,6 +730,56 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
   expect(JSON.stringify(stored)).not.toContain(attemptId);
 });
 
+test("a new recovery cannot reuse the current Recovery Key", async () => {
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
+  vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
+
+  const t = testBackend();
+  const profile = await createRecoverableProfile(t);
+  const recoveryProof = await prepareRecovery(
+    t,
+    profile,
+    recoveryAttemptId("E"),
+    profile.recoveryKey,
+  );
+  const commit = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify({
+      currentRecoveryKey: profile.recoveryKey,
+      installationCredential: "F".repeat(52),
+      newRecoveryKey: profile.recoveryKey,
+      recoveryProof,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+  expect(commit.status).toBe(401);
+
+  const authority = await t.run(async (ctx) => {
+    const tokenmaxxer = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (query) => query.eq("publicId", profile.touchGrassId))
+      .unique();
+    if (!tokenmaxxer?.activeDeviceId) throw new Error("Active Mac is missing");
+    const device = await ctx.db.get(tokenmaxxer.activeDeviceId);
+    return {
+      generation: device?.generation,
+      recoveryAttemptId: tokenmaxxer.recoveryAttemptId,
+    };
+  });
+  expect(authority.generation).toBe(1);
+  expect(authority.recoveryAttemptId).toBeUndefined();
+  await expect(
+    authFetch(t, "/api/auth/sign-in/username", {
+      body: JSON.stringify({
+        password: profile.recoveryKey,
+        username: profile.touchGrassId,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }),
+  ).resolves.toMatchObject({ status: 200 });
+});
+
 test("concurrent identical recovery commits finalize authentication once", async () => {
   vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
@@ -727,6 +801,7 @@ test("concurrent identical recovery commits finalize authentication once", async
     authSubject: profile.user.id,
     installationCredentialDigest: await installationCredentialDigest(installationCredential),
     replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
+    replacementReusesCurrentKey: false,
   });
   await expect(
     t.mutation(internal.auth.profileRecovery.commitRecoveryAttempt, {
@@ -977,6 +1052,7 @@ test("an expired in-flight recovery can refresh its proof and commit", async () 
       authSubject: profile.user.id,
       installationCredentialDigest: await installationCredentialDigest(installationCredential),
       replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
+      replacementReusesCurrentKey: false,
     }),
   ).resolves.toBe(true);
 
@@ -1012,6 +1088,7 @@ test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", as
     authSubject: profile.user.id,
     installationCredentialDigest: await installationCredentialDigest(installationCredential),
     replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
+    replacementReusesCurrentKey: false,
   });
   await expect(
     t.mutation(internal.auth.profileRecovery.commitRecoveryAttempt, {

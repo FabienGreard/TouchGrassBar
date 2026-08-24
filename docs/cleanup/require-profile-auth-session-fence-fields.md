@@ -1,8 +1,8 @@
 # Require the Profile Auth Session Fence Fields
 
 - **Status:** planned
-- **Owner issue:** [#28](https://github.com/FabienGreard/TouchGrassBar/issues/28)
-- **Implementation:** [commit 97856550](https://github.com/FabienGreard/TouchGrassBar/commit/97856550)
+- **Owner issue:** [#86](https://github.com/FabienGreard/TouchGrassBar/issues/86)
+- **Implementation:** [PR #85](https://github.com/FabienGreard/TouchGrassBar/pull/85)
 
 ## Scope
 

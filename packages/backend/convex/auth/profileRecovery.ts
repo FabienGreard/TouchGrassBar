@@ -123,6 +123,7 @@ export const claimRecoveryAttempt = internalMutation({
     authSubject: v.string(),
     installationCredentialDigest: v.string(),
     replacementRecoveryKeyDigest: v.string(),
+    replacementReusesCurrentKey: v.boolean(),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -143,6 +144,7 @@ export const claimRecoveryAttempt = internalMutation({
         attempt.replacementRecoveryKeyDigest === args.replacementRecoveryKeyDigest
       );
     }
+    if (args.replacementReusesCurrentKey) return false;
     if (
       attempt.expiresAt <= Date.now() ||
       tokenmaxxer.activeDeviceId !== attempt.expectedDeviceId

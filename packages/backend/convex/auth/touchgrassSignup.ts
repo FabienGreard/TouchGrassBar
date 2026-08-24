@@ -66,6 +66,7 @@ export type TouchGrassPolicyPort = {
     authSubject: string;
     installationCredentialDigest: string;
     replacementRecoveryKeyDigest: string;
+    replacementReusesCurrentKey: boolean;
   }) => Promise<boolean>;
   commitRecoveryAttempt: (args: {
     attemptDigest: string;
@@ -581,6 +582,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
             installationCredentialDigest:
               await installationCredentialDigest(installationCredential),
             replacementRecoveryKeyDigest: await sha256Digest(newRecoveryKey),
+            replacementReusesCurrentKey: currentRecoveryKey === newRecoveryKey,
           });
           if (!claimed) {
             await policy.finalizeCredentialAttempt({

@@ -39,8 +39,8 @@ type CorrectionLineage = {
 
 // One initial generation plus the transfer policy limit of three per hour.
 const MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY = 73;
-const MAX_DEVICE_USAGE_BUCKETS = 120;
 const MAX_TRANSFER_DAY_CARRYOVERS = 2;
+const PROVIDERS = ["codex", "claude"] as const satisfies readonly Provider[];
 const PROFILE_BACKFILL_DAYS = 30;
 const RETAINED_USAGE_DAYS = 60;
 
@@ -97,13 +97,21 @@ export async function freezeTransferDayUsage(
   newDeviceId: GenericId<"devices">,
   transferDay: string,
 ) {
-  const oldSegments = await ctx.db
-    .query("usageBuckets")
-    .withIndex("by_device_id", (query) => query.eq("deviceId", previousDeviceId))
-    .take(MAX_DEVICE_USAGE_BUCKETS + 1);
-  if (oldSegments.length > MAX_DEVICE_USAGE_BUCKETS) {
-    throw new Error("Active Mac usage history is out of bounds");
-  }
+  const oldSegments = (
+    await Promise.all(
+      PROVIDERS.map((provider) =>
+        ctx.db
+          .query("usageBuckets")
+          .withIndex("by_device_id_and_provider_and_ranking_day", (query) =>
+            query
+              .eq("deviceId", previousDeviceId)
+              .eq("provider", provider)
+              .eq("rankingDay", transferDay),
+          )
+          .unique(),
+      ),
+    )
+  ).filter((segment): segment is Doc<"usageBuckets"> => segment !== null);
   const providerSettings = await ctx.db
     .query("deviceProviderSettings")
     .withIndex("by_device_id", (query) => query.eq("deviceId", previousDeviceId))
@@ -120,10 +128,10 @@ export async function freezeTransferDayUsage(
           ...(providerSettings.codexEnabled ? (["codex"] as const) : []),
           ...(providerSettings.claudeEnabled ? (["claude"] as const) : []),
         ]
-      : (["codex", "claude"] as const),
+      : PROVIDERS,
   );
   for (const segment of oldSegments) {
-    if (segment.rankingDay === transferDay && segment.coverage !== "partial") {
+    if (segment.coverage !== "partial") {
       await ctx.db.patch(segment._id, { coverage: "partial" });
       affectedProviders.add(segment.provider);
     }
