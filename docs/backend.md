@@ -150,18 +150,6 @@ The `backfillDeviceUsageCompletion` migration adds an explicit `null` pending
 state to older Device documents before `usageBackfillCompletedAt` becomes a
 required schema field. Missing and `null` use the same fail-closed behavior
 during this bounded migration.
-The count-only `backfillProfileAuthSessionFence` migration processes at most 25
-Profiles in each call. It changes a missing active Auth Session ID to the
-explicit denied `null` state. It copies the current Active Mac generation when
-the Auth Session generation is missing. A legacy Profile that has not claimed
-its first Active Mac gets the denied `null` session state and generation `0`.
-Its first Active Mac claim replaces that sentinel. The migration does not
-change a revoked, dangling, mismatched, or invalid Active Mac authority. The
-result reports only processed, changed, and invalid counts and a resume cursor.
-Each count-only invariant call checks at most 100 Profiles and returns page
-counts with a resume cursor. It has no fixed total Profile limit. Both fields
-stay optional until every approved deployment reports zero missing and invalid
-counts and a repeated migration changes zero Profiles.
 
 This feature requires the credential-based Active Mac and current usage schemas
 directly. It has no compatibility migration for an earlier feature shape.
@@ -172,6 +160,10 @@ documents. This branch does not change a cloud deployment.
 ## Authentication boundary
 
 Every protected operation calls one shared authorization guard. The guard validates the live Better Auth session, derives the Tokenmaxxer from the Better Auth user, and never accepts a client-supplied user identifier as authority. Synchronization additionally requires the server-owned Active Mac generation and installation credential. Transfer revokes every earlier session and generation immediately.
+
+Every Profile has a required Auth Session fence. A `null` session is denied.
+An unclaimed Profile uses generation `0` until its first Active Mac claim, and
+the first authorized sign-in replaces both fence values.
 
 Better Auth generated credentials and the desktop session-to-JWT exchange are wired. Active Mac transfer and recovery remain separate implementation gates. Synchronization accepts only the current claimed installation credential and server-owned generation.
 

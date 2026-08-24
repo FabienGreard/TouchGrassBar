@@ -23,11 +23,7 @@ export async function profileSessionIsAuthorized(
   if (!tokenmaxxer) {
     return true;
   }
-  if (
-    tokenmaxxer.authSessionGeneration === undefined ||
-    tokenmaxxer.activeAuthSessionId !== sessionId ||
-    !tokenmaxxer.activeDeviceId
-  ) {
+  if (tokenmaxxer.activeAuthSessionId !== sessionId || !tokenmaxxer.activeDeviceId) {
     return false;
   }
   if (tokenmaxxer.recoveryAttemptId) {
@@ -101,6 +97,8 @@ export async function ensureTokenmaxxer(
   }
 
   const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+    activeAuthSessionId: null,
+    authSessionGeneration: 0,
     authSubject: authUser.id,
     createdAt: Date.now(),
     displayName,

@@ -1327,6 +1327,8 @@ test("My Tokenmaxxers rejects a new entry at its 100-entry limit", async () => {
     for (let index = 0; index <= 100; index += 1) {
       const touchGrassId = publicIdFor(index);
       const addedId = await ctx.db.insert("tokenmaxxers", {
+        activeAuthSessionId: null,
+        authSessionGeneration: 0,
         authSubject: `saved-limit-${index}`,
         createdAt: NOW.getTime(),
         displayName: `Saved ${index}`,
@@ -1414,6 +1416,8 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
       await t.run(async (ctx) => {
         for (const row of rows.slice(offset, offset + 50)) {
           const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+            activeAuthSessionId: null,
+            authSessionGeneration: 0,
             authSubject: `seed-${row.touchGrassId}`,
             createdAt: NOW.getTime(),
             displayName: row.displayName,
@@ -1508,6 +1512,8 @@ test("the legacy Global Doomerboard completes a score tie before ranking it", as
     await t.run(async (ctx) => {
       for (const row of rows.slice(offset, offset + 50)) {
         const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
+          activeAuthSessionId: null,
+          authSessionGeneration: 0,
           authSubject: `legacy-tie-${row.touchGrassId}`,
           createdAt: NOW.getTime(),
           displayName: row.displayName,
@@ -2366,6 +2372,8 @@ test("daily score recomputation drains every Tokenmaxxer", async () => {
     for (let index = 0; index < 202; index += 1) {
       ids.push(
         await ctx.db.insert("tokenmaxxers", {
+          activeAuthSessionId: null,
+          authSessionGeneration: 0,
           authSubject: `rollover-${index}`,
           createdAt: NOW.getTime(),
           displayName: `Tokenmaxxer ${index}`,
@@ -2407,6 +2415,8 @@ test("the daily score watchdog resumes a stalled persisted cursor", async () => 
   await t.run(async (ctx) => {
     for (let index = 0; index < 12; index += 1) {
       await ctx.db.insert("tokenmaxxers", {
+        activeAuthSessionId: null,
+        authSessionGeneration: 0,
         authSubject: `watchdog-${index}`,
         createdAt: NOW.getTime(),
         displayName: `Watchdog Tokenmaxxer ${index}`,
@@ -2463,6 +2473,8 @@ test("a delayed daily recomputation uses its execution Ranking Day", async () =>
   const afterMidnight = new Date("2026-08-09T00:00:00.100Z");
   const tokenmaxxerId = await t.run(async (ctx) => {
     const id = await ctx.db.insert("tokenmaxxers", {
+      activeAuthSessionId: null,
+      authSessionGeneration: 0,
       authSubject: "delayed-rollover",
       createdAt: beforeMidnight.getTime(),
       displayName: "Delayed Tokenmaxxer",
