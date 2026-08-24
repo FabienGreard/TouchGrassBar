@@ -24,3 +24,21 @@ test("copying the current Profile writes only its canonical TouchGrass ID", asyn
 
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("TG-7K4P9D"));
 });
+
+test("shows an estimated API-equivalent cost when it is available", () => {
+  render(
+    <Doomerboard
+      rows={[
+        {
+          apiEquivalentCost: "≈ $12.50",
+          displayName: "Fabien",
+          rank: 1,
+          tokenScore: "4.2M",
+          touchGrassId: "#TG-7K4P9D",
+        },
+      ]}
+    />,
+  );
+
+  expect(screen.getByLabelText("Estimated API-equivalent cost ≈ $12.50")).toBeTruthy();
+});

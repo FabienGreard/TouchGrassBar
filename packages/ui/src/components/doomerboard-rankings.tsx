@@ -4,6 +4,7 @@ import { cn } from "#lib/utils";
 import { ScrollArea } from "./scroll-area";
 
 type DoomerboardRow = {
+  apiEquivalentCost?: string | undefined;
   displayName: string;
   note?: string;
   rank: number;
@@ -99,6 +100,14 @@ function DoomerboardRankings({
               <b className="mt-auto text-[12px]">{row.displayName}</b>
               <small className="mt-0.5 text-[7px] text-pearl-muted">{row.touchGrassId}</small>
               <strong className="mt-[7px] text-[16px]">{row.tokenScore}</strong>
+              {row.apiEquivalentCost ? (
+                <small
+                  aria-label={`Estimated API-equivalent cost ${row.apiEquivalentCost}`}
+                  className="mt-0.5 text-[8px] text-pearl-muted"
+                >
+                  {row.apiEquivalentCost}
+                </small>
+              ) : null}
             </article>
           );
         })}
@@ -121,7 +130,17 @@ function DoomerboardRankings({
                   {row.touchGrassId}
                 </small>
               </span>
-              <b className="text-right text-[12px]">{row.tokenScore}</b>
+              <span className="text-right">
+                <b className="block text-[12px]">{row.tokenScore}</b>
+                {row.apiEquivalentCost ? (
+                  <small
+                    aria-label={`Estimated API-equivalent cost ${row.apiEquivalentCost}`}
+                    className="mt-0.5 block text-[8px] text-pearl-muted"
+                  >
+                    {row.apiEquivalentCost}
+                  </small>
+                ) : null}
+              </span>
             </article>
           ))}
         </div>

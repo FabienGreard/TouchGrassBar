@@ -3,6 +3,7 @@ import type { UsagePresentation } from "@/components/panel/usage-overview";
 
 export const currentDoomerboardRows = [
   {
+    apiEquivalentCost: "≈ $214.96",
     displayName: "laura",
     note: "ABSOLUTELY FINE",
     rank: 1,
@@ -10,6 +11,7 @@ export const currentDoomerboardRows = [
     touchGrassId: "#TG-4COLD7",
   },
   {
+    apiEquivalentCost: "≈ $151.84",
     displayName: "Fabien",
     note: "YOU",
     rank: 2,
@@ -17,21 +19,53 @@ export const currentDoomerboardRows = [
     touchGrassId: "#TG-7K4P9D",
   },
   {
+    apiEquivalentCost: "≈ $108.03",
     displayName: "max",
     note: "STILL ONLINE",
     rank: 3,
     tokenScore: "9.1M",
     touchGrassId: "#TG-BURN42",
   },
-  { displayName: "nora", rank: 4, tokenScore: "7.8M", touchGrassId: "#TG-NULL77" },
-  { displayName: "eli", rank: 5, tokenScore: "6.4M", touchGrassId: "#TG-LOOP55" },
-  { displayName: "mia", rank: 6, tokenScore: "4.9M", touchGrassId: "#TG-DIM420" },
-  { displayName: "theo", rank: 7, tokenScore: "3.8M", touchGrassId: "#TG-GRASS7" },
-  { displayName: "zara", rank: 8, tokenScore: "2.4M", touchGrassId: "#TG-SLEEP8" },
+  {
+    apiEquivalentCost: "≈ $92.41",
+    displayName: "nora",
+    rank: 4,
+    tokenScore: "7.8M",
+    touchGrassId: "#TG-NULL77",
+  },
+  {
+    apiEquivalentCost: "≈ $75.86",
+    displayName: "eli",
+    rank: 5,
+    tokenScore: "6.4M",
+    touchGrassId: "#TG-LOOP55",
+  },
+  {
+    apiEquivalentCost: "≈ $58.07",
+    displayName: "mia",
+    rank: 6,
+    tokenScore: "4.9M",
+    touchGrassId: "#TG-DIM420",
+  },
+  {
+    apiEquivalentCost: "≈ $45.04",
+    displayName: "theo",
+    rank: 7,
+    tokenScore: "3.8M",
+    touchGrassId: "#TG-GRASS7",
+  },
+  {
+    apiEquivalentCost: "≈ $28.44",
+    displayName: "zara",
+    rank: 8,
+    tokenScore: "2.4M",
+    touchGrassId: "#TG-SLEEP8",
+  },
 ] as const satisfies readonly DoomerboardRow[];
 
 export const myTokenmaxxerRows = [
   {
+    apiEquivalentCost: "≈ $151.84",
     displayName: "Fabien",
     note: "YOU",
     rank: 1,
@@ -39,6 +73,7 @@ export const myTokenmaxxerRows = [
     touchGrassId: "#TG-7K4P9D",
   },
   {
+    apiEquivalentCost: "≈ $108.03",
     displayName: "max",
     note: "TOUCH GRASS?",
     rank: 2,
@@ -46,14 +81,27 @@ export const myTokenmaxxerRows = [
     touchGrassId: "#TG-BURN42",
   },
   {
+    apiEquivalentCost: "≈ $92.41",
     displayName: "nora",
     note: "STILL ONLINE",
     rank: 3,
     tokenScore: "7.8M",
     touchGrassId: "#TG-NULL77",
   },
-  { displayName: "eli", rank: 4, tokenScore: "6.4M", touchGrassId: "#TG-LOOP55" },
-  { displayName: "mia", rank: 5, tokenScore: "4.9M", touchGrassId: "#TG-DIM420" },
+  {
+    apiEquivalentCost: "≈ $75.86",
+    displayName: "eli",
+    rank: 4,
+    tokenScore: "6.4M",
+    touchGrassId: "#TG-LOOP55",
+  },
+  {
+    apiEquivalentCost: "≈ $58.07",
+    displayName: "mia",
+    rank: 5,
+    tokenScore: "4.9M",
+    touchGrassId: "#TG-DIM420",
+  },
 ] as const satisfies readonly DoomerboardRow[];
 
 export const currentProfile = {

@@ -76,6 +76,7 @@ describe("production landing contract", () => {
       "Add your friends.",
       "Compare token usage.",
       "Public Token Usage",
+      "≈ $214.96",
       "Lives in your menu bar. See your limits and compare your usage on the leaderboard.",
       "Download for macOS",
       "Drag to install",

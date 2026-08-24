@@ -4,21 +4,36 @@ import { DoomerboardRankings } from "../index";
 
 const rows = [
   {
+    apiEquivalentCost: "≈ $214.96",
     displayName: "laura",
     note: "ABSOLUTELY FINE",
     rank: 1,
     tokenScore: "18.2M",
     touchGrassId: "TG-GOLD01",
   },
-  { displayName: "you", note: "YOU", rank: 2, tokenScore: "12.8M", touchGrassId: "TG-GRASS2" },
   {
+    apiEquivalentCost: "≈ $151.84",
+    displayName: "you",
+    note: "YOU",
+    rank: 2,
+    tokenScore: "12.8M",
+    touchGrassId: "TG-GRASS2",
+  },
+  {
+    apiEquivalentCost: "≈ $108.03",
     displayName: "max",
     note: "STILL ONLINE",
     rank: 3,
     tokenScore: "9.1M",
     touchGrassId: "TG-BURN42",
   },
-  { displayName: "nora", rank: 4, tokenScore: "7.8M", touchGrassId: "TG-NULL77" },
+  {
+    apiEquivalentCost: "≈ $92.41",
+    displayName: "nora",
+    rank: 4,
+    tokenScore: "7.8M",
+    touchGrassId: "TG-NULL77",
+  },
 ] as const;
 
 const meta = {

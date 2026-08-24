@@ -97,6 +97,7 @@ const updateState: UpdateState = {
 
 const rows = [
   {
+    apiEquivalentCost: "≈ $214.96",
     displayName: "laura",
     note: "ABSOLUTELY FINE",
     rank: 1,
@@ -104,6 +105,7 @@ const rows = [
     touchGrassId: "#TG-4COLD7",
   },
   {
+    apiEquivalentCost: "≈ $151.84",
     displayName: "Fabien",
     note: "YOU",
     rank: 2,
@@ -111,6 +113,7 @@ const rows = [
     touchGrassId: "#TG-7K4P9D",
   },
   {
+    apiEquivalentCost: "≈ $108.03",
     displayName: "max",
     note: "STILL ONLINE",
     rank: 3,

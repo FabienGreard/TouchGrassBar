@@ -37,6 +37,7 @@ type ProductSpecimenStyle = CSSProperties & {
 
 const GLOBAL_ROWS: DoomerboardRow[] = [
   {
+    apiEquivalentCost: "≈ $214.96",
     displayName: "laura",
     note: "ABSOLUTELY FINE",
     rank: 1,
@@ -44,6 +45,7 @@ const GLOBAL_ROWS: DoomerboardRow[] = [
     touchGrassId: "#TG-4COLD7",
   },
   {
+    apiEquivalentCost: "≈ $151.84",
     displayName: "nora",
     note: "PROMPT ENJOYER",
     rank: 2,
@@ -51,21 +53,53 @@ const GLOBAL_ROWS: DoomerboardRow[] = [
     touchGrassId: "#TG-NULL77",
   },
   {
+    apiEquivalentCost: "≈ $108.03",
     displayName: "max",
     note: "STILL ONLINE",
     rank: 3,
     tokenScore: "9.1M",
     touchGrassId: "#TG-BURN42",
   },
-  { displayName: "jules", rank: 4, tokenScore: "7.8M", touchGrassId: "#TG-BRANCH4" },
-  { displayName: "eli", rank: 5, tokenScore: "6.4M", touchGrassId: "#TG-LOOP55" },
-  { displayName: "mia", rank: 6, tokenScore: "4.9M", touchGrassId: "#TG-DIM420" },
-  { displayName: "theo", rank: 7, tokenScore: "3.8M", touchGrassId: "#TG-GRASS7" },
-  { displayName: "zara", rank: 8, tokenScore: "2.4M", touchGrassId: "#TG-SLEEP8" },
+  {
+    apiEquivalentCost: "≈ $92.41",
+    displayName: "jules",
+    rank: 4,
+    tokenScore: "7.8M",
+    touchGrassId: "#TG-BRANCH4",
+  },
+  {
+    apiEquivalentCost: "≈ $75.86",
+    displayName: "eli",
+    rank: 5,
+    tokenScore: "6.4M",
+    touchGrassId: "#TG-LOOP55",
+  },
+  {
+    apiEquivalentCost: "≈ $58.07",
+    displayName: "mia",
+    rank: 6,
+    tokenScore: "4.9M",
+    touchGrassId: "#TG-DIM420",
+  },
+  {
+    apiEquivalentCost: "≈ $45.04",
+    displayName: "theo",
+    rank: 7,
+    tokenScore: "3.8M",
+    touchGrassId: "#TG-GRASS7",
+  },
+  {
+    apiEquivalentCost: "≈ $28.44",
+    displayName: "zara",
+    rank: 8,
+    tokenScore: "2.4M",
+    touchGrassId: "#TG-SLEEP8",
+  },
 ];
 
 const SCOREBOARD_ROWS: DoomerboardRow[] = [
   {
+    apiEquivalentCost: "≈ $214.96",
     displayName: "laura",
     note: "ABSOLUTELY FINE",
     rank: 1,
@@ -73,6 +107,7 @@ const SCOREBOARD_ROWS: DoomerboardRow[] = [
     touchGrassId: "#TG-4COLD7",
   },
   {
+    apiEquivalentCost: "≈ $151.84",
     displayName: "nora",
     note: "PROMPT ENJOYER",
     rank: 2,
@@ -80,6 +115,7 @@ const SCOREBOARD_ROWS: DoomerboardRow[] = [
     touchGrassId: "#TG-NULL77",
   },
   {
+    apiEquivalentCost: "≈ $108.03",
     displayName: "max",
     note: "STILL ONLINE",
     rank: 3,
@@ -276,7 +312,10 @@ function DoomerboardScoreboard() {
               <strong>{row.displayName}</strong>
               <em>{row.touchGrassId}</em>
             </span>
-            <b>{row.tokenScore}</b>
+            <b>
+              {row.tokenScore}
+              {row.apiEquivalentCost ? <small>{row.apiEquivalentCost}</small> : null}
+            </b>
           </li>
         ))}
       </ol>

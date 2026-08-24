@@ -163,6 +163,9 @@
 }
 
 .d-scoreboard-showcase li > b {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
   padding-left: 20px;
   font-size: clamp(36px, 4.4vw, 60px);
   line-height: 1;
@@ -170,8 +173,19 @@
   text-align: right;
 }
 
+.d-scoreboard-showcase li > b small {
+  margin-top: 8px;
+  color: #b98f88;
+  font: 700 11px var(--font-mono);
+  letter-spacing: 0;
+}
+
 .d-scoreboard-showcase li[data-rank="1"] .d-scoreboard-profile small,
 .d-scoreboard-showcase li[data-rank="1"] .d-scoreboard-profile em {
+  color: #54251f;
+}
+
+.d-scoreboard-showcase li[data-rank="1"] > b small {
   color: #54251f;
 }
 

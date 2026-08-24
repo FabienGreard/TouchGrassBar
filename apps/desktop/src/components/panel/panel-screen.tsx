@@ -32,6 +32,12 @@ const compactTokenScore = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
   notation: "compact",
 });
+const apiEquivalentCost = new Intl.NumberFormat("en-US", {
+  currency: "USD",
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+  style: "currency",
+});
 
 function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
   const [addTokenmaxxerFailure, setAddTokenmaxxerFailure] = useState<AddTokenmaxxerFailure | null>(
@@ -161,6 +167,9 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
             tokenScore: compactTokenScore.format(row.tokenScore),
             touchGrassId: `#${row.touchGrassId}`,
           };
+          if (row.apiEquivalentCostUsd !== null && row.apiEquivalentCostUsd !== undefined) {
+            presentedRow.apiEquivalentCost = `≈ ${apiEquivalentCost.format(row.apiEquivalentCostUsd)}`;
+          }
           if (
             deliveryView.snapshot?.profile?.status === "ready" &&
             deliveryView.snapshot.profile.touchGrassId === row.touchGrassId
