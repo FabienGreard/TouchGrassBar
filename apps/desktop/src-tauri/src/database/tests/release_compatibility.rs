@@ -85,7 +85,12 @@ struct ReleaseFixture {
 #[serde(rename_all = "camelCase")]
 struct SourceSchema {
     database_format: i64,
+    lifecycle: i64,
+    sanitized_desktop_state: i64,
     codex_usage_index: i64,
+    claude_usage_index: Option<i64>,
+    update_state: i64,
+    database_coordinator: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,7 +293,7 @@ fn every_release_fixture_upgrades_and_reopens_without_loss() {
         assert_provider_facts_preserved(&working.database, &source_provider_facts, &fixture);
         assert_current_database(&working.database, &fixture.tag);
         let first_backups = backup_inventory(&working.directory);
-        if fixture.release_status == "official" {
+        if source_requires_upgrade(&fixture.source_schema) {
             let names = first_backups
                 .iter()
                 .map(|(name, _)| name.as_str())
@@ -324,6 +329,16 @@ fn every_release_fixture_upgrades_and_reopens_without_loss() {
         );
         assert_current_database(&working.database, &fixture.tag);
     }
+}
+
+fn source_requires_upgrade(source: &SourceSchema) -> bool {
+    source.database_format != CURRENT_DATABASE_FORMAT
+        || source.lifecycle != 5
+        || source.sanitized_desktop_state != 7
+        || source.codex_usage_index != 8
+        || source.claude_usage_index != Some(7)
+        || source.update_state != 3
+        || source.database_coordinator != Some(1)
 }
 
 fn valid_release_tag(tag: &str) -> bool {
