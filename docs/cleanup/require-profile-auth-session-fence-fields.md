@@ -2,7 +2,8 @@
 
 - **Status:** rehearsed
 - **Owner issue:** [#86](https://github.com/FabienGreard/TouchGrassBar/issues/86)
-- **Implementation:** [PR #85](https://github.com/FabienGreard/TouchGrassBar/pull/85)
+- **Implementation:** [PR #85](https://github.com/FabienGreard/TouchGrassBar/pull/85),
+  [PR #87](https://github.com/FabienGreard/TouchGrassBar/pull/87)
 
 ## Scope
 
