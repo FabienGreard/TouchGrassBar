@@ -23,7 +23,6 @@ function AddTokenmaxxerDialog({
   submitting = false,
 }: AddTokenmaxxerDialogProps) {
   const [touchGrassId, setTouchGrassId] = useState(defaultTouchGrassId);
-  const [submitted, setSubmitted] = useState(false);
   const touchGrassIdInputRef = useRef<HTMLInputElement>(null);
   const normalizedId = normalizeTouchGrassId(touchGrassId);
   const valid = /^TG-[A-Z0-9]{6}$/.test(normalizedId);
@@ -31,7 +30,6 @@ function AddTokenmaxxerDialog({
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
       setTouchGrassId(defaultTouchGrassId);
-      setSubmitted(false);
       onInputChange();
     }
     onOpenChange(nextOpen);
@@ -69,7 +67,6 @@ function AddTokenmaxxerDialog({
           onSubmit={(event) => {
             event.preventDefault();
             if (valid && !submitting) {
-              setSubmitted(true);
               onAddTokenmaxxer(normalizedId);
             }
           }}
@@ -87,7 +84,6 @@ function AddTokenmaxxerDialog({
             id="touchgrass-tokenmaxxer-id"
             onChange={(event) => {
               setTouchGrassId(event.target.value);
-              setSubmitted(false);
               onInputChange();
             }}
             placeholder="TG-ABC123"
@@ -100,11 +96,9 @@ function AddTokenmaxxerDialog({
             className="mt-1.5 block min-h-4 text-[8px] leading-4 text-pearl-muted contrast-more:text-pearl-ink"
             id="touchgrass-tokenmaxxer-id-help"
           >
-            {submitted
-              ? "Tokenmaxxer lookup is not connected yet."
-              : touchGrassId && !valid
-                ? "Use the format TG-ABC123."
-                : "Ask the Tokenmaxxer for their TouchGrass ID."}
+            {touchGrassId && !valid
+              ? "Use the format TG-ABC123."
+              : "Ask the Tokenmaxxer for their TouchGrass ID."}
           </small>
           <div className="mt-3 flex justify-end gap-2">
             <DialogClose asChild>
