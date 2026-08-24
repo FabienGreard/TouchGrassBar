@@ -19,6 +19,11 @@ const recoveryCommitResult = v.object({
   displayName: v.string(),
   touchGrassId: v.string(),
 });
+const recoveryAttemptArgs = v.object({
+  attemptDigest: v.string(),
+  authSubject: v.string(),
+});
+const recoveryAuthFinalizationArgs = recoveryAttemptArgs.extend({ claim: v.string() });
 
 async function recoveryAttemptByDigest(ctx: MutationCtx, attemptDigest: string) {
   return ctx.db
@@ -28,11 +33,9 @@ async function recoveryAttemptByDigest(ctx: MutationCtx, attemptDigest: string) 
 }
 
 export const prepareRecoveryAttempt = internalMutation({
-  args: {
-    attemptDigest: v.string(),
-    authSubject: v.string(),
+  args: recoveryAttemptArgs.extend({
     touchGrassId: v.string(),
-  },
+  }).fields,
   returns: v.union(v.object({ expectedGeneration: v.number(), expiresAt: v.number() }), v.null()),
   handler: async (ctx, args) => {
     const tokenmaxxer = await ctx.db
@@ -118,13 +121,11 @@ export const prepareRecoveryAttempt = internalMutation({
 });
 
 export const claimRecoveryAttempt = internalMutation({
-  args: {
-    attemptDigest: v.string(),
-    authSubject: v.string(),
+  args: recoveryAttemptArgs.extend({
     installationCredentialDigest: v.string(),
     replacementRecoveryKeyDigest: v.string(),
     replacementReusesCurrentKey: v.boolean(),
-  },
+  }).fields,
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
@@ -191,11 +192,9 @@ export const claimRecoveryAttempt = internalMutation({
 });
 
 export const commitRecoveryAttempt = internalMutation({
-  args: {
-    attemptDigest: v.string(),
-    authSubject: v.string(),
+  args: recoveryAttemptArgs.extend({
     installationCredential: v.string(),
-  },
+  }).fields,
   returns: v.union(recoveryCommitResult, v.null()),
   handler: async (ctx, args) => {
     const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
@@ -272,11 +271,7 @@ export const commitRecoveryAttempt = internalMutation({
 });
 
 export const claimRecoveryAuthFinalization = internalMutation({
-  args: {
-    attemptDigest: v.string(),
-    authSubject: v.string(),
-    claim: v.string(),
-  },
+  args: recoveryAuthFinalizationArgs.fields,
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
@@ -302,11 +297,7 @@ export const claimRecoveryAuthFinalization = internalMutation({
 });
 
 export const finalizeRecoveryAuth = internalMutation({
-  args: {
-    attemptDigest: v.string(),
-    authSubject: v.string(),
-    claim: v.string(),
-  },
+  args: recoveryAuthFinalizationArgs.fields,
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
@@ -332,11 +323,7 @@ export const finalizeRecoveryAuth = internalMutation({
 });
 
 export const releaseRecoveryAuthFinalization = internalMutation({
-  args: {
-    attemptDigest: v.string(),
-    authSubject: v.string(),
-    claim: v.string(),
-  },
+  args: recoveryAuthFinalizationArgs.fields,
   returns: v.null(),
   handler: async (ctx, args) => {
     const attempt = await recoveryAttemptByDigest(ctx, args.attemptDigest);
