@@ -1,4 +1,5 @@
 use crate::sanitized::ProviderSnapshot;
+use time::OffsetDateTime;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeadroomFreshness {
@@ -35,6 +36,7 @@ struct ProviderQuotaHeadroom {
 
 pub(crate) fn overall_quota_headroom<'a>(
     enabled_provider_snapshots: impl IntoIterator<Item = &'a ProviderSnapshot>,
+    now: OffsetDateTime,
 ) -> OverallQuotaHeadroom {
     let mut calculated_sum = 0.0;
     let mut calculated_count = 0_u32;
@@ -42,7 +44,7 @@ pub(crate) fn overall_quota_headroom<'a>(
     let mut incomplete = false;
 
     for snapshot in enabled_provider_snapshots {
-        let Some(provider_headroom) = provider_headroom(snapshot) else {
+        let Some(provider_headroom) = provider_headroom(snapshot, now) else {
             incomplete = true;
             continue;
         };
@@ -70,7 +72,10 @@ pub(crate) fn overall_quota_headroom<'a>(
     }
 }
 
-fn provider_headroom(snapshot: &ProviderSnapshot) -> Option<ProviderQuotaHeadroom> {
+fn provider_headroom(
+    snapshot: &ProviderSnapshot,
+    now: OffsetDateTime,
+) -> Option<ProviderQuotaHeadroom> {
     let (quota_lanes, freshness) = match snapshot {
         ProviderSnapshot::Unavailable { .. } => return None,
         ProviderSnapshot::Current { quota_lanes, .. } => (quota_lanes, HeadroomFreshness::Current),
@@ -81,7 +86,9 @@ fn provider_headroom(snapshot: &ProviderSnapshot) -> Option<ProviderQuotaHeadroo
     }
 
     let mut lowest = 100.0_f64;
-    for lane in quota_lanes {
+    let mut has_active_lane = false;
+    for lane in quota_lanes.iter().filter(|lane| lane.is_active_at(now)) {
+        has_active_lane = true;
         let allowance = lane
             .allowance
             .filter(|value| value.is_finite() && *value > 0.0)?;
@@ -90,7 +97,7 @@ fn provider_headroom(snapshot: &ProviderSnapshot) -> Option<ProviderQuotaHeadroo
         lowest = lowest.min(percentage);
     }
 
-    Some(ProviderQuotaHeadroom {
+    has_active_lane.then_some(ProviderQuotaHeadroom {
         remaining_percent: if lowest == 0.0 { 0.0 } else { lowest },
         freshness,
     })
@@ -151,13 +158,17 @@ mod tests {
         (remaining_percent, freshness, completeness)
     }
 
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()
+    }
+
     #[test]
     fn codex_eight_and_claude_sixty_produce_thirty_four_percent() {
         let codex = current(CodingProvider::Codex, vec![lane(Some(100.0), Some(8.0))]);
         let claude = current(CodingProvider::Claude, vec![lane(Some(100.0), Some(60.0))]);
 
         assert_eq!(
-            calculated(overall_quota_headroom([&codex, &claude])),
+            calculated(overall_quota_headroom([&codex, &claude], now())),
             (
                 34.0,
                 HeadroomFreshness::Current,
@@ -172,7 +183,7 @@ mod tests {
         let claude = unavailable(CodingProvider::Claude);
 
         assert_eq!(
-            calculated(overall_quota_headroom([&codex, &claude])),
+            calculated(overall_quota_headroom([&codex, &claude], now())),
             (
                 8.0,
                 HeadroomFreshness::Current,
@@ -187,11 +198,11 @@ mod tests {
         let claude = unavailable(CodingProvider::Claude);
 
         assert_eq!(
-            overall_quota_headroom([&codex, &claude]),
+            overall_quota_headroom([&codex, &claude], now()),
             OverallQuotaHeadroom::Unavailable
         );
         assert_eq!(
-            overall_quota_headroom(std::iter::empty()),
+            overall_quota_headroom(std::iter::empty(), now()),
             OverallQuotaHeadroom::Unavailable
         );
     }
@@ -201,7 +212,7 @@ mod tests {
         let codex = current(CodingProvider::Codex, vec![lane(Some(100.0), Some(0.0))]);
 
         assert_eq!(
-            calculated(overall_quota_headroom([&codex])),
+            calculated(overall_quota_headroom([&codex], now())),
             (
                 0.0,
                 HeadroomFreshness::Current,
@@ -216,7 +227,7 @@ mod tests {
         let claude = current(CodingProvider::Claude, vec![lane(Some(100.0), Some(60.0))]);
 
         assert_eq!(
-            calculated(overall_quota_headroom([&codex, &claude])),
+            calculated(overall_quota_headroom([&codex, &claude], now())),
             (
                 34.0,
                 HeadroomFreshness::Stale,
@@ -237,7 +248,7 @@ mod tests {
         let claude = current(CodingProvider::Claude, vec![lane(Some(100.0), Some(60.25))]);
 
         assert_eq!(
-            calculated(overall_quota_headroom([&codex, &claude])).0,
+            calculated(overall_quota_headroom([&codex, &claude], now())).0,
             34.1875
         );
     }
@@ -257,7 +268,7 @@ mod tests {
             );
 
             assert_eq!(
-                overall_quota_headroom([&codex]),
+                overall_quota_headroom([&codex], now()),
                 OverallQuotaHeadroom::Unavailable
             );
         }
@@ -269,7 +280,7 @@ mod tests {
         let claude = current(CodingProvider::Claude, vec![lane(Some(100.0), Some(140.0))]);
 
         assert_eq!(
-            calculated(overall_quota_headroom([&codex, &claude])).0,
+            calculated(overall_quota_headroom([&codex, &claude], now())).0,
             50.0
         );
     }
