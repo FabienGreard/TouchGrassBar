@@ -7,6 +7,7 @@ import { internalMutation } from "../_generated/server";
 import { doomerboard, doomerboardKey } from "../model/doomerboard";
 import { markDoomerboardChanged } from "../model/doomerboardVersion";
 import schema from "../schema";
+import { profileHasUnclaimedAuthority } from "./profileAuthSessionFence";
 import { assertBoundedProfilePagination } from "./profileAuthSessionFencePagination";
 
 export const migrations = new Migrations(components.migrations, { schema });
@@ -58,6 +59,14 @@ export const backfillProfileAuthSessionFence = internalMutation({
         profile.activeAuthSessionId !== undefined &&
         profile.authSessionGeneration !== undefined
       ) {
+        continue;
+      }
+      if (profileHasUnclaimedAuthority(profile)) {
+        await ctx.db.patch(profile._id, {
+          ...(profile.activeAuthSessionId === undefined ? { activeAuthSessionId: null } : {}),
+          ...(profile.authSessionGeneration === undefined ? { authSessionGeneration: 0 } : {}),
+        });
+        changedProfiles += 1;
         continue;
       }
       const activeDevice = profile.activeDeviceId ? await ctx.db.get(profile.activeDeviceId) : null;

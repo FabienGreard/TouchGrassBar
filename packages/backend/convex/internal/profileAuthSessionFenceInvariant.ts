@@ -2,6 +2,7 @@ import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 
 import { internalQuery } from "../_generated/server";
+import { profileHasUnclaimedAuthority } from "./profileAuthSessionFence";
 import { assertBoundedProfilePagination } from "./profileAuthSessionFencePagination";
 
 const PAGE_SIZE = 100;
@@ -31,11 +32,12 @@ export const check = internalQuery({
       const authSessionGenerationMissing = profile.authSessionGeneration === undefined;
       const activeDevice = profile.activeDeviceId ? await ctx.db.get(profile.activeDeviceId) : null;
       if (
-        !activeDevice ||
-        activeDevice.tokenmaxxerId !== profile._id ||
-        activeDevice.revokedAt !== undefined ||
-        !Number.isSafeInteger(activeDevice.generation) ||
-        activeDevice.generation < 1
+        !profileHasUnclaimedAuthority(profile) &&
+        (!activeDevice ||
+          activeDevice.tokenmaxxerId !== profile._id ||
+          activeDevice.revokedAt !== undefined ||
+          !Number.isSafeInteger(activeDevice.generation) ||
+          activeDevice.generation < 1)
       ) {
         invalidActiveMacAuthorities += 1;
       }

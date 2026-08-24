@@ -23,7 +23,8 @@ cloud migration or schema deployment.
    that compatibility schema through the approved workflow.
 2. Add a bounded, resumable migration that sets a missing active session to
    `null` and copies the current Active Mac generation to a missing session
-   generation.
+   generation. A Profile that has not claimed its first Active Mac uses the
+   denied generation `0` sentinel until the first claim.
 3. Rehearse the migration on disposable, production-shaped local data. This
    step is complete.
 4. Record the approved deployment before any remote action.
@@ -51,15 +52,19 @@ that required a change. One 25-Profile batch ran before an interruption. Four
 more batches resumed from its cursor and completed the migration. The final
 missing-field counts were zero. A second five-batch run changed zero Profiles.
 The invalid Active Mac fixture reported one invalid authority and made no
-change. This evidence is local only. It does not authorize a remote schema
-deployment or migration.
+change. A supported unclaimed Profile fixture migrated to the denied `null`
+session and generation `0`, then changed zero documents on its repeated run.
+This evidence is local only. It does not authorize a remote schema deployment
+or migration.
 
 ## Recovery
 
 Stop on a nonzero invalid authority count, an unexpected field value, or a
-failed invariant. The migration writes only the explicit denied session state
-and the existing Active Mac generation. It is safe to resume. Do not tighten
-the schema until every approved deployment passes both checks.
+failed invariant. A Profile with no Active Mac is a supported unclaimed state,
+not an invalid authority. The migration writes only the explicit denied session
+state, the existing Active Mac generation, or the unclaimed generation `0`
+sentinel. It is safe to resume. Do not tighten the schema until every approved
+deployment passes both checks.
 
 ## Cleanup targets
 

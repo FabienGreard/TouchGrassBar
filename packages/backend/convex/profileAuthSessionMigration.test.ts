@@ -263,6 +263,59 @@ test("the Profile Auth Session fence operations preserve native pagination optio
   ).resolves.toMatchObject({ processedProfiles: 25 });
 });
 
+test("the Profile Auth Session fence migration preserves an unclaimed Profile", async () => {
+  const t = testBackend();
+  await t.run(async (ctx) => {
+    await ctx.db.insert("tokenmaxxers", {
+      authSubject: "unclaimed-profile",
+      createdAt: 0,
+      displayName: "Unclaimed Profile",
+      publicId: "TG-UNCLAIMED",
+    });
+  });
+
+  await expect(profileFenceState(t)).resolves.toEqual({
+    invalidActiveMacAuthorities: 0,
+    missingActiveAuthSessionIds: 1,
+    missingAuthSessionGenerations: 1,
+    profiles: 1,
+    profilesMissingFenceFields: 1,
+  });
+  await expect(migrationBatch(t, null)).resolves.toMatchObject({
+    changedProfiles: 1,
+    invalidActiveMacAuthorities: 0,
+    isDone: true,
+    processedProfiles: 1,
+  });
+  await expect(
+    t.run(async (ctx) => {
+      const profile = await ctx.db.query("tokenmaxxers").first();
+      return {
+        activeAuthSessionId: profile?.activeAuthSessionId,
+        activeDeviceId: profile?.activeDeviceId,
+        authSessionGeneration: profile?.authSessionGeneration,
+      };
+    }),
+  ).resolves.toEqual({
+    activeAuthSessionId: null,
+    activeDeviceId: undefined,
+    authSessionGeneration: 0,
+  });
+  await expect(profileFenceState(t)).resolves.toEqual({
+    invalidActiveMacAuthorities: 0,
+    missingActiveAuthSessionIds: 0,
+    missingAuthSessionGenerations: 0,
+    profiles: 1,
+    profilesMissingFenceFields: 0,
+  });
+  await expect(migrationBatch(t, null)).resolves.toMatchObject({
+    changedProfiles: 0,
+    invalidActiveMacAuthorities: 0,
+    isDone: true,
+    processedProfiles: 1,
+  });
+});
+
 test("the Profile Auth Session fence migration reports and preserves invalid authority", async () => {
   const t = testBackend();
   await t.run(async (ctx) => {

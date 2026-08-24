@@ -18,6 +18,7 @@ import type * as http from "../http.js";
 import type * as internal_doomerboardInvariant from "../internal/doomerboardInvariant.js";
 import type * as internal_doomerboardInvariantPage from "../internal/doomerboardInvariantPage.js";
 import type * as internal_migrations from "../internal/migrations.js";
+import type * as internal_profileAuthSessionFence from "../internal/profileAuthSessionFence.js";
 import type * as internal_profileAuthSessionFenceInvariant from "../internal/profileAuthSessionFenceInvariant.js";
 import type * as internal_profileAuthSessionFencePagination from "../internal/profileAuthSessionFencePagination.js";
 import type * as internal_recompute from "../internal/recompute.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   "internal/doomerboardInvariant": typeof internal_doomerboardInvariant;
   "internal/doomerboardInvariantPage": typeof internal_doomerboardInvariantPage;
   "internal/migrations": typeof internal_migrations;
+  "internal/profileAuthSessionFence": typeof internal_profileAuthSessionFence;
   "internal/profileAuthSessionFenceInvariant": typeof internal_profileAuthSessionFenceInvariant;
   "internal/profileAuthSessionFencePagination": typeof internal_profileAuthSessionFencePagination;
   "internal/recompute": typeof internal_recompute;
