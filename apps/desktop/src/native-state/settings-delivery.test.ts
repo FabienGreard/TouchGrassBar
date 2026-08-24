@@ -134,7 +134,6 @@ describe("Settings delivery", () => {
     });
   });
 
-
   test("subscribes before loading and accepts bounded native navigation", async () => {
     const native = port();
     const delivery = createSettingsDelivery(native);

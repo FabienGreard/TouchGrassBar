@@ -64,11 +64,7 @@ export default defineSchema({
     installationCredentialDigest: v.optional(v.string()),
     newDeviceId: v.optional(v.id("devices")),
     replacementRecoveryKeyDigest: v.optional(v.string()),
-    status: v.union(
-      v.literal("prepared"),
-      v.literal("committing"),
-      v.literal("committed"),
-    ),
+    status: v.union(v.literal("prepared"), v.literal("committing"), v.literal("committed")),
     tokenmaxxerId: v.id("tokenmaxxers"),
   })
     .index("by_attempt_digest", ["attemptDigest"])

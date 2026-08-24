@@ -61,10 +61,7 @@ async function json(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
-async function createRecoverableProfile(
-  t: ReturnType<typeof testBackend>,
-  displayName = "Fabien",
-) {
+async function createRecoverableProfile(t: ReturnType<typeof testBackend>, displayName = "Fabien") {
   const recoveryKey = "R".repeat(48);
   const preparation = await authFetch(t, "/api/auth/touchgrass/prepare", {
     method: "POST",
@@ -132,10 +129,7 @@ async function recoveryDigest(value: string) {
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
   );
   const binary = Array.from(digest, (byte) => String.fromCharCode(byte)).join("");
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
 async function prepareRecovery(
@@ -524,10 +518,7 @@ test("Profile preparation uses the typed IP boundary and reset window", async ()
 test("Profile recovery is idempotent and rotates one-writer authority only at commit", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-09T12:00:00.000Z"));
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
@@ -535,12 +526,7 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
   const attemptId = recoveryAttemptId("A");
   const newRecoveryKey = replacementRecoveryKey("B");
   const firstProof = await prepareRecovery(t, profile, attemptId, newRecoveryKey);
-  const repeatedProof = await prepareRecovery(
-    t,
-    profile,
-    attemptId,
-    newRecoveryKey,
-  );
+  const repeatedProof = await prepareRecovery(t, profile, attemptId, newRecoveryKey);
   expect(repeatedProof).toBe(firstProof);
 
   await expect(
@@ -582,15 +568,11 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
     newRecoveryKey,
     recoveryProof: firstProof,
   };
-  const commit = await authFetch(
-    t,
-    "/api/auth/touchgrass/recovery/commit",
-    {
-      body: JSON.stringify(commitBody),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    },
-  );
+  const commit = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify(commitBody),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
   expect(commit.status).toBe(200);
   const committed = await json(commit);
   expect(committed).toMatchObject({
@@ -624,19 +606,15 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
     }),
   ).rejects.toThrow("authority-rejected");
 
-  const mismatchedReplay = await authFetch(
-    t,
-    "/api/auth/touchgrass/recovery/commit",
-    {
-      body: JSON.stringify({
-        ...commitBody,
-        currentRecoveryKey: newRecoveryKey,
-        installationCredential: "D".repeat(52),
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    },
-  );
+  const mismatchedReplay = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify({
+      ...commitBody,
+      currentRecoveryKey: newRecoveryKey,
+      installationCredential: "D".repeat(52),
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
   expect(mismatchedReplay.status).toBe(401);
 
   const newSignIn = await authFetch(t, "/api/auth/sign-in/username", {
@@ -651,25 +629,16 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
   const newSession = String((await json(newSignIn)).token);
 
   vi.advanceTimersByTime(5 * 60 * 1_000 + 1);
-  const refreshedProof = await prepareRecovery(
-    t,
-    profile,
-    attemptId,
-    newRecoveryKey,
-  );
-  const retry = await authFetch(
-    t,
-    "/api/auth/touchgrass/recovery/commit",
-    {
-      body: JSON.stringify({
-        ...commitBody,
-        currentRecoveryKey: newRecoveryKey,
-        recoveryProof: refreshedProof,
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    },
-  );
+  const refreshedProof = await prepareRecovery(t, profile, attemptId, newRecoveryKey);
+  const retry = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify({
+      ...commitBody,
+      currentRecoveryKey: newRecoveryKey,
+      recoveryProof: refreshedProof,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
   expect(retry.status).toBe(200);
   expect(await json(retry)).toMatchObject({
     activeMacActivatedAt: committed.activeMacActivatedAt,
@@ -702,9 +671,7 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
       installationCredentialDigest: expect.stringMatching(/^sha256:/),
     }),
   );
-  expect(stored.devices.find(({ generation }) => generation === 2)).not.toHaveProperty(
-    "revokedAt",
-  );
+  expect(stored.devices.find(({ generation }) => generation === 2)).not.toHaveProperty("revokedAt");
   const oldDevice = stored.devices.find(({ generation }) => generation === 1);
   expect(stored.recoveryAttempts).toContainEqual(
     expect.objectContaining({
@@ -740,10 +707,7 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
 });
 
 test("concurrent identical recovery commits finalize authentication once", async () => {
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
@@ -751,12 +715,7 @@ test("concurrent identical recovery commits finalize authentication once", async
   const attemptId = recoveryAttemptId("J");
   const newRecoveryKey = replacementRecoveryKey("K");
   const installationCredential = "M".repeat(52);
-  const recoveryProof = await prepareRecovery(
-    t,
-    profile,
-    attemptId,
-    newRecoveryKey,
-  );
+  const recoveryProof = await prepareRecovery(t, profile, attemptId, newRecoveryKey);
   const attemptDigest = await recoveryDigest(attemptId);
   await expect(
     t.query(internal.auth.profileRecovery.profileAuthGeneration, {
@@ -766,9 +725,7 @@ test("concurrent identical recovery commits finalize authentication once", async
   await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
     attemptDigest,
     authSubject: profile.user.id,
-    installationCredentialDigest: await installationCredentialDigest(
-      installationCredential,
-    ),
+    installationCredentialDigest: await installationCredentialDigest(installationCredential),
     replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
   });
   await expect(
@@ -786,26 +743,19 @@ test("concurrent identical recovery commits finalize authentication once", async
 
   const claims = await Promise.all(
     ["first-concurrent-claim", "second-concurrent-claim"].map((claim) =>
-      t.mutation(
-        internal.auth.profileRecovery.claimRecoveryAuthFinalization,
-        {
-          attemptDigest,
-          authSubject: profile.user.id,
-          claim,
-        },
-      ),
+      t.mutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, {
+        attemptDigest,
+        authSubject: profile.user.id,
+        claim,
+      }),
     ),
   );
   expect(claims.filter(Boolean)).toHaveLength(1);
-  const winningClaim = claims[0]
-    ? "first-concurrent-claim"
-    : "second-concurrent-claim";
+  const winningClaim = claims[0] ? "first-concurrent-claim" : "second-concurrent-claim";
   await t.run(async (ctx) => {
     const attempt = await ctx.db
       .query("profileRecoveryAttempts")
-      .withIndex("by_attempt_digest", (query) =>
-        query.eq("attemptDigest", attemptDigest),
-      )
+      .withIndex("by_attempt_digest", (query) => query.eq("attemptDigest", attemptDigest))
       .unique();
     if (!attempt) throw new Error("Recovery attempt is missing");
     await ctx.db.patch(attempt._id, {
@@ -828,20 +778,16 @@ test("concurrent identical recovery commits finalize authentication once", async
     }),
   ).resolves.toBe(false);
 
-  const overlappingReplay = authFetch(
-    t,
-    "/api/auth/touchgrass/recovery/commit",
-    {
-      body: JSON.stringify({
-        currentRecoveryKey: profile.recoveryKey,
-        installationCredential,
-        newRecoveryKey,
-        recoveryProof,
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    },
-  );
+  const overlappingReplay = authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify({
+      currentRecoveryKey: profile.recoveryKey,
+      installationCredential,
+      newRecoveryKey,
+      recoveryProof,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
   await new Promise((resolve) => setTimeout(resolve, 50));
   await expect(
     t.mutation(internal.auth.profileRecovery.finalizeRecoveryAuth, {
@@ -861,10 +807,7 @@ test("concurrent identical recovery commits finalize authentication once", async
 });
 
 test("bounded cleanup retries do not consume the Profile credential limit", async () => {
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
@@ -888,12 +831,7 @@ test("bounded cleanup retries do not consume the Profile credential limit", asyn
   const attemptId = recoveryAttemptId("S");
   const newRecoveryKey = replacementRecoveryKey("T");
   const installationCredential = "U".repeat(52);
-  const recoveryProof = await prepareRecovery(
-    t,
-    profile,
-    attemptId,
-    newRecoveryKey,
-  );
+  const recoveryProof = await prepareRecovery(t, profile, attemptId, newRecoveryKey);
   const commit = (currentRecoveryKey: string) =>
     authFetch(t, "/api/auth/touchgrass/recovery/commit", {
       body: JSON.stringify({
@@ -959,10 +897,7 @@ test("bounded cleanup retries do not consume the Profile credential limit", asyn
 });
 
 test("concurrent Profile recoveries are first-valid-commit-wins", async () => {
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
@@ -1027,10 +962,7 @@ test("concurrent Profile recoveries are first-valid-commit-wins", async () => {
 test("an expired in-flight recovery can refresh its proof and commit", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-08-09T12:00:00.000Z"));
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
@@ -1043,43 +975,29 @@ test("an expired in-flight recovery can refresh its proof and commit", async () 
     t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
       attemptDigest: await recoveryDigest(attemptId),
       authSubject: profile.user.id,
-      installationCredentialDigest: await installationCredentialDigest(
-        installationCredential,
-      ),
+      installationCredentialDigest: await installationCredentialDigest(installationCredential),
       replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
     }),
   ).resolves.toBe(true);
 
   vi.advanceTimersByTime(5 * 60 * 1_000 + 1);
-  const refreshedProof = await prepareRecovery(
-    t,
-    profile,
-    attemptId,
-    newRecoveryKey,
-  );
-  const committed = await authFetch(
-    t,
-    "/api/auth/touchgrass/recovery/commit",
-    {
-      body: JSON.stringify({
-        currentRecoveryKey: profile.recoveryKey,
-        installationCredential,
-        newRecoveryKey,
-        recoveryProof: refreshedProof,
-      }),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    },
-  );
+  const refreshedProof = await prepareRecovery(t, profile, attemptId, newRecoveryKey);
+  const committed = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify({
+      currentRecoveryKey: profile.recoveryKey,
+      installationCredential,
+      newRecoveryKey,
+      recoveryProof: refreshedProof,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
   expect(committed.status).toBe(200);
   expect(await json(committed)).toMatchObject({ activeMacGeneration: 2 });
 });
 
 test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", async () => {
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();
@@ -1092,9 +1010,7 @@ test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", as
   await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
     attemptDigest,
     authSubject: profile.user.id,
-    installationCredentialDigest: await installationCredentialDigest(
-      installationCredential,
-    ),
+    installationCredentialDigest: await installationCredentialDigest(installationCredential),
     replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
   });
   await expect(
@@ -1155,14 +1071,11 @@ test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", as
   ).resolves.toMatchObject({ status: 401 });
   const authFinalizationClaim = "unfinalized-recovery-test";
   await expect(
-    t.mutation(
-      internal.auth.profileRecovery.claimRecoveryAuthFinalization,
-      {
-        attemptDigest,
-        authSubject: profile.user.id,
-        claim: authFinalizationClaim,
-      },
-    ),
+    t.mutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, {
+      attemptDigest,
+      authSubject: profile.user.id,
+      claim: authFinalizationClaim,
+    }),
   ).resolves.toBe(true);
   await expect(
     t.mutation(internal.auth.profileRecovery.finalizeRecoveryAuth, {
@@ -1174,10 +1087,7 @@ test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", as
 });
 
 test("Profile recovery credential failures are indistinguishable and rate-limited", async () => {
-  vi.stubEnv(
-    "BETTER_AUTH_SECRET",
-    `${crypto.randomUUID()}${crypto.randomUUID()}`,
-  );
+  vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
   const t = testBackend();

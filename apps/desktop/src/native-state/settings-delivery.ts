@@ -27,9 +27,7 @@ type SettingsPortOutcome<Value> =
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
-  recoverProfile: (
-    credentials: ProfileRecoveryCredentials,
-  ) => Promise<SettingsPortOutcome<void>>;
+  recoverProfile: (credentials: ProfileRecoveryCredentials) => Promise<SettingsPortOutcome<void>>;
   revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
   selectSection: (section: SettingsSection) => Promise<SettingsPortOutcome<void>>;
   setLaunchAtLogin: (enabled: boolean) => Promise<SettingsPortOutcome<unknown>>;

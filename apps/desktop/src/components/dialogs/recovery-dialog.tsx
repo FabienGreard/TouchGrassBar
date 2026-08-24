@@ -21,9 +21,7 @@ type ProfileRecoveryCredentials = {
 
 type RecoveryDialogProps = {
   onOpenChange: (open: boolean) => void;
-  onRecover: (
-    credentials: ProfileRecoveryCredentials,
-  ) => boolean | Promise<boolean>;
+  onRecover: (credentials: ProfileRecoveryCredentials) => boolean | Promise<boolean>;
   open: boolean;
   portalContainer?: HTMLElement | null | undefined;
 };
@@ -78,9 +76,7 @@ function RecoveryDialog({
         position={portalContainer ? "container" : "viewport"}
       >
         <div className="relative px-8 text-center">
-          <DialogTitle className="m-0 text-[14px] font-bold">
-            Recover from another Mac
-          </DialogTitle>
+          <DialogTitle className="m-0 text-[14px] font-bold">Recover from another Mac</DialogTitle>
           <DialogDescription className="mt-1 mb-0 text-[10px] leading-4 text-pearl-muted contrast-more:text-pearl-ink">
             Enter the Profile details stored on your other Mac.
           </DialogDescription>
@@ -171,12 +167,10 @@ function RecoveryDialog({
           </label>
 
           <div className="mt-3 rounded-[10px] border border-[#d7bd83] bg-[#fff4d9] px-3 py-2.5 text-left">
-            <strong className="block text-[10px] text-[#4f3912]">
-              One-use Recovery Key
-            </strong>
+            <strong className="block text-[10px] text-[#4f3912]">One-use Recovery Key</strong>
             <small className="mt-1 block text-[8px] leading-3.5 text-[#6d5a32]">
-              This key works once. After recovery, this Mac takes over and the
-              other Mac stops syncing. A new Recovery Key is created here.
+              This key works once. After recovery, this Mac takes over and the other Mac stops
+              syncing. A new Recovery Key is created here.
             </small>
           </div>
 
@@ -185,9 +179,7 @@ function RecoveryDialog({
               className="mt-4 rounded-[10px] border border-sheet-line bg-white/52 px-3 py-2.5"
               role="status"
             >
-              <strong className="block text-[10px]">
-                Profile recovery unavailable
-              </strong>
+              <strong className="block text-[10px]">Profile recovery unavailable</strong>
               <small className="mt-1 block text-[8px] leading-4 text-pearl-muted">
                 Check the details and try again.
               </small>
@@ -200,10 +192,7 @@ function RecoveryDialog({
                 Cancel
               </Button>
             </DialogClose>
-            <Button
-              disabled={submitting}
-              type="submit"
-            >
+            <Button disabled={submitting} type="submit">
               {submitting ? "Recovering…" : "Recover on this Mac"}
             </Button>
           </div>

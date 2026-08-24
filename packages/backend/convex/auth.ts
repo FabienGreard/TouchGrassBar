@@ -7,12 +7,7 @@ import { username } from "better-auth/plugins/username";
 
 import { components, internal } from "./_generated/api";
 import type { DataModel } from "./_generated/dataModel";
-import {
-  env,
-  type ActionCtx,
-  type MutationCtx,
-  type QueryCtx,
-} from "./_generated/server";
+import { env, type ActionCtx, type MutationCtx, type QueryCtx } from "./_generated/server";
 import authConfig from "./auth.config";
 import { touchGrassSignup, type TouchGrassPolicyPort } from "./auth/touchgrassSignup";
 import { rejectAuthority } from "./model/authority";
@@ -40,30 +35,15 @@ function touchGrassPolicy(
 
   return {
     claimRecoveryAuthFinalization: (args) =>
-      action().runMutation(
-        internal.auth.profileRecovery.claimRecoveryAuthFinalization,
-        args,
-      ),
+      action().runMutation(internal.auth.profileRecovery.claimRecoveryAuthFinalization, args),
     authorizeProfileSession: (args) =>
-      action().runMutation(
-        internal.auth.profileRecovery.authorizeProfileSession,
-        args,
-      ),
+      action().runMutation(internal.auth.profileRecovery.authorizeProfileSession, args),
     claimRecoveryAttempt: (args) =>
-      action().runMutation(
-        internal.auth.profileRecovery.claimRecoveryAttempt,
-        args,
-      ),
+      action().runMutation(internal.auth.profileRecovery.claimRecoveryAttempt, args),
     commitRecoveryAttempt: (args) =>
-      action().runMutation(
-        internal.auth.profileRecovery.commitRecoveryAttempt,
-        args,
-      ),
+      action().runMutation(internal.auth.profileRecovery.commitRecoveryAttempt, args),
     finalizeRecoveryAuth: (args) =>
-      action().runMutation(
-        internal.auth.profileRecovery.finalizeRecoveryAuth,
-        args,
-      ),
+      action().runMutation(internal.auth.profileRecovery.finalizeRecoveryAuth, args),
     releaseRecoveryAuthFinalization: async (args) => {
       await action().runMutation(
         internal.auth.profileRecovery.releaseRecoveryAuthFinalization,
@@ -83,25 +63,13 @@ function touchGrassPolicy(
     },
     requestIpAddress,
     prepareRecoveryAttempt: (args) =>
-      action().runMutation(
-        internal.auth.profileRecovery.prepareRecoveryAttempt,
-        args,
-      ),
+      action().runMutation(internal.auth.profileRecovery.prepareRecoveryAttempt, args),
     profileAuthGeneration: (args) =>
-      action().runQuery(
-        internal.auth.profileRecovery.profileAuthGeneration,
-        args,
-      ),
+      action().runQuery(internal.auth.profileRecovery.profileAuthGeneration, args),
     profileSessionAuthorized: (args) =>
-      action().runQuery(
-        internal.auth.profileRecovery.profileSessionAuthorized,
-        args,
-      ),
+      action().runQuery(internal.auth.profileRecovery.profileSessionAuthorized, args),
     recoveryAuthPending: (args) =>
-      action().runQuery(
-        internal.auth.profileRecovery.recoveryAuthPending,
-        args,
-      ),
+      action().runQuery(internal.auth.profileRecovery.recoveryAuthPending, args),
     reserveCredentialAttempt: (args) =>
       action().runMutation(internal.auth.credentialAttempts.reserveCredentialAttempt, args),
   };

@@ -16,9 +16,7 @@ type BootstrapPort = {
   complete: (displayName: string) => Promise<BootstrapPortOutcome<unknown>>;
   hide: () => Promise<BootstrapPortOutcome<void>>;
   read: () => Promise<BootstrapPortOutcome<unknown>>;
-  recoverProfile: (
-    credentials: ProfileRecoveryCredentials,
-  ) => Promise<BootstrapPortOutcome<void>>;
+  recoverProfile: (credentials: ProfileRecoveryCredentials) => Promise<BootstrapPortOutcome<void>>;
 };
 
 type BootstrapDeliverySnapshot = {

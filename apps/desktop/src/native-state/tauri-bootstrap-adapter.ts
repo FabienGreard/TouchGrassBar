@@ -7,10 +7,7 @@ import type {
 } from "@/native-state/bootstrap-delivery";
 
 type TauriBootstrapBindings = {
-  invoke: (
-    command: string,
-    payload?: Record<string, unknown>,
-  ) => Promise<unknown>;
+  invoke: (command: string, payload?: Record<string, unknown>) => Promise<unknown>;
 };
 
 const defaultBindings: TauriBootstrapBindings = {
@@ -35,26 +32,14 @@ function createTauriBootstrapAdapter(
 ): BootstrapPort {
   return {
     complete: (displayName) =>
-      closedInvoke(
-        bindings,
-        "complete_bootstrap",
-        "bootstrap-completion-unavailable",
-        { displayName },
-      ),
+      closedInvoke(bindings, "complete_bootstrap", "bootstrap-completion-unavailable", {
+        displayName,
+      }),
     hide: async () => {
-      const outcome = await closedInvoke(
-        bindings,
-        "hide_surface",
-        "surface-unavailable",
-      );
+      const outcome = await closedInvoke(bindings, "hide_surface", "surface-unavailable");
       return outcome.ok ? { ok: true, value: undefined } : outcome;
     },
-    read: () =>
-      closedInvoke(
-        bindings,
-        "get_bootstrap_state",
-        "bootstrap-state-unavailable",
-      ),
+    read: () => closedInvoke(bindings, "get_bootstrap_state", "bootstrap-state-unavailable"),
     recoverProfile: async (credentials) => {
       const outcome = await closedInvoke(
         bindings,

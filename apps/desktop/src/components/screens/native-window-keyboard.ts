@@ -3,12 +3,8 @@ type NativeWindowKeyboardEvent = Pick<
   "defaultPrevented" | "key" | "metaKey" | "preventDefault"
 >;
 
-function isNativeWindowDismissal(
-  event: Pick<NativeWindowKeyboardEvent, "key" | "metaKey">,
-) {
-  return (
-    event.key === "Escape" || (event.metaKey && event.key.toLowerCase() === "w")
-  );
+function isNativeWindowDismissal(event: Pick<NativeWindowKeyboardEvent, "key" | "metaKey">) {
+  return event.key === "Escape" || (event.metaKey && event.key.toLowerCase() === "w");
 }
 
 function createNativeWindowKeyboardHandler({

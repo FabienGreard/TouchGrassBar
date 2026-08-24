@@ -14,15 +14,10 @@ describe("Tauri Settings adapter", () => {
   test("uses exact Settings commands and the bounded navigation event", async () => {
     const fakeRecoveryKey = "2".repeat(48);
     const stops = new Map<string, ReturnType<typeof vi.fn>>();
-    const listeners = new Map<
-      string,
-      (event: { payload: unknown }) => void
-    >();
+    const listeners = new Map<string, (event: { payload: unknown }) => void>();
     const bindings: TauriSettingsBindings = {
       invoke: vi.fn(async (command) =>
-        command === "reveal_recovery_key"
-          ? fakeRecoveryKey
-          : { command },
+        command === "reveal_recovery_key" ? fakeRecoveryKey : { command },
       ),
       listen: vi.fn(async (event, receive) => {
         listeners.set(event, receive);
@@ -46,8 +41,7 @@ describe("Tauri Settings adapter", () => {
       value: fakeRecoveryKey,
     });
     const subscription = await adapter.subscribeNavigation(receive);
-    const recoverySubscription =
-      await adapter.subscribeRecoveryClear(clearRecovery);
+    const recoverySubscription = await adapter.subscribeRecoveryClear(clearRecovery);
     listeners.get("settings-navigation-requested")?.({
       payload: { section: "profile" },
     });
@@ -55,39 +49,22 @@ describe("Tauri Settings adapter", () => {
       payload: null,
     });
 
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      1,
-      "get_settings_state",
-      undefined,
-    );
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      2,
-      "recover_profile",
-      recoveryCredentials,
-    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(1, "get_settings_state", undefined);
+    expect(bindings.invoke).toHaveBeenNthCalledWith(2, "recover_profile", recoveryCredentials);
     expect(bindings.invoke).toHaveBeenNthCalledWith(3, "set_launch_at_login", {
       enabled: true,
     });
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      4,
-      "update_profile_display_name",
-      { displayName: "New name" },
-    );
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      5,
-      "set_provider_enabled",
-      { enabled: false, provider: "claude" },
-    );
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      6,
-      "select_settings_section",
-      { section: "profile" },
-    );
-    expect(bindings.invoke).toHaveBeenNthCalledWith(
-      7,
-      "reveal_recovery_key",
-      undefined,
-    );
+    expect(bindings.invoke).toHaveBeenNthCalledWith(4, "update_profile_display_name", {
+      displayName: "New name",
+    });
+    expect(bindings.invoke).toHaveBeenNthCalledWith(5, "set_provider_enabled", {
+      enabled: false,
+      provider: "claude",
+    });
+    expect(bindings.invoke).toHaveBeenNthCalledWith(6, "select_settings_section", {
+      section: "profile",
+    });
+    expect(bindings.invoke).toHaveBeenNthCalledWith(7, "reveal_recovery_key", undefined);
     expect(bindings.listen).toHaveBeenCalledWith(
       "settings-navigation-requested",
       expect.any(Function),
@@ -101,9 +78,7 @@ describe("Tauri Settings adapter", () => {
     if (subscription.ok) subscription.value();
     if (recoverySubscription.ok) recoverySubscription.value();
     expect(stops.get("settings-navigation-requested")).toHaveBeenCalledOnce();
-    expect(
-      stops.get("settings-recovery-clear-requested"),
-    ).toHaveBeenCalledOnce();
+    expect(stops.get("settings-recovery-clear-requested")).toHaveBeenCalledOnce();
   });
 
   test("contains raw invoke and listener failures", async () => {

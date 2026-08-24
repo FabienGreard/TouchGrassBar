@@ -1,15 +1,8 @@
 import { v } from "convex/values";
 
 import { internal } from "../_generated/api";
-import {
-  internalMutation,
-  internalQuery,
-  type MutationCtx,
-} from "../_generated/server";
-import {
-  installationCredentialDigest,
-  profileSessionIsAuthorized,
-} from "../model/profile";
+import { internalMutation, internalQuery, type MutationCtx } from "../_generated/server";
+import { installationCredentialDigest, profileSessionIsAuthorized } from "../model/profile";
 import { rateLimiter } from "../model/rateLimits";
 import { freezeTransferDayUsage } from "../model/sync";
 import { rankingDayAt } from "../model/values";
@@ -27,15 +20,10 @@ const recoveryCommitResult = v.object({
   touchGrassId: v.string(),
 });
 
-async function recoveryAttemptByDigest(
-  ctx: MutationCtx,
-  attemptDigest: string,
-) {
+async function recoveryAttemptByDigest(ctx: MutationCtx, attemptDigest: string) {
   return ctx.db
     .query("profileRecoveryAttempts")
-    .withIndex("by_attempt_digest", (query) =>
-      query.eq("attemptDigest", attemptDigest),
-    )
+    .withIndex("by_attempt_digest", (query) => query.eq("attemptDigest", attemptDigest))
     .unique();
 }
 
@@ -45,21 +33,13 @@ export const prepareRecoveryAttempt = internalMutation({
     authSubject: v.string(),
     touchGrassId: v.string(),
   },
-  returns: v.union(
-    v.object({ expectedGeneration: v.number(), expiresAt: v.number() }),
-    v.null(),
-  ),
+  returns: v.union(v.object({ expectedGeneration: v.number(), expiresAt: v.number() }), v.null()),
   handler: async (ctx, args) => {
     const tokenmaxxer = await ctx.db
       .query("tokenmaxxers")
-      .withIndex("by_auth_subject", (query) =>
-        query.eq("authSubject", args.authSubject),
-      )
+      .withIndex("by_auth_subject", (query) => query.eq("authSubject", args.authSubject))
       .unique();
-    if (
-      !tokenmaxxer?.activeDeviceId ||
-      tokenmaxxer.publicId !== args.touchGrassId
-    ) {
+    if (!tokenmaxxer?.activeDeviceId || tokenmaxxer.publicId !== args.touchGrassId) {
       return null;
     }
     const activeDevice = await ctx.db.get(tokenmaxxer.activeDeviceId);
@@ -82,37 +62,28 @@ export const prepareRecoveryAttempt = internalMutation({
       }
     }
     if (existing) {
-      if (
-        existing.status === "committed" &&
-        tokenmaxxer.recoveryAttemptId === existing._id
-      ) {
+      if (existing.status === "committed" && tokenmaxxer.recoveryAttemptId === existing._id) {
         const expiresAt = Date.now() + RECOVERY_ATTEMPT_LIFETIME_MS;
         await ctx.db.patch(existing._id, { expiresAt });
-        await ctx.scheduler.runAt(
-          expiresAt,
-          internal.auth.profileRecovery.expireRecoveryAttempt,
-          { recoveryAttemptId: existing._id },
-        );
+        await ctx.scheduler.runAt(expiresAt, internal.auth.profileRecovery.expireRecoveryAttempt, {
+          recoveryAttemptId: existing._id,
+        });
         return {
           expectedGeneration: existing.expectedGeneration,
           expiresAt,
         };
       }
       if (
-        ((existing.status === "prepared" &&
-          existing.expiresAt <= Date.now()) ||
-          (existing.status === "committing" &&
-            tokenmaxxer.recoveryAttemptId === existing._id)) &&
+        ((existing.status === "prepared" && existing.expiresAt <= Date.now()) ||
+          (existing.status === "committing" && tokenmaxxer.recoveryAttemptId === existing._id)) &&
         existing.expectedDeviceId === activeDevice._id &&
         existing.expectedGeneration === activeDevice.generation
       ) {
         const expiresAt = Date.now() + RECOVERY_ATTEMPT_LIFETIME_MS;
         await ctx.db.patch(existing._id, { expiresAt });
-        await ctx.scheduler.runAt(
-          expiresAt,
-          internal.auth.profileRecovery.expireRecoveryAttempt,
-          { recoveryAttemptId: existing._id },
-        );
+        await ctx.scheduler.runAt(expiresAt, internal.auth.profileRecovery.expireRecoveryAttempt, {
+          recoveryAttemptId: existing._id,
+        });
         return { expectedGeneration: existing.expectedGeneration, expiresAt };
       }
       if (
@@ -139,11 +110,9 @@ export const prepareRecoveryAttempt = internalMutation({
       status: "prepared",
       tokenmaxxerId: tokenmaxxer._id,
     });
-    await ctx.scheduler.runAt(
-      expiresAt,
-      internal.auth.profileRecovery.expireRecoveryAttempt,
-      { recoveryAttemptId },
-    );
+    await ctx.scheduler.runAt(expiresAt, internal.auth.profileRecovery.expireRecoveryAttempt, {
+      recoveryAttemptId,
+    });
     return { expectedGeneration: activeDevice.generation, expiresAt };
   },
 });
@@ -170,10 +139,8 @@ export const claimRecoveryAttempt = internalMutation({
     if (attempt.status === "committed") {
       return (
         tokenmaxxer.recoveryAttemptId === attempt._id &&
-        attempt.installationCredentialDigest ===
-          args.installationCredentialDigest &&
-        attempt.replacementRecoveryKeyDigest ===
-          args.replacementRecoveryKeyDigest
+        attempt.installationCredentialDigest === args.installationCredentialDigest &&
+        attempt.replacementRecoveryKeyDigest === args.replacementRecoveryKeyDigest
       );
     }
     if (
@@ -193,10 +160,8 @@ export const claimRecoveryAttempt = internalMutation({
     if (tokenmaxxer.recoveryAttemptId) {
       if (tokenmaxxer.recoveryAttemptId === attempt._id) {
         return (
-          attempt.installationCredentialDigest ===
-            args.installationCredentialDigest &&
-          attempt.replacementRecoveryKeyDigest ===
-            args.replacementRecoveryKeyDigest
+          attempt.installationCredentialDigest === args.installationCredentialDigest &&
+          attempt.replacementRecoveryKeyDigest === args.replacementRecoveryKeyDigest
         );
       }
       const previousAttempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
@@ -244,10 +209,7 @@ export const commitRecoveryAttempt = internalMutation({
       return null;
     }
     if (attempt.status === "committed") {
-      if (
-        attempt.activatedAt === undefined ||
-        attempt.newDeviceId === undefined
-      ) {
+      if (attempt.activatedAt === undefined || attempt.newDeviceId === undefined) {
         return null;
       }
       return {
@@ -278,22 +240,14 @@ export const commitRecoveryAttempt = internalMutation({
     const newDeviceId = await ctx.db.insert("devices", {
       createdAt: activatedAt,
       generation,
-      installationCredentialDigest: await installationCredentialDigest(
-        args.installationCredential,
-      ),
+      installationCredentialDigest: await installationCredentialDigest(args.installationCredential),
       lastSeenAt: activatedAt,
       tokenmaxxerId: tokenmaxxer._id,
       usageBackfillCompletedAt: null,
     });
     await ctx.db.patch(oldDevice._id, { revokedAt: activatedAt });
     const transferDay = rankingDayAt(activatedAt);
-    await freezeTransferDayUsage(
-      ctx,
-      tokenmaxxer._id,
-      oldDevice._id,
-      newDeviceId,
-      transferDay,
-    );
+    await freezeTransferDayUsage(ctx, tokenmaxxer._id, oldDevice._id, newDeviceId, transferDay);
     await ctx.db.patch(tokenmaxxer._id, {
       activeAuthSessionId: undefined,
       activeDeviceId: newDeviceId,
@@ -339,8 +293,7 @@ export const claimRecoveryAuthFinalization = internalMutation({
     }
     await ctx.db.patch(attempt._id, {
       authFinalizationClaim: args.claim,
-      authFinalizationLeaseExpiresAt:
-        Date.now() + RECOVERY_AUTH_FINALIZATION_LEASE_MS,
+      authFinalizationLeaseExpiresAt: Date.now() + RECOVERY_AUTH_FINALIZATION_LEASE_MS,
     });
     return true;
   },
@@ -408,15 +361,11 @@ export const recoveryAuthPending = internalQuery({
   handler: async (ctx, args) => {
     const tokenmaxxer = await ctx.db
       .query("tokenmaxxers")
-      .withIndex("by_public_id", (query) =>
-        query.eq("publicId", args.touchGrassId),
-      )
+      .withIndex("by_public_id", (query) => query.eq("publicId", args.touchGrassId))
       .unique();
     if (!tokenmaxxer?.recoveryAttemptId) return false;
     const attempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
-    return (
-      attempt?.status === "committed" && attempt.authFinalizedAt === undefined
-    );
+    return attempt?.status === "committed" && attempt.authFinalizedAt === undefined;
   },
 });
 
@@ -431,22 +380,14 @@ export const authorizeProfileSession = internalMutation({
   handler: async (ctx, args) => {
     const tokenmaxxer = await ctx.db
       .query("tokenmaxxers")
-      .withIndex("by_public_id", (query) =>
-        query.eq("publicId", args.touchGrassId),
-      )
+      .withIndex("by_public_id", (query) => query.eq("publicId", args.touchGrassId))
       .unique();
-    if (
-      !tokenmaxxer?.activeDeviceId ||
-      tokenmaxxer.authSubject !== args.authSubject
-    ) {
+    if (!tokenmaxxer?.activeDeviceId || tokenmaxxer.authSubject !== args.authSubject) {
       return false;
     }
     if (tokenmaxxer.recoveryAttemptId) {
       const attempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
-      if (
-        attempt?.status === "committed" &&
-        attempt.authFinalizedAt === undefined
-      ) {
+      if (attempt?.status === "committed" && attempt.authFinalizedAt === undefined) {
         return false;
       }
     }
@@ -469,8 +410,7 @@ export const authorizeProfileSession = internalMutation({
 export const profileSessionAuthorized = internalQuery({
   args: { authSubject: v.string(), sessionId: v.string() },
   returns: v.boolean(),
-  handler: (ctx, args) =>
-    profileSessionIsAuthorized(ctx, args.authSubject, args.sessionId),
+  handler: (ctx, args) => profileSessionIsAuthorized(ctx, args.authSubject, args.sessionId),
 });
 
 export const profileAuthGeneration = internalQuery({
@@ -479,14 +419,11 @@ export const profileAuthGeneration = internalQuery({
   handler: async (ctx, args) => {
     const tokenmaxxer = await ctx.db
       .query("tokenmaxxers")
-      .withIndex("by_public_id", (query) =>
-        query.eq("publicId", args.touchGrassId),
-      )
+      .withIndex("by_public_id", (query) => query.eq("publicId", args.touchGrassId))
       .unique();
     if (!tokenmaxxer?.activeDeviceId) return null;
     const device = await ctx.db.get(tokenmaxxer.activeDeviceId);
-    return device?.tokenmaxxerId === tokenmaxxer._id &&
-      device.revokedAt === undefined
+    return device?.tokenmaxxerId === tokenmaxxer._id && device.revokedAt === undefined
       ? device.generation
       : null;
   },

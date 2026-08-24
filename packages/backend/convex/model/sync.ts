@@ -62,12 +62,7 @@ async function upsertDailyUsage(
   if (segments.length > MAX_ACTIVE_MAC_SEGMENTS_PER_PROVIDER_DAY) {
     throw new Error("Daily Usage has too many Active Mac segments");
   }
-  const dailyUsage = calculateScore(
-    segments,
-    snapshot.provider,
-    1,
-    snapshot.rankingDay,
-  );
+  const dailyUsage = calculateScore(segments, snapshot.provider, 1, snapshot.rankingDay);
   const existing = await ctx.db
     .query("userDailyUsage")
     .withIndex("by_tokenmaxxer_id_and_provider_and_ranking_day", (q) =>
@@ -104,18 +99,14 @@ export async function freezeTransferDayUsage(
 ) {
   const oldSegments = await ctx.db
     .query("usageBuckets")
-    .withIndex("by_device_id", (query) =>
-      query.eq("deviceId", previousDeviceId),
-    )
+    .withIndex("by_device_id", (query) => query.eq("deviceId", previousDeviceId))
     .take(MAX_DEVICE_USAGE_BUCKETS + 1);
   if (oldSegments.length > MAX_DEVICE_USAGE_BUCKETS) {
     throw new Error("Active Mac usage history is out of bounds");
   }
   const providerSettings = await ctx.db
     .query("deviceProviderSettings")
-    .withIndex("by_device_id", (query) =>
-      query.eq("deviceId", previousDeviceId),
-    )
+    .withIndex("by_device_id", (query) => query.eq("deviceId", previousDeviceId))
     .unique();
   if (
     providerSettings?.tokenmaxxerId !== undefined &&
@@ -140,13 +131,11 @@ export async function freezeTransferDayUsage(
   for (const provider of affectedProviders) {
     const existingBoundary = await ctx.db
       .query("usageTransferBoundaries")
-      .withIndex(
-        "by_tokenmaxxer_id_and_provider_and_ranking_day",
-        (query) =>
-          query
-            .eq("tokenmaxxerId", tokenmaxxerId)
-            .eq("provider", provider)
-            .eq("rankingDay", transferDay),
+      .withIndex("by_tokenmaxxer_id_and_provider_and_ranking_day", (query) =>
+        query
+          .eq("tokenmaxxerId", tokenmaxxerId)
+          .eq("provider", provider)
+          .eq("rankingDay", transferDay),
       )
       .unique();
     if (!existingBoundary) {
@@ -161,47 +150,29 @@ export async function freezeTransferDayUsage(
     }
   }
   for (const provider of affectedProviders) {
-    await upsertDailyUsage(
-      ctx,
-      tokenmaxxerId,
-      { provider, rankingDay: transferDay },
-      false,
-    );
+    await upsertDailyUsage(ctx, tokenmaxxerId, { provider, rankingDay: transferDay }, false);
   }
   if (affectedProviders.size > 0) {
     await recomputeScores(ctx, tokenmaxxerId, transferDay);
   }
 }
 
-function assertBatchSize(
-  snapshots: UsageSnapshot[],
-  profileBackfillAnchor: string | null,
-) {
+function assertBatchSize(snapshots: UsageSnapshot[], profileBackfillAnchor: string | null) {
   if (profileBackfillAnchor !== null && snapshots.length > 60) {
-    throw new Error(
-      "a Profile backfill must contain at most 60 Daily Usage Snapshots",
-    );
+    throw new Error("a Profile backfill must contain at most 60 Daily Usage Snapshots");
   }
-  if (
-    snapshots.length > 62 ||
-    (snapshots.length === 0 && profileBackfillAnchor === null)
-  ) {
+  if (snapshots.length > 62 || (snapshots.length === 0 && profileBackfillAnchor === null)) {
     throw new Error("sync must contain between 1 and 62 Daily Usage Snapshots");
   }
 }
 
-function assertProfileBackfillMarker(
-  device: Doc<"devices">,
-  profileBackfillAnchor: string | null,
-) {
+function assertProfileBackfillMarker(device: Doc<"devices">, profileBackfillAnchor: string | null) {
   if (profileBackfillAnchor === null) return;
   if (device.generation !== 1) {
     throw new Error("only the first Active Mac can complete a Profile backfill");
   }
   if (profileBackfillAnchor !== rankingDayAt(device.createdAt)) {
-    throw new Error(
-      "Profile backfill anchor must match the Active Mac creation UTC day",
-    );
+    throw new Error("Profile backfill anchor must match the Active Mac creation UTC day");
   }
 }
 
@@ -240,9 +211,7 @@ function assertTransferDayCarryover(
     snapshot.coverage !== "partial" ||
     snapshot.observedAt < device.createdAt
   ) {
-    throw new Error(
-      "a historical snapshot must be an Active Mac transfer carryover",
-    );
+    throw new Error("a historical snapshot must be an Active Mac transfer carryover");
   }
   assertUsageSnapshot(snapshot, snapshot.rankingDay, now);
   if (
@@ -276,12 +245,9 @@ function validateBatch(
     if (
       profileBackfillAnchor !== null &&
       firstProfileBackfillDay !== null &&
-      (snapshot.rankingDay < firstProfileBackfillDay ||
-        snapshot.rankingDay > profileBackfillAnchor)
+      (snapshot.rankingDay < firstProfileBackfillDay || snapshot.rankingDay > profileBackfillAnchor)
     ) {
-      throw new Error(
-        "a marked Profile backfill snapshot is outside the Profile window",
-      );
+      throw new Error("a marked Profile backfill snapshot is outside the Profile window");
     }
     if (snapshot.rankingDay === today) {
       assertUsageSnapshot(snapshot, today, now);
@@ -290,19 +256,11 @@ function validateBatch(
         snapshot.rankingDay === rankingDayAt(device.createdAt) &&
         snapshot.observedAt < device.createdAt
       ) {
-        throw new Error(
-          "transfer-day evidence must be observed after Active Mac activation",
-        );
+        throw new Error("transfer-day evidence must be observed after Active Mac activation");
       }
     } else if (device.generation === 1) {
-      const firstRetainedDay = subtractRankingDays(
-        today,
-        RETAINED_USAGE_DAYS - 1,
-      );
-      if (
-        snapshot.rankingDay < firstRetainedDay ||
-        snapshot.rankingDay >= today
-      ) {
+      const firstRetainedDay = subtractRankingDays(today, RETAINED_USAGE_DAYS - 1);
+      if (snapshot.rankingDay < firstRetainedDay || snapshot.rankingDay >= today) {
         throw new Error("historical snapshot is outside the retained UTC window");
       }
       assertUsageSnapshot(snapshot, snapshot.rankingDay, now, true);
@@ -332,49 +290,27 @@ function assertHistoricalAdmission(
   profileBackfillAnchor: string | null,
 ) {
   if (device.generation !== 1) return;
-  const backfillIsComplete =
-    typeof device.usageBackfillCompletedAt === "number";
+  const backfillIsComplete = typeof device.usageBackfillCompletedAt === "number";
   const anchorDay = rankingDayAt(device.createdAt);
-  const firstBackfillDay = subtractRankingDays(
-    anchorDay,
-    PROFILE_BACKFILL_DAYS - 1,
-  );
+  const firstBackfillDay = subtractRankingDays(anchorDay, PROFILE_BACKFILL_DAYS - 1);
   for (const plan of plans) {
     if (plan.snapshot.rankingDay === today) continue;
-    if (
-      !backfillIsComplete &&
-      !plan.existing &&
-      profileBackfillAnchor === null
-    ) {
-      throw new Error(
-        "new Profile history requires an explicit backfill completion marker",
-      );
+    if (!backfillIsComplete && !plan.existing && profileBackfillAnchor === null) {
+      throw new Error("new Profile history requires an explicit backfill completion marker");
     }
     if (backfillIsComplete && !plan.existing) {
       if (plan.snapshot.rankingDay <= anchorDay) {
-        throw new Error(
-          "a completed Profile backfill keeps original-window missing days closed",
-        );
+        throw new Error("a completed Profile backfill keeps original-window missing days closed");
       }
-      const rankingDayStart = Date.parse(
-        `${plan.snapshot.rankingDay}T00:00:00.000Z`,
-      );
+      const rankingDayStart = Date.parse(`${plan.snapshot.rankingDay}T00:00:00.000Z`);
       const rankingDayEnd = rankingDayStart + 24 * 60 * 60 * 1_000;
-      if (
-        plan.snapshot.observedAt < rankingDayStart ||
-        plan.snapshot.observedAt >= rankingDayEnd
-      ) {
-        throw new Error(
-          "a delayed post-anchor snapshot must use in-day observation evidence",
-        );
+      if (plan.snapshot.observedAt < rankingDayStart || plan.snapshot.observedAt >= rankingDayEnd) {
+        throw new Error("a delayed post-anchor snapshot must use in-day observation evidence");
       }
       continue;
     }
     if (!plan.existing) {
-      if (
-        plan.snapshot.rankingDay < firstBackfillDay ||
-        plan.snapshot.rankingDay > anchorDay
-      ) {
+      if (plan.snapshot.rankingDay < firstBackfillDay || plan.snapshot.rankingDay > anchorDay) {
         throw new Error("new historical usage is outside the Profile window");
       }
     }
@@ -394,10 +330,7 @@ function sameApiEquivalentCost(
   );
 }
 
-function sameUsageSnapshot(
-  existing: Doc<"usageBuckets">,
-  snapshot: UsageSnapshot,
-) {
+function sameUsageSnapshot(existing: Doc<"usageBuckets">, snapshot: UsageSnapshot) {
   return (
     existing.provider === snapshot.provider &&
     existing.rankingDay === snapshot.rankingDay &&
@@ -412,13 +345,8 @@ function sameUsageSnapshot(
   );
 }
 
-function snapshotCorrectionLineage(
-  snapshot: UsageSnapshot,
-): CorrectionLineage | null {
-  if (
-    snapshot.correctionReason === null ||
-    snapshot.correctionRevision === null
-  ) {
+function snapshotCorrectionLineage(snapshot: UsageSnapshot): CorrectionLineage | null {
+  if (snapshot.correctionReason === null || snapshot.correctionRevision === null) {
     return null;
   }
   return {
@@ -427,9 +355,7 @@ function snapshotCorrectionLineage(
   };
 }
 
-function storedCorrectionLineage(
-  existing: Doc<"usageBuckets"> | null,
-): CorrectionLineage | null {
+function storedCorrectionLineage(existing: Doc<"usageBuckets"> | null): CorrectionLineage | null {
   if (!existing) return null;
   if (
     existing.lastCorrectionReason === undefined &&
@@ -449,22 +375,11 @@ function storedCorrectionLineage(
   };
 }
 
-function assertCompatibleFinalEvidence(
-  lineage: CorrectionLineage,
-  snapshot: UsageSnapshot,
-) {
-  if (
-    lineage.reason === "provider-replacement" &&
-    snapshot.evidenceBasis !== "provider-reported"
-  ) {
-    throw new Error(
-      "provider replacement requires provider-reported final evidence",
-    );
+function assertCompatibleFinalEvidence(lineage: CorrectionLineage, snapshot: UsageSnapshot) {
+  if (lineage.reason === "provider-replacement" && snapshot.evidenceBasis !== "provider-reported") {
+    throw new Error("provider replacement requires provider-reported final evidence");
   }
-  if (
-    lineage.reason === "parser-correction" &&
-    snapshot.evidenceBasis !== "locally-derived"
-  ) {
+  if (lineage.reason === "parser-correction" && snapshot.evidenceBasis !== "locally-derived") {
     throw new Error("parser correction requires locally-derived final evidence");
   }
 }
@@ -484,9 +399,7 @@ function assertNewCorrectionProvenance(
     return;
   }
   if (existing && existing.evidenceBasis !== "locally-derived") {
-    throw new Error(
-      "parser correction requires locally-derived evidence on both revisions",
-    );
+    throw new Error("parser correction requires locally-derived evidence on both revisions");
   }
 }
 
@@ -502,11 +415,7 @@ function planCorrectionLineage(
     }
     return null;
   }
-  if (
-    stored &&
-    stored.reason === incoming.reason &&
-    stored.revision === incoming.revision
-  ) {
+  if (stored && stored.reason === incoming.reason && stored.revision === incoming.revision) {
     assertCompatibleFinalEvidence(incoming, snapshot);
     if (existing && snapshot.observedTokens < existing.observedTokens) {
       throw new Error("a known correction lineage cannot explain another decrease");
@@ -702,9 +611,7 @@ export async function applyUsageSnapshots(
   );
   const plans = await planSnapshots(ctx, device._id, acceptedSnapshots);
   assertHistoricalAdmission(plans, device, today, profileBackfillAnchor);
-  const committed = plans.filter(
-    ({ acknowledgement }) => acknowledgement.outcome === "committed",
-  );
+  const committed = plans.filter(({ acknowledgement }) => acknowledgement.outcome === "committed");
   for (const plan of committed) {
     await commitSnapshot(
       ctx,

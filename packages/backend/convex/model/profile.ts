@@ -18,9 +18,7 @@ export async function profileSessionIsAuthorized(
 ) {
   const tokenmaxxer = await ctx.db
     .query("tokenmaxxers")
-    .withIndex("by_auth_subject", (query) =>
-      query.eq("authSubject", authSubject),
-    )
+    .withIndex("by_auth_subject", (query) => query.eq("authSubject", authSubject))
     .unique();
   if (!tokenmaxxer) {
     return true;
@@ -34,10 +32,7 @@ export async function profileSessionIsAuthorized(
   }
   if (tokenmaxxer.recoveryAttemptId) {
     const recoveryAttempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
-    if (
-      recoveryAttempt?.status === "committed" &&
-      recoveryAttempt.authFinalizedAt === undefined
-    ) {
+    if (recoveryAttempt?.status === "committed" && recoveryAttempt.authFinalizedAt === undefined) {
       return false;
     }
   }
@@ -76,10 +71,7 @@ export async function tokenmaxxerForAuthUser(
     .unique();
   if (tokenmaxxer?.recoveryAttemptId) {
     const recoveryAttempt = await ctx.db.get(tokenmaxxer.recoveryAttemptId);
-    if (
-      recoveryAttempt?.status === "committed" &&
-      recoveryAttempt.authFinalizedAt === undefined
-    ) {
+    if (recoveryAttempt?.status === "committed" && recoveryAttempt.authFinalizedAt === undefined) {
       return rejectAuthority();
     }
   }

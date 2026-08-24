@@ -97,34 +97,34 @@ function OnboardingCoordinator({
   return (
     <>
       <OnboardingScreen
-      appVersion={updateView.state?.currentVersion}
-      busyProviders={checkingProviders}
-      canComplete={view.phase === "ready" && view.snapshot?.persistence === "available"}
-      displayName={displayName}
-      furthestStep={furthestStep}
-      onCheckProvider={() => {
-        setCheckingProviders(true);
-        void delivery.read().finally(() => setCheckingProviders(false));
-      }}
-      onDisplayNameChange={(nextDisplayName) => {
-        setSubmissionFailed(false);
-        setDisplayName(nextDisplayName);
-      }}
-      onFinish={(nextDisplayName) => {
-        setSubmissionFailed(false);
-        void delivery.complete(nextDisplayName).then((completed) => {
-          setSubmissionFailed(!completed);
-        });
-      }}
-      onStartRecovery={() => {
-        setSubmissionFailed(false);
-        setRecoveryOpen(true);
-      }}
-      onStepChange={selectStep}
-      providers={providerAccessPresentations(providers)}
-      setupState={setupState}
-      step={step}
-      submissionState={submissionState}
+        appVersion={updateView.state?.currentVersion}
+        busyProviders={checkingProviders}
+        canComplete={view.phase === "ready" && view.snapshot?.persistence === "available"}
+        displayName={displayName}
+        furthestStep={furthestStep}
+        onCheckProvider={() => {
+          setCheckingProviders(true);
+          void delivery.read().finally(() => setCheckingProviders(false));
+        }}
+        onDisplayNameChange={(nextDisplayName) => {
+          setSubmissionFailed(false);
+          setDisplayName(nextDisplayName);
+        }}
+        onFinish={(nextDisplayName) => {
+          setSubmissionFailed(false);
+          void delivery.complete(nextDisplayName).then((completed) => {
+            setSubmissionFailed(!completed);
+          });
+        }}
+        onStartRecovery={() => {
+          setSubmissionFailed(false);
+          setRecoveryOpen(true);
+        }}
+        onStepChange={selectStep}
+        providers={providerAccessPresentations(providers)}
+        setupState={setupState}
+        step={step}
+        submissionState={submissionState}
       />
       <RecoveryDialog
         onOpenChange={setRecoveryOpen}
