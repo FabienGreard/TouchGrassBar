@@ -1,26 +1,30 @@
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle, Input } from "@touchgrass/ui";
 import { useRef, useState } from "react";
 
-import { addTokenmaxxerHelpText, normalizeTouchGrassId } from "./add-tokenmaxxer";
+import {
+  addTokenmaxxerHelpText,
+  type AddTokenmaxxerFailure,
+  normalizeTouchGrassId,
+} from "./add-tokenmaxxer";
 
 type AddTokenmaxxerDialogProps = {
   defaultTouchGrassId?: string;
+  failure?: AddTokenmaxxerFailure | null | undefined;
   onAddTokenmaxxer?: ((touchGrassId: string) => void) | undefined;
   onInputChange?: (() => void) | undefined;
   onOpenChange: (open: boolean) => void;
   open: boolean;
-  notFound?: boolean | undefined;
   portalContainer?: HTMLElement | null | undefined;
   submitting?: boolean | undefined;
 };
 
 function AddTokenmaxxerDialog({
   defaultTouchGrassId = "",
+  failure = null,
   onAddTokenmaxxer = () => undefined,
   onInputChange = () => undefined,
   onOpenChange,
   open,
-  notFound = false,
   portalContainer = null,
   submitting = false,
 }: AddTokenmaxxerDialogProps) {
@@ -99,7 +103,7 @@ function AddTokenmaxxerDialog({
             className="mt-1.5 block min-h-4 text-[8px] leading-4 text-pearl-muted contrast-more:text-pearl-ink"
             id="touchgrass-tokenmaxxer-id-help"
           >
-            {addTokenmaxxerHelpText({ notFound, touchGrassId, valid })}
+            {addTokenmaxxerHelpText({ failure, touchGrassId, valid })}
           </small>
           <div className="mt-3 flex justify-end gap-2">
             <DialogClose asChild>

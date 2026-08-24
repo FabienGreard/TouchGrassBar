@@ -33,13 +33,19 @@ describe("Add Tokenmaxxer dialog validation", () => {
     expect(guard.finish(nextRequest!)).toBe(true);
   });
 
-  test("reports when a Tokenmaxxer does not exist", () => {
+  test.each([
+    ["invalid", "Use the format TG-ABC123."],
+    ["not-found", "Tokenmaxxer not found."],
+    ["self", "You cannot add your own TouchGrass ID."],
+    ["limit-reached", "You can add up to 100 Tokenmaxxers."],
+    ["unavailable", "Could not add the Tokenmaxxer. Try again."],
+  ] as const)("reports the %s outcome", (failure, expected) => {
     expect(
       addTokenmaxxerHelpText({
-        notFound: true,
+        failure,
         touchGrassId: "TG-222222",
         valid: true,
       }),
-    ).toBe("Tokenmaxxer not found.");
+    ).toBe(expected);
   });
 });

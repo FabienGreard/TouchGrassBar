@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
-import { createAddTokenmaxxerRequestGuard } from "@/components/dialogs/add-tokenmaxxer";
+import {
+  type AddTokenmaxxerFailure,
+  createAddTokenmaxxerRequestGuard,
+} from "@/components/dialogs/add-tokenmaxxer";
 import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tokenmaxxer";
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
@@ -31,8 +34,10 @@ const compactTokenScore = new Intl.NumberFormat("en-US", {
 });
 
 function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
+  const [addTokenmaxxerFailure, setAddTokenmaxxerFailure] = useState<AddTokenmaxxerFailure | null>(
+    null,
+  );
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
-  const [addTokenmaxxerNotFound, setAddTokenmaxxerNotFound] = useState(false);
   const [addTokenmaxxerInFlight, setAddTokenmaxxerInFlight] = useState(false);
   const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
@@ -173,8 +178,8 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
 
   return (
     <PanelView
+      addTokenmaxxerFailure={addTokenmaxxerFailure}
       addTokenmaxxerOpen={addTokenmaxxerOpen}
-      addTokenmaxxerNotFound={addTokenmaxxerNotFound}
       addTokenmaxxerSubmitting={addTokenmaxxerInFlight}
       currentProfile={currentProfile}
       doomerboardRows={
@@ -187,7 +192,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       onAddTokenmaxxer={(touchGrassId) => {
         const request = addTokenmaxxerRequests.begin();
         if (request === null) return;
-        setAddTokenmaxxerNotFound(false);
+        setAddTokenmaxxerFailure(null);
         setAddTokenmaxxerInFlight(true);
         void (async () => {
           const outcome = hasNativeRuntime
@@ -203,18 +208,16 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
             void doomerboard.read(nextSelection);
             return;
           }
-          if (outcome.status === "not-found") {
-            setAddTokenmaxxerNotFound(true);
-          }
+          setAddTokenmaxxerFailure(outcome.status);
         })();
       }}
       onAddTokenmaxxerInputChange={() => {
         addTokenmaxxerRequests.invalidate();
-        setAddTokenmaxxerNotFound(false);
+        setAddTokenmaxxerFailure(null);
       }}
       onAddTokenmaxxerOpenChange={(open) => {
         addTokenmaxxerRequests.invalidate();
-        setAddTokenmaxxerNotFound(false);
+        setAddTokenmaxxerFailure(null);
         setAddTokenmaxxerOpen(open);
       }}
       onDoomerboardSelectionChange={setDoomerboardSelection}
