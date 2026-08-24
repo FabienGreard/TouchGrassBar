@@ -64,6 +64,7 @@ export type TouchGrassPolicyPort = {
   claimRecoveryAttempt: (args: {
     attemptDigest: string;
     authSubject: string;
+    currentRecoveryKeyIsValid: boolean;
     installationCredentialDigest: string;
     replacementRecoveryKeyDigest: string;
     replacementReusesCurrentKey: boolean;
@@ -579,6 +580,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
           const claimed = await policy.claimRecoveryAttempt({
             attemptDigest,
             authSubject: user.id,
+            currentRecoveryKeyIsValid: currentKeyIsValid,
             installationCredentialDigest:
               await installationCredentialDigest(installationCredential),
             replacementRecoveryKeyDigest: await sha256Digest(newRecoveryKey),

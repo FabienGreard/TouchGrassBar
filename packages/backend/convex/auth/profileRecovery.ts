@@ -122,6 +122,7 @@ export const prepareRecoveryAttempt = internalMutation({
 
 export const claimRecoveryAttempt = internalMutation({
   args: recoveryAttemptArgs.extend({
+    currentRecoveryKeyIsValid: v.boolean(),
     installationCredentialDigest: v.string(),
     replacementRecoveryKeyDigest: v.string(),
     replacementReusesCurrentKey: v.boolean(),
@@ -145,7 +146,7 @@ export const claimRecoveryAttempt = internalMutation({
         attempt.replacementRecoveryKeyDigest === args.replacementRecoveryKeyDigest
       );
     }
-    if (args.replacementReusesCurrentKey) return false;
+    if (!args.currentRecoveryKeyIsValid || args.replacementReusesCurrentKey) return false;
     if (
       attempt.expiresAt <= Date.now() ||
       tokenmaxxer.activeDeviceId !== attempt.expectedDeviceId

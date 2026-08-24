@@ -730,7 +730,7 @@ test("Profile recovery is idempotent and rotates one-writer authority only at co
   expect(JSON.stringify(stored)).not.toContain(attemptId);
 });
 
-test("a new recovery cannot reuse the current Recovery Key", async () => {
+test("a new recovery requires current-key authentication and a distinct replacement", async () => {
   vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
 
@@ -753,6 +753,23 @@ test("a new recovery cannot reuse the current Recovery Key", async () => {
     method: "POST",
   });
   expect(commit.status).toBe(401);
+  const replacementFieldProof = await prepareRecovery(
+    t,
+    profile,
+    recoveryAttemptId("G"),
+    replacementRecoveryKey("H"),
+  );
+  const replacementFieldCommit = await authFetch(t, "/api/auth/touchgrass/recovery/commit", {
+    body: JSON.stringify({
+      currentRecoveryKey: replacementRecoveryKey("J"),
+      installationCredential: "K".repeat(52),
+      newRecoveryKey: profile.recoveryKey,
+      recoveryProof: replacementFieldProof,
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  });
+  expect(replacementFieldCommit.status).toBe(401);
 
   const authority = await t.run(async (ctx) => {
     const tokenmaxxer = await ctx.db
@@ -799,6 +816,7 @@ test("concurrent identical recovery commits finalize authentication once", async
   await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
     attemptDigest,
     authSubject: profile.user.id,
+    currentRecoveryKeyIsValid: true,
     installationCredentialDigest: await installationCredentialDigest(installationCredential),
     replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
     replacementReusesCurrentKey: false,
@@ -1050,6 +1068,7 @@ test("an expired in-flight recovery can refresh its proof and commit", async () 
     t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
       attemptDigest: await recoveryDigest(attemptId),
       authSubject: profile.user.id,
+      currentRecoveryKeyIsValid: true,
       installationCredentialDigest: await installationCredentialDigest(installationCredential),
       replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
       replacementReusesCurrentKey: false,
@@ -1086,6 +1105,7 @@ test("an unfinalized recovery blocks the new Active Mac and Profile sign-in", as
   await t.mutation(internal.auth.profileRecovery.claimRecoveryAttempt, {
     attemptDigest,
     authSubject: profile.user.id,
+    currentRecoveryKeyIsValid: true,
     installationCredentialDigest: await installationCredentialDigest(installationCredential),
     replacementRecoveryKeyDigest: await recoveryDigest(newRecoveryKey),
     replacementReusesCurrentKey: false,
