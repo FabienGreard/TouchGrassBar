@@ -32,6 +32,7 @@ const compactTokenScore = new Intl.NumberFormat("en-US", {
 
 function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
+  const [addTokenmaxxerNotFound, setAddTokenmaxxerNotFound] = useState(false);
   const [addTokenmaxxerInFlight, setAddTokenmaxxerInFlight] = useState(false);
   const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
@@ -173,6 +174,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   return (
     <PanelView
       addTokenmaxxerOpen={addTokenmaxxerOpen}
+      addTokenmaxxerNotFound={addTokenmaxxerNotFound}
       addTokenmaxxerSubmitting={addTokenmaxxerInFlight}
       currentProfile={currentProfile}
       doomerboardRows={
@@ -185,6 +187,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       onAddTokenmaxxer={(touchGrassId) => {
         const request = addTokenmaxxerRequests.begin();
         if (request === null) return;
+        setAddTokenmaxxerNotFound(false);
         setAddTokenmaxxerInFlight(true);
         void (async () => {
           const outcome = hasNativeRuntime
@@ -200,13 +203,18 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
             void doomerboard.read(nextSelection);
             return;
           }
+          if (outcome.status === "not-found") {
+            setAddTokenmaxxerNotFound(true);
+          }
         })();
       }}
       onAddTokenmaxxerInputChange={() => {
         addTokenmaxxerRequests.invalidate();
+        setAddTokenmaxxerNotFound(false);
       }}
       onAddTokenmaxxerOpenChange={(open) => {
         addTokenmaxxerRequests.invalidate();
+        setAddTokenmaxxerNotFound(false);
         setAddTokenmaxxerOpen(open);
       }}
       onDoomerboardSelectionChange={setDoomerboardSelection}

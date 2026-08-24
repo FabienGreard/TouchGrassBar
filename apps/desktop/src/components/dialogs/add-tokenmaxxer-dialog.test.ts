@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { createAddTokenmaxxerRequestGuard, normalizeTouchGrassId } from "./add-tokenmaxxer";
+import {
+  addTokenmaxxerHelpText,
+  createAddTokenmaxxerRequestGuard,
+  normalizeTouchGrassId,
+} from "./add-tokenmaxxer";
 
 describe("Add Tokenmaxxer dialog validation", () => {
   test.each([
@@ -27,5 +31,15 @@ describe("Add Tokenmaxxer dialog validation", () => {
     const nextRequest = guard.begin();
     expect(nextRequest).not.toBeNull();
     expect(guard.finish(nextRequest!)).toBe(true);
+  });
+
+  test("reports when a Tokenmaxxer does not exist", () => {
+    expect(
+      addTokenmaxxerHelpText({
+        notFound: true,
+        touchGrassId: "TG-222222",
+        valid: true,
+      }),
+    ).toBe("Tokenmaxxer not found.");
   });
 });

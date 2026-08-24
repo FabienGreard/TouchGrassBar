@@ -25,4 +25,19 @@ function normalizeTouchGrassId(value: string) {
   return value.trim().replace(/^#/, "").toUpperCase();
 }
 
-export { createAddTokenmaxxerRequestGuard, normalizeTouchGrassId };
+function addTokenmaxxerHelpText({
+  notFound,
+  touchGrassId,
+  valid,
+}: {
+  notFound: boolean;
+  touchGrassId: string;
+  valid: boolean;
+}) {
+  if (notFound) return "Tokenmaxxer not found.";
+  return touchGrassId.length > 0 && !valid
+    ? "Use the format TG-ABC123."
+    : "Ask the Tokenmaxxer for their TouchGrass ID.";
+}
+
+export { addTokenmaxxerHelpText, createAddTokenmaxxerRequestGuard, normalizeTouchGrassId };

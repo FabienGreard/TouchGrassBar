@@ -35,6 +35,7 @@ function updateActionLabel(updateState: UpdateState | null) {
 
 type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
+  addTokenmaxxerNotFound?: boolean | undefined;
   addTokenmaxxerSubmitting?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
@@ -57,6 +58,7 @@ type PanelViewProps = {
 
 function PanelView({
   addTokenmaxxerOpen = false,
+  addTokenmaxxerNotFound = false,
   addTokenmaxxerSubmitting = false,
   currentProfile,
   doomerboardRows,
@@ -130,6 +132,7 @@ function PanelView({
         onInputChange={onAddTokenmaxxerInputChange}
         onOpenChange={onAddTokenmaxxerOpenChange}
         open={addTokenmaxxerOpen}
+        notFound={addTokenmaxxerNotFound}
         portalContainer={panelContainerRef.current}
         submitting={addTokenmaxxerSubmitting}
       />
