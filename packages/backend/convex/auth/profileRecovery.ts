@@ -251,7 +251,7 @@ export const commitRecoveryAttempt = internalMutation({
     const transferDay = rankingDayAt(activatedAt);
     await freezeTransferDayUsage(ctx, tokenmaxxer._id, oldDevice._id, newDeviceId, transferDay);
     await ctx.db.patch(tokenmaxxer._id, {
-      activeAuthSessionId: undefined,
+      activeAuthSessionId: null,
       activeDeviceId: newDeviceId,
       authSessionGeneration: generation,
     });

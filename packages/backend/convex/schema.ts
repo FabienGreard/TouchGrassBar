@@ -28,7 +28,7 @@ export default defineSchema({
 
   tokenmaxxers: defineTable({
     activeDeviceId: v.optional(v.id("devices")),
-    activeAuthSessionId: v.optional(v.string()),
+    activeAuthSessionId: v.optional(v.union(v.string(), v.null())),
     authSessionGeneration: v.optional(v.number()),
     authSubject: v.string(),
     displayName: v.string(),
