@@ -57,7 +57,11 @@ async function seedProfiles(t: ReturnType<typeof testBackend>) {
 
 async function migrationBatch(t: ReturnType<typeof testBackend>, cursor: string | null) {
   return await t.mutation(internal.internal.migrations.backfillProfileAuthSessionFence, {
-    cursor,
+    paginationOpts: {
+      cursor,
+      maximumRowsRead: 25,
+      numItems: 25,
+    },
   });
 }
 
@@ -90,7 +94,13 @@ async function profileFenceState(t: ReturnType<typeof testBackend>) {
   while (true) {
     const result: ProfileFencePageResult = await t.query(
       internal.internal.profileAuthSessionFenceInvariant.check,
-      { cursor },
+      {
+        paginationOpts: {
+          cursor,
+          maximumRowsRead: 100,
+          numItems: 100,
+        },
+      },
     );
     invalidActiveMacAuthorities += result.invalidActiveMacAuthorities;
     missingActiveAuthSessionIds += result.missingActiveAuthSessionIds;
@@ -183,6 +193,74 @@ test("the Profile Auth Session fence migration is bounded, resumable, and idempo
     profiles: PROFILE_COUNT,
     profilesMissingFenceFields: 0,
   });
+});
+
+test("the Profile Auth Session fence operations reject an unbounded page", async () => {
+  const t = testBackend();
+
+  await expect(
+    t.mutation(internal.internal.migrations.backfillProfileAuthSessionFence, {
+      paginationOpts: {
+        cursor: null,
+        maximumRowsRead: 26,
+        numItems: 25,
+      },
+    }),
+  ).rejects.toThrow("Pagination maximumRowsRead must be between 1 and 25");
+  await expect(
+    t.query(internal.internal.profileAuthSessionFenceInvariant.check, {
+      paginationOpts: {
+        cursor: null,
+        maximumRowsRead: 100,
+        numItems: 101,
+      },
+    }),
+  ).rejects.toThrow("Pagination numItems must be between 1 and 100");
+});
+
+test("the Profile Auth Session fence operations preserve native pagination options", async () => {
+  const t = testBackend();
+  await seedProfiles(t);
+
+  const firstMigrationPage = await migrationBatch(t, null);
+  await expect(
+    t.mutation(internal.internal.migrations.backfillProfileAuthSessionFence, {
+      paginationOpts: {
+        cursor: null,
+        endCursor: firstMigrationPage.continueCursor,
+        id: 1,
+        maximumBytesRead: 1_000_000,
+        maximumRowsRead: 25,
+        numItems: 1,
+      },
+    }),
+  ).resolves.toMatchObject({
+    changedProfiles: 0,
+    processedProfiles: 25,
+  });
+
+  const firstInvariantPage: ProfileFencePageResult = await t.query(
+    internal.internal.profileAuthSessionFenceInvariant.check,
+    {
+      paginationOpts: {
+        cursor: null,
+        maximumRowsRead: 25,
+        numItems: 25,
+      },
+    },
+  );
+  await expect(
+    t.query(internal.internal.profileAuthSessionFenceInvariant.check, {
+      paginationOpts: {
+        cursor: null,
+        endCursor: firstInvariantPage.continueCursor,
+        id: 2,
+        maximumBytesRead: 1_000_000,
+        maximumRowsRead: 100,
+        numItems: 1,
+      },
+    }),
+  ).resolves.toMatchObject({ processedProfiles: 25 });
 });
 
 test("the Profile Auth Session fence migration reports and preserves invalid authority", async () => {

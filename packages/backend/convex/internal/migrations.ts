@@ -1,4 +1,5 @@
 import { Migrations } from "@convex-dev/migrations";
+import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 
 import { components } from "../_generated/api";
@@ -6,6 +7,7 @@ import { internalMutation } from "../_generated/server";
 import { doomerboard, doomerboardKey } from "../model/doomerboard";
 import { markDoomerboardChanged } from "../model/doomerboardVersion";
 import schema from "../schema";
+import { assertBoundedProfilePagination } from "./profileAuthSessionFencePagination";
 
 export const migrations = new Migrations(components.migrations, { schema });
 
@@ -38,7 +40,7 @@ export const backfillDeviceUsageCompletion = migrations.define({
 const PROFILE_AUTH_SESSION_FENCE_BATCH_SIZE = 25;
 
 export const backfillProfileAuthSessionFence = internalMutation({
-  args: { cursor: v.union(v.string(), v.null()) },
+  args: { paginationOpts: paginationOptsValidator },
   returns: v.object({
     changedProfiles: v.number(),
     continueCursor: v.string(),
@@ -47,11 +49,8 @@ export const backfillProfileAuthSessionFence = internalMutation({
     processedProfiles: v.number(),
   }),
   handler: async (ctx, args) => {
-    const page = await ctx.db.query("tokenmaxxers").paginate({
-      cursor: args.cursor,
-      maximumRowsRead: PROFILE_AUTH_SESSION_FENCE_BATCH_SIZE,
-      numItems: PROFILE_AUTH_SESSION_FENCE_BATCH_SIZE,
-    });
+    assertBoundedProfilePagination(args.paginationOpts, PROFILE_AUTH_SESSION_FENCE_BATCH_SIZE);
+    const page = await ctx.db.query("tokenmaxxers").paginate(args.paginationOpts);
     let changedProfiles = 0;
     let invalidActiveMacAuthorities = 0;
     for (const profile of page.page) {

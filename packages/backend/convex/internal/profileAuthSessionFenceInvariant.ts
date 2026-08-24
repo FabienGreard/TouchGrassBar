@@ -1,6 +1,8 @@
+import { paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
 
 import { internalQuery } from "../_generated/server";
+import { assertBoundedProfilePagination } from "./profileAuthSessionFencePagination";
 
 const PAGE_SIZE = 100;
 
@@ -15,14 +17,11 @@ const resultValidator = v.object({
 });
 
 export const check = internalQuery({
-  args: { cursor: v.union(v.string(), v.null()) },
+  args: { paginationOpts: paginationOptsValidator },
   returns: resultValidator,
   handler: async (ctx, args) => {
-    const page = await ctx.db.query("tokenmaxxers").paginate({
-      cursor: args.cursor,
-      maximumRowsRead: PAGE_SIZE,
-      numItems: PAGE_SIZE,
-    });
+    assertBoundedProfilePagination(args.paginationOpts, PAGE_SIZE);
+    const page = await ctx.db.query("tokenmaxxers").paginate(args.paginationOpts);
     let invalidActiveMacAuthorities = 0;
     let missingActiveAuthSessionIds = 0;
     let missingAuthSessionGenerations = 0;
