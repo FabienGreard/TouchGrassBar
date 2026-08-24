@@ -10,6 +10,16 @@ import schema from "./schema";
 const modules = import.meta.glob("./**/*.ts");
 const PROFILE_COUNT = 121;
 
+type ProfileFencePageResult = {
+  continueCursor: string;
+  invalidActiveMacAuthorities: number;
+  isDone: boolean;
+  missingActiveAuthSessionIds: number;
+  missingAuthSessionGenerations: number;
+  processedProfiles: number;
+  profilesMissingFenceFields: number;
+};
+
 function testBackend() {
   const t = convexTest(schema, modules);
   migrationsTest.register(t);
@@ -71,7 +81,33 @@ async function finishMigration(t: ReturnType<typeof testBackend>, cursor: string
 }
 
 async function profileFenceState(t: ReturnType<typeof testBackend>) {
-  return await t.action(internal.internal.profileAuthSessionFenceInvariant.check, {});
+  let cursor: string | null = null;
+  let invalidActiveMacAuthorities = 0;
+  let missingActiveAuthSessionIds = 0;
+  let missingAuthSessionGenerations = 0;
+  let profiles = 0;
+  let profilesMissingFenceFields = 0;
+  while (true) {
+    const result: ProfileFencePageResult = await t.query(
+      internal.internal.profileAuthSessionFenceInvariant.check,
+      { cursor },
+    );
+    invalidActiveMacAuthorities += result.invalidActiveMacAuthorities;
+    missingActiveAuthSessionIds += result.missingActiveAuthSessionIds;
+    missingAuthSessionGenerations += result.missingAuthSessionGenerations;
+    profiles += result.processedProfiles;
+    profilesMissingFenceFields += result.profilesMissingFenceFields;
+    if (result.isDone) {
+      return {
+        invalidActiveMacAuthorities,
+        missingActiveAuthSessionIds,
+        missingAuthSessionGenerations,
+        profiles,
+        profilesMissingFenceFields,
+      };
+    }
+    cursor = result.continueCursor;
+  }
 }
 
 async function storedFenceFields(t: ReturnType<typeof testBackend>) {

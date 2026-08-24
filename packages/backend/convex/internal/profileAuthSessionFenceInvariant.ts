@@ -1,69 +1,58 @@
-import type { PaginationResult } from "convex/server";
 import { v } from "convex/values";
 
-import { internal } from "../_generated/api";
-import { type ActionCtx, internalAction } from "../_generated/server";
+import { internalQuery } from "../_generated/server";
 
 const PAGE_SIZE = 100;
-const MAX_PAGES = 100;
-
-type ProfileFenceState = {
-  activeAuthSessionIdMissing: boolean;
-  activeMacAuthorityInvalid: boolean;
-  authSessionGenerationMissing: boolean;
-};
 
 const resultValidator = v.object({
+  continueCursor: v.string(),
   invalidActiveMacAuthorities: v.number(),
+  isDone: v.boolean(),
   missingActiveAuthSessionIds: v.number(),
   missingAuthSessionGenerations: v.number(),
-  profiles: v.number(),
+  processedProfiles: v.number(),
   profilesMissingFenceFields: v.number(),
 });
 
-export const check = internalAction({
-  args: {},
+export const check = internalQuery({
+  args: { cursor: v.union(v.string(), v.null()) },
   returns: resultValidator,
-  handler: async (ctx: ActionCtx) => {
-    let cursor: string | null = null;
-    let isDone = false;
+  handler: async (ctx, args) => {
+    const page = await ctx.db.query("tokenmaxxers").paginate({
+      cursor: args.cursor,
+      maximumRowsRead: PAGE_SIZE,
+      numItems: PAGE_SIZE,
+    });
     let invalidActiveMacAuthorities = 0;
     let missingActiveAuthSessionIds = 0;
     let missingAuthSessionGenerations = 0;
-    let profiles = 0;
     let profilesMissingFenceFields = 0;
-
-    for (let pageNumber = 0; pageNumber < MAX_PAGES && !isDone; pageNumber += 1) {
-      const page: PaginationResult<ProfileFenceState> = await ctx.runQuery(
-        internal.internal.profileAuthSessionFenceInvariantPage.states,
-        {
-          paginationOpts: {
-            cursor,
-            maximumRowsRead: PAGE_SIZE,
-            numItems: PAGE_SIZE,
-          },
-        },
-      );
-      for (const profile of page.page) {
-        profiles += 1;
-        if (profile.activeMacAuthorityInvalid) invalidActiveMacAuthorities += 1;
-        if (profile.activeAuthSessionIdMissing) missingActiveAuthSessionIds += 1;
-        if (profile.authSessionGenerationMissing) missingAuthSessionGenerations += 1;
-        if (profile.activeAuthSessionIdMissing || profile.authSessionGenerationMissing) {
-          profilesMissingFenceFields += 1;
-        }
+    for (const profile of page.page) {
+      const activeAuthSessionIdMissing = profile.activeAuthSessionId === undefined;
+      const authSessionGenerationMissing = profile.authSessionGeneration === undefined;
+      const activeDevice = profile.activeDeviceId ? await ctx.db.get(profile.activeDeviceId) : null;
+      if (
+        !activeDevice ||
+        activeDevice.tokenmaxxerId !== profile._id ||
+        activeDevice.revokedAt !== undefined ||
+        !Number.isSafeInteger(activeDevice.generation) ||
+        activeDevice.generation < 1
+      ) {
+        invalidActiveMacAuthorities += 1;
       }
-      cursor = page.continueCursor;
-      isDone = page.isDone;
-    }
-    if (!isDone) {
-      throw new Error("Profile Auth Session fence check exceeded its bounded policy");
+      if (activeAuthSessionIdMissing) missingActiveAuthSessionIds += 1;
+      if (authSessionGenerationMissing) missingAuthSessionGenerations += 1;
+      if (activeAuthSessionIdMissing || authSessionGenerationMissing) {
+        profilesMissingFenceFields += 1;
+      }
     }
     return {
+      continueCursor: page.continueCursor,
       invalidActiveMacAuthorities,
+      isDone: page.isDone,
       missingActiveAuthSessionIds,
       missingAuthSessionGenerations,
-      profiles,
+      processedProfiles: page.page.length,
       profilesMissingFenceFields,
     };
   },

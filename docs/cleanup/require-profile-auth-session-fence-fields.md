@@ -28,8 +28,9 @@ cloud migration or schema deployment.
    step is complete.
 4. Record the approved deployment before any remote action.
 5. Run the migration in bounded batches until it completes.
-6. Verify that no Profile document is missing either field and no Profile has
-   invalid Active Mac authority.
+6. Run the count-only check through every cursor. Verify that no Profile
+   document is missing either field and no Profile has invalid Active Mac
+   authority.
 7. Run the migration and the missing-field check again.
 8. Change both schema fields from optional to required and keep the active
    session field nullable.
