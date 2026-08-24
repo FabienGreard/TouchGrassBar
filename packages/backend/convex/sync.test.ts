@@ -1180,26 +1180,120 @@ test("the current Global Doomerboard selects its provider and period", async () 
   ).resolves.toMatchObject([{ tokenScore: 250 }]);
 });
 
-test("the current Friends Doomerboard selects its provider and period", async () => {
+test("adding a Tokenmaxxer returns bounded added and duplicate outcomes", async () => {
   const t = testBackend();
   const owner = await createProfile(t, installationCredential("A"), "Owner");
-  const friendCredential = installationCredential("B");
-  const friend = await createProfile(t, friendCredential, "Friend");
-  const waitingFriend = await createProfile(t, installationCredential("C"), "Waiting Friend");
-  await friend.authenticated.mutation(api.sync.dailyUsage, {
+  const added = await createProfile(t, installationCredential("B"), "Added");
+
+  await expect(
+    owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: added.touchGrassId,
+    }),
+  ).resolves.toEqual({ status: "added" });
+  await expect(
+    owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: added.touchGrassId,
+    }),
+  ).resolves.toEqual({ status: "already-added" });
+});
+
+test("adding a Tokenmaxxer contains invalid, missing, and self outcomes", async () => {
+  const t = testBackend();
+  const owner = await createProfile(t, installationCredential("A"), "Owner");
+
+  await expect(
+    owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: "private-input",
+    }),
+  ).resolves.toEqual({ status: "invalid" });
+  await expect(
+    owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: "TG-222222",
+    }),
+  ).resolves.toEqual({ status: "not-found" });
+  await expect(
+    owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: owner.touchGrassId,
+    }),
+  ).resolves.toEqual({ status: "self" });
+});
+
+test("Tokenmaxxer lookup and add require authenticated Profile authority", async () => {
+  const t = testBackend();
+  const target = await createProfile(t, installationCredential("A"), "Target");
+
+  await expect(
+    t.query(api.tokenmaxxers.findByTouchGrassId, {
+      touchGrassId: target.touchGrassId,
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    t.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: target.touchGrassId,
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    t.mutation(api.tokenmaxxers.removeFromMyTokenmaxxers, {
+      touchGrassId: target.touchGrassId,
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    t.query(api.doomerboards.currentMyTokenmaxxers, {
+      rankingDay: TODAY,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    target.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      ownerId: "hostile-client-identity",
+      touchGrassId: target.touchGrassId,
+    } as never),
+  ).rejects.toThrow();
+  await expect(t.run(async (ctx) => ctx.db.query("addedTokenmaxxers").take(1))).resolves.toEqual(
+    [],
+  );
+});
+
+test("My Tokenmaxxers reads require authenticated Profile authority", async () => {
+  const t = testBackend();
+  const profilePending = await authenticateProfile(t, "Profile Pending");
+
+  await expect(
+    profilePending.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+      rankingDay: TODAY,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).rejects.toThrow("authority-rejected");
+  await expect(
+    profilePending.authenticated.query(api.doomerboards.myTokenmaxxers, {
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).rejects.toThrow("authority-rejected");
+});
+
+test("the current My Tokenmaxxers Doomerboard selects its provider and period", async () => {
+  const t = testBackend();
+  const owner = await createProfile(t, installationCredential("A"), "Owner");
+  const addedCredential = installationCredential("B");
+  const added = await createProfile(t, addedCredential, "Added");
+  const waiting = await createProfile(t, installationCredential("C"), "Waiting");
+  await added.authenticated.mutation(api.sync.dailyUsage, {
     profileBackfillAnchor: null,
     activeMacGeneration: 1,
-    installationCredential: friendCredential,
+    installationCredential: addedCredential,
     snapshots: [
       usageSnapshot({ observedTokens: 100, provider: "codex" }),
       usageSnapshot({ observedTokens: 250, provider: "claude" }),
     ],
   });
   await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
-    touchGrassId: friend.touchGrassId,
+    touchGrassId: added.touchGrassId,
   });
   await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
-    touchGrassId: waitingFriend.touchGrassId,
+    touchGrassId: waiting.touchGrassId,
   });
 
   await expect(
@@ -1211,9 +1305,9 @@ test("the current Friends Doomerboard selects its provider and period", async ()
   ).resolves.toMatchObject({
     rows: [
       {
-        displayName: "Friend",
+        displayName: "Added",
         tokenScore: 250,
-        touchGrassId: friend.touchGrassId,
+        touchGrassId: added.touchGrassId,
       },
     ],
     savedTokenmaxxerCount: 2,
@@ -1252,7 +1346,7 @@ test("My Tokenmaxxers rejects a new entry at its 100-entry limit", async () => {
     owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
       touchGrassId: targetTouchGrassId,
     }),
-  ).rejects.toThrow("My Tokenmaxxers limit reached");
+  ).resolves.toEqual({ status: "limit-reached" });
 
   await t.run(async (ctx) => {
     const [ownerProfile, targetProfile] = await Promise.all([

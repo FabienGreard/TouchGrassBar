@@ -1,23 +1,34 @@
 import { Button, Dialog, DialogClose, DialogContent, DialogTitle, Input } from "@touchgrass/ui";
 import { useRef, useState } from "react";
 
-import { normalizeTouchGrassId } from "./add-tokenmaxxer";
+import {
+  addTokenmaxxerHelpText,
+  type AddTokenmaxxerFailure,
+  normalizeTouchGrassId,
+} from "./add-tokenmaxxer";
 
 type AddTokenmaxxerDialogProps = {
   defaultTouchGrassId?: string;
+  failure?: AddTokenmaxxerFailure | null | undefined;
+  onAddTokenmaxxer?: ((touchGrassId: string) => void) | undefined;
+  onInputChange?: (() => void) | undefined;
   onOpenChange: (open: boolean) => void;
   open: boolean;
   portalContainer?: HTMLElement | null | undefined;
+  submitting?: boolean | undefined;
 };
 
 function AddTokenmaxxerDialog({
   defaultTouchGrassId = "",
+  failure = null,
+  onAddTokenmaxxer = () => undefined,
+  onInputChange = () => undefined,
   onOpenChange,
   open,
   portalContainer = null,
+  submitting = false,
 }: AddTokenmaxxerDialogProps) {
   const [touchGrassId, setTouchGrassId] = useState(defaultTouchGrassId);
-  const [submitted, setSubmitted] = useState(false);
   const touchGrassIdInputRef = useRef<HTMLInputElement>(null);
   const normalizedId = normalizeTouchGrassId(touchGrassId);
   const valid = /^TG-[A-Z0-9]{6}$/.test(normalizedId);
@@ -25,7 +36,7 @@ function AddTokenmaxxerDialog({
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) {
       setTouchGrassId(defaultTouchGrassId);
-      setSubmitted(false);
+      onInputChange();
     }
     onOpenChange(nextOpen);
   }
@@ -61,7 +72,9 @@ function AddTokenmaxxerDialog({
           className="mt-4"
           onSubmit={(event) => {
             event.preventDefault();
-            if (valid) setSubmitted(true);
+            if (valid && !submitting) {
+              onAddTokenmaxxer(normalizedId);
+            }
           }}
         >
           <label
@@ -77,7 +90,7 @@ function AddTokenmaxxerDialog({
             id="touchgrass-tokenmaxxer-id"
             onChange={(event) => {
               setTouchGrassId(event.target.value);
-              setSubmitted(false);
+              onInputChange();
             }}
             placeholder="TG-ABC123"
             ref={touchGrassIdInputRef}
@@ -86,14 +99,11 @@ function AddTokenmaxxerDialog({
             value={touchGrassId}
           />
           <small
+            aria-live="polite"
             className="mt-1.5 block min-h-4 text-[8px] leading-4 text-pearl-muted contrast-more:text-pearl-ink"
             id="touchgrass-tokenmaxxer-id-help"
           >
-            {submitted
-              ? "Tokenmaxxer lookup is not connected yet."
-              : touchGrassId && !valid
-                ? "Use the format TG-ABC123."
-                : "Ask the Tokenmaxxer for their TouchGrass ID."}
+            {addTokenmaxxerHelpText({ failure, touchGrassId, valid })}
           </small>
           <div className="mt-3 flex justify-end gap-2">
             <DialogClose asChild>
@@ -101,7 +111,7 @@ function AddTokenmaxxerDialog({
                 Cancel
               </Button>
             </DialogClose>
-            <Button disabled={!valid} size="default" type="submit">
+            <Button disabled={!valid || submitting} size="default" type="submit">
               Add Tokenmaxxer
             </Button>
           </div>

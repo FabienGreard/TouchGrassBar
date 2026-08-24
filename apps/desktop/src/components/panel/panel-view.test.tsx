@@ -273,7 +273,7 @@ describe("panel states", () => {
     expect(markup).toContain("#TG-LOOP55");
     expect(markup).toContain("#TG-7K4P9D");
     expect(markup).toContain("Fabien#TG-7K4P9D");
-    expect(markup).toContain('aria-label="Copy current user profile Fabien#TG-7K4P9D"');
+    expect(markup).toContain('aria-label="Copy TouchGrass ID TG-7K4P9D"');
     expect(markup).toContain('data-copy-status="idle"');
     expect(markup).not.toContain("data-copy-indicator");
     expect(markup).toContain('data-copy-feedback="idle"');

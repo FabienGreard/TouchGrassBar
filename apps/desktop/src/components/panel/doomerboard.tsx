@@ -82,9 +82,7 @@ function Doomerboard({
   selection?: DoomerboardQuery | undefined;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
 }) {
-  const currentProfileText = currentProfile
-    ? `${currentProfile.displayName}${currentProfile.touchGrassId}`
-    : "";
+  const currentProfileText = currentProfile ? currentProfile.touchGrassId.replace(/^#/, "") : "";
   const { copyStatus, copyText } = useCopyText(currentProfileText);
   const selectedRows = selection.audience === "global" ? rows : tokenmaxxerRows;
   const rowsEmpty = selectedRows !== undefined && selectedRows.length === 0;

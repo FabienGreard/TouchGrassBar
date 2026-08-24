@@ -13,6 +13,7 @@ import { touchGrassSignup, type TouchGrassPolicyPort } from "./auth/touchgrassSi
 import { rejectAuthority } from "./model/authority";
 import { profileSessionIsAuthorized } from "./model/profile";
 import { rateLimiter } from "./model/rateLimits";
+import { validTouchGrassId } from "./model/touchGrassId";
 
 declare const process: {
   env: { readonly CONVEX_SITE_URL?: string };
@@ -108,7 +109,7 @@ export const createAuthWithRequestIp = (
         maxUsernameLength: 9,
         minUsernameLength: 9,
         usernameNormalization: (value) => value.toUpperCase(),
-        usernameValidator: (value) => /^TG-[A-HJ-NP-Z2-9]{6}$/.test(value),
+        usernameValidator: validTouchGrassId,
         validationOrder: { username: "post-normalization" },
       }),
       bearer(),

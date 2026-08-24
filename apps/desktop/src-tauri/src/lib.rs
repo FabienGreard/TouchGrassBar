@@ -757,6 +757,19 @@ async fn get_doomerboard(
 }
 
 #[tauri::command]
+async fn add_tokenmaxxer(
+    window: WebviewWindow,
+    runtime: State<'_, doomerboard::DoomerboardRuntime>,
+    touch_grass_id: String,
+) -> Result<doomerboard::AddTokenmaxxerOutcomeV1, String> {
+    require_panel(&window)?;
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.add(&touch_grass_id))
+        .await
+        .map_err(|_| "Add Tokenmaxxer unavailable".to_owned())
+}
+
+#[tauri::command]
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
@@ -1159,6 +1172,7 @@ pub fn run() {
         ));
     let app = builder
         .invoke_handler(tauri::generate_handler![
+            add_tokenmaxxer,
             check_for_updates,
             complete_bootstrap,
             get_bootstrap_state,

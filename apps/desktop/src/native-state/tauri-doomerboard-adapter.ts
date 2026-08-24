@@ -44,6 +44,16 @@ function createTauriDoomerboardAdapter(
   bindings: TauriDoomerboardBindings = defaultBindings,
 ): DoomerboardPort {
   return {
+    add: async (touchGrassId) => {
+      try {
+        return {
+          ok: true,
+          value: await bindings.invoke("add_tokenmaxxer", { touchGrassId }),
+        };
+      } catch {
+        return unavailable();
+      }
+    },
     read: async (query) => {
       try {
         return {

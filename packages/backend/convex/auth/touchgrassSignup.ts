@@ -6,13 +6,12 @@ import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { internalMutation } from "../_generated/server";
 import { installationCredentialDigest } from "../model/profile";
+import { TOUCH_GRASS_ID_ALPHABET, validTouchGrassId } from "../model/touchGrassId";
 
 const PREPARATION_LIFETIME_MS = 120_000;
 const ATTEMPT_ID_PATTERN = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{32}$/;
 const INSTALLATION_CREDENTIAL_PATTERN =
   /^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{52}$/;
-const PUBLIC_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const PUBLIC_ID_PATTERN = /^TG-[A-HJ-NP-Z2-9]{6}$/;
 const PROOF_HEADER = "x-touchgrass-signup-proof";
 const RECOVERY_KEY_PATTERN = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]{48}$/;
 const DUMMY_RECOVERY_CREDENTIAL = "2".repeat(48);
@@ -132,7 +131,7 @@ function randomBytes(length: number) {
 
 function createTouchGrassId() {
   const suffix = [...randomBytes(6)]
-    .map((byte) => PUBLIC_ID_ALPHABET[byte % PUBLIC_ID_ALPHABET.length])
+    .map((byte) => TOUCH_GRASS_ID_ALPHABET[byte % TOUCH_GRASS_ID_ALPHABET.length])
     .join("");
   return `TG-${suffix}`;
 }
@@ -206,7 +205,7 @@ async function verifyPreparation(secret: string, proof: string, now: number) {
       typeof payload.nonce !== "string" ||
       payload.nonce.length < 20 ||
       typeof payload.touchGrassId !== "string" ||
-      !PUBLIC_ID_PATTERN.test(payload.touchGrassId)
+      !validTouchGrassId(payload.touchGrassId)
     ) {
       return null;
     }
@@ -256,7 +255,7 @@ async function verifyRecoveryProof(secret: string, proof: string, now: number) {
       !Number.isSafeInteger(payload.expiresAt) ||
       payload.expiresAt <= now ||
       typeof payload.touchGrassId !== "string" ||
-      !PUBLIC_ID_PATTERN.test(payload.touchGrassId)
+      !validTouchGrassId(payload.touchGrassId)
     ) {
       return null;
     }
@@ -364,7 +363,7 @@ function touchGrassIdLimitInput(value: unknown) {
     return "invalid-touchgrass-id";
   }
   const normalized = value.toUpperCase();
-  return PUBLIC_ID_PATTERN.test(normalized) ? normalized : "invalid-touchgrass-id";
+  return validTouchGrassId(normalized) ? normalized : "invalid-touchgrass-id";
 }
 
 async function failedCredentialKeys(
@@ -432,7 +431,7 @@ export function touchGrassSignup(policy: TouchGrassPolicyPort): BetterAuthPlugin
 
           const validShape =
             touchGrassId !== null &&
-            PUBLIC_ID_PATTERN.test(touchGrassId) &&
+            validTouchGrassId(touchGrassId) &&
             recoveryKey !== null &&
             RECOVERY_KEY_PATTERN.test(recoveryKey) &&
             replacementRecoveryKey !== null &&
