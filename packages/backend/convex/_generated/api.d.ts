@@ -27,6 +27,7 @@ import type * as model_profile from "../model/profile.js";
 import type * as model_rateLimits from "../model/rateLimits.js";
 import type * as model_scores from "../model/scores.js";
 import type * as model_sync from "../model/sync.js";
+import type * as model_touchGrassId from "../model/touchGrassId.js";
 import type * as model_values from "../model/values.js";
 import type * as sync from "../sync.js";
 import type * as tokenmaxxers from "../tokenmaxxers.js";
@@ -57,6 +58,7 @@ declare const fullApi: ApiFromModules<{
   "model/rateLimits": typeof model_rateLimits;
   "model/scores": typeof model_scores;
   "model/sync": typeof model_sync;
+  "model/touchGrassId": typeof model_touchGrassId;
   "model/values": typeof model_values;
   sync: typeof sync;
   tokenmaxxers: typeof tokenmaxxers;

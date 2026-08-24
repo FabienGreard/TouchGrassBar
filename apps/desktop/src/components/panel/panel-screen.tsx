@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
+import {
+  type AddTokenmaxxerFailure,
+  createAddTokenmaxxerRequestGuard,
+} from "@/components/dialogs/add-tokenmaxxer";
 import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tokenmaxxer";
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
@@ -30,7 +34,12 @@ const compactTokenScore = new Intl.NumberFormat("en-US", {
 });
 
 function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
+  const [addTokenmaxxerFailure, setAddTokenmaxxerFailure] = useState<AddTokenmaxxerFailure | null>(
+    null,
+  );
   const [addTokenmaxxerOpen, setAddTokenmaxxerOpen] = useState(false);
+  const [addTokenmaxxerInFlight, setAddTokenmaxxerInFlight] = useState(false);
+  const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
   const [doomerboard] = useState(() => createDoomerboardDelivery(createTauriDoomerboardAdapter()));
   const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
@@ -89,7 +98,10 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
     let active = true;
     let stop: (() => void) | undefined;
     void subscribeToPanelAddTokenmaxxer(() => {
-      if (active) setAddTokenmaxxerOpen(true);
+      if (active) {
+        addTokenmaxxerRequests.invalidate();
+        setAddTokenmaxxerOpen(true);
+      }
     }).then((stopListening) => {
       if (active) stop = stopListening;
       else stopListening();
@@ -99,7 +111,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       active = false;
       stop?.();
     };
-  }, [hasNativeRuntime]);
+  }, [addTokenmaxxerRequests, hasNativeRuntime]);
 
   useEffect(() => {
     const onKeyDown = createPanelKeyboardHandler({
@@ -166,7 +178,9 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
 
   return (
     <PanelView
+      addTokenmaxxerFailure={addTokenmaxxerFailure}
       addTokenmaxxerOpen={addTokenmaxxerOpen}
+      addTokenmaxxerSubmitting={addTokenmaxxerInFlight}
       currentProfile={currentProfile}
       doomerboardRows={
         presentation.doomerboardRows ??
@@ -175,7 +189,37 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       doomerboardSelection={doomerboardSelection}
       error={deliveryView.phase === "degraded"}
       nativeGlass
-      onAddTokenmaxxerOpenChange={setAddTokenmaxxerOpen}
+      onAddTokenmaxxer={(touchGrassId) => {
+        const request = addTokenmaxxerRequests.begin();
+        if (request === null) return;
+        setAddTokenmaxxerFailure(null);
+        setAddTokenmaxxerInFlight(true);
+        void (async () => {
+          const outcome = hasNativeRuntime
+            ? await doomerboard.addTokenmaxxer(touchGrassId)
+            : ({ status: "unavailable" } as const);
+          const current = addTokenmaxxerRequests.finish(request);
+          setAddTokenmaxxerInFlight(addTokenmaxxerRequests.inFlight());
+          if (!current) return;
+          if (outcome.status === "added" || outcome.status === "already-added") {
+            const nextSelection = { ...doomerboardSelection, audience: "mine" as const };
+            setDoomerboardSelection(nextSelection);
+            setAddTokenmaxxerOpen(false);
+            void doomerboard.read(nextSelection);
+            return;
+          }
+          setAddTokenmaxxerFailure(outcome.status);
+        })();
+      }}
+      onAddTokenmaxxerInputChange={() => {
+        addTokenmaxxerRequests.invalidate();
+        setAddTokenmaxxerFailure(null);
+      }}
+      onAddTokenmaxxerOpenChange={(open) => {
+        addTokenmaxxerRequests.invalidate();
+        setAddTokenmaxxerFailure(null);
+        setAddTokenmaxxerOpen(open);
+      }}
       onDoomerboardSelectionChange={setDoomerboardSelection}
       onRefresh={() => {
         void stateDelivery.requestRefresh();

@@ -1,4 +1,10 @@
-import { doomerboardViewSchema, type DoomerboardView } from "@touchgrass/contracts";
+import {
+  ADD_TOKENMAXXER_CONTRACT_VERSION,
+  addTokenmaxxerOutcomeSchema,
+  doomerboardViewSchema,
+  type AddTokenmaxxerOutcome,
+  type DoomerboardView,
+} from "@touchgrass/contracts";
 
 type DoomerboardPortOutcome<Value> =
   | { ok: true; value: Value }
@@ -17,6 +23,7 @@ const defaultDoomerboardQuery: DoomerboardQuery = {
 };
 
 type DoomerboardPort = {
+  add: (touchGrassId: string) => Promise<DoomerboardPortOutcome<unknown>>;
   read: (query: DoomerboardQuery) => Promise<DoomerboardPortOutcome<unknown>>;
   subscribe: (receive: () => void) => Promise<DoomerboardPortOutcome<() => void>>;
 };
@@ -100,6 +107,20 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
   };
 
   return {
+    async addTokenmaxxer(touchGrassId: string): Promise<AddTokenmaxxerOutcome> {
+      const unavailable = {
+        contractVersion: ADD_TOKENMAXXER_CONTRACT_VERSION,
+        status: "unavailable" as const,
+      };
+      try {
+        const outcome = await port.add(touchGrassId);
+        if (!outcome.ok) return unavailable;
+        const parsed = addTokenmaxxerOutcomeSchema.safeParse(outcome.value);
+        return parsed.success ? parsed.data : unavailable;
+      } catch {
+        return unavailable;
+      }
+    },
     async activate() {
       try {
         const subscription = await port.subscribe(() => void read());

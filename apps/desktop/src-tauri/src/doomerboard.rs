@@ -19,13 +19,15 @@ use crate::profile::{
 use crate::updater::OnlineFeatureGate;
 
 pub const DOOMERBOARD_CONTRACT_VERSION: u8 = 1;
+pub const ADD_TOKENMAXXER_CONTRACT_VERSION: u8 = 1;
 const CURRENT_GLOBAL_QUERY: &str = "doomerboards:currentGlobal";
 const CURRENT_MY_TOKENMAXXERS_QUERY: &str = "doomerboards:currentMyTokenmaxxers";
+const ADD_TOKENMAXXER_MUTATION: &str = "tokenmaxxers:addToMyTokenmaxxers";
 const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const MAX_ROWS: usize = 100;
 const MAX_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_JWT_BYTES: usize = 8 * 1_024;
-const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
+const CONVEX_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -41,6 +43,35 @@ pub(crate) enum DoomerboardScopeV1 {
     Claude,
     Codex,
     Combined,
+}
+
+#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AddTokenmaxxerStatusV1 {
+    Added,
+    AlreadyAdded,
+    Invalid,
+    LimitReached,
+    NotFound,
+    #[serde(rename = "self")]
+    SelfProfile,
+    Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddTokenmaxxerOutcomeV1 {
+    contract_version: u8,
+    status: AddTokenmaxxerStatusV1,
+}
+
+impl AddTokenmaxxerOutcomeV1 {
+    fn new(status: AddTokenmaxxerStatusV1) -> Self {
+        Self {
+            contract_version: ADD_TOKENMAXXER_CONTRACT_VERSION,
+            status,
+        }
+    }
 }
 
 impl DoomerboardScopeV1 {
@@ -117,13 +148,34 @@ pub fn doomerboard_view_schema() -> Schema {
     schema_for!(DoomerboardViewV1)
 }
 
+pub fn add_tokenmaxxer_outcome_schema() -> Schema {
+    schema_for!(AddTokenmaxxerOutcomeV1)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransportError {
     AuthorityRejected,
     Unavailable,
 }
 
+enum ConvexCall {
+    Mutation {
+        arguments: BTreeMap<String, Value>,
+        function_name: &'static str,
+    },
+    Query {
+        arguments: BTreeMap<String, Value>,
+        function_name: &'static str,
+    },
+}
+
 trait DoomerboardTransport: Send + Sync {
+    fn add(
+        &self,
+        session: &Secret,
+        touch_grass_id: &str,
+    ) -> Result<AddTokenmaxxerStatusV1, TransportError>;
+
     fn read(
         &self,
         session: &Secret,
@@ -181,48 +233,90 @@ impl HttpDoomerboardTransport {
         }
         Ok(Zeroizing::new(response.token))
     }
-}
 
-impl DoomerboardTransport for HttpDoomerboardTransport {
-    fn read(
+    fn authenticated_call(
         &self,
         session: &Secret,
-        query: DoomerboardQueryV1,
-    ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
+        call: ConvexCall,
+    ) -> Result<FunctionResult, TransportError> {
         let convex_url = self
             .convex_url
             .ok_or(TransportError::Unavailable)?
             .to_owned();
         let jwt = self.fetch_convex_token(session)?;
-        let result = tokio::runtime::Runtime::new()
+        tokio::runtime::Runtime::new()
             .map_err(|_| TransportError::Unavailable)?
             .block_on(async move {
-                tokio::time::timeout(QUERY_TIMEOUT, async move {
+                tokio::time::timeout(CONVEX_CALL_TIMEOUT, async move {
                     let mut client = ConvexClient::new(&convex_url)
                         .await
                         .map_err(|_| TransportError::Unavailable)?;
                     client.set_auth(Some(jwt.as_str().to_owned())).await;
-                    let result = client
-                        .query(
-                            doomerboard_query_name(query),
-                            doomerboard_query_arguments(query, OffsetDateTime::now_utc()),
-                        )
-                        .await;
+                    let result = match call {
+                        ConvexCall::Mutation {
+                            arguments,
+                            function_name,
+                        } => client.mutation(function_name, arguments).await,
+                        ConvexCall::Query {
+                            arguments,
+                            function_name,
+                        } => client.query(function_name, arguments).await,
+                    };
                     client.set_auth(None).await;
                     result.map_err(|_| TransportError::Unavailable)
                 })
                 .await
                 .map_err(|_| TransportError::Unavailable)?
-            })?;
-        match result {
-            FunctionResult::Value(value) => parse_selected_rows(query, value),
-            FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
-                Err(TransportError::AuthorityRejected)
-            }
-            FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
-                Err(TransportError::Unavailable)
-            }
+            })
+    }
+}
+
+fn parse_function_result<T>(
+    result: FunctionResult,
+    parse_value: impl FnOnce(Value) -> Result<T, TransportError>,
+) -> Result<T, TransportError> {
+    match result {
+        FunctionResult::Value(value) => parse_value(value),
+        FunctionResult::ConvexError(error) if is_exact_authority_rejection(&error.data) => {
+            Err(TransportError::AuthorityRejected)
         }
+        FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
+            Err(TransportError::Unavailable)
+        }
+    }
+}
+
+impl DoomerboardTransport for HttpDoomerboardTransport {
+    fn add(
+        &self,
+        session: &Secret,
+        touch_grass_id: &str,
+    ) -> Result<AddTokenmaxxerStatusV1, TransportError> {
+        let result = self.authenticated_call(
+            session,
+            ConvexCall::Mutation {
+                arguments: add_tokenmaxxer_arguments(touch_grass_id),
+                function_name: ADD_TOKENMAXXER_MUTATION,
+            },
+        )?;
+        parse_function_result(result, |value| {
+            parse_add_tokenmaxxer_status(value).ok_or(TransportError::Unavailable)
+        })
+    }
+
+    fn read(
+        &self,
+        session: &Secret,
+        query: DoomerboardQueryV1,
+    ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
+        let result = self.authenticated_call(
+            session,
+            ConvexCall::Query {
+                arguments: doomerboard_query_arguments(query, OffsetDateTime::now_utc()),
+                function_name: doomerboard_query_name(query),
+            },
+        )?;
+        parse_function_result(result, |value| parse_selected_rows(query, value))
     }
 }
 
@@ -253,6 +347,13 @@ fn doomerboard_query_arguments(
     ])
 }
 
+fn add_tokenmaxxer_arguments(touch_grass_id: &str) -> BTreeMap<String, Value> {
+    BTreeMap::from([(
+        "touchGrassId".to_owned(),
+        Value::String(touch_grass_id.to_owned()),
+    )])
+}
+
 #[derive(Deserialize)]
 struct ConvexTokenResponse {
     token: String,
@@ -278,39 +379,60 @@ impl DoomerboardRuntime {
         }
     }
 
-    pub(crate) fn read(&self, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
-        if self.online_gate.is_paused() || !query.is_valid() {
-            return DoomerboardViewV1::unavailable();
-        }
-        let session = match self
+    fn with_active_session<T>(
+        &self,
+        operation: impl Fn(&Secret) -> Result<T, TransportError>,
+    ) -> Result<T, TransportError> {
+        let session = self
             .coordinator
             .lock()
             .ok()
             .and_then(|coordinator| coordinator.active_sync_credentials().ok())
             .flatten()
-        {
-            Some(credentials) => credentials.session,
-            None => return DoomerboardViewV1::unavailable(),
-        };
-        match self.transport.read(&session, query) {
-            Ok(rows) => DoomerboardViewV1::ready(rows),
+            .map(|credentials| credentials.session)
+            .ok_or(TransportError::Unavailable)?;
+        match operation(&session) {
             Err(TransportError::AuthorityRejected) => {
                 let refreshed = self
                     .coordinator
                     .lock()
                     .ok()
                     .and_then(|coordinator| coordinator.refresh_active_sync_session(&session).ok())
-                    .flatten();
-                match refreshed
-                    .as_ref()
-                    .and_then(|fresh| self.transport.read(fresh, query).ok())
-                {
-                    Some(rows) => DoomerboardViewV1::ready(rows),
-                    None => DoomerboardViewV1::unavailable(),
-                }
+                    .flatten()
+                    .ok_or(TransportError::Unavailable)?;
+                operation(&refreshed)
             }
-            Err(TransportError::Unavailable) => DoomerboardViewV1::unavailable(),
+            result => result,
         }
+    }
+
+    pub(crate) fn read(&self, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
+        if self.online_gate.is_paused() || !query.is_valid() {
+            return DoomerboardViewV1::unavailable();
+        }
+        match self.with_active_session(|session| self.transport.read(session, query)) {
+            Ok(rows) => DoomerboardViewV1::ready(rows),
+            Err(TransportError::AuthorityRejected | TransportError::Unavailable) => {
+                DoomerboardViewV1::unavailable()
+            }
+        }
+    }
+
+    pub(crate) fn add(&self, touch_grass_id: &str) -> AddTokenmaxxerOutcomeV1 {
+        if !valid_touch_grass_id(touch_grass_id) {
+            return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Invalid);
+        }
+        if self.online_gate.is_paused() {
+            return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable);
+        }
+        let status =
+            match self.with_active_session(|session| self.transport.add(session, touch_grass_id)) {
+                Ok(status) => status,
+                Err(TransportError::AuthorityRejected | TransportError::Unavailable) => {
+                    AddTokenmaxxerStatusV1::Unavailable
+                }
+            };
+        AddTokenmaxxerOutcomeV1::new(status)
     }
 }
 
@@ -345,6 +467,32 @@ fn nonnegative_safe_integer(value: &Value) -> Option<u64> {
 fn exact_keys<const N: usize>(object: &BTreeMap<String, Value>, expected: [&str; N]) -> bool {
     let expected = expected.into_iter().collect::<BTreeSet<_>>();
     object.len() == expected.len() && object.keys().all(|key| expected.contains(key.as_str()))
+}
+
+fn parse_add_tokenmaxxer_status(value: Value) -> Option<AddTokenmaxxerStatusV1> {
+    let Value::Object(object) = value else {
+        return None;
+    };
+    if !exact_keys(&object, ["status"]) {
+        return None;
+    }
+    match object.get("status") {
+        Some(Value::String(status)) if status == "added" => Some(AddTokenmaxxerStatusV1::Added),
+        Some(Value::String(status)) if status == "already-added" => {
+            Some(AddTokenmaxxerStatusV1::AlreadyAdded)
+        }
+        Some(Value::String(status)) if status == "invalid" => Some(AddTokenmaxxerStatusV1::Invalid),
+        Some(Value::String(status)) if status == "limit-reached" => {
+            Some(AddTokenmaxxerStatusV1::LimitReached)
+        }
+        Some(Value::String(status)) if status == "not-found" => {
+            Some(AddTokenmaxxerStatusV1::NotFound)
+        }
+        Some(Value::String(status)) if status == "self" => {
+            Some(AddTokenmaxxerStatusV1::SelfProfile)
+        }
+        _ => None,
+    }
 }
 
 fn parse_cost(value: &Value) -> Option<Option<f64>> {
@@ -494,6 +642,15 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     impl DoomerboardTransport for CountingTransport {
+        fn add(
+            &self,
+            _session: &Secret,
+            _touch_grass_id: &str,
+        ) -> Result<AddTokenmaxxerStatusV1, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(AddTokenmaxxerStatusV1::Added)
+        }
+
         fn read(
             &self,
             _session: &Secret,
@@ -554,6 +711,51 @@ mod tests {
         ]))
     }
 
+    fn add_outcome(status: &str) -> Value {
+        Value::Object(BTreeMap::from([(
+            "status".to_owned(),
+            Value::String(status.to_owned()),
+        )]))
+    }
+
+    #[test]
+    fn accepts_only_bounded_add_tokenmaxxer_outcomes() {
+        assert_eq!(
+            parse_add_tokenmaxxer_status(add_outcome("added")),
+            Some(AddTokenmaxxerStatusV1::Added)
+        );
+        assert_eq!(
+            parse_add_tokenmaxxer_status(add_outcome("already-added")),
+            Some(AddTokenmaxxerStatusV1::AlreadyAdded)
+        );
+        assert_eq!(
+            parse_add_tokenmaxxer_status(add_outcome("invalid")),
+            Some(AddTokenmaxxerStatusV1::Invalid)
+        );
+        assert_eq!(
+            parse_add_tokenmaxxer_status(add_outcome("limit-reached")),
+            Some(AddTokenmaxxerStatusV1::LimitReached)
+        );
+        assert_eq!(
+            parse_add_tokenmaxxer_status(add_outcome("not-found")),
+            Some(AddTokenmaxxerStatusV1::NotFound)
+        );
+        assert_eq!(
+            parse_add_tokenmaxxer_status(add_outcome("self")),
+            Some(AddTokenmaxxerStatusV1::SelfProfile)
+        );
+
+        let mut private_outcome = match add_outcome("added") {
+            Value::Object(object) => object,
+            _ => unreachable!(),
+        };
+        private_outcome.insert("session".to_owned(), Value::String("private".to_owned()));
+        assert_eq!(
+            parse_add_tokenmaxxer_status(Value::Object(private_outcome)),
+            None
+        );
+    }
+
     #[test]
     fn accepts_only_ordered_bounded_public_rows() {
         let parsed = parse_rows(Value::Array(vec![
@@ -587,6 +789,17 @@ mod tests {
                 ("scope".to_owned(), Value::String("claude".to_owned()),),
                 ("windowDays".to_owned(), Value::Float64(30.0)),
             ]),
+        );
+    }
+
+    #[test]
+    fn add_mutation_sends_only_the_public_touch_grass_id() {
+        assert_eq!(
+            add_tokenmaxxer_arguments("TG-234567"),
+            BTreeMap::from([(
+                "touchGrassId".to_owned(),
+                Value::String("TG-234567".to_owned()),
+            )])
         );
     }
 
@@ -632,6 +845,32 @@ mod tests {
                 1,
             )),
             DoomerboardViewV1::unavailable()
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn add_validates_the_public_id_and_respects_the_online_gate() {
+        let transport = Arc::new(CountingTransport::default());
+        let coordinator = Arc::new(Mutex::new(crate::profile::production_coordinator(
+            crate::lifecycle::DesktopLifecycle::unavailable(),
+        )));
+        let runtime = DoomerboardRuntime::new(
+            Arc::clone(&coordinator),
+            transport.clone(),
+            OnlineFeatureGate::default(),
+        );
+
+        assert_eq!(
+            runtime.add("private-input"),
+            AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Invalid)
+        );
+        let paused =
+            DoomerboardRuntime::new(coordinator, transport.clone(), OnlineFeatureGate::paused());
+        assert_eq!(
+            paused.add("TG-234567"),
+            AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable)
         );
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
     }

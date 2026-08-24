@@ -88,10 +88,11 @@ function CurrentProfileAction({
   }
 
   const profile = `${currentProfile.displayName}${currentProfile.touchGrassId}`;
+  const touchGrassId = currentProfile.touchGrassId.replace(/^#/, "");
   return (
     <span className="inline-flex min-w-0 items-center gap-0.5" data-slot="current-user-profile">
       <Button
-        aria-label={`Copy current user profile ${profile}`}
+        aria-label={`Copy TouchGrass ID ${touchGrassId}`}
         className="max-w-[142px] rounded-[5px] font-mono text-[7px] font-medium"
         data-copy-status={copyStatus}
         data-slot="current-user-profile-action"
@@ -103,7 +104,7 @@ function CurrentProfileAction({
             ? "Copied"
             : copyStatus === "unavailable"
               ? "Copy unavailable"
-              : "Copy profile"
+              : "Copy TouchGrass ID"
         }
         type="button"
         variant="ghost"

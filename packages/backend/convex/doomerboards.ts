@@ -181,7 +181,7 @@ async function myTokenmaxxerRows(
 ) {
   const authUser = await requireAuthUser(ctx);
   const owner = await tokenmaxxerForAuthUser(ctx, authUser);
-  if (!owner) return { rows: [], savedTokenmaxxerCount: 0 };
+  if (!owner) return rejectAuthority();
   const added = await ctx.db
     .query("addedTokenmaxxers")
     .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))

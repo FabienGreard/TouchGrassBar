@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  ADD_TOKENMAXXER_CONTRACT_VERSION,
   CONTRACT_VERSION,
+  addTokenmaxxerOutcomeSchema,
   bootstrapStateSchema,
   doomerboardViewSchema,
   refreshReceiptSchema,
@@ -87,6 +89,32 @@ describe("public contracts", () => {
       }).success,
     ).toBe(false);
     expect(doomerboardViewSchema.safeParse({ ...view, session: "private" }).success).toBe(false);
+  });
+
+  test("accepts only bounded Add Tokenmaxxer outcomes", () => {
+    for (const status of [
+      "added",
+      "already-added",
+      "invalid",
+      "limit-reached",
+      "not-found",
+      "self",
+      "unavailable",
+    ] as const) {
+      expect(
+        addTokenmaxxerOutcomeSchema.parse({
+          contractVersion: ADD_TOKENMAXXER_CONTRACT_VERSION,
+          status,
+        }),
+      ).toEqual({ contractVersion: ADD_TOKENMAXXER_CONTRACT_VERSION, status });
+    }
+    expect(
+      addTokenmaxxerOutcomeSchema.safeParse({
+        contractVersion: ADD_TOKENMAXXER_CONTRACT_VERSION,
+        session: "private",
+        status: "added",
+      }).success,
+    ).toBe(false);
   });
 
   test("accepts an honestly unavailable native snapshot without invented zeroes", () => {

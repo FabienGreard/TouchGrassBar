@@ -39,6 +39,10 @@ const selectedView = {
 function port(): DoomerboardPort & { changed: () => void } {
   let receiveChange: (() => void) | undefined;
   return {
+    add: vi.fn(async () => ({
+      ok: true as const,
+      value: { contractVersion: 1, status: "added" },
+    })),
     changed: () => receiveChange?.(),
     read: vi.fn(async () => ({ ok: true as const, value: readyView })),
     subscribe: vi.fn(async (receive) => {
@@ -82,6 +86,24 @@ describe("Doomerboard delivery", () => {
     }));
     await delivery.read();
     expect(delivery.getSnapshot()).toEqual({ phase: "degraded", view: null });
+  });
+
+  test("accepts only strict Add Tokenmaxxer outcomes", async () => {
+    const native = port();
+    const delivery = createDoomerboardDelivery(native);
+
+    await expect(delivery.addTokenmaxxer("TG-234567")).resolves.toEqual({
+      contractVersion: 1,
+      status: "added",
+    });
+    native.add = vi.fn(async () => ({
+      ok: true as const,
+      value: { contractVersion: 1, session: "private", status: "added" },
+    }));
+    await expect(delivery.addTokenmaxxer("TG-234567")).resolves.toEqual({
+      contractVersion: 1,
+      status: "unavailable",
+    });
   });
 
   test("reads each selected audience, provider, and period", async () => {
@@ -222,6 +244,21 @@ describe("Doomerboard delivery", () => {
 });
 
 describe("Tauri Doomerboard adapter", () => {
+  test("uses the narrow Add Tokenmaxxer command", async () => {
+    const outcome = { contractVersion: 1, status: "added" } as const;
+    const bindings: TauriDoomerboardBindings = {
+      invoke: vi.fn(async () => outcome),
+      listen: vi.fn(async () => vi.fn()),
+      onFocusChanged: vi.fn(async () => vi.fn()),
+    };
+    const adapter = createTauriDoomerboardAdapter(bindings);
+
+    await expect(adapter.add("TG-234567")).resolves.toEqual({ ok: true, value: outcome });
+    expect(bindings.invoke).toHaveBeenCalledWith("add_tokenmaxxer", {
+      touchGrassId: "TG-234567",
+    });
+  });
+
   test("uses only the narrow command, revision event, and panel focus", async () => {
     const stopRevision = vi.fn();
     const stopFocus = vi.fn();

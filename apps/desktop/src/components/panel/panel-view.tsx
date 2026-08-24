@@ -7,6 +7,7 @@ import { PanelShell } from "@touchgrass/ui";
 import { useRef } from "react";
 
 import { AddTokenmaxxerDialog } from "@/components/dialogs/add-tokenmaxxer-dialog";
+import type { AddTokenmaxxerFailure } from "@/components/dialogs/add-tokenmaxxer";
 import {
   Doomerboard,
   type CurrentProfile,
@@ -34,12 +35,16 @@ function updateActionLabel(updateState: UpdateState | null) {
 }
 
 type PanelViewProps = {
+  addTokenmaxxerFailure?: AddTokenmaxxerFailure | null | undefined;
   addTokenmaxxerOpen?: boolean | undefined;
+  addTokenmaxxerSubmitting?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
   doomerboardSelection?: DoomerboardQuery | undefined;
   error: boolean;
   nativeGlass?: boolean;
+  onAddTokenmaxxer?: ((touchGrassId: string) => void) | undefined;
+  onAddTokenmaxxerInputChange?: (() => void) | undefined;
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
   onDoomerboardSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
   onRefresh: () => void;
@@ -53,12 +58,16 @@ type PanelViewProps = {
 };
 
 function PanelView({
+  addTokenmaxxerFailure = null,
   addTokenmaxxerOpen = false,
+  addTokenmaxxerSubmitting = false,
   currentProfile,
   doomerboardRows,
   doomerboardSelection = defaultDoomerboardQuery,
   error,
   nativeGlass = false,
+  onAddTokenmaxxer = () => undefined,
+  onAddTokenmaxxerInputChange = () => undefined,
   onAddTokenmaxxerOpenChange = () => undefined,
   onDoomerboardSelectionChange = () => undefined,
   onRefresh,
@@ -119,9 +128,14 @@ function PanelView({
         )}
       </PanelShell>
       <AddTokenmaxxerDialog
+        failure={addTokenmaxxerFailure}
+        key={addTokenmaxxerOpen ? "open" : "closed"}
+        onAddTokenmaxxer={onAddTokenmaxxer}
+        onInputChange={onAddTokenmaxxerInputChange}
         onOpenChange={onAddTokenmaxxerOpenChange}
         open={addTokenmaxxerOpen}
         portalContainer={panelContainerRef.current}
+        submitting={addTokenmaxxerSubmitting}
       />
     </>
   );

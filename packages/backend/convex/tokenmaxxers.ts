@@ -4,6 +4,7 @@ import { mutation, query } from "./_generated/server";
 import { requireAuthUser } from "./auth";
 import { rejectAuthority } from "./model/authority";
 import { claimActiveDevice, ensureTokenmaxxer, tokenmaxxerForAuthUser } from "./model/profile";
+import { validTouchGrassId } from "./model/touchGrassId";
 import { MAX_SAVED_TOKENMAXXERS } from "./model/values";
 
 const publicTokenmaxxer = v.object({
@@ -13,6 +14,16 @@ const publicTokenmaxxer = v.object({
 const ensuredTokenmaxxer = publicTokenmaxxer.extend({
   activeMacActivatedAt: v.number(),
   activeMacGeneration: v.number(),
+});
+const addTokenmaxxerOutcome = v.object({
+  status: v.union(
+    v.literal("added"),
+    v.literal("already-added"),
+    v.literal("invalid"),
+    v.literal("limit-reached"),
+    v.literal("not-found"),
+    v.literal("self"),
+  ),
 });
 
 function cleanDisplayName(displayName: string) {
@@ -24,7 +35,7 @@ function cleanDisplayName(displayName: string) {
 }
 
 function touchGrassIdForAuthUser(user: { username?: unknown }) {
-  if (typeof user.username !== "string" || !/^TG-[A-HJ-NP-Z2-9]{6}$/.test(user.username)) {
+  if (typeof user.username !== "string" || !validTouchGrassId(user.username)) {
     return rejectAuthority();
   }
   return user.username;
@@ -92,6 +103,10 @@ export const findByTouchGrassId = query({
   args: { touchGrassId: v.string() },
   returns: v.union(publicTokenmaxxer, v.null()),
   handler: async (ctx, args) => {
+    const authUser = await requireAuthUser(ctx);
+    if (!(await tokenmaxxerForAuthUser(ctx, authUser))) {
+      return rejectAuthority();
+    }
     const tokenmaxxer = await ctx.db
       .query("tokenmaxxers")
       .withIndex("by_public_id", (q) => q.eq("publicId", args.touchGrassId))
@@ -104,40 +119,42 @@ export const findByTouchGrassId = query({
 
 export const addToMyTokenmaxxers = mutation({
   args: { touchGrassId: v.string() },
-  returns: v.null(),
+  returns: addTokenmaxxerOutcome,
   handler: async (ctx, args) => {
     const authUser = await requireAuthUser(ctx);
     const owner = await tokenmaxxerForAuthUser(ctx, authUser);
     if (!owner) {
-      throw new Error("TouchGrass Profile not found");
+      return rejectAuthority();
+    }
+    if (!validTouchGrassId(args.touchGrassId)) {
+      return { status: "invalid" as const };
     }
     const added = await ctx.db
       .query("tokenmaxxers")
       .withIndex("by_public_id", (q) => q.eq("publicId", args.touchGrassId))
       .unique();
-    if (!added || added._id === owner._id) {
-      throw new Error("Tokenmaxxer cannot be added");
-    }
+    if (!added) return { status: "not-found" as const };
+    if (added._id === owner._id) return { status: "self" as const };
     const existing = await ctx.db
       .query("addedTokenmaxxers")
       .withIndex("by_owner_id_and_added_id", (q) =>
         q.eq("ownerId", owner._id).eq("addedId", added._id),
       )
       .unique();
-    if (existing) return null;
+    if (existing) return { status: "already-added" as const };
     const saved = await ctx.db
       .query("addedTokenmaxxers")
       .withIndex("by_owner_id", (q) => q.eq("ownerId", owner._id))
       .take(MAX_SAVED_TOKENMAXXERS);
     if (saved.length >= MAX_SAVED_TOKENMAXXERS) {
-      throw new Error("My Tokenmaxxers limit reached");
+      return { status: "limit-reached" as const };
     }
     await ctx.db.insert("addedTokenmaxxers", {
       addedId: added._id,
       createdAt: Date.now(),
       ownerId: owner._id,
     });
-    return null;
+    return { status: "added" as const };
   },
 });
 
