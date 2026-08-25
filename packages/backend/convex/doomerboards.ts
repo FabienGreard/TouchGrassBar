@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { query, type QueryCtx } from "./_generated/server";
 import { requireAuthUser } from "./auth";
-import { doomerboard, type DoomerboardKey, type LegacyDoomerboardKey } from "./model/doomerboard";
+import { doomerboard, type DoomerboardKey } from "./model/doomerboard";
 import { rejectAuthority } from "./model/authority";
 import { tokenmaxxerForAuthUser } from "./model/profile";
 import {
@@ -26,8 +26,6 @@ const doomerboardRow = v.object({
 });
 
 const CURRENT_GLOBAL_SCAN_LIMIT = 640;
-const SCAN_ROWS_PER_KEY_FORMAT = CURRENT_GLOBAL_SCAN_LIMIT / 2;
-const MAX_LEGACY_COMPATIBILITY_ROWS = CURRENT_GLOBAL_SCAN_LIMIT;
 const canonicalKeyBounds = {
   lower: {
     inclusive: true,
@@ -38,39 +36,6 @@ const canonicalKeyBounds = {
     key: [0, "\uffff"] as DoomerboardKey,
   },
 };
-const legacyKeyBounds = {
-  lower: { inclusive: true, key: 0 as LegacyDoomerboardKey },
-  upper: {
-    inclusive: true,
-    key: Number.MAX_SAFE_INTEGER as LegacyDoomerboardKey,
-  },
-};
-
-async function legacyCompatibilityItems(ctx: QueryCtx, namespace: string) {
-  const count = await doomerboard.count(ctx, {
-    bounds: legacyKeyBounds,
-    namespace,
-  });
-  if (count > MAX_LEGACY_COMPATIBILITY_ROWS) {
-    throw new Error("Legacy Doomerboard compatibility limit exceeded");
-  }
-  if (count === 0) return [];
-  const page = await doomerboard.paginate(ctx, {
-    bounds: legacyKeyBounds,
-    namespace,
-    order: "desc",
-    pageSize: count,
-  });
-  if (
-    !page.isDone ||
-    page.page.length !== count ||
-    page.page.some((item) => typeof item.key !== "number")
-  ) {
-    throw new Error("Legacy Doomerboard compatibility read is incomplete");
-  }
-  return page.page;
-}
-
 export function rankRows<
   T extends {
     apiEquivalentCost: ApiEquivalentCost | null;
@@ -108,20 +73,15 @@ async function globalRows(
 ) {
   await requireDoomerboardProfile(ctx);
   const limit = Math.min(Math.max(Math.floor(requestedLimit ?? 50), 1), 100);
-  const scanLimit = requiredComputedRankingDay === undefined ? limit : SCAN_ROWS_PER_KEY_FORMAT;
+  const scanLimit = requiredComputedRankingDay === undefined ? limit : CURRENT_GLOBAL_SCAN_LIMIT;
   const namespace = boardKey(scope, windowDays);
-  const [canonicalPage, legacyItems] = await Promise.all([
-    doomerboard.paginate(ctx, {
-      bounds: canonicalKeyBounds,
-      namespace,
-      order: "asc",
-      pageSize: scanLimit,
-    }),
-    legacyCompatibilityItems(ctx, namespace),
-  ]);
-  const candidates = await Promise.all(
-    [...canonicalPage.page, ...legacyItems].map((item) => ctx.db.get(item.id)),
-  );
+  const canonicalPage = await doomerboard.paginate(ctx, {
+    bounds: canonicalKeyBounds,
+    namespace,
+    order: "asc",
+    pageSize: scanLimit,
+  });
+  const candidates = await Promise.all(canonicalPage.page.map((item) => ctx.db.get(item.id)));
   const rowsById = new Map<Doc<"publicUsages">["_id"], Doc<"publicUsages">>();
   for (const row of candidates) {
     if (

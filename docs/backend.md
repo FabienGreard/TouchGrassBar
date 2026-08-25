@@ -106,19 +106,10 @@ Ranking Day, scope, and window. The Ranking Day keeps the cached query stable
 within a day and changes its argument at rollover.
 
 `publicUsages` and `doomerboard` have one write path: every insert,
-replacement, or deletion changes both within the same mutation. A legacy
-compatibility read counts numeric Aggregate entries before it loads them and
-fails closed above its fixed 640-row budget. This keeps deterministic
-TouchGrass ID tie ordering without a new blocking database index. A bounded,
-read-only invariant check proves a one-to-one match of document ID, Board Key,
-and composite key across all stored namespaces. Every score, migration, and
-repair transaction advances the singleton Doomerboard version. The action
-accepts a scan only when its start and end versions match and retries at most
-three times. It returns counts only. The paired repair is idempotent and
-changes only the observed index entry. The
-`backfillDoomerboard` migration repairs legacy numeric keys and missing index
-entries without recomputing usage or scores. Production dashboard edits to
-either side are prohibited.
+replacement, or deletion changes both within the same mutation. Global reads
+use only the canonical composite key and apply a fixed 640-row scan limit when
+they select the current Ranking Day. Production dashboard edits to either side
+are prohibited.
 
 My Tokenmaxxers contains at most 100 saved Tokenmaxxers. The add mutation
 rejects a new unique entry at that limit but keeps an existing entry
@@ -142,14 +133,11 @@ been processed, so expired Ranking Days leave all windows. It has no
 correctness cutoff or fixed-record ceiling. Its launch-load fixture must remain
 within the approved backend performance budget.
 
-The migrations component owns bounded repair work. The
-`backfillDoomerboard` migration is forward-only, resumable, and
-idempotent. It removes the legacy numeric key and inserts the deterministic
-composite key for each `publicUsages` row.
-The `backfillDeviceUsageCompletion` migration adds an explicit `null` pending
-state to older Device documents before `usageBackfillCompletedAt` becomes a
-required schema field. Missing and `null` use the same fail-closed behavior
-during this bounded migration.
+The migrations component owns the bounded Device completion repair.
+`backfillDeviceUsageCompletion` adds an explicit `null` pending state to older
+Device documents before `usageBackfillCompletedAt` becomes a required schema
+field. Missing and `null` use the same fail-closed behavior during this bounded
+migration.
 
 This feature requires the credential-based Active Mac and current usage schemas
 directly. It has no compatibility migration for an earlier feature shape.
