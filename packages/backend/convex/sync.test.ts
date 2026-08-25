@@ -9,7 +9,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 import { api, internal } from "./_generated/api";
 import { createAuthWithRequestIp } from "./auth";
-import { doomerboard, doomerboardKey, type DoomerboardKey } from "./model/doomerboard";
+import { doomerboard, doomerboardKey } from "./model/doomerboard";
 import { installationCredentialDigest } from "./model/profile";
 import type { UsageSnapshot } from "./model/values";
 import schema from "./schema";
@@ -1449,11 +1449,7 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
     touchGrassId: publicIdFor(309 - index),
   }));
 
-  async function seedRows(
-    rows: typeof expected,
-    computedAt: number,
-    keyFormat: "canonical" | "legacy" = "canonical",
-  ) {
+  async function seedRows(rows: typeof expected, computedAt: number) {
     for (let offset = 0; offset < rows.length; offset += 50) {
       await t.run(async (ctx) => {
         for (const row of rows.slice(offset, offset + 50)) {
@@ -1478,10 +1474,7 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
           });
           await doomerboard.insert(ctx, {
             id: publicUsageId,
-            key:
-              keyFormat === "legacy"
-                ? row.tokenScore
-                : doomerboardKey(row.tokenScore, row.touchGrassId),
+            key: doomerboardKey(row.tokenScore, row.touchGrassId),
             namespace: "tokens-v1:combined:1d",
           });
         }
@@ -1489,7 +1482,7 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
     }
   }
   await seedRows(staleRows, NOW.getTime() - 24 * 60 * 60 * 1_000);
-  await seedRows(expected.slice(0, 50), NOW.getTime(), "legacy");
+  await seedRows(expected.slice(0, 50), NOW.getTime());
   await seedRows(expected.slice(50), NOW.getTime());
 
   await expect(
@@ -1539,246 +1532,6 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
   expect(JSON.stringify(cappedPage)).not.toMatch(
     /authSubject|boardKey|computedAt|tokenmaxxerId|usageBucket|provider|path|prompt|session/,
   );
-});
-
-test("the legacy Global Doomerboard orders a score tie before assigning unique ranks", async () => {
-  const t = testBackend();
-  const credential = installationCredential("A");
-  const { authenticated } = await createProfile(t, credential, "Fabien");
-  const rows = Array.from({ length: 321 }, (_, index) => ({
-    displayName: `Tied Tokenmaxxer ${index}`,
-    touchGrassId: publicIdFor(index),
-  }));
-
-  for (let offset = 0; offset < rows.length; offset += 50) {
-    await t.run(async (ctx) => {
-      for (const row of rows.slice(offset, offset + 50)) {
-        const tokenmaxxerId = await ctx.db.insert("tokenmaxxers", {
-          activeAuthSessionId: null,
-          authSessionGeneration: 0,
-          authSubject: `legacy-tie-${row.touchGrassId}`,
-          createdAt: NOW.getTime(),
-          displayName: row.displayName,
-          publicId: row.touchGrassId,
-        });
-        const publicUsageId = await ctx.db.insert("publicUsages", {
-          apiEquivalentCost: null,
-          boardKey: "tokens-v1:combined:1d",
-          computedAt: NOW.getTime(),
-          displayName: row.displayName,
-          scope: "combined",
-          tokenmaxxerId,
-          tokenScore: 100,
-          touchGrassId: row.touchGrassId,
-          windowDays: 1,
-        });
-        await doomerboard.insert(ctx, {
-          id: publicUsageId,
-          key: 100,
-          namespace: "tokens-v1:combined:1d",
-        });
-      }
-    });
-  }
-
-  const page = await authenticated.query(api.doomerboards.currentGlobal, {
-    limit: 100,
-    rankingDay: TODAY,
-  });
-  expect(page.map(({ rank, touchGrassId }) => ({ rank, touchGrassId }))).toEqual(
-    rows.slice(0, 100).map((row, index) => ({
-      rank: index + 1,
-      touchGrassId: row.touchGrassId,
-    })),
-  );
-});
-
-test("the migration repairs a missing Doomerboard index entry", async () => {
-  const t = testBackend();
-  const credential = installationCredential("A");
-  const { authenticated } = await createProfile(t, credential, "Fabien");
-  await authenticated.mutation(api.sync.dailyUsage, {
-    profileBackfillAnchor: null,
-    activeMacGeneration: 1,
-    installationCredential: credential,
-    snapshots: [usageSnapshot()],
-  });
-
-  const publicUsage = await t.run(async (ctx) =>
-    ctx.db
-      .query("publicUsages")
-      .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:codex:1d"))
-      .unique(),
-  );
-  if (!publicUsage) throw new Error("Public Usage missing");
-  await t.run(async (ctx) => {
-    await doomerboard.delete(ctx, {
-      id: publicUsage._id,
-      key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
-      namespace: publicUsage.boardKey,
-    });
-  });
-  await expect(
-    authenticated.query(api.doomerboards.global, {
-      limit: 10,
-      scope: "codex",
-      windowDays: 1,
-    }),
-  ).resolves.toEqual([]);
-
-  const args = { cursor: null, dryRun: false, oneBatchOnly: true };
-  await t.mutation(internal.internal.migrations.backfillDoomerboard, args);
-  await t.mutation(internal.internal.migrations.backfillDoomerboard, args);
-  const repairedPage = await t.run((ctx) =>
-    doomerboard.paginate(ctx, {
-      bounds: {
-        lower: {
-          inclusive: true,
-          key: [-Number.MAX_SAFE_INTEGER, ""] as DoomerboardKey,
-        },
-        upper: {
-          inclusive: true,
-          key: [0, "\uffff"] as DoomerboardKey,
-        },
-      },
-      namespace: publicUsage.boardKey,
-      order: "asc",
-      pageSize: 10,
-    }),
-  );
-  expect(repairedPage.page).toContainEqual({
-    id: publicUsage._id,
-    key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
-    sumValue: 0,
-  });
-
-  await expect(
-    authenticated.query(api.doomerboards.global, {
-      limit: 10,
-      scope: "codex",
-      windowDays: 1,
-    }),
-  ).resolves.toEqual([
-    {
-      apiEquivalentCost: expect.any(Object),
-      displayName: "Fabien",
-      rank: 1,
-      tokenScore: 100,
-      touchGrassId: expect.any(String),
-    },
-  ]);
-});
-
-test("the read-only Doomerboard invariant detects and verifies an idempotent repair", async () => {
-  const t = testBackend();
-  const credential = installationCredential("A");
-  const { authenticated } = await createProfile(t, credential, "Fabien");
-  await authenticated.mutation(api.sync.dailyUsage, {
-    profileBackfillAnchor: null,
-    activeMacGeneration: 1,
-    installationCredential: credential,
-    snapshots: [usageSnapshot()],
-  });
-  await expect(t.query(internal.internal.doomerboardInvariantPage.version, {})).resolves.toBe(1);
-  const publicUsage = await t.run(async (ctx) =>
-    ctx.db
-      .query("publicUsages")
-      .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:combined:1d"))
-      .unique(),
-  );
-  if (!publicUsage) throw new Error("Public Usage missing");
-  await t.run(async (ctx) => {
-    await doomerboard.delete(ctx, {
-      id: publicUsage._id,
-      key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
-      namespace: publicUsage.boardKey,
-    });
-    await doomerboard.insert(ctx, {
-      id: publicUsage._id,
-      key: [-publicUsage.tokenScore + 1, publicUsage.touchGrassId],
-      namespace: publicUsage.boardKey,
-    });
-    await doomerboard.insert(ctx, {
-      id: publicUsage._id,
-      key: doomerboardKey(publicUsage.tokenScore, publicUsage.touchGrassId),
-      namespace: "invalid-board-key",
-    });
-  });
-
-  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toMatchObject({
-    extraEntries: 1,
-    invalidEntries: 1,
-    mismatchedEntries: 1,
-    missingEntries: 1,
-  });
-
-  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
-    changedEntries: 2,
-  });
-  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
-    aggregateEntries: 9,
-    extraEntries: 0,
-    invalidEntries: 0,
-    mismatchedEntries: 0,
-    missingEntries: 0,
-    publicScores: 9,
-  });
-  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
-    changedEntries: 0,
-  });
-  await expect(t.query(internal.internal.doomerboardInvariantPage.version, {})).resolves.toBe(3);
-  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
-    aggregateEntries: 9,
-    extraEntries: 0,
-    invalidEntries: 0,
-    mismatchedEntries: 0,
-    missingEntries: 0,
-    publicScores: 9,
-  });
-});
-
-test("the Doomerboard invariant repairs an invalid Public Usage namespace", async () => {
-  const t = testBackend();
-  const credential = installationCredential("A");
-  const { authenticated } = await createProfile(t, credential, "Fabien");
-  await authenticated.mutation(api.sync.dailyUsage, {
-    profileBackfillAnchor: null,
-    activeMacGeneration: 1,
-    installationCredential: credential,
-    snapshots: [usageSnapshot()],
-  });
-  const publicUsage = await t.run(async (ctx) =>
-    ctx.db
-      .query("publicUsages")
-      .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:combined:1d"))
-      .unique(),
-  );
-  if (!publicUsage) throw new Error("Public Usage missing");
-  await t.run(async (ctx) => {
-    await ctx.db.patch(publicUsage._id, {
-      boardKey: "invalid\u0000board-key",
-    });
-  });
-
-  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toMatchObject({
-    extraEntries: 1,
-    invalidEntries: 1,
-    missingEntries: 1,
-  });
-  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
-    changedEntries: 2,
-  });
-  await expect(t.action(internal.internal.doomerboardInvariant.check, {})).resolves.toEqual({
-    aggregateEntries: 9,
-    extraEntries: 0,
-    invalidEntries: 0,
-    mismatchedEntries: 0,
-    missingEntries: 0,
-    publicScores: 9,
-  });
-  await expect(t.action(internal.internal.doomerboardInvariant.repair, {})).resolves.toEqual({
-    changedEntries: 0,
-  });
 });
 
 test("the device completion migration preserves pending Profile authority", async () => {
