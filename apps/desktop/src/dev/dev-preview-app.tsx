@@ -9,29 +9,46 @@ import { applyDevInstanceDocument } from "@/dev/dev-instance-document";
 import { currentDevInstance } from "@/dev/dev-instance";
 import { RecoveryDialog } from "@/components/dialogs/recovery-dialog";
 import { currentProfile, currentDoomerboardRows, myTokenmaxxerRows } from "@/dev/panel-fixtures";
-import { resolveDevPreviewScenario } from "@/dev/preview-scenario";
+import { resolveDevPreviewScenario, type UpdatePreviewStatus } from "@/dev/preview-scenario";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
 document.documentElement.dataset.desktopPreview = "true";
 
-const availableUpdate: UpdateState = {
-  automaticChecksEnabled: true,
-  contractVersion: 2,
-  currentVersion: "1.3.2",
-  onlineFeaturesPaused: false,
-  update: {
-    status: "available",
-    version: "1.4.0",
-  },
-};
+const previewCurrentVersion = "1.3.2";
+const previewUpdateVersion = "1.4.0";
 
-const currentUpdate: UpdateState = {
-  automaticChecksEnabled: true,
-  contractVersion: 2,
-  currentVersion: "1.3.2",
-  onlineFeaturesPaused: false,
-  update: { status: "idle" },
-};
+function previewUpdateState(
+  status: UpdatePreviewStatus,
+  automaticChecksEnabled: boolean,
+): UpdateState {
+  const base = {
+    automaticChecksEnabled,
+    contractVersion: 2 as const,
+    currentVersion: status === "upToDate" ? previewUpdateVersion : previewCurrentVersion,
+    onlineFeaturesPaused: false,
+  };
+
+  switch (status) {
+    case "available":
+      return { ...base, update: { status, version: previewUpdateVersion } };
+    case "checking":
+    case "idle":
+    case "upToDate":
+      return { ...base, update: { status } };
+    case "downloading":
+      return {
+        ...base,
+        update: { progressPercent: 42, status, version: previewUpdateVersion },
+      };
+    case "failed":
+      return {
+        ...base,
+        update: { failure: "network", status, version: previewUpdateVersion },
+      };
+    case "installing":
+      return { ...base, update: { status, version: previewUpdateVersion } };
+  }
+}
 
 type ProviderEnablement = Record<CodingProvider, boolean>;
 
@@ -72,6 +89,7 @@ function DevPreviewApp() {
   const [devInstance] = useState(currentDevInstance);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdatePreviewStatus>(scenario.updateStatus);
   const [providerEnabled, setProviderEnabled] = useState<Record<CodingProvider, boolean>>(() => ({
     ...readProviderEnablement(),
     ...(scenario.surface === "settings" ? { claude: scenario.settingsProviderEnabled } : {}),
@@ -104,14 +122,18 @@ function DevPreviewApp() {
   }, [devInstance, scenario.surface]);
   const hasCurrentPanelPresentation =
     scenario.fixture === "current" || scenario.fixture === "update";
-  const panelPresentation = hasCurrentPanelPresentation
-    ? {
-        currentProfile,
-        doomerboardRows: currentDoomerboardRows,
-        tokenmaxxerRows: myTokenmaxxerRows,
-        updateState: scenario.fixture === "update" ? availableUpdate : currentUpdate,
-      }
-    : undefined;
+  const updateState = previewUpdateState(updateStatus, autoUpdates);
+  const panelPresentation = {
+    onUpdate: () => setUpdateStatus("downloading"),
+    updateState,
+    ...(hasCurrentPanelPresentation
+      ? {
+          currentProfile,
+          doomerboardRows: currentDoomerboardRows,
+          tokenmaxxerRows: myTokenmaxxerRows,
+        }
+      : {}),
+  };
 
   let surface;
   switch (scenario.surface) {
@@ -120,7 +142,7 @@ function DevPreviewApp() {
         <App
           hasNativeRuntime={false}
           onboarding={{
-            appVersion: currentUpdate.currentVersion,
+            appVersion: previewCurrentVersion,
             initialDisplayName: "Fabien",
             initialStep: scenario.onboarding.initialStep,
             onCheckProvider: () => undefined,
@@ -153,8 +175,8 @@ function DevPreviewApp() {
             launchAtLogin,
             onAutoUpdatesChange: setAutoUpdates,
             onCheckProviders: () => undefined,
-            onCheckForUpdates: () => undefined,
-            onInstallUpdate: () => undefined,
+            onCheckForUpdates: () => setUpdateStatus("checking"),
+            onInstallUpdate: () => setUpdateStatus("downloading"),
             onLaunchAtLoginChange: setLaunchAtLogin,
             onOpenLatestDmg: () => undefined,
             onOpenSource: () => undefined,
@@ -166,6 +188,7 @@ function DevPreviewApp() {
             onProfileDisplayNameChange: (displayName) =>
               setProfile((current) => ({ ...current, displayName })),
             onStartRecovery: () => setRecoveryOpen(true),
+            onRetryUpdate: () => setUpdateStatus("downloading"),
             pendingDisplayName: profile.displayName,
             profile: scenario.settingsProfileState === "profile-pending" ? null : profile,
             profileProvisioning:
@@ -184,7 +207,7 @@ function DevPreviewApp() {
                 state: scenario.settingsProviderState,
               },
             ],
-            updateState: scenario.fixture === "update" ? availableUpdate : currentUpdate,
+            updateState,
           }}
           surface="settings"
         />
@@ -220,6 +243,7 @@ function DevPreviewApp() {
         activeFixture={scenario.fixture}
         activeSurface={scenario.surface}
         activeSyncStatus={scenario.syncStatus}
+        activeUpdateStatus={updateStatus}
         devInstance={devInstance}
         onboardingCodexPreviewState={
           scenario.surface === "onboarding" ? scenario.onboarding.codexState : undefined

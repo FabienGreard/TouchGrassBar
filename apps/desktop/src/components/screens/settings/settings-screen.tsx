@@ -65,6 +65,7 @@ type SettingsScreenProps = {
   revealingRecoveryKey?: boolean | undefined;
   savingProviders?: readonly CodingProvider[] | undefined;
   section?: SettingsSection | undefined;
+  updateActionPending?: boolean | undefined;
   updateState?: UpdateState | null | undefined;
 };
 
@@ -96,6 +97,7 @@ function SettingsScreen({
   revealingRecoveryKey = false,
   savingProviders = [],
   section: controlledSection,
+  updateActionPending = false,
   updateState = null,
 }: SettingsScreenProps) {
   const [localSection, setLocalSection] = useState<SettingsSection>(() =>
@@ -163,6 +165,7 @@ function SettingsScreen({
                   Version and update checks.
                 </p>
                 <UpdatesSettings
+                  actionPending={updateActionPending}
                   autoUpdates={autoUpdates}
                   onAutoUpdatesChange={onAutoUpdatesChange}
                   onCheckForUpdates={onCheckForUpdates}

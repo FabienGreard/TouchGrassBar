@@ -148,6 +148,7 @@ function SettingsCoordinator({
         revealingRecoveryKey={view.revealingRecoveryKey}
         section={state?.section}
         savingProviders={view.savingProviders}
+        updateActionPending={updateView.pendingAction !== null}
         updateState={updateView.state}
       />
       <RecoveryDialog

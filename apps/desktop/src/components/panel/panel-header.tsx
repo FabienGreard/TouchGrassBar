@@ -2,6 +2,7 @@ import type { SanitizedDesktopState } from "@touchgrass/contracts";
 import {
   Brand,
   Button,
+  CircularProgressIcon,
   DownloadIcon,
   EllipsisIcon,
   InviteIcon,
@@ -23,7 +24,14 @@ type PanelHeaderProps = {
   onUpdate: () => void;
   refreshing: boolean;
   state: SanitizedDesktopState | null;
-  updateActionLabel: string | null;
+  updateAction: PanelUpdateAction | null;
+};
+
+type PanelUpdateAction = {
+  busy: boolean;
+  indicator: "download" | "finalizing" | "progress" | "spinner";
+  label: string;
+  progressPercent?: number | null | undefined;
 };
 
 type PanelSyncStatus = SanitizedDesktopState["sync"]["status"];
@@ -68,6 +76,38 @@ function syncPresentation(
   return { detailLabel: detailLabel[status], label: "Live", status };
 }
 
+function UpdateActionIcon({ action }: { action: PanelUpdateAction }) {
+  switch (action.indicator) {
+    case "download":
+      return <DownloadIcon aria-hidden="true" data-icon-source="Download04Icon" />;
+    case "finalizing":
+      return (
+        <CircularProgressIcon
+          aria-hidden="true"
+          data-icon-source="CircularProgressIcon"
+          progress={null}
+          showCheck
+        />
+      );
+    case "progress":
+      return (
+        <CircularProgressIcon
+          aria-hidden="true"
+          data-icon-source="CircularProgressIcon"
+          progress={action.progressPercent}
+        />
+      );
+    case "spinner":
+      return (
+        <CircularProgressIcon
+          aria-hidden="true"
+          data-icon-source="CircularProgressIcon"
+          progress={null}
+        />
+      );
+  }
+}
+
 function PanelHeader({
   error,
   onAddTokenmaxxer,
@@ -76,9 +116,13 @@ function PanelHeader({
   onUpdate,
   refreshing,
   state,
-  updateActionLabel,
+  updateAction,
 }: PanelHeaderProps) {
   const sync = syncPresentation(error, refreshing, state);
+  const updateStatusAnnouncement =
+    updateAction?.indicator === "progress"
+      ? "Downloading signed update"
+      : (updateAction?.label ?? "");
 
   return (
     <header className="flex items-center justify-between border-b border-pearl-line bg-panel-header px-4 pt-[15px] pb-3 contrast-more:border-pearl-ink">
@@ -95,16 +139,22 @@ function PanelHeader({
       </div>
 
       <div className="ml-2 flex items-center gap-1">
-        {updateActionLabel ? (
+        <span aria-atomic="true" aria-live="polite" className="sr-only" data-slot="update-status">
+          {updateStatusAnnouncement}
+        </span>
+        {updateAction ? (
           <Button
-            aria-label={updateActionLabel}
+            aria-busy={updateAction.busy || undefined}
+            aria-label={updateAction.label}
+            className={updateAction.busy ? "disabled:opacity-100" : undefined}
             data-slot="update-action"
+            disabled={updateAction.busy}
             onClick={onUpdate}
             size="icon"
-            title={updateActionLabel}
+            title={updateAction.label}
             type="button"
           >
-            <DownloadIcon aria-hidden="true" data-icon-source="Download04Icon" />
+            <UpdateActionIcon action={updateAction} />
           </Button>
         ) : null}
         <PanelMenu>
@@ -150,3 +200,4 @@ function PanelHeader({
 }
 
 export { PanelHeader };
+export type { PanelUpdateAction };

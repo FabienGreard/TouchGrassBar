@@ -248,7 +248,100 @@ describe("panel states", () => {
       />,
     );
     expect(retryMarkup).toContain('aria-label="Retry required update"');
+    expect(retryMarkup).toContain('data-icon-source="Download04Icon"');
+    expect(retryMarkup).not.toContain('data-slot="circular-progress-icon"');
     expect(retryMarkup).not.toContain('aria-label="Install update and relaunch"');
+  });
+
+  test("shows an immediate loader while the install request crosses the native boundary", async () => {
+    const currentState = await deliveredBrowserFixture("current");
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        onUpdate={() => undefined}
+        refreshing={false}
+        state={currentState}
+        updateActionPending
+        updateState={{
+          automaticChecksEnabled: true,
+          contractVersion: 2,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: { status: "available", version: "1.4.0" },
+        }}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Starting update download"');
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain('data-icon-source="CircularProgressIcon"');
+    expect(markup).toContain('data-state="indeterminate"');
+    expect(markup).not.toContain('data-icon-source="Download04Icon"');
+  });
+
+  test.each([
+    {
+      expectedCenter: "empty",
+      expectedLabel: "Checking for updates",
+      expectedState: "indeterminate",
+      update: { status: "checking" } as const,
+    },
+    {
+      expectedCenter: "percentage",
+      expectedLabel: "Downloading signed update, 42 percent",
+      expectedState: "determinate",
+      update: { progressPercent: 42, status: "downloading", version: "1.4.0" } as const,
+    },
+    {
+      expectedCenter: "check",
+      expectedLabel: "Installing and relaunching",
+      expectedState: "indeterminate",
+      update: { status: "installing", version: "1.4.0" } as const,
+    },
+  ])("keeps a distinct circular indicator while $update.status", async (preview) => {
+    const currentState = await deliveredBrowserFixture("current");
+    const markup = renderToStaticMarkup(
+      <PanelView
+        error={false}
+        onRefresh={() => undefined}
+        onSettings={() => undefined}
+        refreshing={false}
+        state={currentState}
+        updateState={{
+          automaticChecksEnabled: true,
+          contractVersion: 2,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: preview.update,
+        }}
+      />,
+    );
+
+    expect(markup).toContain('data-slot="update-action"');
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain('data-slot="update-status"');
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain(`aria-label="${preview.expectedLabel}"`);
+    expect(markup).toContain('data-icon-source="CircularProgressIcon"');
+    expect(markup).toContain(`data-center="${preview.expectedCenter}"`);
+    expect(markup).toContain(`data-state="${preview.expectedState}"`);
+    expect(markup).not.toContain('data-icon-source="Download04Icon"');
+
+    if (preview.update.status === "downloading") {
+      expect(markup).toContain('data-progress="42"');
+      expect(markup).toContain(">42%</text>");
+      expect(markup).toContain(">Downloading signed update</span>");
+    } else {
+      expect(markup).not.toContain("data-progress=");
+      expect(markup).not.toContain("%</text>");
+    }
+    expect(markup.includes('data-slot="circular-progress-check"')).toBe(
+      preview.update.status === "installing",
+    );
   });
 
   test("renders the populated development fixture without changing the production fallback", async () => {

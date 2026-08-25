@@ -19,7 +19,12 @@ import { createUpdateDelivery } from "@/native-state/update-delivery";
 
 type PanelPresentation = Pick<
   PanelViewProps,
-  "currentProfile" | "doomerboardRows" | "tokenmaxxerRows" | "updateState" | "usagePresentation"
+  | "currentProfile"
+  | "doomerboardRows"
+  | "onUpdate"
+  | "tokenmaxxerRows"
+  | "updateState"
+  | "usagePresentation"
 >;
 
 type PanelScreenProps = {
@@ -239,6 +244,10 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       onUpdate={
         updateActionsAvailable
           ? () => {
+              if (!hasNativeRuntime) {
+                presentation.onUpdate?.();
+                return;
+              }
               runUpdateAction(
                 updateState?.update.status === "failed" ? updates.retry : updates.install,
               );
@@ -251,6 +260,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
         presentation.tokenmaxxerRows ??
         (doomerboardSelection.audience === "mine" ? nativeDoomerboardRows : undefined)
       }
+      updateActionPending={updateView.pendingAction !== null}
       updateState={updateState}
       usagePresentation={presentation.usagePresentation}
     />

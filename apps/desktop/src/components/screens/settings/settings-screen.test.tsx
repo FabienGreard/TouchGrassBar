@@ -201,8 +201,114 @@ describe("settings screen", () => {
         }}
       />,
     );
-    expect(failedMarkup).toContain(">Retry</button>");
+    expect(failedMarkup).toContain("Retry</button>");
+    expect(failedMarkup).not.toContain('data-icon-source="Refresh03Icon"');
+    expect(failedMarkup).not.toContain('data-slot="circular-progress-icon"');
     expect(failedMarkup).toContain(">Download latest DMG ↗</button>");
+  });
+
+  test("shows an immediate loader while the install request crosses the native boundary", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates
+        onInstallUpdate={() => undefined}
+        updateActionPending
+        updateState={{
+          automaticChecksEnabled: true,
+          contractVersion: 2,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: { status: "available", version: "1.4.0" },
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Starting signed update…");
+    expect(markup).toContain("Downloading…");
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain('data-icon-source="CircularProgressIcon"');
+    expect(markup).toContain('data-state="indeterminate"');
+  });
+
+  test.each([
+    {
+      action: "Checking…",
+      expectedCenter: "empty",
+      expectedState: "indeterminate",
+      summary: "Checking the stable channel…",
+      update: { status: "checking" } as const,
+    },
+    {
+      action: "Downloading…",
+      expectedCenter: "percentage",
+      expectedState: "determinate",
+      summary: "Downloading signed update · 42%",
+      update: { progressPercent: 42, status: "downloading", version: "1.4.0" } as const,
+    },
+    {
+      action: "Relaunching…",
+      expectedCenter: "check",
+      expectedState: "indeterminate",
+      summary: "Installing and relaunching…",
+      update: { status: "installing", version: "1.4.0" } as const,
+    },
+  ])("shows a distinct circular indicator while $update.status", (preview) => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates
+        onCheckForUpdates={() => undefined}
+        onInstallUpdate={() => undefined}
+        updateState={{
+          automaticChecksEnabled: true,
+          contractVersion: 2,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: preview.update,
+        }}
+      />,
+    );
+
+    expect(markup).toContain(preview.summary);
+    expect(markup).toContain('aria-live="polite"');
+    expect(markup).toContain('data-slot="update-status"');
+    expect(markup).toContain(preview.action);
+    expect(markup).toContain('aria-busy="true"');
+    expect(markup).toContain('data-icon-source="CircularProgressIcon"');
+    expect(markup).toContain(`data-center="${preview.expectedCenter}"`);
+    expect(markup).toContain(`data-state="${preview.expectedState}"`);
+
+    if (preview.update.status === "downloading") {
+      expect(markup).toContain('data-progress="42"');
+      expect(markup).toContain(">42%</text>");
+      expect(markup).toContain(">Downloading signed update.</span>");
+    } else {
+      expect(markup).not.toContain("data-progress=");
+      expect(markup).not.toContain("%</text>");
+    }
+    expect(markup.includes('data-slot="circular-progress-check"')).toBe(
+      preview.update.status === "installing",
+    );
+  });
+
+  test("keeps download progress indeterminate when the native state omits a percentage", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates
+        updateState={{
+          automaticChecksEnabled: true,
+          contractVersion: 2,
+          currentVersion: "1.3.2",
+          onlineFeaturesPaused: false,
+          update: { status: "downloading", version: "1.4.0" },
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Downloading signed update…");
+    expect(markup).not.toContain("undefined%");
+    expect(markup).toContain('data-state="indeterminate"');
+    expect(markup).toContain('data-center="empty"');
   });
 
   test("keeps manual checks available when automatic checks are off", () => {

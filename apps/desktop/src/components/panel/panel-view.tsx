@@ -14,7 +14,7 @@ import {
   type DoomerboardRow,
 } from "@/components/panel/doomerboard";
 import { LoadingPanel } from "@/components/panel/loading-panel";
-import { PanelHeader } from "@/components/panel/panel-header";
+import { PanelHeader, type PanelUpdateAction } from "@/components/panel/panel-header";
 import { ProviderCard } from "@/components/panel/provider-card";
 import { UsageOverview, type UsagePresentation } from "@/components/panel/usage-overview";
 import {
@@ -22,16 +22,60 @@ import {
   type DoomerboardQuery,
 } from "@/native-state/doomerboard-delivery";
 
-function updateActionLabel(updateState: UpdateState | null) {
-  if (updateState?.update.status === "failed") {
-    return updateState.onlineFeaturesPaused ? "Retry required update" : "Retry update";
+function updateActionPresentation(
+  updateState: UpdateState | null,
+  updateActionPending: boolean,
+): PanelUpdateAction | null {
+  const update = updateState?.update;
+  if (!update) return null;
+
+  if (updateActionPending) {
+    if (update.status === "available") {
+      return { busy: true, indicator: "spinner", label: "Starting update download" };
+    }
+    if (update.status === "failed") {
+      return { busy: true, indicator: "spinner", label: "Retrying update" };
+    }
   }
-  if (updateState?.update.status === "available") {
-    return updateState.onlineFeaturesPaused
-      ? "Install required update and relaunch"
-      : "Install update and relaunch";
+
+  switch (update.status) {
+    case "available":
+      return {
+        busy: false,
+        indicator: "download",
+        label: updateState.onlineFeaturesPaused
+          ? "Install required update and relaunch"
+          : "Install update and relaunch",
+      };
+    case "checking":
+      return { busy: true, indicator: "spinner", label: "Checking for updates" };
+    case "downloading":
+      return {
+        busy: true,
+        indicator: "progress",
+        label:
+          update.progressPercent === null || update.progressPercent === undefined
+            ? "Downloading signed update"
+            : `Downloading signed update, ${update.progressPercent} percent`,
+        progressPercent: update.progressPercent,
+      };
+    case "failed":
+      return {
+        busy: false,
+        indicator: "download",
+        label: updateState.onlineFeaturesPaused ? "Retry required update" : "Retry update",
+      };
+    case "installing":
+      return {
+        busy: true,
+        indicator: "finalizing",
+        label: "Installing and relaunching",
+      };
+    case "idle":
+    case "unavailable":
+    case "upToDate":
+      return null;
   }
-  return null;
 }
 
 type PanelViewProps = {
@@ -53,6 +97,7 @@ type PanelViewProps = {
   refreshing: boolean;
   state: SanitizedDesktopState | null;
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
+  updateActionPending?: boolean | undefined;
   updateState?: UpdateState | null | undefined;
   usagePresentation?: UsagePresentation | undefined;
 };
@@ -76,11 +121,13 @@ function PanelView({
   refreshing,
   state,
   tokenmaxxerRows,
+  updateActionPending = false,
   updateState = null,
   usagePresentation,
 }: PanelViewProps) {
   const panelContainerRef = useRef<HTMLElement>(null);
   const visibleProviders: ProviderPresentation[] = state?.providers ?? [];
+  const updateAction = updateActionPresentation(updateState, updateActionPending);
 
   return (
     <>
@@ -97,7 +144,7 @@ function PanelView({
           onUpdate={onUpdate}
           refreshing={refreshing}
           state={state}
-          updateActionLabel={updateActionLabel(updateState)}
+          updateAction={updateAction}
         />
 
         {!state ? (

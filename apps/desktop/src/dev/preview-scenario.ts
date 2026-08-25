@@ -1,4 +1,4 @@
-import type { SyncStatus } from "@touchgrass/contracts";
+import type { SyncStatus, UpdateState } from "@touchgrass/contracts";
 
 import type { DesktopSurface } from "@/App";
 import {
@@ -11,6 +11,10 @@ import {
 } from "@/components/screens/onboarding/onboarding-flow";
 
 type BrowserFixtureName = "current" | "loading" | "stale" | "update" | "unavailable";
+type UpdatePreviewStatus = Extract<
+  UpdateState["update"]["status"],
+  "available" | "checking" | "downloading" | "failed" | "idle" | "installing" | "upToDate"
+>;
 
 type OnboardingSetupPreviewState = "profile-pending" | "ready" | "required" | "unavailable";
 type SettingsProfilePreviewState = "profile-pending" | "saved";
@@ -23,6 +27,16 @@ const syncPreviewStatuses = [
   { key: "authority-rejected", label: "Rejected" },
   { key: "unavailable", label: "Unavailable" },
 ] as const satisfies readonly { key: SyncStatus; label: string }[];
+
+const updatePreviewStatuses = [
+  { key: "idle", label: "No update" },
+  { key: "available", label: "Available" },
+  { key: "checking", label: "Checking" },
+  { key: "downloading", label: "Downloading" },
+  { key: "installing", label: "Relaunching" },
+  { key: "failed", label: "Failed" },
+  { key: "upToDate", label: "Complete" },
+] as const satisfies readonly { key: UpdatePreviewStatus; label: string }[];
 
 type DevPreviewScenario = {
   fixture: BrowserFixtureName;
@@ -37,6 +51,7 @@ type DevPreviewScenario = {
   settingsProviderState: CodingProviderAccessState;
   surface: DesktopSurface;
   syncStatus: SyncStatus;
+  updateStatus: UpdatePreviewStatus;
 };
 
 function resolveFixture(params: URLSearchParams): BrowserFixtureName {
@@ -90,17 +105,30 @@ function resolveSyncStatus(params: URLSearchParams): SyncStatus {
     : "unavailable";
 }
 
+function resolveUpdateStatus(
+  params: URLSearchParams,
+  fixture: BrowserFixtureName,
+): UpdatePreviewStatus {
+  const candidate = params.get("updateStatus");
+  return updatePreviewStatuses.some(({ key }) => key === candidate)
+    ? (candidate as UpdatePreviewStatus)
+    : fixture === "update"
+      ? "available"
+      : "idle";
+}
+
 function resolveBrowserFixtureName(search: string): BrowserFixtureName {
   return resolveFixture(new URLSearchParams(search));
 }
 
 function resolveDevPreviewScenario(search: string): DevPreviewScenario {
   const params = new URLSearchParams(search);
+  const fixture = resolveFixture(params);
   const providerState = resolveProviderState(params, "providerState", "not-installed");
   const settingsProviderExcluded = params.get("providerState") === "excluded";
 
   return {
-    fixture: resolveFixture(params),
+    fixture,
     onboarding: {
       codexState: resolveProviderState(params, "codexState", "detected"),
       initialStep: resolveOnboardingStep(params),
@@ -112,13 +140,20 @@ function resolveDevPreviewScenario(search: string): DevPreviewScenario {
     settingsProviderState: providerState,
     surface: resolveSurface(params),
     syncStatus: resolveSyncStatus(params),
+    updateStatus: resolveUpdateStatus(params, fixture),
   };
 }
 
-export { resolveBrowserFixtureName, resolveDevPreviewScenario, syncPreviewStatuses };
+export {
+  resolveBrowserFixtureName,
+  resolveDevPreviewScenario,
+  syncPreviewStatuses,
+  updatePreviewStatuses,
+};
 export type {
   BrowserFixtureName,
   DevPreviewScenario,
   OnboardingSetupPreviewState,
   SettingsProfilePreviewState,
+  UpdatePreviewStatus,
 };

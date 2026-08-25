@@ -10,7 +10,12 @@ import {
   type ReactNode,
 } from "react";
 
-import { syncPreviewStatuses, type BrowserFixtureName } from "@/dev/preview-scenario";
+import {
+  syncPreviewStatuses,
+  updatePreviewStatuses,
+  type BrowserFixtureName,
+  type UpdatePreviewStatus,
+} from "@/dev/preview-scenario";
 import {
   codingProviderAccessStates,
   type CodingProviderAccessState,
@@ -269,6 +274,7 @@ type FixtureSwitcherOptionProps = {
   children: ReactNode;
   fixture: BrowserFixtureName;
   syncStatus?: SyncStatus | undefined;
+  updateStatus?: UpdatePreviewStatus | undefined;
 };
 
 function FixtureSwitcherOption({
@@ -276,10 +282,12 @@ function FixtureSwitcherOption({
   children,
   fixture,
   syncStatus,
+  updateStatus,
 }: FixtureSwitcherOptionProps) {
   const syncQuery = syncStatus ? `&syncStatus=${encodeURIComponent(syncStatus)}` : "";
+  const updateQuery = updateStatus ? `&updateStatus=${encodeURIComponent(updateStatus)}` : "";
   return (
-    <PreviewSwitcherOption active={active} href={`?fixture=${fixture}${syncQuery}`}>
+    <PreviewSwitcherOption active={active} href={`?fixture=${fixture}${updateQuery}${syncQuery}`}>
       {children}
     </PreviewSwitcherOption>
   );
@@ -309,10 +317,12 @@ function PreviewSwitcherOption({ active, children, href }: PreviewSwitcherOption
 function DevFixtureSwitcher({
   activeFixture,
   activeSyncStatus,
+  activeUpdateStatus,
   devInstance,
 }: {
   activeFixture: BrowserFixtureName;
   activeSyncStatus?: SyncStatus | undefined;
+  activeUpdateStatus?: UpdatePreviewStatus | undefined;
   devInstance?: DevInstance | null | undefined;
 }) {
   return (
@@ -321,7 +331,11 @@ function DevFixtureSwitcher({
       data-dev-only="preview-switcher"
       instanceLabel={devInstance?.label}
     >
-      <FixtureOptions activeFixture={activeFixture} activeSyncStatus={activeSyncStatus} />
+      <FixtureOptions
+        activeFixture={activeFixture}
+        activeSyncStatus={activeSyncStatus}
+        activeUpdateStatus={activeUpdateStatus}
+      />
     </FixtureSwitcher>
   );
 }
@@ -329,9 +343,11 @@ function DevFixtureSwitcher({
 function FixtureOptions({
   activeFixture,
   activeSyncStatus,
+  activeUpdateStatus,
 }: {
   activeFixture: BrowserFixtureName;
   activeSyncStatus?: SyncStatus | undefined;
+  activeUpdateStatus?: UpdatePreviewStatus | undefined;
 }) {
   return (
     <PreviewControlRow aria-label="Panel fixtures" label="Panel">
@@ -339,6 +355,7 @@ function FixtureOptions({
         active={activeFixture === "loading"}
         fixture="loading"
         syncStatus={activeSyncStatus}
+        updateStatus={activeUpdateStatus}
       >
         Loading
       </FixtureSwitcherOption>
@@ -346,6 +363,7 @@ function FixtureOptions({
         active={activeFixture === "unavailable"}
         fixture="unavailable"
         syncStatus={activeSyncStatus}
+        updateStatus={activeUpdateStatus}
       >
         Unavailable
       </FixtureSwitcherOption>
@@ -353,6 +371,7 @@ function FixtureOptions({
         active={activeFixture === "current"}
         fixture="current"
         syncStatus={activeSyncStatus}
+        updateStatus={activeUpdateStatus}
       >
         Current
       </FixtureSwitcherOption>
@@ -360,6 +379,7 @@ function FixtureOptions({
         active={activeFixture === "update"}
         fixture="update"
         syncStatus={activeSyncStatus}
+        updateStatus={activeUpdateStatus === "idle" ? "available" : activeUpdateStatus}
       >
         Update
       </FixtureSwitcherOption>
@@ -367,6 +387,7 @@ function FixtureOptions({
         active={activeFixture === "stale"}
         fixture="stale"
         syncStatus={activeSyncStatus}
+        updateStatus={activeUpdateStatus}
       >
         Stale
       </FixtureSwitcherOption>
@@ -378,6 +399,7 @@ function DevPreviewSwitcher({
   activeFixture,
   activeSurface,
   activeSyncStatus,
+  activeUpdateStatus,
   devInstance,
   onboardingCodexPreviewState,
   onboardingProviderPreviewState,
@@ -388,6 +410,7 @@ function DevPreviewSwitcher({
   activeFixture: BrowserFixtureName;
   activeSurface: PreviewSurface;
   activeSyncStatus: SyncStatus;
+  activeUpdateStatus: UpdatePreviewStatus;
   devInstance?: DevInstance | null | undefined;
   onboardingCodexPreviewState?: CodingProviderAccessState | undefined;
   onboardingProviderPreviewState?: CodingProviderAccessState | undefined;
@@ -397,6 +420,7 @@ function DevPreviewSwitcher({
 }) {
   const fixture = encodeURIComponent(activeFixture);
   const syncStatus = encodeURIComponent(activeSyncStatus);
+  const updateStatus = encodeURIComponent(activeUpdateStatus);
   const settingsProviderState = settingsProviderPreviewState
     ? `&providerState=${encodeURIComponent(
         settingsProviderEnabled ? settingsProviderPreviewState : "excluded",
@@ -415,38 +439,53 @@ function DevPreviewSwitcher({
     providerState?: CodingProviderAccessState;
     step?: OnboardingStep;
   }) =>
-    `?window=onboarding&fixture=${fixture}&onboardingStep=${encodeURIComponent(step)}&codexState=${encodeURIComponent(codexState)}&providerState=${encodeURIComponent(providerState)}&syncStatus=${syncStatus}`;
+    `?window=onboarding&fixture=${fixture}&updateStatus=${updateStatus}&onboardingStep=${encodeURIComponent(step)}&codexState=${encodeURIComponent(codexState)}&providerState=${encodeURIComponent(providerState)}&syncStatus=${syncStatus}`;
 
   return (
     <FixtureSwitcher data-dev-only="preview-switcher" instanceLabel={devInstance?.label}>
       <PreviewControlRow aria-label="Native surfaces" label="Surface">
         <PreviewSwitcherOption
           active={activeSurface === "panel"}
-          href={`?fixture=${fixture}&syncStatus=${syncStatus}`}
+          href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${syncStatus}`}
         >
           Panel
         </PreviewSwitcherOption>
         <PreviewSwitcherOption
           active={activeSurface === "settings"}
-          href={`?window=settings&fixture=${fixture}${settingsProviderState}&syncStatus=${syncStatus}`}
+          href={`?window=settings&fixture=${fixture}&updateStatus=${updateStatus}${settingsProviderState}&syncStatus=${syncStatus}`}
         >
           Settings
         </PreviewSwitcherOption>
         <PreviewSwitcherOption
           active={activeSurface === "onboarding"}
-          href={`?window=onboarding&fixture=${fixture}${onboardingQuery}&syncStatus=${syncStatus}`}
+          href={`?window=onboarding&fixture=${fixture}&updateStatus=${updateStatus}${onboardingQuery}&syncStatus=${syncStatus}`}
         >
           Onboarding
         </PreviewSwitcherOption>
       </PreviewControlRow>
       {activeSurface === "panel" ? (
         <div className="border-t border-pearl-border/70 pt-1.5">
-          <FixtureOptions activeFixture={activeFixture} activeSyncStatus={activeSyncStatus} />
+          <FixtureOptions
+            activeFixture={activeFixture}
+            activeSyncStatus={activeSyncStatus}
+            activeUpdateStatus={activeUpdateStatus}
+          />
+          <PreviewControlRow aria-label="Update preview states" label="Update">
+            {updatePreviewStatuses.map((status) => (
+              <PreviewSwitcherOption
+                active={activeUpdateStatus === status.key}
+                href={`?fixture=${fixture}&updateStatus=${encodeURIComponent(status.key)}&syncStatus=${syncStatus}`}
+                key={status.key}
+              >
+                {status.label}
+              </PreviewSwitcherOption>
+            ))}
+          </PreviewControlRow>
           <PreviewControlRow aria-label="Sync preview states" label="Sync">
             {syncPreviewStatuses.map((status) => (
               <PreviewSwitcherOption
                 active={activeSyncStatus === status.key}
-                href={`?fixture=${fixture}&syncStatus=${encodeURIComponent(status.key)}`}
+                href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${encodeURIComponent(status.key)}`}
                 key={status.key}
               >
                 {status.label}
@@ -461,18 +500,15 @@ function DevPreviewSwitcher({
           className="border-t border-pearl-border/70 pt-1.5"
           label="Update"
         >
-          <PreviewSwitcherOption
-            active={activeFixture !== "update"}
-            href={`?window=settings&fixture=current${settingsProviderState}&syncStatus=${syncStatus}#settings-general`}
-          >
-            No update
-          </PreviewSwitcherOption>
-          <PreviewSwitcherOption
-            active={activeFixture === "update"}
-            href={`?window=settings&fixture=update${settingsProviderState}&syncStatus=${syncStatus}#settings-general`}
-          >
-            Available
-          </PreviewSwitcherOption>
+          {updatePreviewStatuses.map((status) => (
+            <PreviewSwitcherOption
+              active={activeUpdateStatus === status.key}
+              href={`?window=settings&fixture=${fixture}&updateStatus=${encodeURIComponent(status.key)}${settingsProviderState}&syncStatus=${syncStatus}#settings-general`}
+              key={status.key}
+            >
+              {status.label}
+            </PreviewSwitcherOption>
+          ))}
         </PreviewControlRow>
       ) : null}
       {activeSurface === "settings" && settingsProviderPreviewState ? (
@@ -484,7 +520,7 @@ function DevPreviewSwitcher({
                   ? !settingsProviderEnabled
                   : settingsProviderEnabled && settingsProviderPreviewState === state.key
               }
-              href={`?window=settings&fixture=${fixture}&providerState=${encodeURIComponent(state.key)}&syncStatus=${syncStatus}#settings-providers`}
+              href={`?window=settings&fixture=${fixture}&updateStatus=${updateStatus}&providerState=${encodeURIComponent(state.key)}&syncStatus=${syncStatus}#settings-providers`}
               key={state.key}
             >
               {state.label}

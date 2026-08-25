@@ -26,12 +26,17 @@ type UpdatePort = {
 };
 
 type UpdateDeliverySnapshot = {
+  pendingAction: UpdatePendingAction | null;
   phase: "degraded" | "loading" | "ready";
   state: UpdateState | null;
 };
 
+type UpdatePendingAction = "check" | "install" | "retry";
+
 function createUpdateDelivery(port: UpdatePort) {
-  let current: UpdateDeliverySnapshot = { phase: "loading", state: null };
+  let actionInFlight: Promise<boolean> | null = null;
+  let actionRequestRevision = 0;
+  let current: UpdateDeliverySnapshot = { pendingAction: null, phase: "loading", state: null };
   let readInFlight: Promise<void> | null = null;
   let readRequested = false;
   const listeners = new Set<() => void>();
@@ -41,13 +46,13 @@ function createUpdateDelivery(port: UpdatePort) {
     for (const listener of listeners) listener();
   };
 
-  const accept = (value: unknown) => {
+  const accept = (value: unknown, pendingAction = current.pendingAction) => {
     const parsed = updateStateSchema.safeParse(value);
     if (!parsed.success) {
-      publish({ ...current, phase: "degraded" });
+      publish({ ...current, pendingAction, phase: "degraded" });
       return false;
     }
-    publish({ phase: "ready", state: parsed.data });
+    publish({ pendingAction, phase: "ready", state: parsed.data });
     return true;
   };
 
@@ -57,8 +62,11 @@ function createUpdateDelivery(port: UpdatePort) {
     readInFlight = (async () => {
       while (readRequested) {
         readRequested = false;
+        const observedActionRequestRevision = actionRequestRevision;
         const outcome = await port.read();
-        if (!outcome.ok) {
+        if (observedActionRequestRevision !== actionRequestRevision) {
+          readRequested = true;
+        } else if (!outcome.ok) {
           publish({ ...current, phase: "degraded" });
         } else {
           accept(outcome.value);
@@ -79,6 +87,39 @@ function createUpdateDelivery(port: UpdatePort) {
     return accept(outcome.value);
   };
 
+  const runAction = (
+    pendingAction: UpdatePendingAction,
+    action: () => Promise<UpdatePortOutcome<unknown>>,
+  ) => {
+    if (actionInFlight !== null) return actionInFlight;
+    const status = current.state?.update.status;
+    if (status === "checking" || status === "downloading" || status === "installing") {
+      return Promise.resolve(true);
+    }
+    actionRequestRevision += 1;
+    publish({ ...current, pendingAction });
+    const request = (async () => {
+      const outcome = await action();
+      if (!outcome.ok) {
+        publish({ ...current, pendingAction: null, phase: "degraded" });
+        return false;
+      }
+      if (!updateStateSchema.safeParse(outcome.value).success) {
+        publish({ ...current, pendingAction: null, phase: "degraded" });
+        return false;
+      }
+      await read();
+      return current.phase === "ready";
+    })().finally(() => {
+      if (actionInFlight === request) actionInFlight = null;
+      if (current.pendingAction !== null) {
+        publish({ ...current, pendingAction: null });
+      }
+    });
+    actionInFlight = request;
+    return request;
+  };
+
   return {
     async activate() {
       const subscription = await port.subscribe(() => void read());
@@ -89,13 +130,13 @@ function createUpdateDelivery(port: UpdatePort) {
       }
       return subscription.value;
     },
-    check: () => run(port.check),
+    check: () => runAction("check", port.check),
     getSnapshot: () => current,
-    install: () => run(port.install),
+    install: () => runAction("install", port.install),
     openLatestDmg: async () => (await port.openLatestDmg()).ok,
     openSource: async () => (await port.openSource()).ok,
     read,
-    retry: () => run(port.retry),
+    retry: () => runAction("retry", port.retry),
     setAutomaticChecks: (enabled: boolean) => run(() => port.setAutomaticChecks(enabled)),
     subscribe(listener: () => void) {
       listeners.add(listener);

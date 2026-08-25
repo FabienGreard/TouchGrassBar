@@ -1,12 +1,35 @@
 import { describe, expect, test } from "vitest";
 
-import { resolveDevPreviewScenario, syncPreviewStatuses } from "@/dev/preview-scenario";
+import {
+  resolveDevPreviewScenario,
+  syncPreviewStatuses,
+  updatePreviewStatuses,
+} from "@/dev/preview-scenario";
 
 describe("development preview scenarios", () => {
   test("resolves explicit panel fixtures and rejects unknown values", () => {
     expect(resolveDevPreviewScenario("?fixture=current").fixture).toBe("current");
-    expect(resolveDevPreviewScenario("?fixture=update").fixture).toBe("update");
+    expect(resolveDevPreviewScenario("?fixture=current").updateStatus).toBe("idle");
+    expect(resolveDevPreviewScenario("?fixture=update")).toMatchObject({
+      fixture: "update",
+      updateStatus: "available",
+    });
     expect(resolveDevPreviewScenario("?fixture=anything-else").fixture).toBe("unavailable");
+  });
+
+  test.each(updatePreviewStatuses)("resolves the $key update preview", ({ key }) => {
+    expect(
+      resolveDevPreviewScenario(`?fixture=current&updateStatus=${encodeURIComponent(key)}`),
+    ).toMatchObject({ fixture: "current", updateStatus: key });
+  });
+
+  test("rejects unknown update preview details", () => {
+    const scenario = resolveDevPreviewScenario(
+      "?fixture=current&updateStatus=restarting&updateDetail=private-detail",
+    );
+
+    expect(scenario.updateStatus).toBe("idle");
+    expect(scenario).not.toHaveProperty("updateDetail");
   });
 
   test.each(syncPreviewStatuses)(

@@ -1,6 +1,8 @@
 export { Brand, BrandMark, BrandWordmark } from "./components/brand";
 export { Button } from "./components/button";
 export { CodingProviderAccessCard } from "./components/coding-provider-access-card";
+export { CircularProgressIcon } from "./components/circular-progress-icon";
+export type { CircularProgressIconProps } from "./components/circular-progress-icon";
 export {
   codingProviderAccessStates,
   providerAccessPresentations,
