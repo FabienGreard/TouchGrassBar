@@ -76,7 +76,7 @@ function renderHeader({
       onUpdate={() => undefined}
       refreshing={refreshing}
       state={state}
-      updateActionLabel={null}
+      updateAction={null}
     />,
   );
 }

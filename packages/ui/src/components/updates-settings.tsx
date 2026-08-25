@@ -1,9 +1,11 @@
 import type { UpdateState } from "@touchgrass/contracts";
 
 import { Button } from "./button";
+import { CircularProgressIcon } from "./circular-progress-icon";
 import { SettingsToggleRow } from "./settings-toggle-row";
 
 type UpdatesSettingsProps = {
+  actionPending?: boolean | undefined;
   autoUpdates: boolean | null;
   onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
   onCheckForUpdates?: (() => void) | undefined;
@@ -14,9 +16,16 @@ type UpdatesSettingsProps = {
   state: UpdateState | null;
 };
 
-function updateSummary(state: UpdateState | null) {
+function updateSummary(state: UpdateState | null, actionPending = false) {
   if (state === null) return "Update state unavailable.";
   const update = state.update;
+  if (actionPending) {
+    if (update.status === "available") return "Starting signed update…";
+    if (update.status === "failed") return "Retrying update…";
+    if (update.status === "idle" || update.status === "upToDate") {
+      return "Checking the stable channel…";
+    }
+  }
   switch (update.status) {
     case "available":
       return state.onlineFeaturesPaused
@@ -25,7 +34,7 @@ function updateSummary(state: UpdateState | null) {
     case "checking":
       return "Checking the stable channel…";
     case "downloading":
-      return update.progressPercent === null
+      return update.progressPercent === null || update.progressPercent === undefined
         ? "Downloading signed update…"
         : `Downloading signed update · ${update.progressPercent}%`;
     case "failed":
@@ -43,7 +52,14 @@ function updateSummary(state: UpdateState | null) {
   }
 }
 
+function updateStatusAnnouncement(state: UpdateState | null, actionPending: boolean) {
+  return state?.update.status === "downloading"
+    ? "Downloading signed update."
+    : updateSummary(state, actionPending);
+}
+
 function UpdatesSettings({
+  actionPending = false,
   autoUpdates,
   onAutoUpdatesChange,
   onCheckForUpdates,
@@ -54,11 +70,57 @@ function UpdatesSettings({
   state,
 }: UpdatesSettingsProps) {
   const status = state?.update.status;
+  const downloadProgress =
+    state?.update.status === "downloading" ? state.update.progressPercent : null;
   const primaryAction =
     status === "available" ? onInstall : status === "failed" ? onRetry : onCheckForUpdates;
+  const nativeBusy = status === "checking" || status === "downloading" || status === "installing";
   const primaryLabel =
-    status === "available" ? "Install & Relaunch" : status === "failed" ? "Retry" : "Check now";
-  const primaryBusy = status === "checking" || status === "downloading" || status === "installing";
+    actionPending && !nativeBusy
+      ? status === "available"
+        ? "Downloading…"
+        : status === "failed"
+          ? "Retrying…"
+          : "Checking…"
+      : status === "available"
+        ? "Install & Relaunch"
+        : status === "failed"
+          ? "Retry"
+          : status === "checking"
+            ? "Checking…"
+            : status === "downloading"
+              ? "Downloading…"
+              : status === "installing"
+                ? "Relaunching…"
+                : "Check now";
+  const primaryBusy = actionPending || nativeBusy;
+  const primaryIndicator =
+    status === "downloading" ? (
+      <CircularProgressIcon
+        aria-hidden="true"
+        data-icon-source="CircularProgressIcon"
+        progress={downloadProgress}
+      />
+    ) : status === "installing" ? (
+      <CircularProgressIcon
+        aria-hidden="true"
+        data-icon-source="CircularProgressIcon"
+        progress={null}
+        showCheck
+      />
+    ) : status === "checking" ? (
+      <CircularProgressIcon
+        aria-hidden="true"
+        data-icon-source="CircularProgressIcon"
+        progress={null}
+      />
+    ) : actionPending ? (
+      <CircularProgressIcon
+        aria-hidden="true"
+        data-icon-source="CircularProgressIcon"
+        progress={null}
+      />
+    ) : null;
   const recovery = status === "failed";
 
   return (
@@ -73,15 +135,26 @@ function UpdatesSettings({
               Version {state?.currentVersion ?? "unavailable"}
             </strong>
             <small className="mt-0.5 block text-[9px] text-sheet-muted">
-              {updateSummary(state)}
+              {updateSummary(state, actionPending)}
             </small>
+            <span
+              aria-atomic="true"
+              aria-live="polite"
+              className="sr-only"
+              data-slot="update-status"
+            >
+              {updateStatusAnnouncement(state, actionPending)}
+            </span>
           </span>
           <Button
+            aria-busy={primaryBusy || undefined}
+            className={primaryBusy ? "disabled:opacity-100" : undefined}
             disabled={primaryAction === undefined || primaryBusy || status === "unavailable"}
             onClick={primaryAction}
             type="button"
             variant="ghost"
           >
+            {primaryIndicator}
             {primaryLabel}
           </Button>
         </div>
