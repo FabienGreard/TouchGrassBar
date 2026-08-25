@@ -83,21 +83,13 @@ export function rankRows<
     (left, right) =>
       right.tokenScore - left.tokenScore || left.touchGrassId.localeCompare(right.touchGrassId),
   );
-  let rank = 0;
-  let previousScore: number | null = null;
-  return orderedRows.map((row, index) => {
-    if (row.tokenScore !== previousScore) {
-      rank = index + 1;
-      previousScore = row.tokenScore;
-    }
-    return {
-      apiEquivalentCost: row.apiEquivalentCost,
-      displayName: row.displayName,
-      rank,
-      tokenScore: row.tokenScore,
-      touchGrassId: row.touchGrassId,
-    };
-  });
+  return orderedRows.map((row, index) => ({
+    apiEquivalentCost: row.apiEquivalentCost,
+    displayName: row.displayName,
+    rank: index + 1,
+    tokenScore: row.tokenScore,
+    touchGrassId: row.touchGrassId,
+  }));
 }
 
 async function requireDoomerboardProfile(ctx: QueryCtx) {

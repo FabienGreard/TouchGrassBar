@@ -172,6 +172,15 @@ impl UsageSyncCorrections {
         Ok(())
     }
 
+    pub(crate) fn merge_from(&mut self, other: &Self) {
+        for (provider, correction) in &other.0 {
+            let current = self.0.entry(*provider).or_insert(*correction);
+            if correction.source_revision > current.source_revision {
+                *current = *correction;
+            }
+        }
+    }
+
     fn reason_for(&self, provider: CodingProvider) -> Option<CorrectionReason> {
         self.0.get(&provider).map(|correction| correction.reason)
     }

@@ -1314,6 +1314,48 @@ test("the current My Tokenmaxxers Doomerboard selects its provider and period", 
   });
 });
 
+test("the current My Tokenmaxxers Doomerboard gives equal scores unique ranks", async () => {
+  const t = testBackend();
+  const owner = await createProfile(t, installationCredential("A"), "Owner");
+  const firstCredential = installationCredential("B");
+  const secondCredential = installationCredential("C");
+  const first = await createProfile(t, firstCredential, "First");
+  const second = await createProfile(t, secondCredential, "Second");
+
+  await first.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: firstCredential,
+    snapshots: [usageSnapshot({ observedTokens: 100 })],
+  });
+  await second.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: secondCredential,
+    snapshots: [usageSnapshot({ observedTokens: 100 })],
+  });
+  await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: first.touchGrassId,
+  });
+  await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: second.touchGrassId,
+  });
+
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+      rankingDay: TODAY,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).resolves.toMatchObject({
+    rows: [
+      { rank: 1, tokenScore: 100 },
+      { rank: 2, tokenScore: 100 },
+    ],
+    savedTokenmaxxerCount: 2,
+  });
+});
+
 test("My Tokenmaxxers rejects a new entry at its 100-entry limit", async () => {
   const t = testBackend();
   const owner = await createProfile(t, installationCredential("A"), "Owner");
@@ -1479,10 +1521,10 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
   expect(defaultPage).toHaveLength(50);
   expect(cappedPage).toHaveLength(100);
   expect(cappedPage).toEqual(
-    expected.slice(0, 100).map((row, _index, rows) => ({
+    expected.slice(0, 100).map((row, index) => ({
       apiEquivalentCost: null,
       displayName: row.displayName,
-      rank: rows.findIndex((candidate) => candidate.tokenScore === row.tokenScore) + 1,
+      rank: index + 1,
       tokenScore: row.tokenScore,
       touchGrassId: row.touchGrassId,
     })),
@@ -1499,7 +1541,7 @@ test("the current Global Doomerboard is authenticated, current, bounded, determi
   );
 });
 
-test("the legacy Global Doomerboard completes a score tie before ranking it", async () => {
+test("the legacy Global Doomerboard orders a score tie before assigning unique ranks", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
@@ -1543,10 +1585,12 @@ test("the legacy Global Doomerboard completes a score tie before ranking it", as
     limit: 100,
     rankingDay: TODAY,
   });
-  expect(page.map((row) => row.touchGrassId)).toEqual(
-    rows.slice(0, 100).map((row) => row.touchGrassId),
+  expect(page.map(({ rank, touchGrassId }) => ({ rank, touchGrassId }))).toEqual(
+    rows.slice(0, 100).map((row, index) => ({
+      rank: index + 1,
+      touchGrassId: row.touchGrassId,
+    })),
   );
-  expect(page.every((row) => row.rank === 1)).toBe(true);
 });
 
 test("the migration repairs a missing Doomerboard index entry", async () => {

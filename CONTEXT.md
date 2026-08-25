@@ -142,7 +142,7 @@ A calendar day bounded by midnight UTC. Location and travel do not change its bo
 _Avoid_: Local day, usage day
 
 **Doomerboard**:
-An ordered view of Tokenmaxxers by Token Score for a time range and provider scope.
+An ordered view of Tokenmaxxers by Token Score for a time range and provider scope. Each row has a unique rank. Equal Token Scores use TouchGrass ID in ascending order as the stable tie-break.
 _Avoid_: Leaderboard, feed, activity stream
 
 **Provider Doomerboard**:
