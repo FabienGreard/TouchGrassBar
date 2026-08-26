@@ -35,6 +35,12 @@ Add a manifest entry only when those sources define every applicable input,
 cached-input, cache-write, output, effective-date, and long-context rule. Add
 an alias only when an official source defines it.
 
+An unqualified official price row can cover every context size. The audit may
+use its short-context cells for the long-context comparison only when all four
+long-context cells are `-` and the manifest input and output multipliers are
+both `1.0`. A row that names a context band stays qualified to that band. A
+missing long-context price in such a row fails closed.
+
 If any required price or alias is missing, leave the model out of the manifest.
 That model's local tokens stay unpriced. A period can still show a modeled best
 estimate when other priced local evidence supplies a defensible rate; its
@@ -76,8 +82,14 @@ Use these primary sources for an OpenAI update:
 - [OpenAI model catalog](https://developers.openai.com/api/docs/models)
 - [GPT-5.6 Sol](https://developers.openai.com/api/docs/models/gpt-5.6-sol)
 
-The `2026-08-26-v1` review used these dated first-party changes:
+The `2026-08-26-v2` review used these dated first-party changes:
 
+- OpenAI released
+  [GPT-5.2 on 2025-12-11](https://developers.openai.com/api/docs/changelog).
+  The current price table lists USD 1.75 input, USD 0.175 cached input, no
+  cache-write price, and USD 14 output per million tokens. Its unqualified row
+  has no separate long-context rates, so the same token rates apply above the
+  272,000-token threshold.
 - OpenAI changed GPT-5.6 Terra and Luna rates on
   [2026-07-30](https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/).
   Terra changed to USD 2 input, USD 0.20 cached input, USD 2.50 cache
@@ -137,6 +149,19 @@ The Claude transcript allow-list has three verified pairs. Claude Code
 `2.1.223` pairs with `@anthropic-ai/claude-agent-sdk` `0.3.223`. Claude Code
 `2.1.224` pairs with SDK version `0.3.224`. Claude Code `2.1.241` pairs with SDK
 version `0.3.241`.
+
+The public package review on 2026-08-26 resolved each moving channel to an
+exact package record and checked its npm `dist.integrity` value:
+
+| Channel     | Package                          | Version   | Integrity                                                                                         |
+| ----------- | -------------------------------- | --------- | ------------------------------------------------------------------------------------------------- |
+| Stable      | `@anthropic-ai/claude-code`      | `2.1.231` | `sha512-1VG6CYH/x3M58L0wNYV2yLI3IPTCic+SXFrIw9IV2OrXA4EsMFAdXArWG87GpLZMkCCLculmrtDuJlwKLsysxg==` |
+| Stable pair | `@anthropic-ai/claude-agent-sdk` | `0.3.231` | `sha512-tazYrn34/p9tNpzt2v5lkjQMO4ypnm52tQFFd2rUIFsmDfeaRZZp7laO6WeujFCenxAoDotFPlzr+y6uxwb0Ew==` |
+| Latest      | `@anthropic-ai/claude-code`      | `2.1.246` | `sha512-E2PEKkal9D05dWnsc2fcPclJpEbJbnIE3D1vp33aPrsFbmdbqyNzEcc9/SeFIj53hvP/M5BuHygOFbeoBWEAOg==` |
+| Latest pair | `@anthropic-ai/claude-agent-sdk` | `0.3.246` | `sha512-FtR0HoHHNqeqJWjZN8qLUAzZVFUI9ztXYNPPwv98Ecmv9qq2QTauI8IzkY26CC0mleWAqb9RQEW2C0OtiUliug==` |
+
+These public package records do not prove a private transcript shape. They do
+not add a Claude Code version to the transcript allow-list.
 
 The scanner ignores one synthetic API-error record from Claude Code `2.1.241`.
 The record must match the reviewed shape exactly. This check includes the

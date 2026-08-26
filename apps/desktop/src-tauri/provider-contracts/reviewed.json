@@ -3,13 +3,13 @@
   "reviewedAt": "2026-08-26",
   "reviewEveryDays": 30,
   "codex": {
-    "reviewedRelease": "0.147.0",
+    "reviewedRelease": "0.149.1",
     "releaseUrl": "https://api.github.com/repos/openai/codex/releases/latest",
     "repositoryRawBaseUrl": "https://raw.githubusercontent.com/openai/codex",
     "modelCatalogPath": "codex-rs/models-manager/models.json",
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/codex/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/openai-standard.json",
-    "pricingManifestSemanticSha256": "573ed9abc3f8743edef1c9e63bc7737453e8b1d4c435621cf001ed125e3c05b2",
+    "pricingManifestSemanticSha256": "a6234771803704284c57f6ea493b265f8ce4abb9d30480582dcfcd7f0e8ccc3a",
     "pricingRuleWindows": [
       {
         "id": "api-token-and-tool-pricing",
@@ -143,6 +143,20 @@
                   "boundary": "start"
                 }
               ]
+            },
+            {
+              "id": "gpt-5-2-launch",
+              "heading": "### Dec 11",
+              "selector": "Released GPT-5.2",
+              "date": "2025-12-11",
+              "semanticSha256": "d37851ee3621916f488fe48d9f291ba2d9f35cd1b161d3e914a34606d84bdeed",
+              "checkpoints": [
+                {
+                  "model": "gpt-5.2",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
             }
           ]
         }
@@ -157,7 +171,7 @@
       {
         "id": "account-token-usage",
         "path": "codex-rs/app-server-protocol/schema/json/v2/GetAccountTokenUsageResponse.json",
-        "semanticSha256": "bafeb78b53362369a53d748488d8850604f477e8799d41671d8703c9d7d1c8a8"
+        "semanticSha256": "618cc5aca6d45c063148189f06ab1fb3d1248e2e9f9bec9319bd8da080f3ae5d"
       },
       {
         "id": "thread-token-usage",
@@ -181,11 +195,11 @@
     ]
   },
   "claude": {
-    "reviewedStableVersion": "2.1.224",
-    "reviewedLatestVersion": "2.1.241",
+    "reviewedStableVersion": "2.1.231",
+    "reviewedLatestVersion": "2.1.246",
     "stablePackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/stable",
     "latestPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/latest",
-    "reviewedAgentSdkVersion": "0.3.241",
+    "reviewedAgentSdkVersion": "0.3.246",
     "agentSdkPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-agent-sdk/latest",
     "usageTypesSourceUrl": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
     "usageInterfaces": {
@@ -207,6 +221,18 @@
         "ephemeral_1h_input_tokens": "required:number",
         "ephemeral_5m_input_tokens": "required:number"
       },
+      "BetaMessageIterationUsage": {
+        "cache_creation": "required:BetaCacheCreation | null",
+        "cache_creation_input_tokens": "required:number",
+        "cache_read_input_tokens": "required:number",
+        "input_tokens": "required:number",
+        "model": "required:MessagesAPI.Model",
+        "output_tokens": "required:number",
+        "type": "required:'message'"
+      },
+      "BetaOutputTokensDetails": {
+        "thinking_tokens": "required:number"
+      },
       "BetaServerToolUsage": {
         "web_fetch_requests": "required:number",
         "web_search_requests": "required:number"
@@ -217,6 +243,11 @@
         "id": "api-output-inclusive",
         "url": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
         "markers": ["output_tokens remains the inclusive, authoritative total used for billing."]
+      },
+      {
+        "id": "api-iterations-breakdown",
+        "url": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
+        "markers": ["Per-iteration token usage breakdown."]
       },
       {
         "id": "prompt-cache-input-sum",
@@ -258,7 +289,7 @@
         {
           "id": "release-notes",
           "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
-          "windowSemanticSha256": "a6f806c0bd714e0e346be80e682687cd70182ff3d04f5f3a933798c530f5943f",
+          "windowSemanticSha256": "3929e07917d410a48a26fb228d5d4ee06aefba970692581a4fe8f01eee2c371f",
           "sections": [
             {
               "id": "sonnet-5-canceled-increase",

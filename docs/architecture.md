@@ -183,8 +183,13 @@ main and subagent JSONL files with byte, file, traversal, and time limits.
 
 The scanner accepts three exact Claude Code and Agent SDK schema pairs. The
 pairs are `2.1.223` and `0.3.223`, `2.1.224` and `0.3.224`, and `2.1.241` and
-`0.3.241`. Other versions fail closed. Non-null `fallback_credit`, `iterations`,
-or `output_tokens_details` values make a record partial and unpriced.
+`0.3.241`. Other versions fail closed. For Claude Code `2.1.241`, the scanner
+accepts one exact message iteration when its counters equal the top-level
+counters. It also accepts one exact `thinking_tokens` value when it is not more
+than `output_tokens`. These fields are breakdowns. The scanner does not add
+them to the top-level counters. Non-null `fallback_credit`, mismatched
+iterations, and other output-token detail shapes make a record partial and
+unpriced.
 
 The scanner can ignore one synthetic API-error record from Claude Code
 `2.1.241`. Its wrapper, message, content, and zero counters must match the

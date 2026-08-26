@@ -1189,6 +1189,147 @@ The September price change will now occur.`,
     );
   });
 
+  test("accepts one unqualified OpenAI price row as an all-context rate", async () => {
+    const scenario = createScenario();
+    const manifest = clone(openAiManifest);
+    const period = manifest.models[0]?.periods[0];
+    const ruleWindow = scenario.contract.codex.pricingRuleWindows[0];
+    if (!period || !ruleWindow) throw new Error("The OpenAI test price period is absent.");
+    period.longContext.inputMultiplier = 1;
+    period.longContext.outputMultiplier = 1;
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.codex.pricingManifestPath}`,
+      json(manifest),
+    );
+    scenario.contract.codex.pricingManifestSemanticSha256 = semanticJsonSha256(manifest);
+    const allContextPricing = openAiPricing.replace(
+      "$4 / M tokens | $0.4 / M tokens | $5 / M tokens | $15 / M tokens",
+      "- | - | - | -",
+    );
+    scenario.remoteSources.set(scenario.contract.codex.pricingSourceUrl, allContextPricing);
+    ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
+      allContextPricing,
+      ruleWindow.startHeading,
+      ruleWindow.endHeading,
+    );
+
+    const report = await scenario.audit();
+
+    expect(report.status).toBe("pass");
+    expect(report.findings).not.toContainEqual(
+      expect.objectContaining({
+        code: "price-changed",
+        provider: "codex",
+      }),
+    );
+  });
+
+  test("keeps a context-qualified OpenAI price row fail closed", async () => {
+    const scenario = createScenario();
+    const manifest = clone(openAiManifest);
+    const period = manifest.models[0]?.periods[0];
+    const ruleWindow = scenario.contract.codex.pricingRuleWindows[0];
+    if (!period || !ruleWindow) throw new Error("The OpenAI test price period is absent.");
+    period.longContext.inputMultiplier = 1;
+    period.longContext.outputMultiplier = 1;
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.codex.pricingManifestPath}`,
+      json(manifest),
+    );
+    scenario.contract.codex.pricingManifestSemanticSha256 = semanticJsonSha256(manifest);
+    const qualifiedPricing = openAiPricing
+      .replace("| gpt-test | $2", "| gpt-test (<272K) | $2")
+      .replace("$4 / M tokens | $0.4 / M tokens | $5 / M tokens | $15 / M tokens", "- | - | - | -");
+    scenario.remoteSources.set(scenario.contract.codex.pricingSourceUrl, qualifiedPricing);
+    ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
+      qualifiedPricing,
+      ruleWindow.startHeading,
+      ruleWindow.endHeading,
+    );
+
+    const report = await scenario.audit();
+
+    expect(report.status).toBe("review-required");
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({
+        code: "price-changed",
+        provider: "codex",
+      }),
+    );
+  });
+
+  test("keeps a context-qualified OpenAI Fast row fail closed", async () => {
+    const scenario = createScenario();
+    const manifest = clone(openAiManifest);
+    const period = manifest.models[0]?.periods[0];
+    const ruleWindow = scenario.contract.codex.pricingRuleWindows[0];
+    if (!period || !ruleWindow) throw new Error("The OpenAI test price period is absent.");
+    delete period.fastLongContext;
+    period.longContext.inputMultiplier = 1;
+    period.longContext.outputMultiplier = 1;
+    for (const source of scenario.contract.codex.pricingEvidence.sources) {
+      for (const section of source.sections) {
+        section.checkpoints = section.checkpoints.filter(
+          (checkpoint) => checkpoint.periodKind !== "fast-long-context",
+        );
+      }
+    }
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.codex.pricingManifestPath}`,
+      json(manifest),
+    );
+    scenario.contract.codex.pricingManifestSemanticSha256 = semanticJsonSha256(manifest);
+    const qualifiedFastPricing = openAiPricing
+      .replace("$4 / M tokens | $0.4 / M tokens | $5 / M tokens | $15 / M tokens", "- | - | - | -")
+      .replace("| gpt-test | $4 / M tokens", "| gpt-test (<272K) | $4 / M tokens")
+      .replace(
+        "$8 / M tokens | $0.8 / M tokens | $10 / M tokens | $30 / M tokens",
+        "- | - | - | -",
+      );
+    scenario.remoteSources.set(scenario.contract.codex.pricingSourceUrl, qualifiedFastPricing);
+    ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
+      qualifiedFastPricing,
+      ruleWindow.startHeading,
+      ruleWindow.endHeading,
+    );
+
+    const report = await scenario.audit();
+
+    expect(report.status).toBe("review-required");
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({
+        code: "pricing-modifier-changed",
+        provider: "codex",
+      }),
+    );
+  });
+
+  test("keeps an unqualified OpenAI row fail closed when long-context rates differ", async () => {
+    const scenario = createScenario();
+    const ruleWindow = scenario.contract.codex.pricingRuleWindows[0];
+    if (!ruleWindow) throw new Error("The OpenAI pricing rule window is absent.");
+    const incompletePricing = openAiPricing.replace(
+      "$4 / M tokens | $0.4 / M tokens | $5 / M tokens | $15 / M tokens",
+      "- | - | - | -",
+    );
+    scenario.remoteSources.set(scenario.contract.codex.pricingSourceUrl, incompletePricing);
+    ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
+      incompletePricing,
+      ruleWindow.startHeading,
+      ruleWindow.endHeading,
+    );
+
+    const report = await scenario.audit();
+
+    expect(report.status).toBe("review-required");
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({
+        code: "price-changed",
+        provider: "codex",
+      }),
+    );
+  });
+
   test("detects changed US support boundaries and Fast compatibility", async () => {
     const scenario = createScenario();
     scenario.remoteSources.set(

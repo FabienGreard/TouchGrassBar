@@ -190,6 +190,10 @@ type OpenAiRate = {
   output: number | null;
 };
 
+type PublishedOpenAiRate = OpenAiRate & {
+  contextQualified: boolean;
+};
+
 type AnthropicRate = {
   cacheRead: number;
   cacheWrite1h: number;
@@ -1188,17 +1192,19 @@ function parseUsdRateCell(value: string): number | null {
 function openAiRates(
   source: string,
   heading: "### Fast pricing data" | "### Standard pricing data",
-): Map<string, OpenAiRate> {
+): Map<string, PublishedOpenAiRate> {
   const rows = markdownTableAfter(source, heading);
   if (rows[0]?.length !== 9) throw new SourceShapeError("The OpenAI price columns changed.");
-  const rates = new Map<string, OpenAiRate>();
+  const rates = new Map<string, PublishedOpenAiRate>();
   for (const row of rows.slice(1)) {
     if (row.length !== 9) throw new SourceShapeError("An OpenAI price row changed.");
-    const model = plainMarkdown(row[0] ?? "").replace(/\s+\(<.*$/u, "");
+    const publishedModel = plainMarkdown(row[0] ?? "");
+    const model = publishedModel.replace(/\s+\(<.*$/u, "");
     if (!safeIdentifier(model, 128) || rates.has(model)) {
       throw new SourceShapeError("An OpenAI model identifier is invalid.");
     }
     rates.set(model, {
+      contextQualified: publishedModel !== model,
       input: parseUsdRateCell(row[1] ?? ""),
       cachedInput: parseUsdRateCell(row[2] ?? ""),
       cacheWrite: parseUsdRateCell(row[3] ?? ""),
@@ -1924,6 +1930,14 @@ function auditOpenAiPricing(
     const changedFast = (Object.keys(expectedFast) as Array<keyof OpenAiRate>).filter(
       (key) => !ratesEqual(expectedFast[key], publishedFast[key]),
     );
+    const usesFastAllContextFallback =
+      period.fastLongContext === undefined &&
+      period.fastMultiplier !== undefined &&
+      period.longContext.inputMultiplier === 1 &&
+      period.longContext.outputMultiplier === 1;
+    if (usesFastAllContextFallback && publishedFast.contextQualified) {
+      changedFast.push("longInput");
+    }
     if (changedFast.length > 0) {
       finding(
         context,
@@ -1931,7 +1945,7 @@ function auditOpenAiPricing(
         "pricing",
         "review-required",
         "pricing-modifier-changed",
-        `${reviewed.name}: official Fast pricing differs in ${changedFast.join(", ")}; bundled input/output ${formatNullableRate(expectedFast.input)}/${formatNullableRate(expectedFast.output)}, official ${formatNullableRate(publishedFast.input)}/${formatNullableRate(publishedFast.output)}.`,
+        `${reviewed.name}: official Fast pricing differs in ${[...new Set(changedFast)].join(", ")}; bundled input/output ${formatNullableRate(expectedFast.input)}/${formatNullableRate(expectedFast.output)}, official ${formatNullableRate(publishedFast.input)}/${formatNullableRate(publishedFast.output)}.`,
         context.contract.codex.pricingSourceUrl,
       );
     }
@@ -2001,8 +2015,24 @@ function auditOpenAiPricing(
           : period.cacheWriteUsdPerMillion * period.longContext.inputMultiplier,
       longOutput: period.outputUsdPerMillion * period.longContext.outputMultiplier,
     };
+    const publishedAllContext =
+      !published.contextQualified &&
+      period.longContext.inputMultiplier === 1 &&
+      period.longContext.outputMultiplier === 1 &&
+      published.longInput === null &&
+      published.longCachedInput === null &&
+      published.longCacheWrite === null &&
+      published.longOutput === null
+        ? {
+            ...published,
+            longInput: published.input,
+            longCachedInput: published.cachedInput,
+            longCacheWrite: published.cacheWrite,
+            longOutput: published.output,
+          }
+        : published;
     const changed = (Object.keys(expected) as Array<keyof OpenAiRate>).filter(
-      (key) => !ratesEqual(expected[key], published[key]),
+      (key) => !ratesEqual(expected[key], publishedAllContext[key]),
     );
     const contextWindow = officialModel.context_window;
     if (

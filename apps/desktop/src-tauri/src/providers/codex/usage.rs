@@ -40,8 +40,10 @@ const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_SUPPORTED_CODEX_CLI_MINOR: u16 = 130;
-const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 148;
-const ROLLOUT_PARSER_VERSION: i64 = 17;
+const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 150;
+const MIN_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 148;
+const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 150;
+const ROLLOUT_PARSER_VERSION: i64 = 18;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
@@ -808,11 +810,33 @@ fn pricing_rates(
                 output_usd_per_million: entry.output_usd_per_million * output_multiplier,
             })
         }
-        PricingMode::Fast if long_context => entry
-            .fast_long_context
-            .filter(|price| price.applies_to(day))
-            .map(|price| price.rates)
-            .ok_or(PricingLookupFailure::MissingFastLongContextPrice),
+        PricingMode::Fast if long_context => {
+            if let Some(price) = entry
+                .fast_long_context
+                .filter(|price| price.applies_to(day))
+            {
+                return Ok(price.rates);
+            }
+            if entry.fast_long_context.is_some() {
+                return Err(PricingLookupFailure::MissingFastLongContextPrice);
+            }
+            if entry.long_context_input_multiplier != 1.0
+                || entry.long_context_output_multiplier != 1.0
+            {
+                return Err(PricingLookupFailure::MissingFastLongContextPrice);
+            }
+            let multiplier = entry
+                .fast_multiplier
+                .ok_or(PricingLookupFailure::MissingFastPrice)?;
+            Ok(TokenRates {
+                input_usd_per_million: entry.input_usd_per_million * multiplier,
+                cached_input_usd_per_million: entry.cached_input_usd_per_million * multiplier,
+                cache_write_usd_per_million: entry
+                    .cache_write_usd_per_million
+                    .map(|rate| rate * multiplier),
+                output_usd_per_million: entry.output_usd_per_million * multiplier,
+            })
+        }
         PricingMode::Fast => {
             let multiplier = entry
                 .fast_multiplier
@@ -1558,12 +1582,16 @@ fn reviewed_provider_ordinal_origin(line: &[u8], record_type: &str, ordinal: u64
         return false;
     };
     let metadata = line.payload;
-    let is_codex_0_148 = metadata
+    let uses_reviewed_provider_ordinals = metadata
         .cli_version
         .split('.')
         .nth(1)
-        .is_some_and(|minor| minor == "148");
-    if !is_codex_0_148 || metadata.history_mode.as_deref() != Some("paginated") {
+        .and_then(|minor| minor.parse::<u16>().ok())
+        .is_some_and(|minor| {
+            (MIN_REVIEWED_PROVIDER_ORDINAL_MINOR..=MAX_REVIEWED_PROVIDER_ORDINAL_MINOR)
+                .contains(&minor)
+        });
+    if !uses_reviewed_provider_ordinals || metadata.history_mode.as_deref() != Some("paginated") {
         return false;
     }
     match metadata.history_base.as_ref() {
@@ -1594,6 +1622,7 @@ fn reviewed_legacy_ordinal_origin(line: &[u8], record_type: &str) -> bool {
             .history_mode
             .as_deref()
             .is_none_or(|mode| mode == "legacy"),
+        Some(149..=MAX_REVIEWED_PROVIDER_ORDINAL_MINOR) => false,
         _ => {
             metadata
                 .thread_source
@@ -6947,8 +6976,21 @@ mod tests {
         let mut value: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
         value["basis"] = json!(basis);
-        value["models"][1]["periods"][0]["outputUsdPerMillion"] = json!(output_rate);
+        pricing_model_mut(&mut value, "gpt-5.6-sol")["periods"][0]["outputUsdPerMillion"] =
+            json!(output_rate);
         parse_pricing_manifest(&value.to_string()).unwrap()
+    }
+
+    fn pricing_model_mut<'a>(
+        manifest: &'a mut serde_json::Value,
+        name: &str,
+    ) -> &'a mut serde_json::Value {
+        manifest["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|model| model["name"].as_str() == Some(name))
+            .unwrap()
     }
 
     #[test]
@@ -7566,6 +7608,259 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_index_counts_each_reviewed_provider_ordinal_version() {
+        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+        for cli_version in ["0.148.0-alpha.21", "0.149.1", "0.150.0-alpha.8"] {
+            let fixture = TempUsage::new();
+            let observed = token_usage(80, 10, 20, 20);
+            let mut token_count =
+                token_count_usage_line("2026-08-26T10:01:00Z", observed, observed);
+            token_count["ordinal"] = json!(3);
+            fs::write(
+                &fixture.rollout,
+                jsonl([
+                    json!({
+                        "ordinal": 0,
+                        "timestamp": "2026-08-26T10:00:00Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "cli_version": cli_version,
+                            "history_mode": "paginated",
+                            "id": format!("reviewed-{cli_version}-root"),
+                            "source": "cli",
+                            "thread_source": "cli",
+                            "timestamp": "2026-08-26T10:00:00Z"
+                        }
+                    }),
+                    json!({
+                        "ordinal": 1,
+                        "timestamp": "2026-08-26T10:00:00Z",
+                        "type": "inter_agent_communication_metadata",
+                        "payload": { "trigger_turn": false }
+                    }),
+                    json!({
+                        "ordinal": 2,
+                        "timestamp": "2026-08-26T10:00:01Z",
+                        "type": "turn_context",
+                        "payload": { "model": "gpt-5.6-sol" }
+                    }),
+                    token_count,
+                ]),
+            )
+            .unwrap();
+
+            let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+                .expect("each reviewed provider-ordinal version must index");
+
+            assert_eq!(
+                indexed.scan_status,
+                UsageScanStatus::Complete,
+                "{cli_version}"
+            );
+            assert_eq!(
+                indexed.daily[&now.date()].observed_tokens,
+                100,
+                "{cli_version}"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_index_counts_owned_usage_from_a_reviewed_codex_0_150_child() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+        let observed = token_usage(70, 20, 0, 30);
+        let mut token_count = token_count_usage_line("2026-08-26T10:00:02Z", observed, observed);
+        token_count["ordinal"] = json!(6);
+        fs::write(
+            &fixture.rollout,
+            jsonl([
+                json!({
+                    "ordinal": 0,
+                    "timestamp": "2026-08-26T10:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "cli_version": "0.150.0-alpha.8",
+                        "history_mode": "paginated",
+                        "id": "child-fixture",
+                        "forked_from_id": "parent-fixture",
+                        "thread_source": "subagent",
+                        "subagent_history_start_ordinal": 3,
+                        "timestamp": "2026-08-26T10:00:00Z"
+                    }
+                }),
+                json!({
+                    "ordinal": 1,
+                    "timestamp": "2026-08-26T09:59:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "cli_version": "0.150.0-alpha.8",
+                        "history_mode": "paginated",
+                        "id": "parent-fixture",
+                        "thread_source": "cli",
+                        "timestamp": "2026-08-26T09:59:00Z"
+                    }
+                }),
+                json!({
+                    "ordinal": 2,
+                    "timestamp": "2026-08-26T09:59:01Z",
+                    "type": "response_item",
+                    "payload": { "type": "message", "role": "assistant" }
+                }),
+                json!({
+                    "ordinal": 3,
+                    "timestamp": "2026-08-26T10:00:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "thread_settings_applied",
+                        "thread_settings": {}
+                    }
+                }),
+                json!({
+                    "ordinal": 4,
+                    "timestamp": "2026-08-26T10:00:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": "turn-fixture",
+                        "model_context_window": 1_050_000,
+                        "collaboration_mode_kind": "default",
+                        "started_at": 0
+                    }
+                }),
+                json!({
+                    "ordinal": 5,
+                    "timestamp": "2026-08-26T10:00:01Z",
+                    "type": "turn_context",
+                    "payload": { "model": "gpt-5.6-sol" }
+                }),
+                token_count,
+            ]),
+        )
+        .unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("the reviewed Codex 0.150 child usage must index");
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+        assert!(!indexed.has_excluded_usage);
+    }
+
+    #[test]
+    fn sqlite_index_rejects_noncontiguous_reviewed_codex_0_150_ordinals() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+        let observed = token_usage(70, 20, 0, 30);
+        let mut token_count = token_count_usage_line("2026-08-26T10:00:02Z", observed, observed);
+        token_count["ordinal"] = json!(3);
+        fs::write(
+            &fixture.rollout,
+            jsonl([
+                json!({
+                    "ordinal": 0,
+                    "timestamp": "2026-08-26T10:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "cli_version": "0.150.0-alpha.8",
+                        "history_mode": "paginated"
+                    }
+                }),
+                json!({
+                    "ordinal": 2,
+                    "timestamp": "2026-08-26T10:00:01Z",
+                    "type": "turn_context",
+                    "payload": { "model": "gpt-5.6-sol" }
+                }),
+                token_count,
+            ]),
+        )
+        .unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("the failed scan must still return bounded status");
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Unavailable);
+        assert!(indexed.daily.is_empty());
+        let completion: String = Connection::open(&fixture.database)
+            .unwrap()
+            .query_row(
+                "SELECT completion_state FROM codex_usage_files",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(completion, "error");
+    }
+
+    #[test]
+    fn sqlite_index_retries_files_rejected_by_the_previous_codex_parser() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+        let rollout = reviewed_codex_0_148_root_rollout(100)
+            .replace("0.148.0-alpha.21", "0.150.0-alpha.8")
+            .replace("2026-08-24", "2026-08-26");
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(first.daily[&now.date()].observed_tokens, 100);
+
+        let connection = Connection::open(&fixture.database).unwrap();
+        connection
+            .execute_batch(
+                "DELETE FROM codex_usage_file_days;
+                 DELETE FROM codex_usage_file_model_days;
+                 DELETE FROM codex_usage_token_snapshots;",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE codex_usage_files
+                 SET parser_version = ?1,
+                     completion_state = 'error',
+                     parsed_offset = size_bytes,
+                     schema_supported = 0,
+                     accounting_ready = 0,
+                     parser_error_seen = 1",
+                [ROLLOUT_PARSER_VERSION - 1],
+            )
+            .unwrap();
+        drop(connection);
+
+        let retried = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(retried.scan_status, UsageScanStatus::Complete);
+        assert_eq!(retried.daily[&now.date()].observed_tokens, 100);
+        let state: (i64, String, bool, bool, bool) = Connection::open(&fixture.database)
+            .unwrap()
+            .query_row(
+                "SELECT parser_version, completion_state, schema_supported,
+                        accounting_ready, parser_error_seen
+                 FROM codex_usage_files",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            state,
+            (
+                ROLLOUT_PARSER_VERSION,
+                "complete".to_owned(),
+                true,
+                true,
+                false
+            )
+        );
+    }
+
+    #[test]
     fn sqlite_index_counts_a_reviewed_root_counter_reset_after_task_started() {
         let fixture = TempUsage::new();
         let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
@@ -7575,6 +7870,22 @@ mod tests {
 
         let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
             .expect("the reviewed root counter reset must index");
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_265);
+    }
+
+    #[test]
+    fn sqlite_index_counts_a_reviewed_codex_0_150_root_counter_reset() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let mut records = codex_0_148_task_reset_prefix();
+        records.extend(codex_0_148_task_reset_counters());
+        let rollout = jsonl(records).replace("0.148.0-alpha.21", "0.150.0-alpha.8");
+        fs::write(&fixture.rollout, rollout).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("the reviewed Codex 0.150 counter reset must index");
 
         assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
         assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_265);
@@ -8034,7 +8345,7 @@ mod tests {
             "timestamp": "2026-08-06T10:00:00Z",
             "type": "session_meta",
             "payload": {
-                "cli_version": "0.149.0-alpha.1",
+                "cli_version": "0.151.0-alpha.1",
                 "source": { "subagent": { "thread_spawn": {} } }
             }
         })
@@ -10222,7 +10533,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v1", 60.0);
+        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v2", 60.0);
         reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
         let after: (i64, i64, f64) = connection
             .query_row(
@@ -10334,7 +10645,7 @@ mod tests {
             )
             .unwrap();
 
-        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v1", 60.0);
+        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v2", 60.0);
         reprice_index_with_manifest(&connection, &changed, day, day).unwrap();
 
         let repriced = connection
@@ -10749,7 +11060,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-standard-2026-08-26-v1");
+        assert_eq!(manifest.basis, "openai-standard-2026-08-26-v2");
         assert!(
             catalog_entry(
                 &manifest,
@@ -10766,43 +11077,44 @@ mod tests {
 
         let mut duplicate: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        duplicate["models"][1]["aliases"] = json!(["gpt-5.5"]);
+        pricing_model_mut(&mut duplicate, "gpt-5.6-sol")["aliases"] = json!(["gpt-5.5"]);
         assert!(parse_pricing_manifest(&duplicate.to_string()).is_err());
 
         let mut overlap: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        let period = overlap["models"][0]["periods"][0].clone();
-        overlap["models"][0]["periods"]
-            .as_array_mut()
-            .unwrap()
-            .push(period);
+        let model = pricing_model_mut(&mut overlap, "gpt-5.5");
+        let period = model["periods"][0].clone();
+        model["periods"].as_array_mut().unwrap().push(period);
         assert!(parse_pricing_manifest(&overlap.to_string()).is_err());
 
         let mut bad_date: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        bad_date["models"][0]["periods"][0]["effectiveFrom"] = json!("2026-02-30");
+        pricing_model_mut(&mut bad_date, "gpt-5.2")["periods"][0]["effectiveFrom"] =
+            json!("2026-02-30");
         assert!(parse_pricing_manifest(&bad_date.to_string()).is_err());
 
         let mut negative: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        negative["models"][0]["periods"][0]["inputUsdPerMillion"] = json!(-1.0);
+        pricing_model_mut(&mut negative, "gpt-5.2")["periods"][0]["inputUsdPerMillion"] =
+            json!(-1.0);
         assert!(parse_pricing_manifest(&negative.to_string()).is_err());
 
         let mut multiplier: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        multiplier["models"][0]["periods"][0]["longContext"]["inputMultiplier"] = json!(0.0);
+        pricing_model_mut(&mut multiplier, "gpt-5.2")["periods"][0]["longContext"]["inputMultiplier"] =
+            json!(0.0);
         assert!(parse_pricing_manifest(&multiplier.to_string()).is_err());
 
         let mut invalid_fast_date: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        invalid_fast_date["models"][1]["periods"][0]["fastLongContext"]["effectiveFrom"] =
-            json!("2026-06-25");
+        pricing_model_mut(&mut invalid_fast_date, "gpt-5.6-sol")["periods"][0]["fastLongContext"]
+            ["effectiveFrom"] = json!("2026-06-25");
         assert!(parse_pricing_manifest(&invalid_fast_date.to_string()).is_err());
 
         let mut invalid_fast_price: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        invalid_fast_price["models"][1]["periods"][0]["fastLongContext"]["outputUsdPerMillion"] =
-            json!(-1.0);
+        pricing_model_mut(&mut invalid_fast_price, "gpt-5.6-sol")["periods"][0]["fastLongContext"]
+            ["outputUsdPerMillion"] = json!(-1.0);
         assert!(parse_pricing_manifest(&invalid_fast_price.to_string()).is_err());
     }
 
@@ -10845,8 +11157,10 @@ mod tests {
         assert!(is_supported_cli_version("0.146.0-alpha.9.2"));
         assert!(is_supported_cli_version("0.147.0-alpha.6.5"));
         assert!(is_supported_cli_version("0.148.0-alpha.21"));
+        assert!(is_supported_cli_version("0.149.1"));
+        assert!(is_supported_cli_version("0.150.0-alpha.8"));
         assert!(!is_supported_cli_version("0.129.9"));
-        assert!(!is_supported_cli_version("0.149.0"));
+        assert!(!is_supported_cli_version("0.151.0"));
         assert!(!is_supported_cli_version("1.0.0"));
         assert!(!is_supported_cli_version("private value"));
     }
@@ -11406,6 +11720,87 @@ mod tests {
     }
 
     #[test]
+    fn gpt_5_2_uses_one_all_context_rate_for_standard_and_fast_pricing() {
+        let day = Date::from_calendar_date(2026, Month::August, 26).unwrap();
+        let usage = token_usage(400_000, 100_000, 0, 100_000);
+
+        for pricing_input_tokens in [272_000, 272_001] {
+            let standard = price_usage_tier(
+                "gpt-5.2",
+                day,
+                usage,
+                pricing_input_tokens,
+                PricingMode::Standard,
+            )
+            .expect("GPT-5.2 Standard pricing applies to every supported context size");
+            let fast = price_usage_tier(
+                "gpt-5.2",
+                day,
+                usage,
+                pricing_input_tokens,
+                PricingMode::Fast,
+            )
+            .expect("GPT-5.2 Fast pricing applies to every supported context size");
+
+            assert!((standard - 1.9425).abs() < 1e-12);
+            assert!((fast - 3.885).abs() < 1e-12);
+        }
+
+        let cache_write_usage = token_usage(400_000, 100_000, 100_000, 100_000);
+        assert!(
+            price_usage_tier(
+                "gpt-5.2",
+                day,
+                cache_write_usage,
+                272_001,
+                PricingMode::Standard,
+            )
+            .is_none()
+        );
+        assert!(
+            price_usage_tier(
+                "gpt-5.2",
+                day,
+                cache_write_usage,
+                272_001,
+                PricingMode::Fast,
+            )
+            .is_none()
+        );
+
+        assert!(price_usage_tier("gpt-5.5", day, usage, 272_001, PricingMode::Fast,).is_none());
+    }
+
+    #[test]
+    fn fast_all_context_fallback_does_not_override_dated_context_rates() {
+        let day = Date::from_calendar_date(2026, Month::August, 26).unwrap();
+        let usage = token_usage(400_000, 100_000, 0, 100_000);
+        let mut source: serde_json::Value =
+            serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
+        pricing_model_mut(&mut source, "gpt-5.2")["periods"][0]["fastLongContext"] = json!({
+            "effectiveFrom": "2026-09-01",
+            "effectiveUntil": null,
+            "inputUsdPerMillion": 3.5,
+            "cachedInputUsdPerMillion": 0.35,
+            "cacheWriteUsdPerMillion": null,
+            "outputUsdPerMillion": 28.0
+        });
+        let manifest = parse_pricing_manifest(&source.to_string()).unwrap();
+
+        assert!(
+            price_usage_tier_with_manifest(
+                &manifest,
+                "gpt-5.2",
+                day,
+                usage,
+                272_001,
+                PricingMode::Fast,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn gpt_5_6_fast_long_context_pricing_starts_on_august_5() {
         let before_release = Date::from_calendar_date(2026, Month::August, 4).unwrap();
         let release_day = Date::from_calendar_date(2026, Month::August, 5).unwrap();
@@ -11439,7 +11834,8 @@ mod tests {
         let original = pricing_manifest().unwrap();
         let mut changed: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        changed["models"][1]["periods"][0]["fastLongContext"]["outputUsdPerMillion"] = json!(91.0);
+        pricing_model_mut(&mut changed, "gpt-5.6-sol")["periods"][0]["fastLongContext"]["outputUsdPerMillion"] =
+            json!(91.0);
         let changed = parse_pricing_manifest(&changed.to_string()).unwrap();
 
         assert_ne!(original.fingerprint, changed.fingerprint);
@@ -12553,6 +12949,23 @@ mod tests {
         let mut days = BTreeMap::new();
         assert!(!scan_rollout_reader(
             current_without_provider_ordinal.as_bytes(),
+            day,
+            day,
+            &mut days,
+        ));
+
+        let codex_0_150_legacy_child = jsonl([json!({
+            "timestamp": "2026-08-26T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "cli_version": "0.150.0-alpha.8",
+                "history_mode": "legacy",
+                "thread_source": "subagent"
+            }
+        })]);
+        let mut days = BTreeMap::new();
+        assert!(!scan_rollout_reader(
+            codex_0_150_legacy_child.as_bytes(),
             day,
             day,
             &mut days,

@@ -38,7 +38,7 @@ const MAX_UNKNOWN_USAGE_FIELDS: usize = 64;
 const MAX_UNKNOWN_USAGE_KEY_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 6;
+const TRANSCRIPT_PARSER_VERSION: i64 = 7;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -178,10 +178,24 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
     }
     let cache_creation_known = line.message.usage.cache_creation_input_tokens.is_some();
     let cache_read_known = line.message.usage.cache_read_input_tokens.is_some();
+    let reviewed_extended_usage = envelope.version == "2.1.241"
+        && line
+            .message
+            .usage
+            .iterations
+            .as_ref()
+            .is_none_or(|iterations| iterations.matches(&line.message.usage))
+        && line
+            .message
+            .usage
+            .output_tokens_details
+            .as_ref()
+            .is_none_or(|details| details.matches(line.message.usage.output_tokens));
     let usage_schema_known = line.message.usage.unknown.is_empty()
         && line.message.usage.fallback_credit.is_none()
-        && line.message.usage.iterations.is_none()
-        && line.message.usage.output_tokens_details.is_none()
+        && (line.message.usage.iterations.is_none()
+            && line.message.usage.output_tokens_details.is_none()
+            || reviewed_extended_usage)
         && line
             .message
             .usage
@@ -326,14 +340,91 @@ struct RawClaudeTokenUsage {
     #[allow(dead_code)]
     #[serde(default)]
     fallback_credit: Option<IgnoredAny>,
-    #[allow(dead_code)]
     #[serde(default)]
-    iterations: Option<IgnoredAny>,
-    #[allow(dead_code)]
+    iterations: Option<RawMessageIterations>,
     #[serde(default)]
-    output_tokens_details: Option<IgnoredAny>,
+    output_tokens_details: Option<RawOutputTokenDetails>,
     #[serde(flatten)]
     unknown: BoundedUnknownUsageFields,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawMessageIterations {
+    Reviewed([ReviewedMessageIteration; 1]),
+    Unreviewed(IgnoredAny),
+}
+
+impl RawMessageIterations {
+    fn matches(&self, usage: &RawClaudeTokenUsage) -> bool {
+        let Self::Reviewed([iteration]) = self else {
+            return false;
+        };
+        iteration.matches(usage)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedMessageIteration {
+    cache_creation: ReviewedMessageIterationCacheCreation,
+    cache_creation_input_tokens: u64,
+    cache_read_input_tokens: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    #[serde(rename = "type")]
+    message_type: String,
+}
+
+impl ReviewedMessageIteration {
+    fn matches(&self, usage: &RawClaudeTokenUsage) -> bool {
+        self.message_type == "message"
+            && self.input_tokens == usage.input_tokens
+            && Some(self.cache_creation_input_tokens) == usage.cache_creation_input_tokens
+            && Some(self.cache_read_input_tokens) == usage.cache_read_input_tokens
+            && self.output_tokens == usage.output_tokens
+            && usage
+                .cache_creation
+                .as_ref()
+                .is_some_and(|cache| self.cache_creation.matches(cache))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedMessageIterationCacheCreation {
+    ephemeral_1h_input_tokens: u64,
+    ephemeral_5m_input_tokens: u64,
+}
+
+impl ReviewedMessageIterationCacheCreation {
+    fn matches(&self, usage: &RawCacheCreationUsage) -> bool {
+        usage.unknown.is_empty()
+            && Some(self.ephemeral_1h_input_tokens) == usage.ephemeral_1h_input_tokens
+            && Some(self.ephemeral_5m_input_tokens) == usage.ephemeral_5m_input_tokens
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawOutputTokenDetails {
+    Reviewed(ReviewedOutputTokenDetails),
+    Unreviewed(IgnoredAny),
+}
+
+impl RawOutputTokenDetails {
+    fn matches(&self, output_tokens: u64) -> bool {
+        matches!(
+            self,
+            Self::Reviewed(details) if details.thinking_tokens <= output_tokens
+        )
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedOutputTokenDetails {
+    thinking_tokens: u64,
 }
 
 #[derive(Default)]
@@ -3403,7 +3494,7 @@ mod tests {
 
     fn claude_code_2_1_241_transcript_line() -> String {
         format!(
-            r#"{{"cwd":"/PRIVATE/PATH","effort":"medium","entrypoint":"cli","gitBranch":"PRIVATE-BRANCH","isSidechain":false,"message":{{"content":[{{"text":"PRIVATE-CONTENT","type":"text"}}],"diagnostics":null,"id":"PRIVATE-VALID-MESSAGE-ID","model":"claude-sonnet-4-20250514","role":"assistant","stop_details":null,"stop_reason":"end_turn","stop_sequence":null,"type":"message","usage":{{"cache_creation":{{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20}},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"inference_geo":"not_available","input_tokens":10,"iterations":[{{"cache_creation":{{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20}},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"input_tokens":10,"output_tokens":40,"type":"message"}}],"output_tokens":40,"output_tokens_details":{{"thinking_tokens":15}},"server_tool_use":{{"web_fetch_requests":0,"web_search_requests":0}},"service_tier":"standard","speed":"standard"}}}},"parentUuid":"PRIVATE-PARENT","requestId":"PRIVATE-REQUEST","sessionId":"PRIVATE-SESSION","session_id":"PRIVATE-SESSION","timestamp":"{}","type":"assistant","userType":"external","uuid":"PRIVATE-VALID-FRAME-ID","version":"2.1.241"}}"#,
+            r#"{{"cwd":"/PRIVATE/PATH","effort":"medium","entrypoint":"cli","gitBranch":"PRIVATE-BRANCH","isSidechain":false,"message":{{"content":[{{"text":"PRIVATE-CONTENT","type":"text"}}],"diagnostics":null,"id":"PRIVATE-VALID-MESSAGE-ID","model":"claude-sonnet-4-5-20250929","role":"assistant","stop_details":null,"stop_reason":"end_turn","stop_sequence":null,"type":"message","usage":{{"cache_creation":{{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20}},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"inference_geo":"not_available","input_tokens":10,"iterations":[{{"cache_creation":{{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20}},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"input_tokens":10,"output_tokens":40,"type":"message"}}],"output_tokens":40,"output_tokens_details":{{"thinking_tokens":15}},"server_tool_use":{{"web_fetch_requests":0,"web_search_requests":0}},"service_tier":"standard","speed":"standard"}}}},"parentUuid":"PRIVATE-PARENT","requestId":"PRIVATE-REQUEST","sessionId":"PRIVATE-SESSION","session_id":"PRIVATE-SESSION","timestamp":"{}","type":"assistant","userType":"external","uuid":"PRIVATE-VALID-FRAME-ID","version":"2.1.241"}}"#,
             (now() - Duration::minutes(5)).format(&Rfc3339).unwrap()
         )
     }
@@ -4250,7 +4341,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_keeps_unmodeled_claude_code_2_1_241_usage_unpriced() {
+    fn scan_counts_reviewed_claude_code_2_1_241_usage_once_and_prices_it() {
         let fixture = FixtureRoot::new();
         let config = fixture.config();
         let message = claude_code_2_1_241_transcript_line();
@@ -4260,7 +4351,7 @@ mod tests {
         };
         assert_eq!(parsed.usage, usage(10, 20, 30, 40));
         assert_eq!(parsed.usage.observed_tokens(), Some(100));
-        assert!(!parsed.complete);
+        assert!(parsed.complete);
         write_transcript(&config.join("projects/project-a/session.jsonl"), &[message]);
 
         let local = scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
@@ -4278,9 +4369,85 @@ mod tests {
 
         assert_eq!(local.scan_status, UsageScanStatus::Complete);
         assert_eq!(evidence_basis, UsageEvidenceBasis::LocallyDerived);
-        assert_eq!(coverage, UsageCoverage::Partial);
+        assert_eq!(coverage, UsageCoverage::Complete);
         assert_eq!(observed_tokens, 100);
-        assert_eq!(api_equivalent_cost_usd, None);
+        assert_eq!(api_equivalent_cost_usd, Some(0.000_714));
+    }
+
+    #[test]
+    fn scan_keeps_unreviewed_2_1_241_extended_usage_partial_and_unpriced() {
+        let reviewed = claude_code_2_1_241_transcript_line();
+        let second_iteration = r#",{"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"input_tokens":10,"output_tokens":40,"type":"message"}"#;
+        for (case, message) in [
+            (
+                "fallback credit",
+                reviewed.replacen(
+                    r#""inference_geo""#,
+                    r#""fallback_credit":{"amount":1},"inference_geo""#,
+                    1,
+                ),
+            ),
+            (
+                "mismatched iteration counter",
+                reviewed.replacen(
+                    r#""output_tokens":40,"type":"message""#,
+                    r#""output_tokens":41,"type":"message""#,
+                    1,
+                ),
+            ),
+            (
+                "unknown iteration field",
+                reviewed.replacen(
+                    r#""output_tokens":40,"type":"message""#,
+                    r#""future_tokens":1,"output_tokens":40,"type":"message""#,
+                    1,
+                ),
+            ),
+            (
+                "more than one iteration",
+                reviewed.replacen(
+                    r#"}],"output_tokens":40"#,
+                    &format!(r#"}}{second_iteration}],"output_tokens":40"#),
+                    1,
+                ),
+            ),
+            (
+                "thinking exceeds output",
+                reviewed.replacen(r#""thinking_tokens":15"#, r#""thinking_tokens":41"#, 1),
+            ),
+            (
+                "unknown output-token detail",
+                reviewed.replacen(
+                    r#""thinking_tokens":15"#,
+                    r#""future_tokens":1,"thinking_tokens":15"#,
+                    1,
+                ),
+            ),
+            (
+                "unreviewed Claude Code version",
+                reviewed.replacen(r#""version":"2.1.241""#, r#""version":"2.1.224""#, 1),
+            ),
+        ] {
+            let TranscriptLineOutcome::Usage(parsed) =
+                parse_transcript_line(message.as_bytes(), &SALT)
+            else {
+                panic!("{case} must retain known top-level token evidence");
+            };
+            assert_eq!(parsed.usage.observed_tokens(), Some(100), "{case}");
+            assert!(!parsed.complete, "{case}");
+
+            let fixture = FixtureRoot::new();
+            let config = fixture.config();
+            write_transcript(&config.join("projects/project-a/session.jsonl"), &[message]);
+            let local = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+                .expect("known top-level token evidence must index");
+            assert_eq!(
+                local.daily_usage[&now().date()].coverage,
+                UsageCoverage::Partial,
+                "{case}"
+            );
+            assert!(!local.daily_cost.contains_key(&now().date()), "{case}");
+        }
     }
 
     #[test]
@@ -4333,29 +4500,32 @@ mod tests {
     }
 
     #[test]
-    fn parser_upgrade_reindexes_claude_code_2_1_241_error_into_today() {
+    fn parser_upgrade_reindexes_the_previous_2_1_241_checkpoint_once() {
         let fixture = FixtureRoot::new();
         let config = fixture.config();
         let database = fixture.database();
         let transcript = config.join("projects/project-a/session.jsonl");
-        let message = transcript_line(
-            "fixture-retry-claude-code-2-1-241",
-            now() - Duration::minutes(5),
-            "claude-sonnet-4-20250514",
-            usage(10, 20, 30, 40),
-        )
-        .replacen("\"version\":\"2.1.224\"", "\"version\":\"2.1.241\"", 1);
-        write_transcript(&transcript, &[message]);
+        let message = claude_code_2_1_241_transcript_line();
+        write_transcript(&transcript, std::slice::from_ref(&message));
         prepare_database(&database).expect("the Claude index must prepare");
         let metadata = fs::metadata(&transcript).unwrap();
         let resume_anchor = file_resume_anchor(&transcript, metadata.len()).unwrap();
         let connection = Connection::open(&database).unwrap();
-        connection
+        let dedupe_salt = load_or_create_dedupe_salt(&connection).unwrap();
+        let TranscriptLineOutcome::Usage(previous_message) =
+            parse_transcript_line(message.as_bytes(), &dedupe_salt)
+        else {
+            panic!("the reviewed Claude Code 2.1.241 fixture must parse");
+        };
+        let day = previous_message.day.to_string();
+        let observed_at = previous_message.observed_at.format(&Rfc3339).unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        transaction
             .execute(
                 "INSERT INTO claude_usage_files(
                    path, file_identity, size_bytes, modified_ns, parsed_offset,
                    resume_anchor, parser_version, completion_state
-                 ) VALUES(?1, ?2, ?3, ?4, ?3, ?5, 4, 'error')",
+                 ) VALUES(?1, ?2, ?3, ?4, ?3, ?5, 6, 'complete')",
                 params![
                     transcript.to_string_lossy().as_ref(),
                     file_identity(&metadata),
@@ -4365,17 +4535,87 @@ mod tests {
                 ],
             )
             .unwrap();
-        connection
+        transaction
             .execute(
-                "INSERT INTO claude_usage_index_meta(key, value) VALUES(?1, '4')",
+                "INSERT INTO claude_usage_frames(
+                   frame_key, day, observed_at, parser_version
+                 ) VALUES(?1, ?2, ?3, 6)",
+                params![previous_message.frame_key, day, observed_at],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO claude_usage_messages(
+                   frame_key, supersedes_frame_key, message_key, day, observed_at, model,
+                   input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+                   output_tokens, cache_creation_5m_input_tokens,
+                   cache_creation_1h_input_tokens, service_tier, inference_geo, speed,
+                   web_search_requests, web_fetch_requests, code_execution_requests,
+                   has_unknown_paid_server_tool, observed_tokens, complete, parser_version
+                 ) VALUES(
+                   ?1, NULL, ?2, ?3, ?4, 'claude-sonnet-4-5-20250929',
+                   10, 20, 30, 40, 20, 0, 'standard', 'not_available', 'standard',
+                   0, 0, NULL, 0, 100, 0, 6
+                 )",
+                params![
+                    previous_message.frame_key,
+                    previous_message.message_key,
+                    day,
+                    observed_at,
+                ],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO claude_usage_daily(
+                   day, observed_tokens, coverage, observed_through, revision,
+                   priced_tokens, cost_usd, cost_modeled, pricing_basis,
+                   pricing_fingerprint, correction_provenance,
+                   correction_source_revision
+                 ) VALUES(
+                   ?1, 100, 'partial', ?2, 4, 0, NULL, 0, NULL, NULL, NULL, NULL
+                 )",
+                params![day, observed_at],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO claude_usage_index_meta(key, value) VALUES(?1, '6')",
                 [USAGE_AGGREGATE_PARSER_VERSION_KEY],
             )
             .unwrap();
+        transaction.commit().unwrap();
+
+        let previous = connection
+            .query_row(
+                "SELECT complete, parser_version FROM claude_usage_messages",
+                [],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(previous, (false, 6));
+        let previous_daily = connection
+            .query_row(
+                "SELECT coverage, priced_tokens, cost_usd, revision
+                 FROM claude_usage_daily WHERE day = ?1",
+                [&day],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, Option<f64>>(2)?,
+                        row.get::<_, u64>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(previous_daily, ("partial".to_owned(), 0, None, 4));
         drop(connection);
 
         let local = scan_local_usage_at(&database, &config, &fixture.probe(), now())
-            .expect("the parser update must restart the old error checkpoint");
+            .expect("the parser update must restart the previous checkpoint");
         let UsageTotal::Current {
+            api_equivalent_cost_usd,
             coverage,
             observed_tokens,
             ..
@@ -4387,11 +4627,95 @@ mod tests {
         assert_eq!(local.scan_status, UsageScanStatus::Complete);
         assert_eq!(coverage, UsageCoverage::Complete);
         assert_eq!(observed_tokens, 100);
+        assert_eq!(api_equivalent_cost_usd, Some(0.000_714));
+        assert!(local.aggregate_changed);
         assert_eq!(local.correction, None);
         let connection = Connection::open(database).unwrap();
         assert_eq!(
             stored_usage_aggregate_parser_version(&connection).unwrap(),
             Some(TRANSCRIPT_PARSER_VERSION)
+        );
+        assert_eq!(stored_message_count(&fixture.database()), 1);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM claude_usage_messages", [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap(),
+            1
+        );
+        let current_message = connection
+            .query_row(
+                "SELECT complete, parser_version FROM claude_usage_messages",
+                [],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(current_message, (true, TRANSCRIPT_PARSER_VERSION));
+        let current_daily = connection
+            .query_row(
+                "SELECT coverage, priced_tokens, cost_usd, revision
+                 FROM claude_usage_daily WHERE day = ?1",
+                [&day],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, Option<f64>>(2)?,
+                        row.get::<_, u64>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            current_daily,
+            ("complete".to_owned(), 100, Some(0.000_714), 5)
+        );
+        let first_revision = stored_daily_revision(&fixture.database(), now().date());
+        drop(connection);
+
+        let unchanged = scan_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(1),
+        )
+        .expect("a complete unchanged scan must retain the indexed usage");
+        assert!(
+            !unchanged.aggregate_changed,
+            "an unchanged checkpoint must not apply the same parser correction twice"
+        );
+        assert_eq!(stored_message_count(&fixture.database()), 1);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            first_revision
+        );
+        let connection = Connection::open(fixture.database()).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM claude_usage_messages", [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT coverage, priced_tokens, cost_usd, revision
+                     FROM claude_usage_daily WHERE day = ?1",
+                    [&day],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, u64>(1)?,
+                            row.get::<_, Option<f64>>(2)?,
+                            row.get::<_, u64>(3)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            current_daily
         );
     }
 
