@@ -567,13 +567,13 @@ mod tests {
         let manifest = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON)
             .expect("valid bundled manifest");
         let changed_basis = parse_pricing_manifest(&ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "anthropic-standard-2026-08-07-v1",
-            "anthropic-standard-2026-08-07-v2",
+            "anthropic-standard-2026-08-26-v1",
+            "anthropic-standard-2026-08-26-v2",
             1,
         ))
         .expect("valid changed basis");
 
-        assert_eq!(manifest.basis(), "anthropic-standard-2026-08-07-v1");
+        assert_eq!(manifest.basis(), "anthropic-standard-2026-08-26-v1");
         assert!(manifest.semantic_fingerprint().starts_with("fnv1a64:"));
         assert_ne!(
             manifest.semantic_fingerprint(),
@@ -594,15 +594,17 @@ mod tests {
             "\"cacheWrite5mUsdPerMillion\": 12.6",
             1,
         );
-        let overlap = ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "\"effectiveUntil\": \"2026-09-01\"",
-            "\"effectiveUntil\": \"2026-09-02\"",
-            1,
-        );
+        let mut overlap: serde_json::Value =
+            serde_json::from_str(ANTHROPIC_STANDARD_PRICING_JSON).unwrap();
+        let duplicate_period = overlap["models"][0]["standardPeriods"][0].clone();
+        overlap["models"][0]["standardPeriods"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate_period);
 
         assert!(parse_pricing_manifest(&unknown_field).is_err());
         assert!(parse_pricing_manifest(&bad_cache_rate).is_err());
-        assert!(parse_pricing_manifest(&overlap).is_err());
+        assert!(parse_pricing_manifest(&overlap.to_string()).is_err());
     }
 
     #[test]
@@ -634,7 +636,7 @@ mod tests {
         );
         assert_cost(
             manifest.price_message("claude-sonnet-5", date("2026-09-01"), usage()),
-            18.0,
+            12.0,
         );
         assert_cost(
             manifest.price_message(

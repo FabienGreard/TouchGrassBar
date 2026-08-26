@@ -7,6 +7,7 @@
     "packages/*"
   ],
   "scripts": {
+    "audit:providers": "bun scripts/provider-contract-audit.ts",
     "setup": "bun scripts/setup.ts",
     "env:check": "bun --env-file=.env.local scripts/check-environment.ts",
     "format": "oxfmt .",
@@ -33,7 +34,7 @@
     "lint": "bunx --bun turbo run lint",
     "test": "bunx --bun turbo run test && bun run test:release",
     "test:native": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
-    "test:release": "bun scripts/run-vitest.ts scripts/release-contract.test.ts scripts/finalize-macos-release.test.ts scripts/release-governance.test.ts scripts/release.test.ts scripts/vitest-summary.test.ts",
+    "test:release": "bun scripts/run-vitest.ts scripts/provider-contract-audit.test.ts scripts/release-contract.test.ts scripts/finalize-macos-release.test.ts scripts/release-governance.test.ts scripts/release.test.ts scripts/vitest-summary.test.ts",
     "typecheck": "bunx --bun turbo run typecheck",
     "quality": "bun run contracts:check && bun run quality:code && bun run test:native",
     "quality:code": "bun run lint && bun run typecheck && bun run test && bun run build && bun run doctor",

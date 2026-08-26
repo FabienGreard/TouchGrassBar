@@ -9,7 +9,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{
     Deserialize, Deserializer,
-    de::{IgnoredAny, SeqAccess, Visitor},
+    de::{IgnoredAny, MapAccess, SeqAccess, Visitor},
 };
 use time::{Date, Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
@@ -34,9 +34,11 @@ const SUPPORTED_CLAUDE_CODE_VERSIONS: [&str; 3] = ["2.1.223", "2.1.224", "2.1.24
 const MAX_SUPERSEDED_FRAMES: usize = 64;
 const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
+const MAX_UNKNOWN_USAGE_FIELDS: usize = 64;
+const MAX_UNKNOWN_USAGE_KEY_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 5;
+const TRANSCRIPT_PARSER_VERSION: i64 = 6;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -176,6 +178,22 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
     }
     let cache_creation_known = line.message.usage.cache_creation_input_tokens.is_some();
     let cache_read_known = line.message.usage.cache_read_input_tokens.is_some();
+    let usage_schema_known = line.message.usage.unknown.is_empty()
+        && line.message.usage.fallback_credit.is_none()
+        && line.message.usage.iterations.is_none()
+        && line.message.usage.output_tokens_details.is_none()
+        && line
+            .message
+            .usage
+            .cache_creation
+            .as_ref()
+            .is_none_or(|cache| cache.unknown.is_empty())
+        && line
+            .message
+            .usage
+            .server_tool_use
+            .as_ref()
+            .is_none_or(|tools| tools.unknown.is_empty());
     let mut usage = ClaudeTokenUsage {
         input: line.message.usage.input_tokens,
         cache_creation_input: line.message.usage.cache_creation_input_tokens.unwrap_or(0),
@@ -208,6 +226,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
     }
     let complete = cache_creation_known
         && cache_read_known
+        && usage_schema_known
         && !line.aborted
         && (usage.cache_creation_input == 0 || cache_breakdown_matches);
     let pricing = ClaudePricingMetadata {
@@ -304,6 +323,68 @@ struct RawClaudeTokenUsage {
     speed: Option<String>,
     #[serde(default)]
     server_tool_use: Option<RawServerToolUsage>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    fallback_credit: Option<IgnoredAny>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    iterations: Option<IgnoredAny>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    output_tokens_details: Option<IgnoredAny>,
+    #[serde(flatten)]
+    unknown: BoundedUnknownUsageFields,
+}
+
+#[derive(Default)]
+struct BoundedUnknownUsageFields {
+    fields: BTreeMap<String, IgnoredAny>,
+    overflowed: bool,
+}
+
+impl BoundedUnknownUsageFields {
+    fn is_empty(&self) -> bool {
+        self.fields.is_empty() && !self.overflowed
+    }
+}
+
+impl<'de> Deserialize<'de> for BoundedUnknownUsageFields {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(BoundedUnknownUsageFieldsVisitor)
+    }
+}
+
+struct BoundedUnknownUsageFieldsVisitor;
+
+impl<'de> Visitor<'de> for BoundedUnknownUsageFieldsVisitor {
+    type Value = BoundedUnknownUsageFields;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a bounded map of unknown usage metadata")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut unknown = BoundedUnknownUsageFields::default();
+        while let Some(key) = map.next_key::<String>()? {
+            let value = map.next_value::<IgnoredAny>()?;
+            if key.len() > MAX_UNKNOWN_USAGE_KEY_BYTES
+                || unknown.fields.len() >= MAX_UNKNOWN_USAGE_FIELDS
+            {
+                unknown.overflowed = true;
+                continue;
+            }
+            if unknown.fields.insert(key, value).is_some() {
+                unknown.overflowed = true;
+            }
+        }
+        Ok(unknown)
+    }
 }
 
 #[derive(Deserialize)]
@@ -312,6 +393,8 @@ struct RawCacheCreationUsage {
     ephemeral_5m_input_tokens: Option<u64>,
     #[serde(default)]
     ephemeral_1h_input_tokens: Option<u64>,
+    #[serde(flatten)]
+    unknown: BoundedUnknownUsageFields,
 }
 
 #[derive(Deserialize)]
@@ -321,7 +404,7 @@ struct RawServerToolUsage {
     #[serde(default)]
     web_fetch_requests: Option<u64>,
     #[serde(flatten)]
-    unknown: BTreeMap<String, IgnoredAny>,
+    unknown: BoundedUnknownUsageFields,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3627,6 +3710,173 @@ mod tests {
     }
 
     #[test]
+    fn parser_marks_unmodeled_nested_beta_usage_metadata_partial() {
+        for (case, field) in [
+            ("fallback credit", r#""fallback_credit":{"amount":1}"#),
+            ("iteration details", r#""iterations":[{"index":1}]"#),
+            (
+                "output token details",
+                r#""output_tokens_details":{"reasoning_tokens":2}"#,
+            ),
+        ] {
+            let line = transcript_line(
+                "fixture-unmodeled-beta-usage",
+                now() - Duration::minutes(1),
+                "claude-sonnet-4-5-20250929",
+                usage(10, 20, 30, 40),
+            )
+            .replacen(
+                "\"server_tool_use\"",
+                &format!("{field},\"server_tool_use\""),
+                1,
+            );
+
+            let TranscriptLineOutcome::Usage(message) =
+                parse_transcript_line(line.as_bytes(), &SALT)
+            else {
+                panic!("{case} must retain known token evidence");
+            };
+
+            assert_eq!(message.usage.observed_tokens(), Some(100), "{case}");
+            assert!(!message.complete, "{case}");
+        }
+    }
+
+    #[test]
+    fn unknown_usage_counter_is_partial_unpriced_and_absent_from_debug_output() {
+        const UNKNOWN_KEY: &str = "future_private_output_tokens";
+        const UNKNOWN_VALUE: &str = "918273645";
+
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let line = transcript_line(
+            "fixture-unknown-beta-usage",
+            now() - Duration::minutes(1),
+            "claude-sonnet-4-5-20250929",
+            usage(1_000_000, 0, 0, 1_000_000),
+        )
+        .replacen(
+            r#""server_tool_use":{"web_search_requests":0,"web_fetch_requests":0}"#,
+            &format!(
+                r#""{UNKNOWN_KEY}":{UNKNOWN_VALUE},"server_tool_use":{{"web_search_requests":0,"web_fetch_requests":0}}"#
+            ),
+            1,
+        );
+
+        let TranscriptLineOutcome::Usage(message) = parse_transcript_line(line.as_bytes(), &SALT)
+        else {
+            panic!("an unknown usage counter must retain known token evidence");
+        };
+        assert_eq!(message.usage.observed_tokens(), Some(2_000_000));
+        assert!(!message.complete);
+        let normalized_debug = format!("{message:?}");
+        assert!(!normalized_debug.contains(UNKNOWN_KEY));
+        assert!(!normalized_debug.contains(UNKNOWN_VALUE));
+
+        write_transcript(&config.join("projects/project-a/session.jsonl"), &[line]);
+        let local = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("an unknown usage counter must retain known token evidence");
+        assert_eq!(local.daily_usage[&now().date()].observed_tokens, 2_000_000);
+        assert_eq!(
+            local.daily_usage[&now().date()].coverage,
+            UsageCoverage::Partial
+        );
+        assert!(!local.daily_cost.contains_key(&now().date()));
+
+        let report = debug_usage_report(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("partial usage must produce a sanitized debug report");
+        assert!(report.contains("pricing_status=unavailable"));
+        assert!(!report.contains(UNKNOWN_KEY));
+        assert!(!report.contains(UNKNOWN_VALUE));
+        assert_sqlite_artifacts_exclude(&fixture.database(), UNKNOWN_KEY);
+        assert_sqlite_artifacts_exclude(&fixture.database(), UNKNOWN_VALUE);
+    }
+
+    #[test]
+    fn unknown_nested_usage_fields_are_partial_and_unpriced() {
+        const UNKNOWN_KEY: &str = "future_private_billing_counter";
+        const UNKNOWN_VALUE: &str = "918273645";
+        let cases = [
+            (
+                "cache-creation",
+                r#""ephemeral_5m_input_tokens":20"#,
+                format!(r#""{UNKNOWN_KEY}":{UNKNOWN_VALUE},"ephemeral_5m_input_tokens":20"#,),
+            ),
+            (
+                "server-tool-use",
+                r#""web_search_requests":0"#,
+                format!(r#""{UNKNOWN_KEY}":{UNKNOWN_VALUE},"web_search_requests":0"#),
+            ),
+        ];
+
+        for (case, marker, replacement) in cases {
+            let fixture = FixtureRoot::new();
+            let config = fixture.config();
+            let line = transcript_line(
+                &format!("fixture-unknown-nested-{case}"),
+                now() - Duration::minutes(1),
+                "claude-sonnet-4-5-20250929",
+                usage(10, 20, 30, 40),
+            )
+            .replacen(marker, &replacement, 1);
+            let TranscriptLineOutcome::Usage(message) =
+                parse_transcript_line(line.as_bytes(), &SALT)
+            else {
+                panic!("unknown nested metadata must retain known token evidence");
+            };
+            assert_eq!(message.usage.observed_tokens(), Some(100));
+            assert!(!message.complete);
+            assert_eq!(
+                message.pricing.has_unknown_paid_server_tool,
+                case == "server-tool-use"
+            );
+            let normalized_debug = format!("{message:?}");
+            assert!(!normalized_debug.contains(UNKNOWN_KEY));
+            assert!(!normalized_debug.contains(UNKNOWN_VALUE));
+
+            write_transcript(&config.join("projects/project-a/session.jsonl"), &[line]);
+            let local = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+                .expect("unknown nested metadata must retain known token evidence");
+            assert_eq!(local.daily_usage[&now().date()].observed_tokens, 100);
+            assert_eq!(
+                local.daily_usage[&now().date()].coverage,
+                UsageCoverage::Partial
+            );
+            assert!(!local.daily_cost.contains_key(&now().date()));
+
+            let report = debug_usage_report(&fixture.database(), &config, &fixture.probe(), now())
+                .expect("partial usage must produce a sanitized debug report");
+            assert!(report.contains("pricing_status=unavailable"));
+            assert!(!report.contains(UNKNOWN_KEY));
+            assert!(!report.contains(UNKNOWN_VALUE));
+            assert_sqlite_artifacts_exclude(&fixture.database(), UNKNOWN_KEY);
+            assert_sqlite_artifacts_exclude(&fixture.database(), UNKNOWN_VALUE);
+        }
+    }
+
+    #[test]
+    fn unknown_usage_metadata_storage_is_bounded() {
+        let fields = (0..=MAX_UNKNOWN_USAGE_FIELDS)
+            .map(|index| format!(r#""unknown_{index}":{index}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let unknown: BoundedUnknownUsageFields =
+            serde_json::from_str(&format!("{{{fields}}}")).unwrap();
+
+        assert_eq!(unknown.fields.len(), MAX_UNKNOWN_USAGE_FIELDS);
+        assert!(unknown.overflowed);
+        assert!(!unknown.is_empty());
+
+        let long_key = "x".repeat(MAX_UNKNOWN_USAGE_KEY_BYTES + 1);
+        let unknown: BoundedUnknownUsageFields =
+            serde_json::from_str(&format!(r#"{{"{long_key}":1}}"#)).unwrap();
+
+        assert!(unknown.fields.is_empty());
+        assert!(unknown.overflowed);
+        assert!(!unknown.is_empty());
+    }
+
+    #[test]
     fn parser_reduces_server_tool_blocks_to_bounded_pricing_signals() {
         for name in [
             "code_execution",
@@ -4000,7 +4250,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_publishes_reviewed_claude_code_2_1_241_usage() {
+    fn scan_keeps_unmodeled_claude_code_2_1_241_usage_unpriced() {
         let fixture = FixtureRoot::new();
         let config = fixture.config();
         let message = claude_code_2_1_241_transcript_line();
@@ -4010,11 +4260,13 @@ mod tests {
         };
         assert_eq!(parsed.usage, usage(10, 20, 30, 40));
         assert_eq!(parsed.usage.observed_tokens(), Some(100));
+        assert!(!parsed.complete);
         write_transcript(&config.join("projects/project-a/session.jsonl"), &[message]);
 
         let local = scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
-            .expect("reviewed Claude Code 2.1.241 usage must publish");
+            .expect("known Claude Code 2.1.241 tokens must publish");
         let UsageTotal::Current {
+            api_equivalent_cost_usd,
             evidence_basis,
             coverage,
             observed_tokens,
@@ -4026,8 +4278,9 @@ mod tests {
 
         assert_eq!(local.scan_status, UsageScanStatus::Complete);
         assert_eq!(evidence_basis, UsageEvidenceBasis::LocallyDerived);
-        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(coverage, UsageCoverage::Partial);
         assert_eq!(observed_tokens, 100);
+        assert_eq!(api_equivalent_cost_usd, None);
     }
 
     #[test]
@@ -5231,7 +5484,7 @@ mod tests {
         assert_eq!(detail.api_equivalent_cost_usd, Some(18.0));
         assert_eq!(
             local.pricing_basis.as_deref(),
-            Some("anthropic-standard-2026-08-07-v1")
+            Some("anthropic-standard-2026-08-26-v1")
         );
 
         let UsageTotal::Current {

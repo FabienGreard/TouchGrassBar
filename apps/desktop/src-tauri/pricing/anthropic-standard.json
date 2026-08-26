@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "basis": "anthropic-standard-2026-08-07-v1",
+  "basis": "anthropic-standard-2026-08-26-v1",
   "batchFactor": 0.5,
   "usInferenceFactor": 1.1,
   "webSearchUsdPerThousand": 10.0,
@@ -205,21 +205,12 @@
       "standardPeriods": [
         {
           "effectiveFrom": "2026-06-30",
-          "effectiveUntil": "2026-09-01",
+          "effectiveUntil": null,
           "inputUsdPerMillion": 2.0,
           "cacheWrite5mUsdPerMillion": 2.5,
           "cacheWrite1hUsdPerMillion": 4.0,
           "cacheReadUsdPerMillion": 0.2,
           "outputUsdPerMillion": 10.0
-        },
-        {
-          "effectiveFrom": "2026-09-01",
-          "effectiveUntil": null,
-          "inputUsdPerMillion": 3.0,
-          "cacheWrite5mUsdPerMillion": 3.75,
-          "cacheWrite1hUsdPerMillion": 6.0,
-          "cacheReadUsdPerMillion": 0.3,
-          "outputUsdPerMillion": 15.0
         }
       ],
       "fastPeriods": []

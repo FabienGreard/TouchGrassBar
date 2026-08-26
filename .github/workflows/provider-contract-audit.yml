@@ -1,0 +1,123 @@
+name: Provider contract audit
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: provider-contract-audit
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: Check public provider contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ISSUE_TITLE: Provider contract audit needs review
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+      - id: provider_audit
+        name: Create the sanitized audit report
+        run: |
+          set -euo pipefail
+          report_file="$RUNNER_TEMP/provider-contract-audit.md"
+          diagnostic_file="$RUNNER_TEMP/provider-contract-audit.stderr"
+
+          set +e
+          timeout 5m bun run audit:providers -- --format markdown \
+            > "$report_file" 2> "$diagnostic_file"
+          audit_status=$?
+          set -e
+
+          if [[ ! -s "$report_file" ]]; then
+            cat > "$report_file" <<'EOF'
+          # Provider contract audit
+
+          **Status:** `unavailable`
+
+          The audit did not create a sanitized Markdown report. Review the
+          workflow run, fix the audit command, and run the audit again.
+          EOF
+          fi
+
+          cat "$report_file" >> "$GITHUB_STEP_SUMMARY"
+          printf 'status=%s\n' "$audit_status" >> "$GITHUB_OUTPUT"
+      - name: Reconcile the review issue
+        env:
+          AUDIT_STATUS: ${{ steps.provider_audit.outputs.status }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          report_file="$RUNNER_TEMP/provider-contract-audit.md"
+          issue_body="$RUNNER_TEMP/provider-contract-audit-issue.md"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          issues_json="$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --limit 1000 \
+            --json number,title,body,author)"
+          mapfile -t issue_numbers < <(
+            jq --arg title "$ISSUE_TITLE" -r \
+              '.[] | select(
+                .title == $title and
+                .author.login == "app/github-actions" and
+                (.body | contains("<!-- provider-contract-audit -->"))
+              ) | .number' \
+              <<< "$issues_json"
+          )
+
+          if [[ "$AUDIT_STATUS" == "0" ]]; then
+            for issue_number in "${issue_numbers[@]}"; do
+              gh issue close "$issue_number" \
+                --repo "$GITHUB_REPOSITORY" \
+                --comment "The provider contract audit passes. See the [workflow run]($run_url)."
+            done
+            exit 0
+          fi
+
+          {
+            printf '%s\n\n' '<!-- provider-contract-audit -->'
+            printf '%s\n\n' 'This issue is managed by the weekly provider contract audit.'
+            cat "$report_file"
+            printf '\n\n[Workflow run](%s)\n' "$run_url"
+          } > "$issue_body"
+
+          if [[ "${#issue_numbers[@]}" == "0" ]]; then
+            issue_url="$(gh issue create \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$ISSUE_TITLE" \
+              --label needs-triage \
+              --body-file "$issue_body")"
+            primary_number="${issue_url##*/}"
+          else
+            primary_number="${issue_numbers[0]}"
+            gh issue edit "$primary_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --add-label needs-triage \
+              --body-file "$issue_body"
+          fi
+
+          for duplicate_number in "${issue_numbers[@]:1}"; do
+            gh issue close "$duplicate_number" \
+              --repo "$GITHUB_REPOSITORY" \
+              --comment "This duplicate was replaced by #$primary_number."
+          done
+      - name: Return the audit result
+        if: ${{ steps.provider_audit.outputs.status != '0' }}
+        env:
+          AUDIT_STATUS: ${{ steps.provider_audit.outputs.status }}
+        run: exit "$AUDIT_STATUS"

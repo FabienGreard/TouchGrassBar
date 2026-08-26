@@ -1,0 +1,567 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-08-26",
+  "reviewEveryDays": 30,
+  "codex": {
+    "reviewedRelease": "0.147.0",
+    "releaseUrl": "https://api.github.com/repos/openai/codex/releases/latest",
+    "repositoryRawBaseUrl": "https://raw.githubusercontent.com/openai/codex",
+    "modelCatalogPath": "codex-rs/models-manager/models.json",
+    "parserSourcePath": "apps/desktop/src-tauri/src/providers/codex/usage.rs",
+    "pricingManifestPath": "apps/desktop/src-tauri/pricing/openai-standard.json",
+    "pricingManifestSemanticSha256": "573ed9abc3f8743edef1c9e63bc7737453e8b1d4c435621cf001ed125e3c05b2",
+    "pricingRuleWindows": [
+      {
+        "id": "api-token-and-tool-pricing",
+        "startHeading": "# Pricing",
+        "endHeading": "### Pricing Table data",
+        "semanticSha256": "10cc2cf0e628a1eecb445fb9a0e315edda95c77ed1873f31ddf58f31541b5ab2"
+      }
+    ],
+    "pricingEvidence": {
+      "boundaryExemptions": [
+        {
+          "model": "gpt-5.6-sol",
+          "periodKind": "standard",
+          "boundary": "start",
+          "date": "2026-06-26",
+          "reason": "The reviewed launch snapshot predates the machine-readable API changelog record."
+        },
+        {
+          "model": "gpt-5.6-terra",
+          "periodKind": "standard",
+          "boundary": "start",
+          "date": "2026-06-26",
+          "reason": "The reviewed launch snapshot predates the machine-readable API changelog record."
+        },
+        {
+          "model": "gpt-5.6-luna",
+          "periodKind": "standard",
+          "boundary": "start",
+          "date": "2026-06-26",
+          "reason": "The reviewed launch snapshot predates the machine-readable API changelog record."
+        }
+      ],
+      "sources": [
+        {
+          "id": "api-changelog",
+          "url": "https://developers.openai.com/api/docs/changelog.md",
+          "windowSemanticSha256": "1e62f9927af0f50aaaff6daa2f890ab32797e1d9ce8c2aa3090eb00ab1cb7a48",
+          "sections": [
+            {
+              "id": "sol-price-change",
+              "heading": "### Aug 21",
+              "selector": "GPT-5.6 Sol now costs $4 per million input tokens",
+              "date": "2026-08-21",
+              "semanticSha256": "9e30f7be2b763449ef3736c40da170ceac0228821532c27d6db33a8fc77dc856",
+              "checkpoints": [
+                {
+                  "model": "gpt-5.6-sol",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                },
+                {
+                  "model": "gpt-5.6-sol",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-5.6-sol",
+                  "periodKind": "fast-long-context",
+                  "boundary": "end"
+                },
+                {
+                  "model": "gpt-5.6-sol",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "fast-long-context",
+              "heading": "### Aug 5",
+              "selector": "Fast mode now supports long-context requests for GPT-5.6 Sol",
+              "date": "2026-08-05",
+              "semanticSha256": "b12adff48dd179323906fc738209e91dd2fd94cd000a78caa7a7667389aa6a8b",
+              "checkpoints": [
+                {
+                  "model": "gpt-5.6-sol",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-5.6-terra",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-5.6-luna",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "terra-luna-price-change",
+              "heading": "### Jul 30",
+              "selector": "Starting July 30, GPT-5.6 Luna costs 80% less",
+              "date": "2026-07-30",
+              "semanticSha256": "7c9ce9075672169fb3e7e65ccc98b2348d3c951a7b03cfb205d1bbc107d98263",
+              "checkpoints": [
+                {
+                  "model": "gpt-5.6-terra",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                },
+                {
+                  "model": "gpt-5.6-terra",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-5.6-luna",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                },
+                {
+                  "model": "gpt-5.6-luna",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "gpt-5-5-launch",
+              "heading": "### Apr 24",
+              "selector": "Released GPT-5.5",
+              "date": "2026-04-24",
+              "semanticSha256": "42b63b0c9d0df5b7fc16ae3dbd71a2402bfbfded2fb30fc3cb41d0799b244aaf",
+              "checkpoints": [
+                {
+                  "model": "gpt-5.5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "pricingSemanticMarkers": [
+      "Regional processing (data residency) endpoints are charged a 10% uplift for models released on or after March 5, 2026",
+      "Priority processing was renamed Fast mode on July 30, 2026."
+    ],
+    "pricingSourceUrl": "https://developers.openai.com/api/docs/pricing.md",
+    "schemas": [
+      {
+        "id": "account-token-usage",
+        "path": "codex-rs/app-server-protocol/schema/json/v2/GetAccountTokenUsageResponse.json",
+        "semanticSha256": "bafeb78b53362369a53d748488d8850604f477e8799d41671d8703c9d7d1c8a8"
+      },
+      {
+        "id": "thread-token-usage",
+        "path": "codex-rs/app-server-protocol/schema/json/v2/ThreadTokenUsageUpdatedNotification.json",
+        "semanticSha256": "6251f0be14095d7e03e890b81fb7df604b920971e004042c005ff7eb2193703e"
+      }
+    ],
+    "rustAnchors": [
+      {
+        "id": "rollout-event-kinds",
+        "path": "codex-rs/protocol/src/protocol.rs",
+        "kind": "event-msg-variants",
+        "semanticSha256": "3269931134574f4272a24d1763168e8003cdbce22394038746072e81e269445a"
+      },
+      {
+        "id": "api-token-mapping",
+        "path": "codex-rs/codex-api/src/sse/responses.rs",
+        "kind": "response-token-mapping",
+        "semanticSha256": "cae90f4cfc7a6dc8fe25deb7e20e586432b1db8b5229ec1ab2c03c211a2d9abd"
+      }
+    ]
+  },
+  "claude": {
+    "reviewedStableVersion": "2.1.224",
+    "reviewedLatestVersion": "2.1.241",
+    "stablePackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/stable",
+    "latestPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/latest",
+    "reviewedAgentSdkVersion": "0.3.241",
+    "agentSdkPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-agent-sdk/latest",
+    "usageTypesSourceUrl": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
+    "usageInterfaces": {
+      "BetaUsage": {
+        "cache_creation": "required:BetaCacheCreation | null",
+        "cache_creation_input_tokens": "required:number | null",
+        "cache_read_input_tokens": "required:number | null",
+        "fallback_credit": "required:BetaFallbackCreditUsage | null",
+        "inference_geo": "required:string | null",
+        "input_tokens": "required:number",
+        "iterations": "required:BetaIterationsUsage | null",
+        "output_tokens": "required:number",
+        "output_tokens_details": "required:BetaOutputTokensDetails | null",
+        "server_tool_use": "required:BetaServerToolUsage | null",
+        "service_tier": "required:'standard' | 'priority' | 'batch' | null",
+        "speed": "required:'standard' | 'fast' | null"
+      },
+      "BetaCacheCreation": {
+        "ephemeral_1h_input_tokens": "required:number",
+        "ephemeral_5m_input_tokens": "required:number"
+      },
+      "BetaServerToolUsage": {
+        "web_fetch_requests": "required:number",
+        "web_search_requests": "required:number"
+      }
+    },
+    "usageSemanticSources": [
+      {
+        "id": "api-output-inclusive",
+        "url": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
+        "markers": ["output_tokens remains the inclusive, authoritative total used for billing."]
+      },
+      {
+        "id": "prompt-cache-input-sum",
+        "url": "https://raw.githubusercontent.com/anthropics/skills/main/skills/claude-api/shared/prompt-caching.md",
+        "markers": [
+          "input_tokens is the uncached remainder only.",
+          "Total prompt size = input_tokens + cache_creation_input_tokens + cache_read_input_tokens."
+        ]
+      }
+    ],
+    "parserSourcePath": "apps/desktop/src-tauri/src/providers/claude/usage.rs",
+    "pricingManifestPath": "apps/desktop/src-tauri/pricing/anthropic-standard.json",
+    "pricingManifestSemanticSha256": "7463b4ecd6907dd417d71854fd3189c2a7c92cf1643d948f4cc7675b8ad107c9",
+    "pricingRuleWindows": [
+      {
+        "id": "model-token-pricing",
+        "startHeading": "## Model pricing",
+        "endHeading": "## Cloud platform pricing",
+        "semanticSha256": "6faa37d1e327b4df2c0677a2f9a9e531171f76ef666e22aa146f60e36132a194"
+      },
+      {
+        "id": "feature-pricing-rules",
+        "startHeading": "## Feature-specific pricing",
+        "endHeading": "## Claude Managed Agents pricing",
+        "semanticSha256": "aa1b24bc114d202bad49fb15fa0bfe820ba09dbfc59f149c4724c9cebe8c5f6c"
+      }
+    ],
+    "pricingEvidence": {
+      "boundaryExemptions": [
+        {
+          "model": "claude-3-5-haiku-20241022",
+          "periodKind": "standard",
+          "boundary": "start",
+          "date": "2024-10-22",
+          "reason": "The immutable model identifier supplies this legacy snapshot date. Public API availability began later."
+        }
+      ],
+      "sources": [
+        {
+          "id": "release-notes",
+          "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
+          "windowSemanticSha256": "a6f806c0bd714e0e346be80e682687cd70182ff3d04f5f3a933798c530f5943f",
+          "sections": [
+            {
+              "id": "sonnet-5-canceled-increase",
+              "heading": "### August 10, 2026",
+              "selector": "The introductory pricing for Claude Sonnet 5",
+              "date": "2026-08-10",
+              "semanticSha256": "d48251a0bfd534f86e0f11eb321fd1b1ca32fcd4747a46c1ace8892687fbe208",
+              "checkpoints": [
+                {
+                  "model": "claude-sonnet-5",
+                  "periodKind": "standard",
+                  "boundary": "absent",
+                  "date": "2026-09-01",
+                  "marker": "the previously scheduled increase to $3 / $15 per MTok on September 1, 2026 will not occur"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-1-retirement",
+              "heading": "### August 5, 2026",
+              "selector": "We've retired the Claude Opus 4.1 model",
+              "date": "2026-08-05",
+              "semanticSha256": "3b52b6b6ed3fcf21f2781049410d7000f83a439d48b9d79dbe77d34abd41e458",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-1-20250805",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                }
+              ]
+            },
+            {
+              "id": "opus-5-launch",
+              "heading": "### July 24, 2026",
+              "selector": "We've launched Claude Opus 5",
+              "date": "2026-07-24",
+              "semanticSha256": "31fa89f9383b42c0a0c68ee274c5a862c93dbc9f0d7857f5e5957abadf2dd1e4",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-opus-5",
+                  "periodKind": "fast",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-opus-4-7",
+                  "periodKind": "fast",
+                  "boundary": "end"
+                }
+              ]
+            },
+            {
+              "id": "sonnet-5-launch",
+              "heading": "### June 30, 2026",
+              "selector": "We've launched Claude Sonnet 5",
+              "date": "2026-06-30",
+              "semanticSha256": "f9a7a719f0307ee89abfade940de7c40109a31e5f8528e54eb44565e86b2c9e7",
+              "checkpoints": [
+                {
+                  "model": "claude-sonnet-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-6-fast-removal",
+              "heading": "### June 29, 2026",
+              "selector": "We've removed fast mode for Claude Opus 4.6",
+              "date": "2026-06-29",
+              "semanticSha256": "eeff68943c4a8fb90de5bee10a9ce42c4b33f68ea221945328f4b2349d04c2ae",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-6",
+                  "periodKind": "fast",
+                  "boundary": "end"
+                }
+              ]
+            },
+            {
+              "id": "claude-4-retirement",
+              "heading": "### June 15, 2026",
+              "selector": "We've retired the Claude Sonnet 4 model",
+              "date": "2026-06-15",
+              "semanticSha256": "3d63d5d2807120aadcf191927ca72d46aae66d5c9741f870872bcf8d58569218",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-20250514",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                },
+                {
+                  "model": "claude-sonnet-4-20250514",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                }
+              ]
+            },
+            {
+              "id": "fable-mythos-5-launch",
+              "heading": "### June 9, 2026",
+              "selector": "We've launched Claude Fable 5",
+              "date": "2026-06-09",
+              "semanticSha256": "5381f5d42b6dd8ab151519eabdc2117c16ee586b45758f86c2317e8a68d915c0",
+              "checkpoints": [
+                {
+                  "model": "claude-fable-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-mythos-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-8-launch",
+              "heading": "### May 28, 2026",
+              "selector": "We've launched Claude Opus 4.8",
+              "date": "2026-05-28",
+              "semanticSha256": "6ec5e79de8cf7178c92ba7d0e3e2de8b4460bc233591697dd6149c1667d5fa8b",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-8",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-opus-4-8",
+                  "periodKind": "fast",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-7-fast-launch",
+              "heading": "### May 12, 2026",
+              "selector": "Fast mode (research preview) now supports Claude Opus 4.7",
+              "date": "2026-05-12",
+              "semanticSha256": "891c87dd562a54b82c172854402d8a51ec3d0fc5f3550723a49195414dc67699",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-7",
+                  "periodKind": "fast",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-7-launch",
+              "heading": "### April 16, 2026",
+              "selector": "We've launched Claude Opus 4.7",
+              "date": "2026-04-16",
+              "semanticSha256": "3bfd215ecc1e75b27256228df9684562b78e05c62281a4223a6b276b538ef4e9",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-7",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "haiku-3-5-retirement",
+              "heading": "### February 19, 2026",
+              "selector": "We've retired the Claude Sonnet 3.7 model",
+              "date": "2026-02-19",
+              "semanticSha256": "de16a63cf2d6e0eaff5fc37aa6d7dcd3a5bd0341ec45c247f0d566bf736092de",
+              "checkpoints": [
+                {
+                  "model": "claude-3-5-haiku-20241022",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                }
+              ]
+            },
+            {
+              "id": "sonnet-4-6-launch",
+              "heading": "### February 17, 2026",
+              "selector": "We've launched Claude Sonnet 4.6",
+              "date": "2026-02-17",
+              "semanticSha256": "d49407e58090ed92b3b8bccde102634b83032434e6fe87f1b34bf698f16a7a7e",
+              "checkpoints": [
+                {
+                  "model": "claude-sonnet-4-6",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-6-fast-launch",
+              "heading": "### February 7, 2026",
+              "selector": "We've launched fast mode",
+              "date": "2026-02-07",
+              "semanticSha256": "73fda8c8080d3a31f3db439a3b8531bf3d72b52c266f415a59e7de0bc74ef9e5",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-6",
+                  "periodKind": "fast",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-6-launch",
+              "heading": "### February 5, 2026",
+              "selector": "We've launched Claude Opus 4.6",
+              "date": "2026-02-05",
+              "semanticSha256": "3543c4e3151450dfd049ffd204c618f2af275bc0125bb0e89f02ba305ec330df",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-6",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-5-launch",
+              "heading": "### November 24, 2025",
+              "selector": "We've launched Claude Opus 4.5",
+              "date": "2025-11-24",
+              "semanticSha256": "402e1b62162b5efb17c13635449c833aba718f89dbbb26a4ad2d2005bfcae540",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-5-20251101",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "haiku-4-5-launch",
+              "heading": "### October 15, 2025",
+              "selector": "We've launched Claude Haiku 4.5",
+              "date": "2025-10-15",
+              "semanticSha256": "f2b11ca93d8e191e351dfe33cfb1d7afb62d1204d17a29425cbec9ce7b5f3a1a",
+              "checkpoints": [
+                {
+                  "model": "claude-haiku-4-5-20251001",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "sonnet-4-5-launch",
+              "heading": "### September 29, 2025",
+              "selector": "We've launched Claude Sonnet 4.5",
+              "date": "2025-09-29",
+              "semanticSha256": "e5fa5d538c0baed650e6185fb7ffe46e21fbdcdab9df7017544598fd177276bd",
+              "checkpoints": [
+                {
+                  "model": "claude-sonnet-4-5-20250929",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "opus-4-1-launch",
+              "heading": "### August 5, 2025",
+              "selector": "We've launched Claude Opus 4.1",
+              "date": "2025-08-05",
+              "semanticSha256": "dfa35c1d39af73fa2e0c456bf8ce70b7d2fba01ef74b9a1d082338396b9b8ed3",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-1-20250805",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
+            {
+              "id": "claude-4-launch",
+              "heading": "### May 22, 2025",
+              "selector": "We've launched Claude Opus 4 and Claude Sonnet 4",
+              "date": "2025-05-22",
+              "semanticSha256": "f1981d11cba2591c6a553fb25d01daeafb1cd360d3193c40f7074def7d67d2c9",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-4-20250514",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-sonnet-4-20250514",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "pricingSourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing.md"
+  }
+}

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "basis": "openai-api-2026-08-09-v3",
+  "basis": "openai-standard-2026-08-26-v1",
   "models": [
     {
       "name": "gpt-5.5",
@@ -28,7 +28,7 @@
       "periods": [
         {
           "effectiveFrom": "2026-06-26",
-          "effectiveUntil": null,
+          "effectiveUntil": "2026-08-21",
           "inputUsdPerMillion": 5.0,
           "cachedInputUsdPerMillion": 0.5,
           "cacheWriteUsdPerMillion": 6.25,
@@ -41,11 +41,33 @@
           },
           "fastLongContext": {
             "effectiveFrom": "2026-08-05",
-            "effectiveUntil": null,
+            "effectiveUntil": "2026-08-21",
             "inputUsdPerMillion": 20.0,
             "cachedInputUsdPerMillion": 2.0,
             "cacheWriteUsdPerMillion": 25.0,
             "outputUsdPerMillion": 90.0
+          }
+        },
+        {
+          "effectiveFrom": "2026-08-21",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 4.0,
+          "cachedInputUsdPerMillion": 0.4,
+          "cacheWriteUsdPerMillion": 5.0,
+          "outputUsdPerMillion": 20.0,
+          "fastMultiplier": 2.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          },
+          "fastLongContext": {
+            "effectiveFrom": "2026-08-21",
+            "effectiveUntil": null,
+            "inputUsdPerMillion": 16.0,
+            "cachedInputUsdPerMillion": 1.6,
+            "cacheWriteUsdPerMillion": 20.0,
+            "outputUsdPerMillion": 60.0
           }
         }
       ]
@@ -56,6 +78,20 @@
       "periods": [
         {
           "effectiveFrom": "2026-06-26",
+          "effectiveUntil": "2026-07-30",
+          "inputUsdPerMillion": 2.5,
+          "cachedInputUsdPerMillion": 0.25,
+          "cacheWriteUsdPerMillion": 3.125,
+          "outputUsdPerMillion": 15.0,
+          "fastMultiplier": 2.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          }
+        },
+        {
+          "effectiveFrom": "2026-07-30",
           "effectiveUntil": null,
           "inputUsdPerMillion": 2.0,
           "cachedInputUsdPerMillion": 0.2,
@@ -84,6 +120,20 @@
       "periods": [
         {
           "effectiveFrom": "2026-06-26",
+          "effectiveUntil": "2026-07-30",
+          "inputUsdPerMillion": 1.0,
+          "cachedInputUsdPerMillion": 0.1,
+          "cacheWriteUsdPerMillion": 1.25,
+          "outputUsdPerMillion": 6.0,
+          "fastMultiplier": 2.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          }
+        },
+        {
+          "effectiveFrom": "2026-07-30",
           "effectiveUntil": null,
           "inputUsdPerMillion": 0.2,
           "cachedInputUsdPerMillion": 0.02,

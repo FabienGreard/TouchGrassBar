@@ -39,6 +39,8 @@ const TOKEN_HISTORY_RETENTION_DAYS: i64 = 60;
 const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
+const MIN_SUPPORTED_CODEX_CLI_MINOR: u16 = 130;
+const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 148;
 const ROLLOUT_PARSER_VERSION: i64 = 17;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
@@ -142,6 +144,9 @@ pub(crate) fn merge_cached_account_usage(
 struct RawAccountUsageResponse {
     daily_usage_buckets: Option<Vec<RawDailyUsageBucket>>,
     summary: IgnoredAny,
+    #[allow(dead_code)]
+    #[serde(default)]
+    thread_usage: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -1651,7 +1656,7 @@ fn is_supported_cli_version(version: &str) -> bool {
         return false;
     };
     let remainder = parts.collect::<Vec<_>>().join(".");
-    (130..=148).contains(&minor)
+    (MIN_SUPPORTED_CODEX_CLI_MINOR..=MAX_SUPPORTED_CODEX_CLI_MINOR).contains(&minor)
         && !remainder.is_empty()
         && remainder
             .bytes()
@@ -6975,6 +6980,30 @@ mod tests {
     }
 
     #[test]
+    fn account_usage_accepts_reviewed_optional_thread_usage_metadata() {
+        let observation = parse_account_usage(
+            r#"{
+              "dailyUsageBuckets": [
+                { "startDate": "2026-08-06", "tokens": 340 }
+              ],
+              "summary": { "lifetimeTokens": 340 },
+              "threadUsage": {
+                "threadId": "reviewed-but-not-retained",
+                "totalTokens": 340
+              }
+            }"#,
+        )
+        .expect("reviewed thread usage metadata must not hide daily usage");
+
+        assert_eq!(
+            observation
+                .daily_tokens
+                .get(&Date::from_calendar_date(2026, time::Month::August, 6).unwrap()),
+            Some(&340)
+        );
+    }
+
+    #[test]
     fn account_usage_rejects_duplicate_days_and_unknown_bucket_fields() {
         let duplicate = r#"{
           "dailyUsageBuckets": [
@@ -10193,7 +10222,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let changed = changed_pricing_manifest("openai-api-2026-08-09-v4", 60.0);
+        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v1", 60.0);
         reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
         let after: (i64, i64, f64) = connection
             .query_row(
@@ -10305,7 +10334,7 @@ mod tests {
             )
             .unwrap();
 
-        let changed = changed_pricing_manifest("openai-api-2026-08-09-v4", 60.0);
+        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v1", 60.0);
         reprice_index_with_manifest(&connection, &changed, day, day).unwrap();
 
         let repriced = connection
@@ -10720,7 +10749,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-api-2026-08-09-v3");
+        assert_eq!(manifest.basis, "openai-standard-2026-08-26-v1");
         assert!(
             catalog_entry(
                 &manifest,
@@ -10866,7 +10895,36 @@ mod tests {
             pricing_catalog_entry(pricing_manifest().unwrap(), "gpt-5.6-sol", before_release),
             Err(PricingLookupFailure::MissingApplicablePrice)
         ));
-        assert_eq!(price_usage("gpt-5.6-sol", after_release, usage), Some(0.62));
+        let assert_price = |model: &str, day: Date, expected: f64| {
+            let actual = price_usage(model, day, usage).expect("known effective price");
+            assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+        };
+        assert_price("gpt-5.6-sol", after_release, 0.62);
+        assert_price(
+            "gpt-5.6-sol",
+            Date::from_calendar_date(2026, Month::August, 20).unwrap(),
+            0.62,
+        );
+        assert_price(
+            "gpt-5.6-sol",
+            Date::from_calendar_date(2026, Month::August, 21).unwrap(),
+            0.456,
+        );
+        for (model, old_price, new_price) in [
+            ("gpt-5.6-terra", 0.31, 0.248),
+            ("gpt-5.6-luna", 0.124, 0.0248),
+        ] {
+            assert_price(
+                model,
+                Date::from_calendar_date(2026, Month::July, 29).unwrap(),
+                old_price,
+            );
+            assert_price(
+                model,
+                Date::from_calendar_date(2026, Month::July, 30).unwrap(),
+                new_price,
+            );
+        }
     }
 
     #[test]
@@ -10882,7 +10940,10 @@ mod tests {
         };
 
         let cost = price_usage("gpt-5.6-terra", day, usage).unwrap();
-        assert!((cost - 2.69).abs() < 1e-12);
+        assert!((cost - 3.3625).abs() < f64::EPSILON);
+        let current_day = Date::from_calendar_date(2026, Month::July, 30).unwrap();
+        let current_cost = price_usage("gpt-5.6-terra", current_day, usage).unwrap();
+        assert!((current_cost - 2.69).abs() < 1e-12);
         assert!(price_usage("gpt-5.5", day, usage).is_none());
     }
 
