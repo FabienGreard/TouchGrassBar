@@ -36,6 +36,17 @@ const selectedView = {
   ],
 } as const;
 
+const refreshedView = {
+  ...readyView,
+  rows: [
+    {
+      ...readyView.rows[0],
+      displayName: "Fresh Fabien",
+      tokenScore: 12_600_000,
+    },
+  ],
+} as const;
+
 function port(): DoomerboardPort & { changed: () => void } {
   let receiveChange: (() => void) | undefined;
   return {
@@ -154,6 +165,32 @@ describe("Doomerboard delivery", () => {
     });
   });
 
+  test("restores cached Global rankings while their refresh is pending", async () => {
+    let finishGlobalRefresh!: () => void;
+    const native = port();
+    native.read = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true as const, value: readyView })
+      .mockResolvedValueOnce({ ok: true as const, value: selectedView })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishGlobalRefresh = () => resolve({ ok: true as const, value: refreshedView });
+          }),
+      );
+    const delivery = createDoomerboardDelivery(native);
+    await delivery.activate();
+    await delivery.select({ ...defaultDoomerboardQuery, audience: "mine" });
+
+    const selectingGlobal = delivery.select(defaultDoomerboardQuery);
+
+    expect(native.read).toHaveBeenCalledTimes(3);
+    expect(delivery.getSnapshot()).toEqual({ phase: "ready", view: readyView });
+    finishGlobalRefresh();
+    await selectingGlobal;
+    expect(delivery.getSnapshot()).toEqual({ phase: "ready", view: refreshedView });
+  });
+
   test("does not label old rankings as a new unavailable selection", async () => {
     const native = port();
     native.read = vi
@@ -244,6 +281,29 @@ describe("Doomerboard delivery", () => {
 });
 
 describe("Tauri Doomerboard adapter", () => {
+  test("reads on activation and whenever the panel regains focus", async () => {
+    let focus!: (event: { payload: boolean }) => void;
+    const bindings: TauriDoomerboardBindings = {
+      invoke: vi.fn(async () => readyView),
+      listen: vi.fn(async () => vi.fn()),
+      onFocusChanged: vi.fn(async (receive) => {
+        focus = receive;
+        return vi.fn();
+      }),
+    };
+    const delivery = createDoomerboardDelivery(createTauriDoomerboardAdapter(bindings));
+
+    const unsubscribe = await delivery.activate();
+    expect(bindings.invoke).toHaveBeenCalledOnce();
+
+    focus({ payload: false });
+    expect(bindings.invoke).toHaveBeenCalledOnce();
+    focus({ payload: true });
+    await vi.waitFor(() => expect(bindings.invoke).toHaveBeenCalledTimes(2));
+
+    unsubscribe();
+  });
+
   test("uses the narrow Add Tokenmaxxer command", async () => {
     const outcome = { contractVersion: 1, status: "added" } as const;
     const bindings: TauriDoomerboardBindings = {

@@ -38,11 +38,14 @@ const sameQuery = (left: DoomerboardQuery, right: DoomerboardQuery) =>
   left.scope === right.scope &&
   left.windowDays === right.windowDays;
 
+const globalViewKey = (query: DoomerboardQuery) => `${query.scope}:${query.windowDays}`;
+
 function createDoomerboardDelivery(port: DoomerboardPort) {
   let current: DoomerboardDeliverySnapshot = {
     phase: "loading",
     view: null,
   };
+  const globalViews = new Map<string, DoomerboardView>();
   let readInFlight: Promise<void> | null = null;
   let readRequested = false;
   let query = defaultDoomerboardQuery;
@@ -61,9 +64,18 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
     });
   };
 
+  const publishCachedGlobalView = (requestedQuery: DoomerboardQuery) => {
+    if (requestedQuery.audience !== "global") return;
+    const cached = globalViews.get(globalViewKey(requestedQuery));
+    if (cached === undefined) return;
+    viewQuery = requestedQuery;
+    publish({ phase: "ready", view: cached });
+  };
+
   const read = (nextQuery = query) => {
     if (!sameQuery(query, nextQuery)) {
       query = nextQuery;
+      publishCachedGlobalView(nextQuery);
     }
     readRequested = true;
     if (readInFlight !== null) return readInFlight;
@@ -89,6 +101,9 @@ function createDoomerboardDelivery(port: DoomerboardPort) {
           if (parsed.data.status === "unavailable") {
             publishFailure(requestedQuery);
             continue;
+          }
+          if (requestedQuery.audience === "global") {
+            globalViews.set(globalViewKey(requestedQuery), parsed.data);
           }
           viewQuery = requestedQuery;
           publish({ phase: "ready", view: parsed.data });
