@@ -5739,7 +5739,7 @@ mod tests {
                 .unwrap()
         };
         let initial = read_daily();
-        let changed_basis = pricing_catalog_with_basis("anthropic-standard-2026-08-08-v2");
+        let changed_basis = pricing_catalog_with_basis("anthropic-standard-2026-08-26-v2");
         let cutoff = now().date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
 
         refresh_daily_aggregates_with_catalog(
@@ -5756,7 +5756,7 @@ mod tests {
 
     #[test]
     fn mixed_retained_price_books_keep_bounded_provenance_during_incomplete_scan() {
-        const NEW_BASIS: &str = "anthropic-standard-2026-08-08-v2";
+        const NEW_BASIS: &str = "anthropic-standard-2026-08-26-v2";
 
         let fixture = FixtureRoot::new();
         let config = fixture.config();
