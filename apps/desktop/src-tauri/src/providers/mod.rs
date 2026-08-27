@@ -340,6 +340,8 @@ impl ProviderObservationCoordinator {
         self.normalize_registry(&mut cached);
         let mut completed_providers = BTreeSet::new();
         let mut corrections = BTreeMap::new();
+        let defer_progress = attempt.includes_local_usage_catch_up();
+        let mut deferred_progress = Vec::new();
 
         thread::scope(|scope| -> Result<(), RefreshFailure> {
             let (result_sender, result_receiver) = mpsc::channel();
@@ -431,7 +433,7 @@ impl ProviderObservationCoordinator {
                 if let Some(progress) = progress
                     && (provider_changed || provider_completed || provider_correction.is_some())
                 {
-                    progress.report(SnapshotRefreshOutcome {
+                    let outcome = SnapshotRefreshOutcome {
                         snapshot: provider_changed.then(|| cached.clone()),
                         completed_providers: if provider_completed {
                             BTreeSet::from([provider])
@@ -441,11 +443,24 @@ impl ProviderObservationCoordinator {
                         corrections: provider_correction
                             .map(|correction| BTreeMap::from([(provider, correction)]))
                             .unwrap_or_default(),
-                    })?;
+                    };
+                    if defer_progress {
+                        deferred_progress.push(outcome);
+                    } else {
+                        progress.report(outcome)?;
+                    }
                 }
             }
             Ok(())
         })?;
+
+        // Both local usage adapters write to the same SQLite database. Report
+        // their results only after both workers release their transactions.
+        if let Some(progress) = progress {
+            for outcome in deferred_progress {
+                progress.report(outcome)?;
+            }
+        }
 
         attempt.remaining()?;
         cached.refresh_combined_usage();
@@ -786,6 +801,8 @@ pub(crate) fn test_descendant_held_output_refresh_adapter() -> (
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
+        path::PathBuf,
         sync::{
             Barrier,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -794,6 +811,7 @@ mod tests {
         time::{Duration as StdDuration, Instant},
     };
 
+    use rusqlite::{Connection, TransactionBehavior};
     use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
     use super::*;
@@ -1135,6 +1153,141 @@ mod tests {
         assert_eq!(
             outcome.completed_providers,
             BTreeSet::from([CodingProvider::Claude])
+        );
+    }
+
+    struct LocalUsageDatabaseLockAdapter {
+        provider: CodingProvider,
+        database: PathBuf,
+        lock_ready: Arc<Barrier>,
+        hold_lock: bool,
+    }
+
+    impl ProviderObservationAdapter for LocalUsageDatabaseLockAdapter {
+        fn provider(&self) -> CodingProvider {
+            self.provider
+        }
+
+        fn refresh(
+            &self,
+            _cached: &ProviderPresentation,
+            attempt: &RefreshAttempt,
+        ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+            let mut connection =
+                Connection::open(&self.database).map_err(|_| RefreshFailure::SourceUnavailable)?;
+            connection
+                .busy_timeout(StdDuration::ZERO)
+                .map_err(|_| RefreshFailure::SourceUnavailable)?;
+            let transaction = self
+                .hold_lock
+                .then(|| connection.transaction_with_behavior(TransactionBehavior::Immediate))
+                .transpose()
+                .map_err(|_| RefreshFailure::SourceUnavailable)?;
+            self.lock_ready.wait();
+            if self.hold_lock {
+                thread::sleep(StdDuration::from_millis(100));
+            }
+            attempt.remaining()?;
+            drop(transaction);
+            Ok(Some(ProviderObservation {
+                quota: ProviderSnapshot::Unavailable {
+                    provider: self.provider,
+                    quota_lanes: [],
+                },
+                usage: usage_with_tokens(match self.provider {
+                    CodingProvider::Codex => 42,
+                    CodingProvider::Claude => 58,
+                }),
+                top_model_usage: None,
+                correction: None,
+            }))
+        }
+    }
+
+    struct SqliteSnapshotProgress {
+        database: PathBuf,
+    }
+
+    impl SnapshotRefreshProgress for SqliteSnapshotProgress {
+        fn report(&self, _outcome: SnapshotRefreshOutcome) -> Result<(), RefreshFailure> {
+            let connection =
+                Connection::open(&self.database).map_err(|_| RefreshFailure::SourceUnavailable)?;
+            connection
+                .busy_timeout(StdDuration::ZERO)
+                .map_err(|_| RefreshFailure::SourceUnavailable)?;
+            connection
+                .execute("INSERT INTO refresh_progress DEFAULT VALUES", [])
+                .map_err(|_| RefreshFailure::SourceUnavailable)?;
+            Ok(())
+        }
+    }
+
+    struct LocalUsageProgressDatabase(PathBuf);
+
+    impl LocalUsageProgressDatabase {
+        fn new() -> Self {
+            static NEXT_DATABASE: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "touchgrassbar-local-usage-progress-{}-{}.sqlite3",
+                std::process::id(),
+                NEXT_DATABASE.fetch_add(1, Ordering::Relaxed)
+            ));
+            Connection::open(&path)
+                .unwrap()
+                .execute_batch(
+                    "CREATE TABLE refresh_progress (
+                       sequence INTEGER PRIMARY KEY AUTOINCREMENT
+                     );",
+                )
+                .unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for LocalUsageProgressDatabase {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn coalesced_local_usage_progress_waits_for_provider_database_writers() {
+        let database = LocalUsageProgressDatabase::new();
+        let lock_ready = Arc::new(Barrier::new(2));
+        let coordinator = ProviderObservationCoordinator::new(vec![
+            Arc::new(LocalUsageDatabaseLockAdapter {
+                provider: CodingProvider::Codex,
+                database: database.0.clone(),
+                lock_ready: Arc::clone(&lock_ready),
+                hold_lock: false,
+            }),
+            Arc::new(LocalUsageDatabaseLockAdapter {
+                provider: CodingProvider::Claude,
+                database: database.0.clone(),
+                lock_ready,
+                hold_lock: true,
+            }),
+        ]);
+        let progress = SqliteSnapshotProgress {
+            database: database.0.clone(),
+        };
+
+        coordinator
+            .refresh_with_progress(
+                unavailable_state(1),
+                &RefreshAttempt::test_provider_notification_with_local_usage(),
+                &progress,
+            )
+            .expect("local usage progress must persist after provider database writes finish");
+
+        assert!(
+            Connection::open(&database.0)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM refresh_progress", [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap()
+                >= 2
         );
     }
 
