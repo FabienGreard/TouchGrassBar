@@ -43,6 +43,7 @@ const MIN_SUPPORTED_CODEX_CLI_MINOR: u16 = 130;
 const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 150;
 const MIN_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 148;
 const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 150;
+const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 17;
 const ROLLOUT_PARSER_VERSION: i64 = 18;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
@@ -53,13 +54,15 @@ pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 9;
 struct ScanBudget {
     max_bytes: u64,
     max_file_bytes: u64,
-    max_millis: u128,
+    max_discovery_millis: u128,
+    max_parse_millis: u128,
 }
 
 const DEFAULT_SCAN_BUDGET: ScanBudget = ScanBudget {
     max_bytes: MAX_ROLLOUT_SCAN_BYTES,
     max_file_bytes: MAX_ROLLOUT_FILE_SCAN_BYTES,
-    max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+    max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+    max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
 };
 
 #[cfg(debug_assertions)]
@@ -2073,6 +2076,38 @@ fn collect_rollout_files(
         }
     }
     Ok(())
+}
+
+fn is_regular_file_without_intermediate_symlinks(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let Ok(root_metadata) = fs::metadata(root) else {
+        return false;
+    };
+    if !root_metadata.file_type().is_dir() {
+        return false;
+    }
+
+    let mut current = root.to_path_buf();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(component) = component else {
+            return false;
+        };
+        current.push(component);
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            return false;
+        };
+        if components.peek().is_some() {
+            if !metadata.file_type().is_dir() {
+                return false;
+            }
+        } else {
+            return metadata.file_type().is_file();
+        }
+    }
+    false
 }
 
 const MAX_ROLLOUT_METADATA_PROBE_BYTES: u64 = 256 * 1024;
@@ -4137,6 +4172,32 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
         .map_err(|_| ())
 }
 
+fn promote_compatible_parser_rows(connection: &Connection) -> Result<usize, ()> {
+    // Parser 18 adds CLI 0.149 and 0.150 support. It does not change rows that
+    // parser 17 accepted. Promote only rows with complete, included evidence.
+    connection
+        .execute(
+            "UPDATE codex_usage_files
+             SET parser_version = ?1
+             WHERE parser_version = ?2
+               AND completion_state = 'complete'
+               AND parsed_offset = size_bytes
+               AND accounting_ready = 1
+               AND usage_excluded = 0
+               AND schema_supported = 1
+               AND parser_error_seen = 0
+               AND lineage_invalid = 0
+               AND snapshot_timestamp_regressed = 0
+               AND deferred_until_day IS NULL
+               AND lineage_mode IN (
+                 'root', 'explicit-boundary', 'independent', 'parent-resolved'
+               )
+               AND provider_ordinal_mode IN ('legacy', 'provider')",
+            params![ROLLOUT_PARSER_VERSION, COMPATIBLE_ROLLOUT_PARSER_VERSION],
+        )
+        .map_err(|_| ())
+}
+
 fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCursor>, ()> {
     connection
         .query_row(
@@ -5740,9 +5801,10 @@ fn index_local_usage_with_budget(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let max_bytes = budget.max_bytes.min(MAX_ROLLOUT_SCAN_BYTES);
     let max_file_bytes = budget.max_file_bytes.min(MAX_ROLLOUT_FILE_SCAN_BYTES);
-    let max_millis = budget.max_millis.min(MAX_ROLLOUT_SCAN_MILLIS);
+    let max_discovery_millis = budget.max_discovery_millis.min(MAX_ROLLOUT_SCAN_MILLIS);
+    let max_parse_millis = budget.max_parse_millis.min(MAX_ROLLOUT_SCAN_MILLIS);
     debug_usage_event(&format!(
-        "scan_pass_started max_bytes={max_bytes} max_file_bytes={max_file_bytes} max_millis={max_millis}"
+        "scan_pass_started max_bytes={max_bytes} max_file_bytes={max_file_bytes} max_discovery_millis={max_discovery_millis} max_parse_millis={max_parse_millis}"
     ));
     let mut connection = Connection::open(database_path).ok()?;
     ensure_index_schema(&mut connection, Some(database_path)).ok()?;
@@ -5757,9 +5819,16 @@ fn index_local_usage_with_budget(
         }
         Err(()) => load_stored_fast_turns(&connection).ok()?,
     };
+    let promoted_rows = promote_compatible_parser_rows(&connection).ok()?;
+    if promoted_rows > 0 {
+        debug_usage_event(&format!(
+            "compatible_parser_rows_promoted source_version={} target_version={} rows={promoted_rows}",
+            COMPATIBLE_ROLLOUT_PARSER_VERSION, ROLLOUT_PARSER_VERSION
+        ));
+    }
     // Trace evidence and rollout bytes are independent local inputs. A large
     // read-only trace database must not consume the bounded rollout budget.
-    let started = Instant::now();
+    let pass_started = Instant::now();
     let cutoff_modified_ns =
         i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).ok()?;
     let retention_complete = prune_expired_index(
@@ -5776,7 +5845,7 @@ fn index_local_usage_with_budget(
     if !retention_complete || !pricing_complete || !summaries_complete {
         debug_usage_event(&format!(
             "scan_pass_completed stop=maintenance elapsed_ms={} retention_complete={retention_complete} pricing_complete={pricing_complete} summaries_complete={summaries_complete}",
-            started.elapsed().as_millis()
+            pass_started.elapsed().as_millis()
         ));
         let mut local = read_indexed_usage(
             &connection,
@@ -5792,16 +5861,37 @@ fn index_local_usage_with_budget(
         }
         return Some(local);
     }
+    let discovery_started = Instant::now();
+    let rollout_roots = [home.join("sessions"), home.join("archived_sessions")];
+    let canonical_home = fs::canonicalize(home).ok();
+    let mut trusted_rollout_roots = Vec::new();
     let mut files = Vec::new();
     let mut found_root = false;
     let mut traversal_complete = true;
-    for directory in ["sessions", "archived_sessions"] {
-        let root = home.join(directory);
-        if !root.is_dir() {
+    for root in &rollout_roots {
+        if fs::symlink_metadata(root).is_err() {
             continue;
         }
         found_root = true;
-        traversal_complete &= collect_rollout_files(&root, &mut files, started, max_millis).is_ok();
+        if !fs::metadata(root).is_ok_and(|metadata| metadata.file_type().is_dir()) {
+            traversal_complete = false;
+            continue;
+        }
+        let Ok(canonical_root) = fs::canonicalize(root) else {
+            traversal_complete = false;
+            continue;
+        };
+        if !canonical_home
+            .as_ref()
+            .is_some_and(|home| canonical_root.starts_with(home))
+        {
+            traversal_complete = false;
+            continue;
+        }
+        traversal_complete &=
+            collect_rollout_files(root, &mut files, discovery_started, max_discovery_millis)
+                .is_ok();
+        trusted_rollout_roots.push(canonical_root);
     }
     if !found_root {
         return None;
@@ -5810,15 +5900,43 @@ fn index_local_usage_with_budget(
     let stored_files = load_file_summaries(&connection).ok()?;
     let required_parent_ids = required_parent_session_ids(&connection, cutoff_modified_ns).ok()?;
     let mut discovered_files = Vec::with_capacity(files.len());
+    let mut accepted_canonical_rollout_paths = BTreeSet::new();
+    let mut duplicate_rollout_paths = BTreeSet::new();
     for path in files {
-        if started.elapsed().as_millis() >= max_millis {
+        if discovery_started.elapsed().as_millis() >= max_discovery_millis {
             traversal_complete = false;
             break;
         }
-        let Ok(metadata) = fs::metadata(&path) else {
+        if !rollout_roots
+            .iter()
+            .any(|root| is_regular_file_without_intermediate_symlinks(root, &path))
+        {
+            traversal_complete = false;
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
             traversal_complete = false;
             continue;
         };
+        if !metadata.file_type().is_file() {
+            traversal_complete = false;
+            continue;
+        }
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            traversal_complete = false;
+            continue;
+        };
+        if !trusted_rollout_roots
+            .iter()
+            .any(|root| canonical_path.starts_with(root))
+        {
+            traversal_complete = false;
+            continue;
+        }
+        if !accepted_canonical_rollout_paths.insert(canonical_path) {
+            duplicate_rollout_paths.insert(path.to_string_lossy().into_owned());
+            continue;
+        }
         let Ok(modified_ns) = file_modified_ns(&metadata) else {
             traversal_complete = false;
             continue;
@@ -5898,7 +6016,7 @@ fn index_local_usage_with_budget(
         ));
         while probe_bytes > 0
             && completed_candidates < probe_candidates.len()
-            && started.elapsed().as_millis() < max_millis
+            && discovery_started.elapsed().as_millis() < max_discovery_millis
         {
             let candidate = probe_candidates[position];
             let path = &discovered_files[candidate].3;
@@ -5981,16 +6099,80 @@ fn index_local_usage_with_budget(
             path,
         ));
     }
-    ordered_files.sort_by_key(|entry| rollout_work_priority(entry.0, entry.2, entry.1, entry.4));
     let present = ordered_files
         .iter()
         .map(|(_, _, _, _, _, _, path)| path.to_string_lossy().into_owned())
         .collect::<BTreeSet<_>>();
+    for duplicate in &duplicate_rollout_paths {
+        reset_file(&connection, duplicate).ok()?;
+    }
     if traversal_complete {
         for missing in stored_files.keys().filter(|path| !present.contains(*path)) {
             reset_file(&connection, missing).ok()?;
         }
     }
+    for (path_value, stored) in &stored_files {
+        if present.contains(path_value) {
+            continue;
+        }
+        let path = PathBuf::from(path_value);
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl")
+            || !rollout_roots.iter().any(|root| path.starts_with(root))
+            || !rollout_roots
+                .iter()
+                .any(|root| is_regular_file_without_intermediate_symlinks(root, &path))
+        {
+            continue;
+        }
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let Ok(modified_ns) = file_modified_ns(&metadata) else {
+            continue;
+        };
+        let identity = file_identity(&metadata);
+        let size = metadata.len();
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if !trusted_rollout_roots
+            .iter()
+            .any(|root| canonical_path.starts_with(root))
+        {
+            continue;
+        }
+        if !accepted_canonical_rollout_paths.insert(canonical_path) {
+            reset_file(&connection, path_value).ok()?;
+            continue;
+        }
+        let is_required_parent = dependency_parent_paths.contains(path_value)
+            || stored
+                .leaf_session_id
+                .as_ref()
+                .is_some_and(|session_id| required_parent_ids.contains(session_id));
+        let needs_work = (modified_ns >= cutoff_modified_ns || is_required_parent)
+            && stored.needs_work(&identity, size, modified_ns, today);
+        let is_pending = needs_work && stored.is_pending(&identity, size, modified_ns, today);
+        if !is_pending {
+            continue;
+        }
+        if is_required_parent {
+            dependency_parent_paths.insert(path_value.clone());
+        }
+        ordered_files.push((
+            needs_work,
+            is_required_parent,
+            is_pending,
+            identity,
+            modified_ns,
+            size,
+            path,
+        ));
+    }
+    ordered_files.sort_by_key(|entry| rollout_work_priority(entry.0, entry.2, entry.1, entry.4));
     let files = ordered_files
         .into_iter()
         .filter(|(needs_work, _, _, _, _, _, _)| *needs_work)
@@ -6002,12 +6184,14 @@ fn index_local_usage_with_budget(
         fast_turns: &fast_turns,
         dependency_parent_paths: &dependency_parent_paths,
     };
+    let discovery_elapsed_millis = discovery_started.elapsed().as_millis();
+    let parse_started = Instant::now();
     let mut all_complete = traversal_complete && parent_discovery_complete;
     let mut failed = false;
     let mut visited_files = 0_u64;
     let mut completed_files = 0_u64;
     for (_, _, _, _, _, _, path) in &files {
-        if started.elapsed().as_millis() >= max_millis {
+        if parse_started.elapsed().as_millis() >= max_parse_millis {
             all_complete = false;
             break;
         }
@@ -6022,8 +6206,8 @@ fn index_local_usage_with_budget(
             &connection,
             path,
             &index_context,
-            started,
-            max_millis,
+            parse_started,
+            max_parse_millis,
             &mut file_remaining_bytes,
         ) {
             Ok(complete) => {
@@ -6077,7 +6261,9 @@ fn index_local_usage_with_budget(
         "complete"
     } else if pending_files == 0 && error_files > 0 {
         "parser_errors"
-    } else if started.elapsed().as_millis() >= max_millis {
+    } else if discovery_elapsed_millis >= max_discovery_millis
+        || parse_started.elapsed().as_millis() >= max_parse_millis
+    {
         "time"
     } else if remaining_bytes == 0 {
         "bytes"
@@ -6085,9 +6271,11 @@ fn index_local_usage_with_budget(
         "pending"
     };
     debug_usage_event(&format!(
-        "scan_pass_completed stop={stop} bytes_read={} elapsed_ms={} visited_files={visited_files} completed_files={completed_files} pending_files={pending_files} error_files={error_files} excluded_inherited_files={excluded_files} traversal_complete={traversal_complete}",
+        "scan_pass_completed stop={stop} bytes_read={} elapsed_ms={} discovery_elapsed_ms={} parse_elapsed_ms={} visited_files={visited_files} completed_files={completed_files} pending_files={pending_files} error_files={error_files} excluded_inherited_files={excluded_files} traversal_complete={traversal_complete}",
         max_bytes.saturating_sub(remaining_bytes),
-        started.elapsed().as_millis()
+        pass_started.elapsed().as_millis(),
+        discovery_elapsed_millis,
+        parse_started.elapsed().as_millis()
     ));
     debug_unpriced_model_days(&connection, detail_cutoff, today);
     let indexed_files = load_file_summaries(&connection).ok()?;
@@ -7821,7 +8009,7 @@ mod tests {
                      schema_supported = 0,
                      accounting_ready = 0,
                      parser_error_seen = 1",
-                [ROLLOUT_PARSER_VERSION - 1],
+                [COMPATIBLE_ROLLOUT_PARSER_VERSION],
             )
             .unwrap();
         drop(connection);
@@ -7858,6 +8046,379 @@ mod tests {
                 false
             )
         );
+    }
+
+    #[test]
+    fn sqlite_index_reuses_complete_rows_from_the_previous_compatible_parser() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(
+            &fixture.rollout,
+            reviewed_codex_0_148_root_rollout(100).replace("2026-08-24", "2026-08-26"),
+        )
+        .unwrap();
+        let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(first.daily[&now.date()].observed_tokens, 100);
+
+        Connection::open(&fixture.database)
+            .unwrap()
+            .execute(
+                "UPDATE codex_usage_files SET parser_version = ?1",
+                [COMPATIBLE_ROLLOUT_PARSER_VERSION],
+            )
+            .unwrap();
+
+        let reused = index_local_usage_with_budget(
+            &fixture.database,
+            &fixture.root,
+            now,
+            ScanBudget {
+                max_bytes: 0,
+                max_file_bytes: 0,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(reused.scan_status, UsageScanStatus::Complete);
+        assert_eq!(reused.daily[&now.date()].observed_tokens, 100);
+        assert_eq!(
+            Connection::open(&fixture.database)
+                .unwrap()
+                .query_row("SELECT parser_version FROM codex_usage_files", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            ROLLOUT_PARSER_VERSION
+        );
+    }
+
+    #[test]
+    fn sqlite_index_does_not_promote_unsafe_previous_parser_rows() {
+        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+        for unsafe_change in [
+            "completion_state = 'indexing'",
+            "parsed_offset = 0",
+            "accounting_ready = 0",
+            "usage_excluded = 1",
+            "schema_supported = 0",
+            "parser_error_seen = 1",
+            "lineage_invalid = 1",
+            "snapshot_timestamp_regressed = 1",
+            "deferred_until_day = '2026-08-27'",
+            "lineage_mode = 'unknown'",
+            "provider_ordinal_mode = 'unknown'",
+        ] {
+            let fixture = TempUsage::new();
+            fs::write(
+                &fixture.rollout,
+                reviewed_codex_0_148_root_rollout(100).replace("2026-08-24", "2026-08-26"),
+            )
+            .unwrap();
+            let initial = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+            assert_eq!(initial.daily[&now.date()].observed_tokens, 100);
+            Connection::open(&fixture.database)
+                .unwrap()
+                .execute_batch(&format!(
+                    "UPDATE codex_usage_files
+                     SET parser_version = {COMPATIBLE_ROLLOUT_PARSER_VERSION},
+                         {unsafe_change};"
+                ))
+                .unwrap();
+
+            let pending = index_local_usage_with_budget(
+                &fixture.database,
+                &fixture.root,
+                now,
+                ScanBudget {
+                    max_bytes: 0,
+                    max_file_bytes: 0,
+                    max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                    max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(pending.scan_status, UsageScanStatus::Indexing);
+            assert_eq!(
+                Connection::open(&fixture.database)
+                    .unwrap()
+                    .query_row("SELECT parser_version FROM codex_usage_files", [], |row| {
+                        row.get::<_, i64>(0)
+                    },)
+                    .unwrap(),
+                COMPATIBLE_ROLLOUT_PARSER_VERSION,
+                "{unsafe_change}"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_index_resumes_a_stored_current_parser_cursor_after_discovery_times_out() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+        let rollout = reviewed_codex_0_148_root_rollout(100).replace("2026-08-24", "2026-08-26");
+        let first_record_bytes = u64::try_from(
+            rollout
+                .split_inclusive('\n')
+                .next()
+                .expect("the rollout must contain session metadata")
+                .len(),
+        )
+        .unwrap();
+        fs::write(&fixture.rollout, rollout).unwrap();
+        let initial = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(initial.daily[&now.date()].observed_tokens, 100);
+
+        Connection::open(&fixture.database)
+            .unwrap()
+            .execute(
+                "UPDATE codex_usage_files
+                 SET parser_version = ?1,
+                     completion_state = 'error',
+                     parsed_offset = size_bytes,
+                     schema_supported = 0,
+                     accounting_ready = 0,
+                     parser_error_seen = 1",
+                [COMPATIBLE_ROLLOUT_PARSER_VERSION],
+            )
+            .unwrap();
+
+        let partial = index_local_usage_with_budget(
+            &fixture.database,
+            &fixture.root,
+            now,
+            ScanBudget {
+                max_bytes: first_record_bytes,
+                max_file_bytes: first_record_bytes,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+        assert_eq!(partial.scan_status, UsageScanStatus::Indexing);
+        let partial_cursor: (i64, String, u64, u64) = Connection::open(&fixture.database)
+            .unwrap()
+            .query_row(
+                "SELECT parser_version, completion_state, parsed_offset, size_bytes
+                 FROM codex_usage_files",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        from_i64(row.get(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        from_i64(row.get(3)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(partial_cursor.0, ROLLOUT_PARSER_VERSION);
+        assert_eq!(partial_cursor.1, "indexing");
+        assert!(partial_cursor.2 > 0);
+        assert!(partial_cursor.2 < partial_cursor.3);
+
+        let resumed = index_local_usage_with_budget(
+            &fixture.database,
+            &fixture.root,
+            now,
+            ScanBudget {
+                max_bytes: MAX_ROLLOUT_SCAN_BYTES,
+                max_file_bytes: MAX_ROLLOUT_FILE_SCAN_BYTES,
+                max_discovery_millis: 0,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resumed.scan_status, UsageScanStatus::Indexing);
+        assert_eq!(
+            resumed
+                .daily
+                .get(&now.date())
+                .map(|day| day.observed_tokens),
+            Some(100)
+        );
+        let completed_cursor: (String, u64, u64) = Connection::open(&fixture.database)
+            .unwrap()
+            .query_row(
+                "SELECT completion_state, parsed_offset, size_bytes FROM codex_usage_files",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        from_i64(row.get(1)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        from_i64(row.get(2)?).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(completed_cursor.0, "complete");
+        assert_eq!(completed_cursor.1, completed_cursor.2);
+    }
+
+    #[test]
+    fn sqlite_index_reads_an_appended_rollout_after_discovery_times_out() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let initial = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(initial.daily[&now.date()].observed_tokens, 100);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&fixture.rollout)
+            .unwrap()
+            .write_all(appended_total(300).as_bytes())
+            .unwrap();
+
+        let resumed = index_local_usage_with_budget(
+            &fixture.database,
+            &fixture.root,
+            now,
+            ScanBudget {
+                max_bytes: MAX_ROLLOUT_SCAN_BYTES,
+                max_file_bytes: MAX_ROLLOUT_FILE_SCAN_BYTES,
+                max_discovery_millis: 0,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resumed.scan_status, UsageScanStatus::Indexing);
+        assert_eq!(resumed.daily[&now.date()].observed_tokens, 300);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_index_rejects_a_stored_rollout_through_an_outward_directory_symlink() {
+        let fixture = TempUsage::new();
+        let external = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let initial = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(initial.daily[&now.date()].observed_tokens, 100);
+
+        fs::write(&external.rollout, root_rollout(900)).unwrap();
+        fs::remove_file(&fixture.rollout).unwrap();
+        fs::remove_dir(fixture.root.join("sessions")).unwrap();
+        std::os::unix::fs::symlink(
+            external.root.join("sessions"),
+            fixture.root.join("sessions"),
+        )
+        .unwrap();
+
+        let protected = index_local_usage_with_budget(
+            &fixture.database,
+            &fixture.root,
+            now,
+            ScanBudget {
+                max_bytes: MAX_ROLLOUT_SCAN_BYTES,
+                max_file_bytes: MAX_ROLLOUT_FILE_SCAN_BYTES,
+                max_discovery_millis: 0,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(protected.scan_status, UsageScanStatus::Indexing);
+        assert_eq!(protected.daily[&now.date()].observed_tokens, 100);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_index_rejects_a_discovered_rollout_through_an_outward_directory_symlink() {
+        let fixture = TempUsage::new();
+        let external = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let initial = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(initial.daily[&now.date()].observed_tokens, 100);
+
+        fs::write(&external.rollout, root_rollout(900)).unwrap();
+        fs::remove_file(&fixture.rollout).unwrap();
+        fs::remove_dir(fixture.root.join("sessions")).unwrap();
+        std::os::unix::fs::symlink(
+            external.root.join("sessions"),
+            fixture.root.join("sessions"),
+        )
+        .unwrap();
+
+        let protected = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(protected.daily[&now.date()].observed_tokens, 100);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_index_rejects_a_stored_rollout_through_an_inward_directory_symlink() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let sessions = fixture.root.join("sessions");
+        let original_directory = sessions.join("original");
+        let moved_directory = sessions.join("moved");
+        fs::create_dir(&original_directory).unwrap();
+        let original_rollout = original_directory.join("rollout.jsonl");
+        fs::write(&original_rollout, root_rollout(100)).unwrap();
+        let initial = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(initial.daily[&now.date()].observed_tokens, 100);
+
+        fs::rename(&original_directory, &moved_directory).unwrap();
+        std::os::unix::fs::symlink(&moved_directory, &original_directory).unwrap();
+        fs::OpenOptions::new()
+            .append(true)
+            .open(moved_directory.join("rollout.jsonl"))
+            .unwrap()
+            .write_all(appended_total(300).as_bytes())
+            .unwrap();
+
+        let protected = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(protected.daily[&now.date()].observed_tokens, 300);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_index_accepts_a_rollout_root_alias_that_stays_inside_the_codex_home() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let sessions = fixture.root.join("sessions");
+        let aliased_sessions = fixture.root.join("stored-sessions");
+        fs::rename(&sessions, &aliased_sessions).unwrap();
+        std::os::unix::fs::symlink(&aliased_sessions, &sessions).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sqlite_index_counts_overlapping_inward_rollout_root_aliases_once() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let sessions = fixture.root.join("sessions");
+        let archived_sessions = fixture.root.join("archived_sessions");
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        fs::create_dir(&archived_sessions).unwrap();
+        fs::rename(&fixture.rollout, archived_sessions.join("rollout.jsonl")).unwrap();
+        fs::remove_dir(&sessions).unwrap();
+        std::os::unix::fs::symlink(&archived_sessions, &sessions).unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+        let stored_files: u64 = Connection::open(&fixture.database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM codex_usage_files", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(stored_files, 1);
     }
 
     #[test]
@@ -7907,7 +8468,8 @@ mod tests {
             ScanBudget {
                 max_bytes: prefix_bytes,
                 max_file_bytes: prefix_bytes,
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
@@ -8074,7 +8636,8 @@ mod tests {
             ScanBudget {
                 max_bytes: appended_bytes,
                 max_file_bytes: appended_bytes,
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
@@ -8305,7 +8868,8 @@ mod tests {
             ScanBudget {
                 max_bytes: u64::try_from(first_pass_bytes).unwrap(),
                 max_file_bytes: u64::try_from(first_pass_bytes).unwrap(),
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
@@ -9007,7 +9571,8 @@ mod tests {
             ScanBudget {
                 max_bytes: first_line_bytes,
                 max_file_bytes: first_line_bytes,
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
@@ -9103,7 +9668,8 @@ mod tests {
             ScanBudget {
                 max_bytes: full_size,
                 max_file_bytes: full_size,
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
@@ -9115,7 +9681,8 @@ mod tests {
             ScanBudget {
                 max_bytes: first_line,
                 max_file_bytes: first_line,
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
@@ -9528,7 +10095,8 @@ mod tests {
                 ScanBudget {
                     max_bytes: fixed_budget,
                     max_file_bytes: fixed_budget,
-                    max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                    max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                    max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
                 },
             )
             .unwrap();
@@ -9581,7 +10149,8 @@ mod tests {
                 ScanBudget {
                     max_bytes: fixed_budget,
                     max_file_bytes: fixed_budget,
-                    max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                    max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                    max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
                 },
             )
             .unwrap();
@@ -9603,7 +10172,8 @@ mod tests {
             ScanBudget {
                 max_bytes: fixed_budget,
                 max_file_bytes: fixed_budget,
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
@@ -10110,7 +10680,8 @@ mod tests {
             ScanBudget {
                 max_bytes: MAX_ROLLOUT_SCAN_BYTES,
                 max_file_bytes: MAX_ROLLOUT_FILE_SCAN_BYTES,
-                max_millis: 0,
+                max_discovery_millis: 0,
+                max_parse_millis: 0,
             },
         )
         .unwrap();
@@ -10123,7 +10694,8 @@ mod tests {
             ScanBudget {
                 max_bytes: 1,
                 max_file_bytes: 1,
-                max_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
             },
         )
         .unwrap();
