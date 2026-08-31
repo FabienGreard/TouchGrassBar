@@ -19,26 +19,24 @@ const emptyProviders: readonly DoomerboardProvider[] = [];
 
 const doomerboardSkeletonCards = [
   {
-    card: "min-h-[100px] border-rank-silver-border bg-rank-silver",
+    card: "min-h-[112px] border-rank-silver-border bg-rank-silver",
     key: "second",
     medal: "h-[29px] w-[29px] bg-rank-silver text-[12px]",
     rank: 2,
   },
   {
-    card: "min-h-[120px] border-rank-gold-border bg-rank-gold",
+    card: "min-h-[136px] border-rank-gold-border bg-rank-gold",
     key: "first",
     medal: "h-[33px] w-[33px] bg-rank-gold text-[15px]",
     rank: 1,
   },
   {
-    card: "min-h-[100px] border-rank-bronze-border bg-rank-bronze",
+    card: "min-h-[112px] border-rank-bronze-border bg-rank-bronze",
     key: "third",
     medal: "h-[29px] w-[29px] bg-rank-bronze text-[12px]",
     rank: 3,
   },
 ] as const;
-
-const doomerboardSkeletonLedgerRows = ["fourth", "fifth", "sixth"] as const;
 
 function DoomerboardSkeleton() {
   return (
@@ -52,49 +50,28 @@ function DoomerboardSkeleton() {
       <span className="sr-only">Loading Doomerboard scores…</span>
       <div
         aria-hidden="true"
-        className="pointer-events-none h-full animate-pulse overflow-hidden motion-reduce:animate-none"
+        className="pointer-events-none grid h-full animate-pulse grid-cols-[1fr_1.12fr_1fr] items-end gap-[5px] px-3.5 pt-[25px] pb-[11px] motion-reduce:animate-none"
         inert
       >
-        <div className="grid grid-cols-[1fr_1.12fr_1fr] items-end gap-[5px] px-3.5 pt-[25px] pb-[5px]">
-          {doomerboardSkeletonCards.map((style) => (
-            <div
-              className={`relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px] ${style.card}`}
-              data-doomerboard-skeleton-rank={style.rank}
-              key={style.key}
-            >
-              <span
-                className={`absolute -top-3.5 grid place-items-center rounded-full font-extrabold text-pearl-ink/20 shadow-control contrast-more:text-pearl-ink/40 ${style.medal}`}
-                data-slot="doomerboard-skeleton-medal"
-              >
-                {style.rank}
-              </span>
-              <span className="mt-[18px] h-1.5 w-12 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-              <span className="mt-auto h-2.5 w-16 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-              <span className="mt-1.5 h-1.5 w-12 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-              <span className="mt-3 h-3 w-14 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-              <span className="mt-1.5 h-1.5 w-10 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-            </div>
-          ))}
-        </div>
-        <div className="mx-3.5 border-t border-pearl-line" data-slot="doomerboard-skeleton-ledger">
-          {doomerboardSkeletonLedgerRows.map((row) => (
+        {doomerboardSkeletonCards.map((style) => (
+          <div
+            className={`relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px] ${style.card}`}
+            data-doomerboard-skeleton-rank={style.rank}
+            key={style.key}
+          >
             <span
-              className="grid grid-cols-[30px_1fr_70px] items-center border-b border-pearl-line px-2.5 py-[5px]"
-              data-slot="doomerboard-skeleton-ledger-row"
-              key={row}
+              className={`absolute -top-3.5 grid place-items-center rounded-full font-extrabold text-pearl-ink/20 shadow-control contrast-more:text-pearl-ink/40 ${style.medal}`}
+              data-slot="doomerboard-skeleton-medal"
             >
-              <span className="h-2 w-3 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-              <span className="flex flex-col gap-1.5">
-                <span className="h-2 w-16 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-                <span className="h-1.5 w-11 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-              </span>
-              <span className="flex flex-col items-end gap-1.5">
-                <span className="h-2 w-10 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-                <span className="h-1.5 w-8 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
-              </span>
+              {style.rank}
             </span>
-          ))}
-        </div>
+            <span className="mt-[18px] h-1.5 w-12 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-auto h-2.5 w-16 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-1.5 h-1.5 w-12 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-3 h-3 w-14 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-1.5 h-1.5 w-10 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+          </div>
+        ))}
       </div>
     </div>
   );

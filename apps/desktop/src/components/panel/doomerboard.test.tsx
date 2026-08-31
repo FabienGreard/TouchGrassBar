@@ -64,11 +64,3 @@ test("loading keeps the real gold, silver, and bronze podium tones", () => {
     );
   }
 });
-
-test("loading hints that Doomerboard ranks continue below the podium", () => {
-  render(<Doomerboard loading />);
-
-  const loading = screen.getByRole("status", { name: "Loading Doomerboard" });
-
-  expect(loading.querySelectorAll("[data-slot='doomerboard-skeleton-ledger-row']")).toHaveLength(3);
-});
