@@ -881,6 +881,42 @@ impl DoomerboardRuntime {
         }
     }
 
+    fn with_active_session_for<T>(
+        &self,
+        expected_touch_grass_id: &str,
+        operation: impl Fn(&Secret) -> Result<T, TransportError>,
+    ) -> Result<T, TransportError> {
+        let session = self
+            .coordinator
+            .lock()
+            .ok()
+            .and_then(|coordinator| {
+                coordinator
+                    .active_sync_credentials_for(expected_touch_grass_id)
+                    .ok()
+            })
+            .flatten()
+            .map(|credentials| credentials.session)
+            .ok_or(TransportError::Unavailable)?;
+        match operation(&session) {
+            Err(TransportError::AuthorityRejected) => {
+                let refreshed = self
+                    .coordinator
+                    .lock()
+                    .ok()
+                    .and_then(|coordinator| {
+                        coordinator
+                            .refresh_active_sync_session_for(&session, expected_touch_grass_id)
+                            .ok()
+                    })
+                    .flatten()
+                    .ok_or(TransportError::Unavailable)?;
+                operation(&refreshed)
+            }
+            result => result,
+        }
+    }
+
     pub(crate) fn read(&self, request_id: &str, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
         let Some(cancellation) = self.read_cancellation(request_id) else {
             return DoomerboardViewV1::unavailable();
@@ -903,22 +939,27 @@ impl DoomerboardRuntime {
         }
     }
 
-    pub(crate) fn add(&self, touch_grass_id: &str) -> AddTokenmaxxerOutcomeV1 {
+    pub(crate) fn add(
+        &self,
+        expected_touch_grass_id: &str,
+        touch_grass_id: &str,
+    ) -> AddTokenmaxxerOutcomeV1 {
         if !valid_touch_grass_id(touch_grass_id) {
             return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Invalid);
         }
         if self.online_gate.is_paused() {
             return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable);
         }
-        let status =
-            match self.with_active_session(|session| self.transport.add(session, touch_grass_id)) {
-                Ok(status) => status,
-                Err(
-                    TransportError::AuthorityRejected
-                    | TransportError::Canceled
-                    | TransportError::Unavailable,
-                ) => AddTokenmaxxerStatusV1::Unavailable,
-            };
+        let status = match self.with_active_session_for(expected_touch_grass_id, |session| {
+            self.transport.add(session, touch_grass_id)
+        }) {
+            Ok(status) => status,
+            Err(
+                TransportError::AuthorityRejected
+                | TransportError::Canceled
+                | TransportError::Unavailable,
+            ) => AddTokenmaxxerStatusV1::Unavailable,
+        };
         AddTokenmaxxerOutcomeV1::new(status)
     }
 }
@@ -1692,13 +1733,13 @@ mod tests {
         );
 
         assert_eq!(
-            runtime.add("private-input"),
+            runtime.add("TG-234567", "private-input"),
             AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Invalid)
         );
         let paused =
             DoomerboardRuntime::new(coordinator, transport.clone(), OnlineFeatureGate::paused());
         assert_eq!(
-            paused.add("TG-234567"),
+            paused.add("TG-234567", "TG-234568"),
             AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable)
         );
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);

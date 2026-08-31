@@ -393,8 +393,9 @@ function PanelScreen({
         setAddTokenmaxxerFailure(null);
         setAddTokenmaxxerInFlight(true);
         void (async () => {
-          const outcome = hasNativeRuntime
-            ? await addTokenmaxxer(doomerboard, touchGrassId)
+          const outcome =
+            hasNativeRuntime && submissionProfileKey !== null
+              ? await addTokenmaxxer(doomerboard, submissionProfileKey, touchGrassId)
             : ({ status: "unavailable" } as const);
           const finishRequest = () => {
             const current = addTokenmaxxerRequests.finish(request);

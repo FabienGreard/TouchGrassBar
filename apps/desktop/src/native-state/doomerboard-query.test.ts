@@ -76,12 +76,13 @@ test("Add Tokenmaxxer accepts only strict public outcomes", async () => {
   let value: unknown = { contractVersion: 1, status: "added" };
   const add = vi.fn(async () => ({ ok: true as const, value }));
 
-  await expect(addTokenmaxxer({ add }, "TG-234567")).resolves.toEqual({
+  await expect(addTokenmaxxer({ add }, "TG-7K4P9D", "TG-234567")).resolves.toEqual({
     contractVersion: 1,
     status: "added",
   });
+  expect(add).toHaveBeenCalledWith("TG-7K4P9D", "TG-234567");
   value = { contractVersion: 1, session: "private", status: "added" };
-  await expect(addTokenmaxxer({ add }, "TG-234567")).resolves.toEqual({
+  await expect(addTokenmaxxer({ add }, "TG-7K4P9D", "TG-234567")).resolves.toEqual({
     contractVersion: 1,
     status: "unavailable",
   });

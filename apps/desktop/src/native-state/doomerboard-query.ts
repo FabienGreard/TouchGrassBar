@@ -36,7 +36,7 @@ type DoomerboardQuery = {
 };
 
 type DoomerboardPort = {
-  add: (touchGrassId: string) => Promise<DoomerboardPortOutcome<unknown>>;
+  add: (profileKey: string, touchGrassId: string) => Promise<DoomerboardPortOutcome<unknown>>;
   read: (
     query: DoomerboardQuery,
     signal?: AbortSignal | undefined,
@@ -260,6 +260,7 @@ function createDoomerboardQueryOptions({
 
 async function addTokenmaxxer(
   native: DoomerboardMutationPort,
+  profileKey: string,
   touchGrassId: string,
 ): Promise<AddTokenmaxxerOutcome> {
   const unavailable = {
@@ -267,7 +268,7 @@ async function addTokenmaxxer(
     status: "unavailable" as const,
   };
   try {
-    const outcome = await native.add(touchGrassId);
+    const outcome = await native.add(profileKey, touchGrassId);
     if (!outcome.ok) return unavailable;
     const parsed = addTokenmaxxerOutcomeSchema.safeParse(outcome.value);
     return parsed.success ? parsed.data : unavailable;

@@ -793,11 +793,12 @@ fn cancel_doomerboard_read(
 async fn add_tokenmaxxer(
     window: WebviewWindow,
     runtime: State<'_, doomerboard::DoomerboardRuntime>,
+    profile_key: String,
     touch_grass_id: String,
 ) -> Result<doomerboard::AddTokenmaxxerOutcomeV1, String> {
     require_panel(&window)?;
     let runtime = runtime.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || runtime.add(&touch_grass_id))
+    tauri::async_runtime::spawn_blocking(move || runtime.add(&profile_key, &touch_grass_id))
         .await
         .map_err(|_| "Add Tokenmaxxer unavailable".to_owned())
 }

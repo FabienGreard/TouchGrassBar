@@ -758,6 +758,7 @@ test("Add Tokenmaxxer ignores a delayed completion after the Profile changes", a
   if (submit === null) throw new Error("Missing Add Tokenmaxxer form");
   fireEvent.submit(submit);
   await waitFor(() => expect(native.add).toHaveBeenCalledOnce());
+  expect(native.add).toHaveBeenCalledWith(firstProfileKey, "TG-234567");
 
   state.publish(secondSnapshot);
   await screen.findByText("global-combined-1-v1");

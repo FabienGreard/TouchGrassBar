@@ -56,8 +56,12 @@ describe("Tauri Doomerboard adapter", () => {
     };
     const adapter = createTauriDoomerboardAdapter(bindings);
 
-    await expect(adapter.add("TG-234567")).resolves.toEqual({ ok: true, value: outcome });
+    await expect(adapter.add("TG-7K4P9D", "TG-234567")).resolves.toEqual({
+      ok: true,
+      value: outcome,
+    });
     expect(bindings.invoke).toHaveBeenCalledWith("add_tokenmaxxer", {
+      profileKey: "TG-7K4P9D",
       touchGrassId: "TG-234567",
     });
   });
