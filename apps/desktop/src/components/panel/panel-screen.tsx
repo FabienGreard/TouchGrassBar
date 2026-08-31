@@ -11,6 +11,7 @@ import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import {
   addTokenmaxxer,
+  cancelDoomerboardAudience,
   cancelDoomerboardRankingDay,
   createDoomerboardQueryOptions,
   currentRankingDay,
@@ -384,6 +385,13 @@ function PanelScreen({
           if (outcome.status === "added" || outcome.status === "already-added") {
             const nextSelection = { ...doomerboardSelection, audience: "mine" as const };
             if (profileKey !== null) {
+              await cancelDoomerboardAudience(
+                queryClient,
+                doomerboard,
+                profileKey,
+                rankingDay,
+                "mine",
+              );
               await queryClient.invalidateQueries({
                 queryKey: doomerboardAudienceKey(profileKey, rankingDay, "mine"),
                 refetchType: "none",

@@ -514,3 +514,87 @@ test("a Profile change discards reads from the previous prefetch", async () => {
   expect(await screen.findByText(`${activeProfile}-mine-combined-1`)).toBeTruthy();
   expect(screen.queryByText(`${secondProfileKey}-mine-combined-1`)).toBeNull();
 });
+
+test("Add Tokenmaxxer discards a pending Mine result before selecting it", async () => {
+  let announceOldMineRead!: () => void;
+  let finishOldMineRead!: () => void;
+  const oldMineReadStarted = new Promise<void>((resolve) => {
+    announceOldMineRead = resolve;
+  });
+  const oldMineReadFinished = new Promise<void>((resolve) => {
+    finishOldMineRead = resolve;
+  });
+  const native = doomerboardPort();
+  let scoreVersion = 1;
+  let oldMineReadPending = true;
+  native.add = vi.fn(async () => {
+    scoreVersion = 2;
+    return {
+      ok: true as const,
+      value: { contractVersion: 1, status: "added" },
+    };
+  });
+  native.read = vi.fn(async (selection) => {
+    const oldMineRead =
+      oldMineReadPending &&
+      selection.audience === "mine" &&
+      selection.scope === "combined" &&
+      selection.windowDays === 1;
+    const readVersion = scoreVersion;
+    if (oldMineRead) {
+      oldMineReadPending = false;
+      announceOldMineRead();
+      await oldMineReadFinished;
+    }
+    return {
+      ok: true as const,
+      value: {
+        contractVersion: 1,
+        rows: [
+          {
+            displayName: `mutation-result-v${readVersion}`,
+            rank: 1,
+            tokenScore: 4_200_000,
+            touchGrassId: "TG-7K4P9D",
+          },
+        ],
+        status: "ready" as const,
+      },
+    };
+  });
+  const stateDelivery = createSanitizedDesktopStateDelivery(
+    createBrowserSanitizedDesktopStateAdapter(
+      "current",
+      () => new Date("2026-08-31T10:00:00.000Z"),
+      undefined,
+      "synced",
+    ),
+  );
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={stateDelivery} />
+    </QueryClientProvider>,
+  );
+
+  await screen.findByText("mutation-result-v1");
+  await oldMineReadStarted;
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Open panel menu" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a Tokenmaxxer…" }));
+  fireEvent.change(screen.getByLabelText("TouchGrass ID"), {
+    target: { value: "TG-234567" },
+  });
+  const submit = screen.getByRole("button", { name: "Add Tokenmaxxer" }).closest("form");
+  if (submit === null) throw new Error("Missing Add Tokenmaxxer form");
+  fireEvent.submit(submit);
+
+  await waitFor(() => expect(native.add).toHaveBeenCalledOnce());
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  finishOldMineRead();
+
+  expect(await screen.findByText("mutation-result-v2")).toBeTruthy();
+  expect(screen.queryByText("mutation-result-v1")).toBeNull();
+});
