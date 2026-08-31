@@ -22,7 +22,8 @@ use time::{Duration, OffsetDateTime, UtcOffset, format_description::well_known::
 
 use crate::daily_usage_aggregate::project_retained_cost;
 use crate::providers::{
-    PROVIDER_REGISTRY, ProviderCorrection, ProviderDailyUsage, load_daily_usage_history,
+    PROVIDER_REGISTRY, ProviderCorrection, ProviderDailyUsage, approved_pricing_basis,
+    load_daily_usage_history,
 };
 use crate::sanitized::{
     ApiEquivalentCostQuality, CodingProvider, SanitizedDesktopStateV3, UsageCoverage,
@@ -3475,6 +3476,7 @@ fn aggregate_from_total_with_day_policy(
     };
     validate_safe_integer(observed_tokens)?;
     let api_equivalent_cost = convert_cost(
+        provider,
         api_equivalent_cost_usd,
         api_equivalent_cost_basis,
         api_equivalent_cost_quality,
@@ -3495,6 +3497,7 @@ fn aggregate_from_total_with_day_policy(
 }
 
 fn convert_cost(
+    provider: CodingProvider,
     cost_usd: Option<f64>,
     pricing_basis: &Option<String>,
     quality: Option<ApiEquivalentCostQuality>,
@@ -3526,6 +3529,9 @@ fn convert_cost(
         coverage_percent,
     };
     cost.validate()?;
+    if !approved_pricing_basis(provider, &cost.pricing_basis) {
+        return Ok(None);
+    }
     Ok(Some(cost))
 }
 
@@ -4064,17 +4070,6 @@ fn valid_pricing_basis(value: &str) -> bool {
         })
 }
 
-fn approved_pricing_basis(provider: CodingProvider, value: &str) -> bool {
-    matches!(
-        (provider, value),
-        // Keep the bounded prior Codex catalog while a retained 60-day row
-        // can still prove the exact effective-dated cost basis.
-        (CodingProvider::Codex, "openai-standard-2026-08-06-v1")
-            | (CodingProvider::Codex, "openai-api-2026-08-09-v3")
-            | (CodingProvider::Claude, "anthropic-standard-2026-08-07-v1")
-    )
-}
-
 fn valid_installation_credential(value: &str) -> bool {
     const ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     value.len() == INSTALLATION_CREDENTIAL_BYTES
@@ -4363,6 +4358,139 @@ mod tests {
                 .coverage_percent,
             Some(75.0)
         );
+    }
+
+    #[test]
+    fn bundled_current_pricing_bases_reach_usage_sync() {
+        let codex_basis = crate::providers::current_pricing_basis(CodingProvider::Codex)
+            .expect("bundled Codex pricing basis");
+        let claude_basis = crate::providers::current_pricing_basis(CodingProvider::Claude)
+            .expect("bundled Claude pricing basis");
+        let state = state_with_totals(
+            total(
+                UsageEvidenceBasis::ProviderReported,
+                120,
+                NOW,
+                Some((
+                    1.25,
+                    codex_basis,
+                    ApiEquivalentCostQuality::Reconciled,
+                    None,
+                )),
+            ),
+            total(
+                UsageEvidenceBasis::LocallyDerived,
+                80,
+                NOW,
+                Some((
+                    0.75,
+                    claude_basis,
+                    ApiEquivalentCostQuality::Modeled,
+                    Some(75.0),
+                )),
+            ),
+        );
+
+        let aggregates = current_utc_daily_aggregates(&state, now()).unwrap();
+
+        assert_eq!(
+            aggregates[0]
+                .api_equivalent_cost
+                .as_ref()
+                .unwrap()
+                .pricing_basis,
+            codex_basis
+        );
+        assert_eq!(
+            aggregates[1]
+                .api_equivalent_cost
+                .as_ref()
+                .unwrap()
+                .pricing_basis,
+            claude_basis
+        );
+    }
+
+    #[test]
+    fn bundled_current_pricing_basis_queues_a_today_snapshot() {
+        let codex_basis = crate::providers::current_pricing_basis(CodingProvider::Codex)
+            .expect("bundled Codex pricing basis");
+        let state = state_with_totals(
+            total(
+                UsageEvidenceBasis::ProviderReported,
+                120,
+                NOW,
+                Some((
+                    1.25,
+                    codex_basis,
+                    ApiEquivalentCostQuality::Reconciled,
+                    None,
+                )),
+            ),
+            UsageTotal::Unavailable,
+        );
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        activate_generation(&transaction, 1).unwrap();
+        capture_generation_baselines(&transaction, 1, &state, now(), now()).unwrap();
+
+        let updates = queue_usage_for_commit(
+            &transaction,
+            1,
+            &state,
+            now(),
+            &BTreeSet::from([CodingProvider::Codex]),
+            UsageQueueRequest::AfterAcknowledgement,
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        assert!(matches!(
+            updates.as_slice(),
+            [QueueUpdate::Stored { revision: 1, .. }]
+        ));
+        let batch = load_next_pending_usage_batch(
+            &connection,
+            1,
+            now(),
+            &BTreeSet::from([CodingProvider::Codex]),
+        )
+        .unwrap()
+        .expect("pending Today batch");
+        assert_eq!(batch.snapshots().len(), 1);
+        assert_eq!(batch.snapshots()[0].observed_tokens, 120);
+        assert_eq!(
+            batch.snapshots()[0]
+                .api_equivalent_cost
+                .as_ref()
+                .unwrap()
+                .pricing_basis,
+            codex_basis
+        );
+    }
+
+    #[test]
+    fn unapproved_cost_basis_does_not_block_current_tokens() {
+        let state = state_with_totals(
+            total(
+                UsageEvidenceBasis::ProviderReported,
+                120,
+                NOW,
+                Some((
+                    1.25,
+                    "openai-standard-future-v1",
+                    ApiEquivalentCostQuality::Reconciled,
+                    None,
+                )),
+            ),
+            UsageTotal::Unavailable,
+        );
+
+        let aggregates = current_utc_daily_aggregates(&state, now()).unwrap();
+
+        assert_eq!(aggregates.len(), 1);
+        assert_eq!(aggregates[0].observed_tokens, 120);
+        assert_eq!(aggregates[0].api_equivalent_cost, None);
     }
 
     #[test]
@@ -5096,7 +5224,7 @@ mod tests {
     }
 
     #[test]
-    fn hostile_and_incomplete_values_fail_closed() {
+    fn hostile_and_incomplete_costs_fail_closed_without_blocking_a_bounded_unknown_basis() {
         let hostile = state_with_totals(
             total(
                 UsageEvidenceBasis::ProviderReported,
@@ -5130,10 +5258,10 @@ mod tests {
             ),
             UsageTotal::Unavailable,
         );
-        assert_eq!(
-            current_utc_daily_aggregates(&private_basis, now()),
-            Err(UsageSyncError::INVALID_VALUE)
-        );
+        let aggregates = current_utc_daily_aggregates(&private_basis, now()).unwrap();
+        assert_eq!(aggregates.len(), 1);
+        assert_eq!(aggregates[0].observed_tokens, 10);
+        assert_eq!(aggregates[0].api_equivalent_cost, None);
 
         let incomplete = state_with_totals(
             UsageTotal::Current {

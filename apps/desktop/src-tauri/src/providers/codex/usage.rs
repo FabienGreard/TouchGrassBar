@@ -651,6 +651,10 @@ fn pricing_manifest() -> Option<&'static PricingManifest> {
         .ok()
 }
 
+pub(super) fn current_pricing_basis() -> Option<&'static str> {
+    pricing_manifest().map(|manifest| manifest.basis.as_str())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PricingLookupFailure {
     MissingApplicablePrice,

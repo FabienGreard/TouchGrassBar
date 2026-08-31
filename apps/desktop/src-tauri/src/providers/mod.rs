@@ -30,6 +30,49 @@ pub(crate) const CODEX_USAGE_SCHEMA_VERSION: i64 = codex::USAGE_INDEX_SCHEMA_VER
 pub(crate) const CLAUDE_USAGE_SCHEMA_MODULE: &str = claude::USAGE_INDEX_SCHEMA_MODULE;
 pub(crate) const CLAUDE_USAGE_SCHEMA_VERSION: i64 = claude::USAGE_INDEX_SCHEMA_VERSION;
 
+// These prior bases can still occur in the retained 60-day Usage history.
+// The current bases come from the bundled provider pricing catalogs below.
+const RETAINED_CODEX_PRICING_BASES: &[&str] =
+    &["openai-api-2026-08-09-v3", "openai-standard-2026-08-06-v1"];
+const RETAINED_CLAUDE_PRICING_BASES: &[&str] = &["anthropic-standard-2026-08-07-v1"];
+
+pub(crate) fn current_pricing_basis(provider: CodingProvider) -> Option<&'static str> {
+    match provider {
+        CodingProvider::Codex => codex::current_pricing_basis(),
+        CodingProvider::Claude => claude::current_pricing_basis(),
+    }
+}
+
+fn retained_pricing_bases(provider: CodingProvider) -> &'static [&'static str] {
+    match provider {
+        CodingProvider::Codex => RETAINED_CODEX_PRICING_BASES,
+        CodingProvider::Claude => RETAINED_CLAUDE_PRICING_BASES,
+    }
+}
+
+pub(crate) fn approved_pricing_bases(provider: CodingProvider) -> Vec<&'static str> {
+    let mut bases = retained_pricing_bases(provider)
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if let Some(current) = current_pricing_basis(provider) {
+        bases.insert(current);
+    }
+    bases.into_iter().collect()
+}
+
+pub(crate) fn approved_pricing_basis(provider: CodingProvider, value: &str) -> bool {
+    current_pricing_basis(provider) == Some(value)
+        || retained_pricing_bases(provider).contains(&value)
+}
+
+pub(crate) fn approved_pricing_bases_by_provider() -> BTreeMap<&'static str, Vec<&'static str>> {
+    BTreeMap::from([
+        ("claude", approved_pricing_bases(CodingProvider::Claude)),
+        ("codex", approved_pricing_bases(CodingProvider::Codex)),
+    ])
+}
+
 pub(crate) fn prepare_usage_databases(path: &Path) -> Result<(), ()> {
     codex::prepare_usage_database(path)?;
     claude::prepare_usage_database(path)

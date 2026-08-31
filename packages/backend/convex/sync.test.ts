@@ -4,6 +4,7 @@ import doomerboardIndexTest from "@convex-dev/aggregate/test";
 import betterAuthTest from "@convex-dev/better-auth/test";
 import migrationsTest from "@convex-dev/migrations/test";
 import rateLimiterTest from "@convex-dev/rate-limiter/test";
+import { APPROVED_PRICING_BASES_BY_PROVIDER } from "@touchgrass/contracts";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
@@ -773,6 +774,38 @@ test("a retained Codex correction keeps an approved prior pricing basis", async 
   });
 });
 
+test("every native pricing basis is accepted by Usage Snapshot sync", async () => {
+  for (const [provider, pricingBases] of Object.entries(APPROVED_PRICING_BASES_BY_PROVIDER) as [
+    "claude" | "codex",
+    readonly string[],
+  ][]) {
+    for (const pricingBasis of pricingBases) {
+      const t = testBackend();
+      const credential = installationCredential("A");
+      const { authenticated } = await createProfile(t, credential, `Profile ${pricingBasis}`);
+
+      await expect(
+        authenticated.mutation(api.sync.dailyUsage, {
+          activeMacGeneration: 1,
+          installationCredential: credential,
+          profileBackfillAnchor: TODAY,
+          snapshots: [
+            usageSnapshot({
+              apiEquivalentCost: {
+                coveragePercent: null,
+                micros: 1_000,
+                pricingBasis,
+                quality: "local-only",
+              },
+              provider,
+            }),
+          ],
+        }),
+      ).resolves.toMatchObject([{ outcome: "committed" }]);
+    }
+  }
+});
+
 test("both providers commit atomically and retries report exact revision outcomes", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
@@ -1274,12 +1307,14 @@ test("My Tokenmaxxers reads require authenticated Profile authority", async () =
   ).rejects.toThrow("authority-rejected");
 });
 
-test("the current My Tokenmaxxers Doomerboard selects its provider and period", async () => {
+test("the current Doomerboards select their provider and period and omit zero scores", async () => {
   const t = testBackend();
   const owner = await createProfile(t, installationCredential("A"), "Owner");
   const addedCredential = installationCredential("B");
   const added = await createProfile(t, addedCredential, "Added");
   const waiting = await createProfile(t, installationCredential("C"), "Waiting");
+  const zeroCredential = installationCredential("D");
+  const zero = await createProfile(t, zeroCredential, "Zero");
   await added.authenticated.mutation(api.sync.dailyUsage, {
     profileBackfillAnchor: null,
     activeMacGeneration: 1,
@@ -1289,12 +1324,35 @@ test("the current My Tokenmaxxers Doomerboard selects its provider and period", 
       usageSnapshot({ observedTokens: 250, provider: "claude" }),
     ],
   });
+  await zero.authenticated.mutation(api.sync.dailyUsage, {
+    profileBackfillAnchor: null,
+    activeMacGeneration: 1,
+    installationCredential: zeroCredential,
+    snapshots: [usageSnapshot({ observedTokens: 0, provider: "claude" })],
+  });
   await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
     touchGrassId: added.touchGrassId,
   });
   await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
     touchGrassId: waiting.touchGrassId,
   });
+  await owner.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+    touchGrassId: zero.touchGrassId,
+  });
+
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentGlobal, {
+      rankingDay: TODAY,
+      scope: "claude",
+      windowDays: 30,
+    }),
+  ).resolves.toMatchObject([
+    {
+      displayName: "Added",
+      tokenScore: 250,
+      touchGrassId: added.touchGrassId,
+    },
+  ]);
 
   await expect(
     owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
@@ -1310,7 +1368,7 @@ test("the current My Tokenmaxxers Doomerboard selects its provider and period", 
         touchGrassId: added.touchGrassId,
       },
     ],
-    savedTokenmaxxerCount: 2,
+    savedTokenmaxxerCount: 3,
   });
 });
 

@@ -44,10 +44,12 @@ export function rankRows<
     touchGrassId: string;
   },
 >(rows: T[]) {
-  const orderedRows = [...rows].sort(
-    (left, right) =>
-      right.tokenScore - left.tokenScore || left.touchGrassId.localeCompare(right.touchGrassId),
-  );
+  const orderedRows = rows
+    .filter((row) => row.tokenScore > 0)
+    .sort(
+      (left, right) =>
+        right.tokenScore - left.tokenScore || left.touchGrassId.localeCompare(right.touchGrassId),
+    );
   return orderedRows.map((row, index) => ({
     apiEquivalentCost: row.apiEquivalentCost,
     displayName: row.displayName,

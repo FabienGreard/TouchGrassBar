@@ -88,6 +88,12 @@ describe("public contracts", () => {
         rows: [{ ...view.rows[0], providerMessageId: "private" }],
       }).success,
     ).toBe(false);
+    expect(
+      doomerboardViewSchema.safeParse({
+        ...view,
+        rows: [{ ...view.rows[0], tokenScore: 0 }],
+      }).success,
+    ).toBe(false);
     expect(doomerboardViewSchema.safeParse({ ...view, session: "private" }).success).toBe(false);
   });
 

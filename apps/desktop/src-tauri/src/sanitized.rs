@@ -32,7 +32,8 @@ use crate::profile::ActiveMacActivation;
 pub use crate::providers::{CodingProvider, ProviderPresenceStatus};
 use crate::providers::{
     PROVIDER_REGISTRY, ProviderCorrection, ProviderEnablementPolicy, all_providers_enabled_policy,
-    detect_provider_presence, production_observation_coordinator, provider_descriptor,
+    approved_pricing_bases_by_provider, detect_provider_presence,
+    production_observation_coordinator, provider_descriptor,
 };
 use crate::quota_headroom::{RevisionedOverallQuotaHeadroom, overall_quota_headroom};
 use crate::updater::{UPDATE_CONTRACT_VERSION, UPDATE_STATE_CHANGED_EVENT, update_state_schema};
@@ -4330,6 +4331,7 @@ pub fn native_contract_export() -> Value {
     json!({
         "addTokenmaxxerContractVersion": ADD_TOKENMAXXER_CONTRACT_VERSION,
         "addTokenmaxxerOutcomeSchema": add_tokenmaxxer_outcome_schema(),
+        "approvedPricingBasesByProvider": approved_pricing_bases_by_provider(),
         "bootstrapContractVersion": LIFECYCLE_CONTRACT_VERSION,
         "bootstrapStateSchema": bootstrap_state_schema(),
         "contractVersion": CONTRACT_VERSION,

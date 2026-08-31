@@ -107,7 +107,7 @@ pub struct DoomerboardRowV1 {
     pub touch_grass_id: String,
     #[schemars(range(min = 1, max = 9007199254740991_u64))]
     pub rank: u64,
-    #[schemars(range(max = 9007199254740991_u64))]
+    #[schemars(range(min = 1, max = 9007199254740991_u64))]
     pub token_score: u64,
     pub api_equivalent_cost_usd: Option<f64>,
 }
@@ -543,6 +543,9 @@ fn parse_row(value: Value) -> Option<DoomerboardRowV1> {
     let token_score = object
         .get("tokenScore")
         .and_then(nonnegative_safe_integer)?;
+    if token_score == 0 {
+        return None;
+    }
     let api_equivalent_cost_usd = parse_cost(object.get("apiEquivalentCost")?)?;
     Some(DoomerboardRowV1 {
         display_name,
@@ -621,10 +624,12 @@ fn parse_selected_rows(
         .filter(|count| *count <= MAX_ROWS as u64)
         .ok_or(TransportError::Unavailable)?;
     let rows = parse_rows(object.remove("rows").ok_or(TransportError::Unavailable)?)?;
-    if rows.len() as u64 == saved_tokenmaxxer_count {
-        Ok(rows)
-    } else {
+    if rows.len() as u64 > saved_tokenmaxxer_count
+        || (saved_tokenmaxxer_count > 0 && rows.is_empty())
+    {
         Err(TransportError::Unavailable)
+    } else {
+        Ok(rows)
     }
 }
 
@@ -768,6 +773,10 @@ mod tests {
         assert_eq!(parsed[0].api_equivalent_cost_usd, Some(12.5));
         assert_eq!(parsed[1].rank, 1);
         assert_eq!(parsed[2].rank, 3);
+        assert_eq!(
+            parse_rows(Value::Array(vec![row("TG-234567", 1, 0)])),
+            Err(TransportError::Unavailable)
+        );
     }
 
     #[test]
@@ -821,8 +830,10 @@ mod tests {
             1
         );
         assert_eq!(
-            parse_selected_rows(selected, saved_rows(2, vec![row("TG-234567", 1, 500)]),),
-            Err(TransportError::Unavailable)
+            parse_selected_rows(selected, saved_rows(2, vec![row("TG-234567", 1, 500)]),)
+                .expect("omit an unscored saved Profile")
+                .len(),
+            1
         );
     }
 

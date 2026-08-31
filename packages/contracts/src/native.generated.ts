@@ -2,6 +2,7 @@
 import * as z from "zod";
 
 export const ADD_TOKENMAXXER_CONTRACT_VERSION = 1 as const;
+export const APPROVED_PRICING_BASES_BY_PROVIDER = {"claude":["anthropic-standard-2026-08-07-v1","anthropic-standard-2026-08-26-v1"],"codex":["openai-api-2026-08-09-v3","openai-standard-2026-08-06-v1","openai-standard-2026-08-26-v2"]} as const;
 export const BOOTSTRAP_CONTRACT_VERSION = 3 as const;
 export const CONTRACT_VERSION = 4 as const;
 export const DOOMERBOARD_CONTRACT_VERSION = 1 as const;
@@ -17,7 +18,7 @@ export const addTokenmaxxerStatusV1Schema = z.enum(["added","already-added","inv
 export const apiEquivalentCostQualitySchema = z.enum(["reconciled","modeled","local-only"]);
 export const bootstrapStatusSchema = z.enum(["required","completed"]);
 export const codingProviderSchema = z.enum(["codex","claude"]);
-export const doomerboardRowV1Schema = z.object({ displayName: z.string().min(1).max(40), touchGrassId: z.string().regex(new RegExp("^TG-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$")), rank: z.number().int().nonnegative().min(1).max(9007199254740991), tokenScore: z.number().int().nonnegative().max(9007199254740991), apiEquivalentCostUsd: z.number().nonnegative().nullable().optional() }).strict();
+export const doomerboardRowV1Schema = z.object({ displayName: z.string().min(1).max(40), touchGrassId: z.string().regex(new RegExp("^TG-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{6}$")), rank: z.number().int().nonnegative().min(1).max(9007199254740991), tokenScore: z.number().int().nonnegative().min(1).max(9007199254740991), apiEquivalentCostUsd: z.number().nonnegative().nullable().optional() }).strict();
 export const launchAtLoginStateSchema = z.discriminatedUnion("availability", [z.object({ enabled: z.boolean(), availability: z.literal("available") }).strict(), z.object({ availability: z.literal("unavailable") }).strict()]);
 export const persistenceStatusSchema = z.enum(["available","unavailable"]);
 export const profileProvisioningStatusSchema = z.enum(["not-authorized","profile-pending","ready"]);

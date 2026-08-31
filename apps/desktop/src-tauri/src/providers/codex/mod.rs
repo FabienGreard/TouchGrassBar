@@ -6,6 +6,10 @@ pub(crate) use usage::{
     prepare_database as prepare_usage_database, usage_index_schema_version,
 };
 
+pub(super) fn current_pricing_basis() -> Option<&'static str> {
+    usage::current_pricing_basis()
+}
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,

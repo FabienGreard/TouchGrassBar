@@ -12,7 +12,7 @@ export const tokenmaxxerSchema = z
 export const doomerboardRowSchema = tokenmaxxerSchema
   .extend({
     rank: z.number().int().positive(),
-    tokenScore: z.number().int().nonnegative(),
+    tokenScore: z.number().int().positive(),
     apiEquivalentCostUsd: z.number().nonnegative().nullable(),
   })
   .strict();
