@@ -48,11 +48,20 @@ type DoomerboardQueryPort = Pick<DoomerboardPort, "read">;
 type DoomerboardMutationPort = Pick<DoomerboardPort, "add">;
 type DoomerboardReadOutcome = Awaited<ReturnType<DoomerboardQueryPort["read"]>>;
 type PendingDoomerboardRead = {
+  profileKey: string;
   query: DoomerboardQuery;
+  rankingDay: string;
   reject: (reason?: unknown) => void;
   resolve: (outcome: DoomerboardReadOutcome) => void;
 };
-type ScheduleDoomerboardRead = (query: DoomerboardQuery) => Promise<DoomerboardReadOutcome>;
+type DoomerboardReadScheduler = {
+  cancel: (profileKey: string, rankingDay: string) => void;
+  schedule: (
+    query: DoomerboardQuery,
+    profileKey: string,
+    rankingDay: string,
+  ) => Promise<DoomerboardReadOutcome>;
+};
 
 type CreateDoomerboardQueryOptionsInput = {
   native: DoomerboardQueryPort;
@@ -64,41 +73,67 @@ type CreateDoomerboardQueryOptionsInput = {
 type PrefetchDoomerboardSelectionsInput = Omit<CreateDoomerboardQueryOptionsInput, "selection"> & {
   activeSelection: DoomerboardQuery;
   client: QueryClient;
+  signal?: AbortSignal | undefined;
 };
 
-const doomerboardReadSchedulers = new WeakMap<DoomerboardQueryPort, ScheduleDoomerboardRead>();
+const doomerboardReadSchedulers = new WeakMap<DoomerboardQueryPort, DoomerboardReadScheduler>();
 
-function createDoomerboardReadScheduler(native: DoomerboardQueryPort): ScheduleDoomerboardRead {
+function canceledDoomerboardRead() {
+  return new DOMException("Doomerboard read canceled", "AbortError");
+}
+
+function createDoomerboardReadScheduler(native: DoomerboardQueryPort): DoomerboardReadScheduler {
+  const active = new Set<PendingDoomerboardRead>();
   const pending: PendingDoomerboardRead[] = [];
-  let activeReads = 0;
   const startPendingReads = () => {
-    while (activeReads < doomerboardNativeReadLimit) {
+    while (active.size < doomerboardNativeReadLimit) {
       const read = pending.shift();
       if (read === undefined) return;
-      activeReads += 1;
+      active.add(read);
       void Promise.resolve()
         .then(() => native.read(read.query))
         .then(read.resolve, read.reject)
         .finally(() => {
-          activeReads -= 1;
+          active.delete(read);
           startPendingReads();
         });
     }
   };
-  return (query) =>
-    new Promise((resolve, reject) => {
-      pending.push({ query, reject, resolve });
+  return {
+    cancel: (profileKey, rankingDay) => {
+      for (let index = pending.length - 1; index >= 0; index -= 1) {
+        const read = pending[index];
+        if (read?.profileKey !== profileKey || read.rankingDay !== rankingDay) continue;
+        pending.splice(index, 1);
+        read.reject(canceledDoomerboardRead());
+      }
+      for (const read of active) {
+        if (read.profileKey === profileKey && read.rankingDay === rankingDay) {
+          read.reject(canceledDoomerboardRead());
+        }
+      }
       startPendingReads();
-    });
+    },
+    schedule: (query, profileKey, rankingDay) =>
+      new Promise((resolve, reject) => {
+        pending.push({ profileKey, query, rankingDay, reject, resolve });
+        startPendingReads();
+      }),
+  };
 }
 
-function scheduleDoomerboardRead(native: DoomerboardQueryPort, query: DoomerboardQuery) {
-  let schedule = doomerboardReadSchedulers.get(native);
-  if (schedule === undefined) {
-    schedule = createDoomerboardReadScheduler(native);
-    doomerboardReadSchedulers.set(native, schedule);
+function scheduleDoomerboardRead(
+  native: DoomerboardQueryPort,
+  query: DoomerboardQuery,
+  profileKey: string,
+  rankingDay: string,
+) {
+  let scheduler = doomerboardReadSchedulers.get(native);
+  if (scheduler === undefined) {
+    scheduler = createDoomerboardReadScheduler(native);
+    doomerboardReadSchedulers.set(native, scheduler);
   }
-  return schedule(query);
+  return scheduler.schedule(query, profileKey, rankingDay);
 }
 
 function currentRankingDay(now = new Date()) {
@@ -118,6 +153,19 @@ function doomerboardQueryKey(profileKey: string, rankingDay: string, selection: 
 
 function doomerboardRankingDayKey(profileKey: string, rankingDay: string) {
   return ["doomerboard", profileKey, rankingDay] as const;
+}
+
+function cancelDoomerboardRankingDay(
+  client: QueryClient,
+  native: DoomerboardQueryPort,
+  profileKey: string,
+  rankingDay: string,
+) {
+  const cancellation = client.cancelQueries({
+    queryKey: doomerboardRankingDayKey(profileKey, rankingDay),
+  });
+  doomerboardReadSchedulers.get(native)?.cancel(profileKey, rankingDay);
+  return cancellation;
 }
 
 function doomerboardAudienceKey(
@@ -145,7 +193,7 @@ function createDoomerboardQueryOptions({
   return queryOptions({
     gcTime: doomerboardRankingDayCacheTimeMs,
     queryFn: async (): Promise<DoomerboardView> => {
-      const outcome = await scheduleDoomerboardRead(native, selection);
+      const outcome = await scheduleDoomerboardRead(native, selection, profileKey, rankingDay);
       if (!outcome.ok) throw new Error("Doomerboard unavailable");
       const parsed = doomerboardViewSchema.safeParse(outcome.value);
       if (!parsed.success || parsed.data.status !== "ready") {
@@ -185,26 +233,39 @@ async function prefetchDoomerboardSelections({
   native,
   profileKey,
   rankingDay = currentRankingDay(),
+  signal,
 }: PrefetchDoomerboardSelectionsInput) {
+  if (signal?.aborted) return;
+  const cancelPrefetch = () => {
+    void cancelDoomerboardRankingDay(client, native, profileKey, rankingDay);
+  };
+  signal?.addEventListener("abort", cancelPrefetch, { once: true });
   const pending = allDoomerboardSelections.filter(
     (selection) => !sameDoomerboardQuery(selection, activeSelection),
   );
   let nextIndex = 0;
   const prefetchNext = async (): Promise<void> => {
+    if (signal?.aborted) return;
     const selection = pending[nextIndex];
     nextIndex += 1;
     if (selection === undefined) return;
     await client.prefetchQuery(
       createDoomerboardQueryOptions({ native, profileKey, rankingDay, selection }),
     );
+    if (signal?.aborted) return;
     await prefetchNext();
   };
-  await Promise.all(Array.from({ length: Math.min(3, pending.length) }, prefetchNext));
+  try {
+    await Promise.all(Array.from({ length: Math.min(3, pending.length) }, prefetchNext));
+  } finally {
+    signal?.removeEventListener("abort", cancelPrefetch);
+  }
 }
 
 export {
   addTokenmaxxer,
   allDoomerboardSelections,
+  cancelDoomerboardRankingDay,
   createDoomerboardQueryOptions,
   currentRankingDay,
   defaultDoomerboardQuery,

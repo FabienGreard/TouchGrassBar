@@ -4,6 +4,7 @@ import { expect, test, vi } from "vitest";
 import {
   addTokenmaxxer,
   allDoomerboardSelections,
+  cancelDoomerboardRankingDay,
   createDoomerboardQueryOptions,
   defaultDoomerboardQuery,
   prefetchDoomerboardSelections,
@@ -204,4 +205,98 @@ test("all Doomerboard queries share one three-read native limit", async () => {
   await reads;
 
   expect(maximumActiveReads).toBe(3);
+});
+
+test("canceling queries removes their queued native reads", async () => {
+  let releaseReads!: () => void;
+  const readsReleased = new Promise<void>((resolve) => {
+    releaseReads = resolve;
+  });
+  const native: DoomerboardQueryPort = {
+    read: vi.fn(async () => {
+      await readsReleased;
+      return { ok: true as const, value: readyView };
+    }),
+  };
+  const runningClient = new QueryClient();
+  const canceledClient = new QueryClient();
+  const foregroundClient = new QueryClient();
+  const runningSelections = allDoomerboardSelections.slice(0, 3);
+  const canceledSelections = allDoomerboardSelections.slice(3, 6);
+  const foregroundSelection = allDoomerboardSelections[6];
+  if (foregroundSelection === undefined) throw new Error("Missing test selection");
+
+  const runningReads = Promise.all(
+    runningSelections.map((selection) =>
+      runningClient.fetchQuery(
+        createDoomerboardQueryOptions({
+          native,
+          profileKey: "TG-234567",
+          rankingDay: "2026-08-31",
+          selection,
+        }),
+      ),
+    ),
+  );
+  const canceledReads = Promise.allSettled(
+    canceledSelections.map((selection) =>
+      canceledClient.fetchQuery(
+        createDoomerboardQueryOptions({
+          native,
+          profileKey: "TG-765432",
+          rankingDay: "2026-08-31",
+          selection,
+        }),
+      ),
+    ),
+  );
+
+  await vi.waitFor(() => expect(native.read).toHaveBeenCalledTimes(3));
+  await cancelDoomerboardRankingDay(canceledClient, native, "TG-765432", "2026-08-31");
+  const foregroundRead = foregroundClient.fetchQuery(
+    createDoomerboardQueryOptions({
+      native,
+      profileKey: "TG-999999",
+      rankingDay: "2026-08-31",
+      selection: foregroundSelection,
+    }),
+  );
+
+  releaseReads();
+  await Promise.all([runningReads, canceledReads, foregroundRead]);
+
+  expect(native.read).toHaveBeenCalledTimes(4);
+  expect(native.read).toHaveBeenNthCalledWith(4, foregroundSelection);
+  for (const selection of canceledSelections) {
+    expect(native.read).not.toHaveBeenCalledWith(selection);
+  }
+});
+
+test("aborting a prefetch stops its remaining native reads", async () => {
+  let releaseReads!: () => void;
+  const readsReleased = new Promise<void>((resolve) => {
+    releaseReads = resolve;
+  });
+  const native: DoomerboardQueryPort = {
+    read: vi.fn(async () => {
+      await readsReleased;
+      return { ok: true as const, value: readyView };
+    }),
+  };
+  const controller = new AbortController();
+  const prefetch = prefetchDoomerboardSelections({
+    activeSelection: defaultDoomerboardQuery,
+    client: new QueryClient(),
+    native,
+    profileKey: "TG-234567",
+    rankingDay: "2026-08-31",
+    signal: controller.signal,
+  });
+
+  await vi.waitFor(() => expect(native.read).toHaveBeenCalledTimes(3));
+  controller.abort();
+  releaseReads();
+  await prefetch;
+
+  expect(native.read).toHaveBeenCalledTimes(3);
 });
