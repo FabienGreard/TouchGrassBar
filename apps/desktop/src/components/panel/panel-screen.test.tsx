@@ -173,3 +173,60 @@ test("a native revision refreshes only the active Doomerboard", async () => {
   expect(await screen.findByText("mine-combined-1-v2")).toBeTruthy();
   await waitFor(() => expect(native.read).toHaveBeenCalledTimes(20));
 });
+
+test("a late prefetch cannot replace a newer Doomerboard revision", async () => {
+  let announceOldPrefetch!: () => void;
+  let finishOldPrefetch!: () => void;
+  const oldPrefetchStarted = new Promise<void>((resolve) => {
+    announceOldPrefetch = resolve;
+  });
+  const oldPrefetchFinished = new Promise<void>((resolve) => {
+    finishOldPrefetch = resolve;
+  });
+  const native = doomerboardPort();
+  const read = native.read;
+  let oldPrefetchPending = true;
+  native.read = vi.fn(async (selection) => {
+    const outcome = await read(selection);
+    if (
+      oldPrefetchPending &&
+      selection.audience === "mine" &&
+      selection.scope === "combined" &&
+      selection.windowDays === 1
+    ) {
+      oldPrefetchPending = false;
+      announceOldPrefetch();
+      await oldPrefetchFinished;
+    }
+    return outcome;
+  });
+  const stateDelivery = createSanitizedDesktopStateDelivery(
+    createBrowserSanitizedDesktopStateAdapter(
+      "current",
+      () => new Date("2026-08-31T10:00:00.000Z"),
+      undefined,
+      "synced",
+    ),
+  );
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={stateDelivery} />
+    </QueryClientProvider>,
+  );
+
+  await screen.findByText("global-combined-1-v1");
+  await oldPrefetchStarted;
+  native.setScoreVersion(2);
+  native.changed();
+  expect(await screen.findByText("global-combined-1-v2")).toBeTruthy();
+
+  finishOldPrefetch();
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Friends" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+
+  expect(await screen.findByText("mine-combined-1-v2")).toBeTruthy();
+  expect(screen.queryByText("mine-combined-1-v1")).toBeNull();
+});

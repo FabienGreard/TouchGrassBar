@@ -136,13 +136,11 @@ function PanelScreen({
           return;
         }
         if (profileKey === null) return;
-        void queryClient.invalidateQueries(
-          {
-            queryKey: doomerboardRankingDayKey(profileKey, rankingDay),
-            refetchType: "active",
-          },
-          { cancelRefetch: false },
-        );
+        const queryKey = doomerboardRankingDayKey(profileKey, rankingDay);
+        void (async () => {
+          await queryClient.cancelQueries({ queryKey });
+          await queryClient.invalidateQueries({ queryKey, refetchType: "active" });
+        })();
       }),
     );
   }, [doomerboard, hasNativeRuntime, profileKey, queryClient, rankingDay]);
