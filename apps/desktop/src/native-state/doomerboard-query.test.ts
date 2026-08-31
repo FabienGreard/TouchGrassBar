@@ -114,6 +114,47 @@ test("prefetch makes every Doomerboard selection available from cache", async ()
   expect(native.read).toHaveBeenCalledTimes(18);
 });
 
+test("prefetched Doomerboard selections stay cached for the Ranking Day", async () => {
+  vi.useFakeTimers();
+  const native = port();
+  const client = new QueryClient();
+  const profileKey = "TG-234567";
+  const rankingDay = "2026-08-31";
+
+  try {
+    await client.fetchQuery(
+      createDoomerboardQueryOptions({
+        native,
+        profileKey,
+        rankingDay,
+        selection: defaultDoomerboardQuery,
+      }),
+    );
+    await prefetchDoomerboardSelections({
+      activeSelection: defaultDoomerboardQuery,
+      client,
+      native,
+      profileKey,
+      rankingDay,
+    });
+
+    await vi.advanceTimersByTimeAsync(23 * 60 * 60 * 1_000);
+
+    for (const selection of allDoomerboardSelections) {
+      const options = createDoomerboardQueryOptions({
+        native,
+        profileKey,
+        rankingDay,
+        selection,
+      });
+      expect(client.getQueryData(options.queryKey)).toEqual(readyView);
+    }
+  } finally {
+    client.clear();
+    vi.useRealTimers();
+  }
+});
+
 test("all Doomerboard queries share one three-read native limit", async () => {
   let activeReads = 0;
   let maximumActiveReads = 0;

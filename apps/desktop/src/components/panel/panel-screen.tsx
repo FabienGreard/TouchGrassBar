@@ -85,7 +85,7 @@ function PanelScreen({
   const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
   const [doomerboard] = useState(() => doomerboardPort ?? createTauriDoomerboardAdapter());
-  const prefetchedDoomerboardGeneration = useRef<string | null>(null);
+  const prefetchedDoomerboardCacheKey = useRef<string | null>(null);
   const [rankingDay, setRankingDay] = useState(currentRankingDay);
   const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
   const deliveryView = useSyncExternalStore(
@@ -158,13 +158,13 @@ function PanelScreen({
 
   useEffect(() => {
     if (!hasNativeRuntime || profileKey === null) {
-      prefetchedDoomerboardGeneration.current = null;
+      prefetchedDoomerboardCacheKey.current = null;
       return;
     }
     if (doomerboardView.data === undefined) return;
-    const generation = `${profileKey}:${rankingDay}`;
-    if (prefetchedDoomerboardGeneration.current === generation) return;
-    prefetchedDoomerboardGeneration.current = generation;
+    const cacheKey = `${profileKey}:${rankingDay}`;
+    if (prefetchedDoomerboardCacheKey.current === cacheKey) return;
+    prefetchedDoomerboardCacheKey.current = cacheKey;
     void prefetchDoomerboardSelections({
       activeSelection: doomerboardSelection,
       client: queryClient,

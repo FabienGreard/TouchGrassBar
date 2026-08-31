@@ -8,6 +8,7 @@ import {
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 
 const doomerboardStaleTimeMs = 5 * 60 * 1_000;
+const doomerboardRankingDayCacheTimeMs = 24 * 60 * 60 * 1_000;
 const doomerboardNativeReadLimit = 3;
 const defaultDoomerboardQuery: DoomerboardQuery = {
   audience: "global",
@@ -119,7 +120,11 @@ function doomerboardRankingDayKey(profileKey: string, rankingDay: string) {
   return ["doomerboard", profileKey, rankingDay] as const;
 }
 
-function doomerboardAudienceKey(profileKey: string, rankingDay: string, audience: string) {
+function doomerboardAudienceKey(
+  profileKey: string,
+  rankingDay: string,
+  audience: DoomerboardQuery["audience"],
+) {
   return ["doomerboard", profileKey, rankingDay, audience] as const;
 }
 
@@ -138,7 +143,7 @@ function createDoomerboardQueryOptions({
   selection,
 }: CreateDoomerboardQueryOptionsInput) {
   return queryOptions({
-    gcTime: 30 * 60 * 1_000,
+    gcTime: doomerboardRankingDayCacheTimeMs,
     queryFn: async (): Promise<DoomerboardView> => {
       const outcome = await scheduleDoomerboardRead(native, selection);
       if (!outcome.ok) throw new Error("Doomerboard unavailable");
