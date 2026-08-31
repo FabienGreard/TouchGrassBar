@@ -75,6 +75,11 @@ function UpdatesSettings({
   const primaryAction =
     status === "available" ? onInstall : status === "failed" ? onRetry : onCheckForUpdates;
   const nativeBusy = status === "checking" || status === "downloading" || status === "installing";
+  const checkAction =
+    status !== "available" &&
+    status !== "failed" &&
+    status !== "downloading" &&
+    status !== "installing";
   const primaryLabel =
     actionPending && !nativeBusy
       ? status === "available"
@@ -108,13 +113,7 @@ function UpdatesSettings({
         progress={null}
         showCheck
       />
-    ) : status === "checking" ? (
-      <CircularProgressIcon
-        aria-hidden="true"
-        data-icon-source="CircularProgressIcon"
-        progress={null}
-      />
-    ) : actionPending ? (
+    ) : actionPending && !checkAction ? (
       <CircularProgressIcon
         aria-hidden="true"
         data-icon-source="CircularProgressIcon"
@@ -148,14 +147,35 @@ function UpdatesSettings({
           </span>
           <Button
             aria-busy={primaryBusy || undefined}
-            className={primaryBusy ? "disabled:opacity-100" : undefined}
+            className={primaryBusy ? "h-7 py-0 disabled:opacity-100" : "h-7 py-0"}
             disabled={primaryAction === undefined || primaryBusy || status === "unavailable"}
             onClick={primaryAction}
             type="button"
             variant="ghost"
           >
             {primaryIndicator}
-            {primaryLabel}
+            {checkAction ? (
+              <span className="inline-grid" data-slot="update-check-labels">
+                <span
+                  aria-hidden={primaryBusy ? true : undefined}
+                  className={
+                    primaryBusy ? "invisible col-start-1 row-start-1" : "col-start-1 row-start-1"
+                  }
+                >
+                  Check now
+                </span>
+                <span
+                  aria-hidden={primaryBusy ? undefined : true}
+                  className={
+                    primaryBusy ? "col-start-1 row-start-1" : "invisible col-start-1 row-start-1"
+                  }
+                >
+                  Checking…
+                </span>
+              </span>
+            ) : (
+              primaryLabel
+            )}
           </Button>
         </div>
         <SettingsToggleRow

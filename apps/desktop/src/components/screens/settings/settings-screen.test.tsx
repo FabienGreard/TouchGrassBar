@@ -134,7 +134,10 @@ describe("settings screen", () => {
     expect(generalMarkup).toContain("Not connected in this build.");
     expect(generalMarkup).toContain("Update state unavailable.");
     expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(2);
-    expect(generalMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Check now/);
+    expect(generalMarkup).toMatch(
+      /<button(?=[^>]*data-variant="ghost")(?=[^>]*disabled="")[^>]*><span[^>]*data-slot="update-check-labels"/,
+    );
+    expect(generalMarkup).toContain("Check now");
     expect(generalMarkup).toMatch(/<button[^>]*disabled=""[^>]*>View on GitHub/);
   });
 
@@ -231,6 +234,34 @@ describe("settings screen", () => {
     expect(markup).toContain('data-state="indeterminate"');
   });
 
+  test("keeps the manual update check geometry stable while it is busy", () => {
+    const state = {
+      automaticChecksEnabled: true,
+      contractVersion: 2 as const,
+      currentVersion: "1.3.2",
+      onlineFeaturesPaused: false,
+      update: { status: "upToDate" as const },
+    };
+    const idleMarkup = renderToStaticMarkup(
+      <SettingsScreen autoUpdates onCheckForUpdates={() => undefined} updateState={state} />,
+    );
+    const pendingMarkup = renderToStaticMarkup(
+      <SettingsScreen
+        autoUpdates
+        onCheckForUpdates={() => undefined}
+        updateActionPending
+        updateState={state}
+      />,
+    );
+
+    for (const markup of [idleMarkup, pendingMarkup]) {
+      expect(markup).toContain('data-slot="update-check-labels"');
+      expect(markup).toContain("Check now");
+      expect(markup).toContain("Checking…");
+    }
+    expect(pendingMarkup).not.toContain('data-icon-source="CircularProgressIcon"');
+  });
+
   test.each([
     {
       action: "Checking…",
@@ -253,7 +284,7 @@ describe("settings screen", () => {
       summary: "Installing and relaunching…",
       update: { status: "installing", version: "1.4.0" } as const,
     },
-  ])("shows a distinct circular indicator while $update.status", (preview) => {
+  ])("shows a stable action while $update.status", (preview) => {
     const markup = renderToStaticMarkup(
       <SettingsScreen
         autoUpdates
@@ -274,9 +305,15 @@ describe("settings screen", () => {
     expect(markup).toContain('data-slot="update-status"');
     expect(markup).toContain(preview.action);
     expect(markup).toContain('aria-busy="true"');
-    expect(markup).toContain('data-icon-source="CircularProgressIcon"');
-    expect(markup).toContain(`data-center="${preview.expectedCenter}"`);
-    expect(markup).toContain(`data-state="${preview.expectedState}"`);
+    expect(markup).toMatch(/<button[^>]*data-variant="ghost"[^>]*class="[^"]*h-7[^"]*py-0[^"]*"/);
+    if (preview.update.status === "checking") {
+      expect(markup).toContain('data-slot="update-check-labels"');
+      expect(markup).not.toContain('data-icon-source="CircularProgressIcon"');
+    } else {
+      expect(markup).toContain('data-icon-source="CircularProgressIcon"');
+      expect(markup).toContain(`data-center="${preview.expectedCenter}"`);
+      expect(markup).toContain(`data-state="${preview.expectedState}"`);
+    }
 
     if (preview.update.status === "downloading") {
       expect(markup).toContain('data-progress="42"');
@@ -332,7 +369,10 @@ describe("settings screen", () => {
     )?.[0];
     expect(automaticSwitch).toContain('aria-checked="false"');
     expect(automaticSwitch).not.toContain('disabled=""');
-    expect(markup).toMatch(/<button[^>]*>Check now<\/button>/);
+    expect(markup).toMatch(
+      /<button(?=[^>]*data-variant="ghost")[^>]*><span[^>]*data-slot="update-check-labels"/,
+    );
+    expect(markup).toContain("Check now");
   });
 
   test("names provider controls independently for VoiceOver", () => {
