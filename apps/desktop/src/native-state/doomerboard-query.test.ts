@@ -4,10 +4,13 @@ import { expect, test, vi } from "vitest";
 import {
   addTokenmaxxer,
   allDoomerboardSelections,
+  cancelDoomerboardAudience,
   cancelDoomerboardRankingDay,
   createDoomerboardQueryOptions,
   defaultDoomerboardQuery,
   prefetchDoomerboardSelections,
+  type DoomerboardPortOutcome,
+  type DoomerboardQuery,
   type DoomerboardQueryPort,
 } from "@/native-state/doomerboard-query";
 
@@ -266,10 +269,117 @@ test("canceling queries removes their queued native reads", async () => {
   await Promise.all([runningReads, canceledReads, foregroundRead]);
 
   expect(native.read).toHaveBeenCalledTimes(4);
-  expect(native.read).toHaveBeenNthCalledWith(4, foregroundSelection);
+  expect(vi.mocked(native.read).mock.calls[3]?.[0]).toEqual(foregroundSelection);
   for (const selection of canceledSelections) {
-    expect(native.read).not.toHaveBeenCalledWith(selection);
+    expect(vi.mocked(native.read).mock.calls.map(([query]) => query)).not.toContain(selection);
   }
+});
+
+test("canceling active reads releases native capacity for current work", async () => {
+  let activeReads = 0;
+  let maximumActiveReads = 0;
+  const oldSelections = allDoomerboardSelections.slice(0, 3);
+  const currentSelection = allDoomerboardSelections[3];
+  if (currentSelection === undefined) throw new Error("Missing test selection");
+  const native: DoomerboardQueryPort = {
+    read: vi.fn(
+      (selection, signal?: AbortSignal) =>
+        new Promise<DoomerboardPortOutcome<unknown>>((resolve) => {
+          activeReads += 1;
+          maximumActiveReads = Math.max(maximumActiveReads, activeReads);
+          let completed = false;
+          const complete = (value: { ok: true; value: typeof readyView }) => {
+            if (completed) return;
+            completed = true;
+            activeReads -= 1;
+            resolve(value);
+          };
+          if (selection === currentSelection) {
+            complete({ ok: true, value: readyView });
+            return;
+          }
+          const cancel = () => complete({ ok: true, value: readyView });
+          signal?.addEventListener("abort", cancel, { once: true });
+          if (signal?.aborted) cancel();
+        }),
+    ),
+  };
+  const oldClient = new QueryClient();
+  const currentClient = new QueryClient();
+  const oldReads = Promise.allSettled(
+    oldSelections.map((selection) =>
+      oldClient.fetchQuery(
+        createDoomerboardQueryOptions({
+          native,
+          profileKey: "TG-234567",
+          rankingDay: "2026-08-31",
+          selection,
+        }),
+      ),
+    ),
+  );
+
+  await vi.waitFor(() => expect(activeReads).toBe(3));
+  await cancelDoomerboardRankingDay(oldClient, native, "TG-234567", "2026-08-31");
+  const currentRead = currentClient.fetchQuery(
+    createDoomerboardQueryOptions({
+      native,
+      profileKey: "TG-765432",
+      rankingDay: "2026-08-31",
+      selection: currentSelection,
+    }),
+  );
+
+  await expect(currentRead).resolves.toEqual(readyView);
+  await oldReads;
+  expect(native.read).toHaveBeenCalledTimes(4);
+  expect(maximumActiveReads).toBe(3);
+});
+
+test("canceling one audience preserves active reads for the other audience", async () => {
+  const releases = new Map<DoomerboardQuery["audience"], () => void>();
+  const signals = new Map<DoomerboardQuery["audience"], AbortSignal | undefined>();
+  const native: DoomerboardQueryPort = {
+    read: vi.fn(
+      (selection, signal) =>
+        new Promise<DoomerboardPortOutcome<unknown>>((resolve) => {
+          signals.set(selection.audience, signal);
+          releases.set(selection.audience, () =>
+            resolve({ ok: true as const, value: readyView }),
+          );
+        }),
+    ),
+  };
+  const client = new QueryClient();
+  const profileKey = "TG-234567";
+  const rankingDay = "2026-08-31";
+  const reads = Promise.allSettled([
+    client.fetchQuery(
+      createDoomerboardQueryOptions({
+        native,
+        profileKey,
+        rankingDay,
+        selection: defaultDoomerboardQuery,
+      }),
+    ),
+    client.fetchQuery(
+      createDoomerboardQueryOptions({
+        native,
+        profileKey,
+        rankingDay,
+        selection: { ...defaultDoomerboardQuery, audience: "mine" },
+      }),
+    ),
+  ]);
+
+  await vi.waitFor(() => expect(native.read).toHaveBeenCalledTimes(2));
+  await cancelDoomerboardAudience(client, native, profileKey, rankingDay, "mine");
+
+  expect(signals.get("mine")?.aborted).toBe(true);
+  expect(signals.get("global")?.aborted).toBe(false);
+  releases.get("mine")?.();
+  releases.get("global")?.();
+  await reads;
 });
 
 test("aborting a prefetch stops its remaining native reads", async () => {

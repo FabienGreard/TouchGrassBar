@@ -84,6 +84,7 @@ describe("Tauri Doomerboard adapter", () => {
     const subscription = await adapter.subscribe(receive);
     expect(bindings.invoke).toHaveBeenCalledWith("get_doomerboard", {
       query: defaultDoomerboardQuery,
+      requestId: expect.any(String),
     });
     if (!subscription.ok) throw new Error("expected data subscription");
     revision();
@@ -92,6 +93,45 @@ describe("Tauri Doomerboard adapter", () => {
     expect(bindings.onFocusChanged).not.toHaveBeenCalled();
     subscription.value();
     expect(stopRevision).toHaveBeenCalledOnce();
+  });
+
+  test("cancels the matching native read when its signal aborts", async () => {
+    let announceRead!: () => void;
+    let finishRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      announceRead = resolve;
+    });
+    const readFinished = new Promise<void>((resolve) => {
+      finishRead = resolve;
+    });
+    let requestId: unknown;
+    const bindings: TauriDoomerboardBindings = {
+      invoke: vi.fn(async (command, args) => {
+        if (command === "get_doomerboard") {
+          requestId = args?.requestId;
+          announceRead();
+          await readFinished;
+          return readyView;
+        }
+        if (command === "cancel_doomerboard_read") {
+          finishRead();
+          return undefined;
+        }
+        return undefined;
+      }),
+      listen: vi.fn(async () => vi.fn()),
+      onFocusChanged: vi.fn(async () => vi.fn()),
+    };
+    const adapter = createTauriDoomerboardAdapter(bindings);
+    const controller = new AbortController();
+    const read = adapter.read(defaultDoomerboardQuery, controller.signal);
+
+    await readStarted;
+    controller.abort();
+    await vi.waitFor(() =>
+      expect(bindings.invoke).toHaveBeenCalledWith("cancel_doomerboard_read", { requestId }),
+    );
+    await expect(read).resolves.toEqual({ ok: true, value: readyView });
   });
 
   test("refreshes at UTC rollover and cancels the next rollover on cleanup", async () => {

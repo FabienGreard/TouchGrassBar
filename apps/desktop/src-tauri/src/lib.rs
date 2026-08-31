@@ -136,6 +136,16 @@ pub(crate) fn native_https_client() -> reqwest::blocking::Client {
         .expect("build the bounded native HTTPS client")
 }
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn native_async_https_client() -> reqwest::Client {
+    install_tls_crypto_provider();
+    reqwest::Client::builder()
+        .connect_timeout(NATIVE_HTTP_CONNECT_TIMEOUT)
+        .timeout(NATIVE_HTTP_REQUEST_TIMEOUT)
+        .build()
+        .expect("build the bounded native async HTTPS client")
+}
+
 #[derive(Clone)]
 struct ProfileRetryMailbox {
     pending: Arc<Mutex<bool>>,
@@ -748,12 +758,35 @@ async fn get_doomerboard(
     window: WebviewWindow,
     runtime: State<'_, doomerboard::DoomerboardRuntime>,
     query: doomerboard::DoomerboardQueryV1,
+    request_id: String,
 ) -> Result<doomerboard::DoomerboardViewV1, String> {
     require_panel(&window)?;
     let runtime = runtime.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || runtime.read(query))
+    runtime
+        .begin_read(&request_id)
+        .map_err(|()| "Doomerboard unavailable".to_owned())?;
+    let read_runtime = runtime.clone();
+    let read_request_id = request_id.clone();
+    match tauri::async_runtime::spawn_blocking(move || read_runtime.read(&read_request_id, query))
         .await
-        .map_err(|_| "Doomerboard unavailable".to_owned())
+    {
+        Ok(view) => Ok(view),
+        Err(_) => {
+            runtime.abandon_read(&request_id);
+            Err("Doomerboard unavailable".to_owned())
+        }
+    }
+}
+
+#[tauri::command]
+fn cancel_doomerboard_read(
+    window: WebviewWindow,
+    runtime: State<'_, doomerboard::DoomerboardRuntime>,
+    request_id: String,
+) -> Result<(), String> {
+    require_panel(&window)?;
+    runtime.cancel_read(&request_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1173,6 +1206,7 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             add_tokenmaxxer,
+            cancel_doomerboard_read,
             check_for_updates,
             complete_bootstrap,
             get_bootstrap_state,

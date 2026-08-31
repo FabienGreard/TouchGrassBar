@@ -37,7 +37,10 @@ type DoomerboardQuery = {
 
 type DoomerboardPort = {
   add: (touchGrassId: string) => Promise<DoomerboardPortOutcome<unknown>>;
-  read: (query: DoomerboardQuery) => Promise<DoomerboardPortOutcome<unknown>>;
+  read: (
+    query: DoomerboardQuery,
+    signal?: AbortSignal | undefined,
+  ) => Promise<DoomerboardPortOutcome<unknown>>;
   subscribe: (receive: () => void) => Promise<DoomerboardPortOutcome<() => void>>;
   subscribeFocus: (
     receive: (focused: boolean) => void,
@@ -48,14 +51,20 @@ type DoomerboardQueryPort = Pick<DoomerboardPort, "read">;
 type DoomerboardMutationPort = Pick<DoomerboardPort, "add">;
 type DoomerboardReadOutcome = Awaited<ReturnType<DoomerboardQueryPort["read"]>>;
 type PendingDoomerboardRead = {
+  controller: AbortController;
   profileKey: string;
   query: DoomerboardQuery;
   rankingDay: string;
   reject: (reason?: unknown) => void;
   resolve: (outcome: DoomerboardReadOutcome) => void;
 };
+type DoomerboardReadTarget = {
+  audience?: DoomerboardQuery["audience"] | undefined;
+  profileKey: string;
+  rankingDay: string;
+};
 type DoomerboardReadScheduler = {
-  cancel: (profileKey: string, rankingDay: string) => void;
+  cancel: (target: DoomerboardReadTarget) => void;
   schedule: (
     query: DoomerboardQuery,
     profileKey: string,
@@ -82,6 +91,14 @@ function canceledDoomerboardRead() {
   return new DOMException("Doomerboard read canceled", "AbortError");
 }
 
+function matchesDoomerboardRead(read: PendingDoomerboardRead, target: DoomerboardReadTarget) {
+  return (
+    read.profileKey === target.profileKey &&
+    read.rankingDay === target.rankingDay &&
+    (target.audience === undefined || read.query.audience === target.audience)
+  );
+}
+
 function createDoomerboardReadScheduler(native: DoomerboardQueryPort): DoomerboardReadScheduler {
   const active = new Set<PendingDoomerboardRead>();
   const pending: PendingDoomerboardRead[] = [];
@@ -91,7 +108,7 @@ function createDoomerboardReadScheduler(native: DoomerboardQueryPort): Doomerboa
       if (read === undefined) return;
       active.add(read);
       void Promise.resolve()
-        .then(() => native.read(read.query))
+        .then(() => native.read(read.query, read.controller.signal))
         .then(read.resolve, read.reject)
         .finally(() => {
           active.delete(read);
@@ -100,15 +117,16 @@ function createDoomerboardReadScheduler(native: DoomerboardQueryPort): Doomerboa
     }
   };
   return {
-    cancel: (profileKey, rankingDay) => {
+    cancel: (target) => {
       for (let index = pending.length - 1; index >= 0; index -= 1) {
         const read = pending[index];
-        if (read?.profileKey !== profileKey || read.rankingDay !== rankingDay) continue;
+        if (read === undefined || !matchesDoomerboardRead(read, target)) continue;
         pending.splice(index, 1);
         read.reject(canceledDoomerboardRead());
       }
       for (const read of active) {
-        if (read.profileKey === profileKey && read.rankingDay === rankingDay) {
+        if (matchesDoomerboardRead(read, target)) {
+          read.controller.abort();
           read.reject(canceledDoomerboardRead());
         }
       }
@@ -116,7 +134,14 @@ function createDoomerboardReadScheduler(native: DoomerboardQueryPort): Doomerboa
     },
     schedule: (query, profileKey, rankingDay) =>
       new Promise((resolve, reject) => {
-        pending.push({ profileKey, query, rankingDay, reject, resolve });
+        pending.push({
+          controller: new AbortController(),
+          profileKey,
+          query,
+          rankingDay,
+          reject,
+          resolve,
+        });
         startPendingReads();
       }),
   };
@@ -164,7 +189,21 @@ function cancelDoomerboardRankingDay(
   const cancellation = client.cancelQueries({
     queryKey: doomerboardRankingDayKey(profileKey, rankingDay),
   });
-  doomerboardReadSchedulers.get(native)?.cancel(profileKey, rankingDay);
+  doomerboardReadSchedulers.get(native)?.cancel({ profileKey, rankingDay });
+  return cancellation;
+}
+
+function cancelDoomerboardAudience(
+  client: QueryClient,
+  native: DoomerboardQueryPort,
+  profileKey: string,
+  rankingDay: string,
+  audience: DoomerboardQuery["audience"],
+) {
+  const cancellation = client.cancelQueries({
+    queryKey: doomerboardAudienceKey(profileKey, rankingDay, audience),
+  });
+  doomerboardReadSchedulers.get(native)?.cancel({ audience, profileKey, rankingDay });
   return cancellation;
 }
 
@@ -265,6 +304,7 @@ async function prefetchDoomerboardSelections({
 export {
   addTokenmaxxer,
   allDoomerboardSelections,
+  cancelDoomerboardAudience,
   cancelDoomerboardRankingDay,
   createDoomerboardQueryOptions,
   currentRankingDay,

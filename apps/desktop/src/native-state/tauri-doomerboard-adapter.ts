@@ -18,6 +18,13 @@ const defaultBindings: TauriDoomerboardBindings = {
   onFocusChanged: (receive) => getCurrentWindow().onFocusChanged(receive),
 };
 
+let nextDoomerboardReadSequence = 0;
+
+function createDoomerboardReadId() {
+  nextDoomerboardReadSequence += 1;
+  return `${Date.now().toString(36)}-${nextDoomerboardReadSequence.toString(36)}`;
+}
+
 function unavailable<Value>(): DoomerboardPortOutcome<Value> {
   return {
     fault: { code: "doomerboard-unavailable" },
@@ -52,14 +59,24 @@ function createTauriDoomerboardAdapter(
         return unavailable();
       }
     },
-    read: async (query) => {
+    read: async (query, signal) => {
+      if (signal?.aborted) return unavailable();
+      const requestId = createDoomerboardReadId();
+      const read = bindings.invoke("get_doomerboard", { query, requestId });
+      const cancelRead = () => {
+        void bindings.invoke("cancel_doomerboard_read", { requestId }).catch(() => undefined);
+      };
+      signal?.addEventListener("abort", cancelRead, { once: true });
+      if (signal?.aborted) cancelRead();
       try {
         return {
           ok: true,
-          value: await bindings.invoke("get_doomerboard", { query }),
+          value: await read,
         };
       } catch {
         return unavailable();
+      } finally {
+        signal?.removeEventListener("abort", cancelRead);
       }
     },
     subscribeFocus: async (receive) => {
