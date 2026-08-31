@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { focusManager, useQuery, useQueryClient } from "@tanstack/react-query";
+import { focusManager, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import {
@@ -11,6 +11,7 @@ import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import {
   addTokenmaxxer,
+  cancelDoomerboardRankingDay,
   createDoomerboardQueryOptions,
   currentRankingDay,
   defaultDoomerboardQuery,
@@ -19,6 +20,7 @@ import {
   prefetchDoomerboardSelections,
   type DoomerboardPort,
   type DoomerboardPortOutcome,
+  type DoomerboardQuery,
 } from "@/native-state/doomerboard-query";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 import { createTauriDoomerboardAdapter } from "@/native-state/tauri-doomerboard-adapter";
@@ -41,6 +43,24 @@ type PanelScreenProps = {
   hasNativeRuntime: boolean;
   presentation?: PanelPresentation | undefined;
   stateDelivery: SanitizedDesktopStateDelivery;
+};
+
+type DoomerboardCacheState = {
+  controller: AbortController;
+  prefetchStatus: "waiting" | "running" | "complete" | "canceled";
+  profileKey: string;
+  rankingDay: string;
+};
+
+type UseDoomerboardCacheInput = {
+  activeSelection: DoomerboardQuery;
+  client: QueryClient;
+  dataReady: boolean;
+  hasNativeRuntime: boolean;
+  native: DoomerboardPort;
+  profileKey: string | null;
+  rankingDay: string;
+  setRankingDay: (rankingDay: string) => void;
 };
 
 const compactTokenScore = new Intl.NumberFormat("en-US", {
@@ -70,6 +90,108 @@ function retainAsyncSubscription(start: () => Promise<DoomerboardPortOutcome<() 
   };
 }
 
+function useDoomerboardCache({
+  activeSelection,
+  client,
+  dataReady,
+  hasNativeRuntime,
+  native,
+  profileKey,
+  rankingDay,
+  setRankingDay,
+}: UseDoomerboardCacheInput) {
+  const cacheState = useRef<DoomerboardCacheState | null>(null);
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return undefined;
+    return retainAsyncSubscription(() =>
+      native.subscribe(() => {
+        const currentCacheState = cacheState.current;
+        if (
+          currentCacheState?.profileKey === profileKey &&
+          currentCacheState.rankingDay === rankingDay
+        ) {
+          if (currentCacheState.prefetchStatus === "running") {
+            currentCacheState.prefetchStatus = "canceled";
+            currentCacheState.controller.abort();
+          }
+        }
+        const nextRankingDay = currentRankingDay();
+        if (nextRankingDay !== rankingDay) {
+          setRankingDay(nextRankingDay);
+          return;
+        }
+        if (profileKey === null) return;
+        const queryKey = doomerboardRankingDayKey(profileKey, rankingDay);
+        void (async () => {
+          await cancelDoomerboardRankingDay(client, native, profileKey, rankingDay);
+          await client.invalidateQueries({ queryKey, refetchType: "active" });
+        })();
+      }),
+    );
+  }, [client, hasNativeRuntime, native, profileKey, rankingDay, setRankingDay]);
+
+  useEffect(() => {
+    const previousCacheState = cacheState.current;
+    const cacheChanged =
+      previousCacheState !== null &&
+      (!hasNativeRuntime ||
+        profileKey === null ||
+        previousCacheState.profileKey !== profileKey ||
+        previousCacheState.rankingDay !== rankingDay);
+    if (cacheChanged) {
+      previousCacheState.controller.abort();
+      void cancelDoomerboardRankingDay(
+        client,
+        native,
+        previousCacheState.profileKey,
+        previousCacheState.rankingDay,
+      );
+      client.removeQueries({
+        queryKey: doomerboardRankingDayKey(
+          previousCacheState.profileKey,
+          previousCacheState.rankingDay,
+        ),
+      });
+      cacheState.current = null;
+    }
+    if (!hasNativeRuntime || profileKey === null) return;
+    if (cacheState.current === null) {
+      cacheState.current = {
+        controller: new AbortController(),
+        prefetchStatus: "waiting",
+        profileKey,
+        rankingDay,
+      };
+    }
+    if (!dataReady) return;
+    const currentCacheState = cacheState.current;
+    if (currentCacheState.prefetchStatus !== "waiting") return;
+    currentCacheState.prefetchStatus = "running";
+    void prefetchDoomerboardSelections({
+      activeSelection,
+      client,
+      native,
+      profileKey,
+      rankingDay,
+      signal: currentCacheState.controller.signal,
+    }).then(() => {
+      if (cacheState.current !== currentCacheState) return;
+      currentCacheState.prefetchStatus = currentCacheState.controller.signal.aborted
+        ? "canceled"
+        : "complete";
+    });
+  }, [activeSelection, client, dataReady, hasNativeRuntime, native, profileKey, rankingDay]);
+
+  useEffect(
+    () => () => {
+      cacheState.current?.controller.abort();
+      cacheState.current = null;
+    },
+    [],
+  );
+}
+
 function PanelScreen({
   doomerboardPort,
   hasNativeRuntime,
@@ -85,7 +207,6 @@ function PanelScreen({
   const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
   const [doomerboard] = useState(() => doomerboardPort ?? createTauriDoomerboardAdapter());
-  const prefetchedDoomerboardCacheKey = useRef<string | null>(null);
   const [rankingDay, setRankingDay] = useState(currentRankingDay);
   const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
   const deliveryView = useSyncExternalStore(
@@ -111,6 +232,16 @@ function PanelScreen({
     }),
     enabled: hasNativeRuntime && profileKey !== null,
   });
+  useDoomerboardCache({
+    activeSelection: doomerboardSelection,
+    client: queryClient,
+    dataReady: doomerboardView.data !== undefined,
+    hasNativeRuntime,
+    native: doomerboard,
+    profileKey,
+    rankingDay,
+    setRankingDay,
+  });
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
@@ -128,25 +259,6 @@ function PanelScreen({
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
-    return retainAsyncSubscription(() =>
-      doomerboard.subscribe(() => {
-        const nextRankingDay = currentRankingDay();
-        if (nextRankingDay !== rankingDay) {
-          setRankingDay(nextRankingDay);
-          return;
-        }
-        if (profileKey === null) return;
-        const queryKey = doomerboardRankingDayKey(profileKey, rankingDay);
-        void (async () => {
-          await queryClient.cancelQueries({ queryKey });
-          await queryClient.invalidateQueries({ queryKey, refetchType: "active" });
-        })();
-      }),
-    );
-  }, [doomerboard, hasNativeRuntime, profileKey, queryClient, rankingDay]);
-
-  useEffect(() => {
-    if (!hasNativeRuntime) return undefined;
     const stop = retainAsyncSubscription(() =>
       doomerboard.subscribeFocus((focused) => focusManager.setFocused(focused)),
     );
@@ -155,32 +267,6 @@ function PanelScreen({
       focusManager.setFocused(undefined);
     };
   }, [doomerboard, hasNativeRuntime]);
-
-  useEffect(() => {
-    if (!hasNativeRuntime || profileKey === null) {
-      prefetchedDoomerboardCacheKey.current = null;
-      return;
-    }
-    if (doomerboardView.data === undefined) return;
-    const cacheKey = `${profileKey}:${rankingDay}`;
-    if (prefetchedDoomerboardCacheKey.current === cacheKey) return;
-    prefetchedDoomerboardCacheKey.current = cacheKey;
-    void prefetchDoomerboardSelections({
-      activeSelection: doomerboardSelection,
-      client: queryClient,
-      native: doomerboard,
-      profileKey,
-      rankingDay,
-    });
-  }, [
-    doomerboard,
-    doomerboardSelection,
-    doomerboardView.data,
-    hasNativeRuntime,
-    profileKey,
-    queryClient,
-    rankingDay,
-  ]);
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
