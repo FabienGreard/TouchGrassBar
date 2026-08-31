@@ -16,7 +16,7 @@ import {
   createDoomerboardQueryOptions,
   currentRankingDay,
   defaultDoomerboardQuery,
-  doomerboardAudienceKey,
+  doomerboardProfileAudienceFilter,
   doomerboardRankingDayKey,
   prefetchDoomerboardSelections,
   type DoomerboardPort,
@@ -89,6 +89,11 @@ function retainAsyncSubscription(start: () => Promise<DoomerboardPortOutcome<() 
     disposed = true;
     stop?.();
   };
+}
+
+function deliveredProfileKey(stateDelivery: SanitizedDesktopStateDelivery) {
+  const profile = stateDelivery.getSnapshot().snapshot?.profile;
+  return profile?.status === "ready" ? profile.touchGrassId : null;
 }
 
 function useDoomerboardCache({
@@ -224,6 +229,17 @@ function PanelScreen({
     deliveryView.snapshot?.profile?.status === "ready"
       ? deliveryView.snapshot.profile.touchGrassId
       : null;
+  useEffect(() => {
+    let subscribedProfileKey = deliveredProfileKey(stateDelivery);
+    return stateDelivery.subscribe(() => {
+      const nextProfileKey = deliveredProfileKey(stateDelivery);
+      if (nextProfileKey === subscribedProfileKey) return;
+      subscribedProfileKey = nextProfileKey;
+      addTokenmaxxerRequests.invalidate();
+      setAddTokenmaxxerFailure(null);
+      setAddTokenmaxxerOpen(false);
+    });
+  }, [addTokenmaxxerRequests, stateDelivery]);
   const doomerboardView = useQuery({
     ...createDoomerboardQueryOptions({
       native: doomerboard,
@@ -371,6 +387,7 @@ function PanelScreen({
       error={deliveryView.phase === "degraded"}
       nativeGlass
       onAddTokenmaxxer={(touchGrassId) => {
+        const submissionProfileKey = profileKey;
         const request = addTokenmaxxerRequests.begin();
         if (request === null) return;
         setAddTokenmaxxerFailure(null);
@@ -379,28 +396,46 @@ function PanelScreen({
           const outcome = hasNativeRuntime
             ? await addTokenmaxxer(doomerboard, touchGrassId)
             : ({ status: "unavailable" } as const);
-          const current = addTokenmaxxerRequests.finish(request);
-          setAddTokenmaxxerInFlight(addTokenmaxxerRequests.inFlight());
-          if (!current) return;
+          const finishRequest = () => {
+            const current = addTokenmaxxerRequests.finish(request);
+            setAddTokenmaxxerInFlight(addTokenmaxxerRequests.inFlight());
+            return current && deliveredProfileKey(stateDelivery) === submissionProfileKey;
+          };
           if (outcome.status === "added" || outcome.status === "already-added") {
+            const nextRankingDay = currentRankingDay();
             const nextSelection = { ...doomerboardSelection, audience: "mine" as const };
-            if (profileKey !== null) {
+            if (
+              submissionProfileKey !== null &&
+              deliveredProfileKey(stateDelivery) === submissionProfileKey
+            ) {
               await cancelDoomerboardAudience(
                 queryClient,
                 doomerboard,
-                profileKey,
-                rankingDay,
+                submissionProfileKey,
                 "mine",
               );
               await queryClient.invalidateQueries({
-                queryKey: doomerboardAudienceKey(profileKey, rankingDay, "mine"),
+                ...doomerboardProfileAudienceFilter(submissionProfileKey, "mine"),
                 refetchType: "none",
               });
             }
+            if (!finishRequest()) return;
+            if (submissionProfileKey !== null) {
+              void queryClient.prefetchQuery(
+                createDoomerboardQueryOptions({
+                  native: doomerboard,
+                  profileKey: submissionProfileKey,
+                  rankingDay: nextRankingDay,
+                  selection: nextSelection,
+                }),
+              );
+            }
+            setRankingDay(nextRankingDay);
             setDoomerboardSelection(nextSelection);
             setAddTokenmaxxerOpen(false);
             return;
           }
+          if (!finishRequest()) return;
           setAddTokenmaxxerFailure(outcome.status);
         })();
       }}

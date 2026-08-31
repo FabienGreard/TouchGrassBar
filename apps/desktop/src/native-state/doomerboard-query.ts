@@ -61,7 +61,7 @@ type PendingDoomerboardRead = {
 type DoomerboardReadTarget = {
   audience?: DoomerboardQuery["audience"] | undefined;
   profileKey: string;
-  rankingDay: string;
+  rankingDay?: string | undefined;
 };
 type DoomerboardReadScheduler = {
   cancel: (target: DoomerboardReadTarget) => void;
@@ -94,7 +94,7 @@ function canceledDoomerboardRead() {
 function matchesDoomerboardRead(read: PendingDoomerboardRead, target: DoomerboardReadTarget) {
   return (
     read.profileKey === target.profileKey &&
-    read.rankingDay === target.rankingDay &&
+    (target.rankingDay === undefined || read.rankingDay === target.rankingDay) &&
     (target.audience === undefined || read.query.audience === target.audience)
   );
 }
@@ -197,14 +197,24 @@ function cancelDoomerboardAudience(
   client: QueryClient,
   native: DoomerboardQueryPort,
   profileKey: string,
-  rankingDay: string,
   audience: DoomerboardQuery["audience"],
 ) {
+  const filters = doomerboardProfileAudienceFilter(profileKey, audience);
   const cancellation = client.cancelQueries({
-    queryKey: doomerboardAudienceKey(profileKey, rankingDay, audience),
+    ...filters,
   });
-  doomerboardReadSchedulers.get(native)?.cancel({ audience, profileKey, rankingDay });
+  doomerboardReadSchedulers.get(native)?.cancel({ audience, profileKey });
   return cancellation;
+}
+
+function doomerboardProfileAudienceFilter(
+  profileKey: string,
+  audience: DoomerboardQuery["audience"],
+) {
+  return {
+    predicate: (query: { queryKey: readonly unknown[] }) => query.queryKey[3] === audience,
+    queryKey: ["doomerboard", profileKey] as const,
+  };
 }
 
 function doomerboardAudienceKey(
@@ -310,6 +320,7 @@ export {
   currentRankingDay,
   defaultDoomerboardQuery,
   doomerboardAudienceKey,
+  doomerboardProfileAudienceFilter,
   doomerboardRankingDayKey,
   prefetchDoomerboardSelections,
 };

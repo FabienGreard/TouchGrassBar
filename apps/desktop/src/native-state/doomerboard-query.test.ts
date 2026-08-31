@@ -336,17 +336,21 @@ test("canceling active reads releases native capacity for current work", async (
   expect(maximumActiveReads).toBe(3);
 });
 
-test("canceling one audience preserves active reads for the other audience", async () => {
-  const releases = new Map<DoomerboardQuery["audience"], () => void>();
-  const signals = new Map<DoomerboardQuery["audience"], AbortSignal | undefined>();
+test("canceling one audience across Ranking Days preserves the other audience", async () => {
+  const pending: Array<{
+    audience: DoomerboardQuery["audience"];
+    release: () => void;
+    signal: AbortSignal | undefined;
+  }> = [];
   const native: DoomerboardQueryPort = {
     read: vi.fn(
       (selection, signal) =>
         new Promise<DoomerboardPortOutcome<unknown>>((resolve) => {
-          signals.set(selection.audience, signal);
-          releases.set(selection.audience, () =>
-            resolve({ ok: true as const, value: readyView }),
-          );
+          pending.push({
+            audience: selection.audience,
+            release: () => resolve({ ok: true as const, value: readyView }),
+            signal,
+          });
         }),
     ),
   };
@@ -370,15 +374,27 @@ test("canceling one audience preserves active reads for the other audience", asy
         selection: { ...defaultDoomerboardQuery, audience: "mine" },
       }),
     ),
+    client.fetchQuery(
+      createDoomerboardQueryOptions({
+        native,
+        profileKey,
+        rankingDay: "2026-09-01",
+        selection: { ...defaultDoomerboardQuery, audience: "mine" },
+      }),
+    ),
   ]);
 
-  await vi.waitFor(() => expect(native.read).toHaveBeenCalledTimes(2));
-  await cancelDoomerboardAudience(client, native, profileKey, rankingDay, "mine");
+  await vi.waitFor(() => expect(native.read).toHaveBeenCalledTimes(3));
+  await cancelDoomerboardAudience(client, native, profileKey, "mine");
 
-  expect(signals.get("mine")?.aborted).toBe(true);
-  expect(signals.get("global")?.aborted).toBe(false);
-  releases.get("mine")?.();
-  releases.get("global")?.();
+  expect(pending.filter(({ audience }) => audience === "mine")).toHaveLength(2);
+  expect(
+    pending
+      .filter(({ audience }) => audience === "mine")
+      .every(({ signal }) => signal?.aborted === true),
+  ).toBe(true);
+  expect(pending.find(({ audience }) => audience === "global")?.signal?.aborted).toBe(false);
+  for (const read of pending) read.release();
   await reads;
 });
 
