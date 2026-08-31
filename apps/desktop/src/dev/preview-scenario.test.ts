@@ -53,6 +53,17 @@ describe("development preview scenarios", () => {
     expect(scenario).not.toHaveProperty("syncReason");
   });
 
+  test("resolves the Doomerboard loading preview independently from the panel fixture", () => {
+    expect(resolveDevPreviewScenario("?fixture=current&doomerboardStatus=loading")).toMatchObject({
+      doomerboardStatus: "loading",
+      fixture: "current",
+    });
+    expect(
+      resolveDevPreviewScenario("?fixture=current&doomerboardStatus=private-detail")
+        .doomerboardStatus,
+    ).toBe("ready");
+  });
+
   test("owns surface and onboarding query parsing outside production", () => {
     expect(
       resolveDevPreviewScenario(

@@ -138,4 +138,27 @@ describe("development preview switcher", () => {
     expect(markup).not.toContain("installationCredential");
     expect(markup).not.toContain("transportError");
   });
+
+  test("keeps the Doomerboard loading preview available during panel navigation", () => {
+    const markup = renderToStaticMarkup(
+      <DevPreviewSwitcher
+        activeDoomerboardStatus="loading"
+        activeFixture="current"
+        activeSurface="panel"
+        activeSyncStatus="synced"
+        activeUpdateStatus="idle"
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Doomerboard preview states"');
+    expect(markup).toContain(
+      'href="?fixture=current&amp;updateStatus=idle&amp;syncStatus=synced&amp;doomerboardStatus=loading"',
+    );
+    expect(markup).toContain(
+      'href="?fixture=stale&amp;updateStatus=idle&amp;syncStatus=synced&amp;doomerboardStatus=loading"',
+    );
+    expect(markup).toContain('href="?fixture=current&amp;updateStatus=idle&amp;syncStatus=synced"');
+    expect(markup).toContain(">Ready<");
+    expect(markup).toContain(">Loading<");
+  });
 });
