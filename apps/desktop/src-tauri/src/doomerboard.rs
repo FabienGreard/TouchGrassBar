@@ -3,10 +3,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose};
 use convex::{ConvexClient, FunctionResult, Value};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,7 @@ const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const MAX_ROWS: usize = 100;
 const MAX_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_JWT_BYTES: usize = 8 * 1_024;
+const JWT_REFRESH_MARGIN_SECONDS: i64 = 60;
 const CONVEX_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -183,29 +185,67 @@ trait DoomerboardTransport: Send + Sync {
     ) -> Result<Vec<DoomerboardRowV1>, TransportError>;
 }
 
+struct FetchedConvexToken {
+    refresh_after_unix_seconds: i64,
+    token: Zeroizing<String>,
+}
+
+trait ConvexTokenProvider: Send + Sync {
+    fn fetch(
+        &self,
+        session: &Secret,
+        now_unix_seconds: i64,
+    ) -> Result<FetchedConvexToken, TransportError>;
+}
+
+trait DoomerboardConnection: Send + Sync {
+    fn authenticate(&self, token: Zeroizing<String>) -> Result<(), TransportError>;
+    fn call(&self, call: ConvexCall) -> Result<FunctionResult, TransportError>;
+}
+
+trait DoomerboardConnectionFactory: Send + Sync {
+    fn connect(&self, convex_url: &str) -> Result<Arc<dyn DoomerboardConnection>, TransportError>;
+}
+
 #[derive(Clone)]
-struct HttpDoomerboardTransport {
+struct HttpConvexTokenProvider {
     auth_site_url: Option<&'static str>,
-    convex_url: Option<&'static str>,
     client: reqwest::blocking::Client,
 }
 
-impl HttpDoomerboardTransport {
-    #[cfg(target_os = "macos")]
-    fn from_build_configuration() -> Self {
-        Self {
-            auth_site_url: option_env!("CONVEX_SITE_URL").filter(|value| !value.is_empty()),
-            convex_url: option_env!("CONVEX_URL").filter(|value| !value.is_empty()),
-            client: crate::native_https_client(),
-        }
-    }
-
+impl HttpConvexTokenProvider {
     fn endpoint(&self, path: &str) -> Result<String, TransportError> {
         let base = self.auth_site_url.ok_or(TransportError::Unavailable)?;
         Ok(format!("{}{path}", base.trim_end_matches('/')))
     }
+}
 
-    fn fetch_convex_token(&self, session: &Secret) -> Result<Zeroizing<String>, TransportError> {
+#[derive(Deserialize)]
+struct ConvexJwtClaims {
+    exp: i64,
+}
+
+fn convex_jwt_refresh_after(token: &str, now_unix_seconds: i64) -> i64 {
+    let Some(payload) = token.split('.').nth(1) else {
+        return now_unix_seconds;
+    };
+    let decoded = general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| general_purpose::URL_SAFE.decode(payload));
+    let Ok(decoded) = decoded else {
+        return now_unix_seconds;
+    };
+    serde_json::from_slice::<ConvexJwtClaims>(&decoded)
+        .map(|claims| claims.exp.saturating_sub(JWT_REFRESH_MARGIN_SECONDS))
+        .unwrap_or(now_unix_seconds)
+}
+
+impl ConvexTokenProvider for HttpConvexTokenProvider {
+    fn fetch(
+        &self,
+        session: &Secret,
+        now_unix_seconds: i64,
+    ) -> Result<FetchedConvexToken, TransportError> {
         let response = self
             .client
             .get(self.endpoint(CONVEX_TOKEN_PATH)?)
@@ -231,7 +271,125 @@ impl HttpDoomerboardTransport {
         if response.token.is_empty() || response.token.len() > MAX_JWT_BYTES {
             return Err(TransportError::Unavailable);
         }
-        Ok(Zeroizing::new(response.token))
+        let token = Zeroizing::new(response.token);
+        Ok(FetchedConvexToken {
+            refresh_after_unix_seconds: convex_jwt_refresh_after(token.as_str(), now_unix_seconds),
+            token,
+        })
+    }
+}
+
+struct ReusableDoomerboardConnection {
+    client: Mutex<ConvexClient>,
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+impl DoomerboardConnection for ReusableDoomerboardConnection {
+    fn authenticate(&self, token: Zeroizing<String>) -> Result<(), TransportError> {
+        let mut client = self
+            .client
+            .lock()
+            .map_err(|_| TransportError::Unavailable)?;
+        self.runtime
+            .block_on(client.set_auth(Some(token.as_str().to_owned())));
+        Ok(())
+    }
+
+    fn call(&self, call: ConvexCall) -> Result<FunctionResult, TransportError> {
+        let mut client = self
+            .client
+            .lock()
+            .map_err(|_| TransportError::Unavailable)?
+            .clone();
+        self.runtime.block_on(async move {
+            tokio::time::timeout(CONVEX_CALL_TIMEOUT, async move {
+                let result = match call {
+                    ConvexCall::Mutation {
+                        arguments,
+                        function_name,
+                    } => client.mutation(function_name, arguments).await,
+                    ConvexCall::Query {
+                        arguments,
+                        function_name,
+                    } => client.query(function_name, arguments).await,
+                };
+                result.map_err(|_| TransportError::Unavailable)
+            })
+            .await
+            .map_err(|_| TransportError::Unavailable)?
+        })
+    }
+}
+
+struct ReusableDoomerboardConnectionFactory;
+
+impl DoomerboardConnectionFactory for ReusableDoomerboardConnectionFactory {
+    fn connect(&self, convex_url: &str) -> Result<Arc<dyn DoomerboardConnection>, TransportError> {
+        let runtime =
+            Arc::new(tokio::runtime::Runtime::new().map_err(|_| TransportError::Unavailable)?);
+        let client = runtime
+            .block_on(async {
+                tokio::time::timeout(CONVEX_CALL_TIMEOUT, ConvexClient::new(convex_url)).await
+            })
+            .map_err(|_| TransportError::Unavailable)?
+            .map_err(|_| TransportError::Unavailable)?;
+        Ok(Arc::new(ReusableDoomerboardConnection {
+            client: Mutex::new(client),
+            runtime,
+        }))
+    }
+}
+
+struct CachedDoomerboardConnection {
+    connection: Arc<dyn DoomerboardConnection>,
+    refresh_after_unix_seconds: i64,
+    session: Secret,
+}
+
+struct HttpDoomerboardTransport {
+    connection: RwLock<Option<CachedDoomerboardConnection>>,
+    connection_factory: Arc<dyn DoomerboardConnectionFactory>,
+    convex_url: Option<&'static str>,
+    now_unix_seconds: Arc<dyn Fn() -> i64 + Send + Sync>,
+    token_provider: Arc<dyn ConvexTokenProvider>,
+}
+
+impl HttpDoomerboardTransport {
+    fn new(
+        convex_url: Option<&'static str>,
+        token_provider: Arc<dyn ConvexTokenProvider>,
+        connection_factory: Arc<dyn DoomerboardConnectionFactory>,
+        now_unix_seconds: Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> Self {
+        Self {
+            connection: RwLock::new(None),
+            connection_factory,
+            convex_url,
+            now_unix_seconds,
+            token_provider,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn from_build_configuration() -> Self {
+        Self::new(
+            option_env!("CONVEX_URL").filter(|value| !value.is_empty()),
+            Arc::new(HttpConvexTokenProvider {
+                auth_site_url: option_env!("CONVEX_SITE_URL").filter(|value| !value.is_empty()),
+                client: crate::native_https_client(),
+            }),
+            Arc::new(ReusableDoomerboardConnectionFactory),
+            Arc::new(|| OffsetDateTime::now_utc().unix_timestamp()),
+        )
+    }
+
+    fn can_reuse(
+        cached: &CachedDoomerboardConnection,
+        session: &Secret,
+        now_unix_seconds: i64,
+    ) -> bool {
+        cached.session.expose() == session.expose()
+            && now_unix_seconds < cached.refresh_after_unix_seconds
     }
 
     fn authenticated_call(
@@ -239,35 +397,42 @@ impl HttpDoomerboardTransport {
         session: &Secret,
         call: ConvexCall,
     ) -> Result<FunctionResult, TransportError> {
-        let convex_url = self
-            .convex_url
-            .ok_or(TransportError::Unavailable)?
-            .to_owned();
-        let jwt = self.fetch_convex_token(session)?;
-        tokio::runtime::Runtime::new()
-            .map_err(|_| TransportError::Unavailable)?
-            .block_on(async move {
-                tokio::time::timeout(CONVEX_CALL_TIMEOUT, async move {
-                    let mut client = ConvexClient::new(&convex_url)
-                        .await
-                        .map_err(|_| TransportError::Unavailable)?;
-                    client.set_auth(Some(jwt.as_str().to_owned())).await;
-                    let result = match call {
-                        ConvexCall::Mutation {
-                            arguments,
-                            function_name,
-                        } => client.mutation(function_name, arguments).await,
-                        ConvexCall::Query {
-                            arguments,
-                            function_name,
-                        } => client.query(function_name, arguments).await,
-                    };
-                    client.set_auth(None).await;
-                    result.map_err(|_| TransportError::Unavailable)
-                })
-                .await
-                .map_err(|_| TransportError::Unavailable)?
-            })
+        let convex_url = self.convex_url.ok_or(TransportError::Unavailable)?;
+        let now_unix_seconds = (self.now_unix_seconds)();
+        {
+            let cached = self
+                .connection
+                .read()
+                .map_err(|_| TransportError::Unavailable)?;
+            if let Some(cached) = cached.as_ref()
+                && Self::can_reuse(cached, session, now_unix_seconds)
+            {
+                return cached.connection.call(call);
+            }
+        }
+
+        let mut cached = self
+            .connection
+            .write()
+            .map_err(|_| TransportError::Unavailable)?;
+        if let Some(current) = cached.as_ref()
+            && Self::can_reuse(current, session, now_unix_seconds)
+        {
+            return current.connection.call(call);
+        }
+
+        let fetched = self.token_provider.fetch(session, now_unix_seconds)?;
+        let connection = match cached.as_ref() {
+            Some(current) => current.connection.clone(),
+            None => self.connection_factory.connect(convex_url)?,
+        };
+        connection.authenticate(fetched.token)?;
+        *cached = Some(CachedDoomerboardConnection {
+            connection: connection.clone(),
+            refresh_after_unix_seconds: fetched.refresh_after_unix_seconds,
+            session: session.clone(),
+        });
+        connection.call(call)
     }
 }
 
@@ -637,7 +802,7 @@ fn parse_selected_rows(
 mod tests {
     use super::*;
     #[cfg(target_os = "macos")]
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
     #[cfg(target_os = "macos")]
     #[derive(Default)]
@@ -664,6 +829,189 @@ mod tests {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct CountingTokenProvider {
+        calls: AtomicUsize,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ConvexTokenProvider for CountingTokenProvider {
+        fn fetch(
+            &self,
+            _session: &Secret,
+            _now_unix_seconds: i64,
+        ) -> Result<FetchedConvexToken, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(FetchedConvexToken {
+                refresh_after_unix_seconds: 2_000,
+                token: Zeroizing::new("test-jwt".to_owned()),
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct CountingConnection {
+        authentications: AtomicUsize,
+        calls: AtomicUsize,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl DoomerboardConnection for CountingConnection {
+        fn authenticate(&self, _token: Zeroizing<String>) -> Result<(), TransportError> {
+            self.authentications.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn call(&self, _call: ConvexCall) -> Result<FunctionResult, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(FunctionResult::Value(Value::Null))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct CountingConnectionFactory {
+        calls: AtomicUsize,
+        connection: Arc<CountingConnection>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl DoomerboardConnectionFactory for CountingConnectionFactory {
+        fn connect(
+            &self,
+            _convex_url: &str,
+        ) -> Result<Arc<dyn DoomerboardConnection>, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.connection.clone())
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn reuses_one_authenticated_convex_connection_for_the_same_session() {
+        let token_provider = Arc::new(CountingTokenProvider::default());
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            token_provider.clone(),
+            connection_factory.clone(),
+            Arc::new(|| 1_000),
+        );
+        let session = Secret::test_only();
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&session, call())
+            .expect("first authenticated call");
+        transport
+            .authenticated_call(&session, call())
+            .expect("second authenticated call");
+
+        assert_eq!(token_provider.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.authentications.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn reauthenticates_the_reused_connection_when_the_session_changes() {
+        let token_provider = Arc::new(CountingTokenProvider::default());
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            token_provider.clone(),
+            connection_factory.clone(),
+            Arc::new(|| 1_000),
+        );
+        let first_session = Secret::test_only();
+        let replacement_session = Secret::new("replacement-session".to_owned());
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&first_session, call())
+            .expect("first authenticated call");
+        transport
+            .authenticated_call(&replacement_session, call())
+            .expect("replacement authenticated call");
+
+        assert_eq!(token_provider.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.authentications.load(Ordering::Relaxed), 2);
+        assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn refreshes_authentication_when_the_cached_jwt_reaches_its_margin() {
+        let now = Arc::new(AtomicI64::new(1_000));
+        let token_provider = Arc::new(CountingTokenProvider::default());
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            token_provider.clone(),
+            connection_factory.clone(),
+            {
+                let now = now.clone();
+                Arc::new(move || now.load(Ordering::Relaxed))
+            },
+        );
+        let session = Secret::test_only();
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&session, call())
+            .expect("first authenticated call");
+        now.store(2_000, Ordering::Relaxed);
+        transport
+            .authenticated_call(&session, call())
+            .expect("refreshed authenticated call");
+
+        assert_eq!(token_provider.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.authentications.load(Ordering::Relaxed), 2);
+        assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn reads_the_jwt_expiry_with_a_refresh_margin() {
+        let payload = general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":2060}"#);
+        let token = format!("header.{payload}.signature");
+
+        assert_eq!(convex_jwt_refresh_after(&token, 1_000), 2_000);
+    }
+
+    #[test]
+    fn refreshes_immediately_when_the_jwt_expiry_is_not_valid() {
+        assert_eq!(convex_jwt_refresh_after("not-a-jwt", 1_000), 1_000);
+        assert_eq!(
+            convex_jwt_refresh_after("header.not-base64.signature", 1_000),
+            1_000
+        );
     }
 
     fn cost(micros: i64) -> Value {
