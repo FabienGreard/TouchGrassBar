@@ -80,6 +80,7 @@ type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
   addTokenmaxxerSubmitting?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
+  doomerboardLoading?: boolean | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
   doomerboardSelection?: DoomerboardQuery | undefined;
   error: boolean;
@@ -104,6 +105,7 @@ function PanelView({
   addTokenmaxxerOpen = false,
   addTokenmaxxerSubmitting = false,
   currentProfile,
+  doomerboardLoading = false,
   doomerboardRows,
   doomerboardSelection = defaultDoomerboardQuery,
   error,
@@ -161,6 +163,7 @@ function PanelView({
             <Doomerboard
               currentProfile={currentProfile}
               key="doomerboard"
+              loading={doomerboardLoading}
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
               onSelectionChange={onDoomerboardSelectionChange}
               providers={visibleProviders}

@@ -28,6 +28,7 @@ import { createUpdateDelivery } from "@/native-state/update-delivery";
 type PanelPresentation = Pick<
   PanelViewProps,
   | "currentProfile"
+  | "doomerboardLoading"
   | "doomerboardRows"
   | "onUpdate"
   | "tokenmaxxerRows"
@@ -276,6 +277,7 @@ function PanelScreen({
       addTokenmaxxerOpen={addTokenmaxxerOpen}
       addTokenmaxxerSubmitting={addTokenmaxxerInFlight}
       currentProfile={currentProfile}
+      doomerboardLoading={presentation.doomerboardLoading ?? doomerboardView.isLoading}
       doomerboardRows={
         presentation.doomerboardRows ??
         (doomerboardSelection.audience === "global" ? nativeDoomerboardRows : undefined)

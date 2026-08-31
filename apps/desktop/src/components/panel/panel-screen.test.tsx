@@ -84,6 +84,62 @@ test("switching audience uses the prefetched Doomerboard", async () => {
   expect(native.read).toHaveBeenCalledTimes(18);
 });
 
+test("switching to a pending Doomerboard shows a skeleton until its scores arrive", async () => {
+  let announcePendingSelection!: () => void;
+  let finishPendingSelection!: () => void;
+  const pendingSelectionStarted = new Promise<void>((resolve) => {
+    announcePendingSelection = resolve;
+  });
+  const pendingSelectionFinished = new Promise<void>((resolve) => {
+    finishPendingSelection = resolve;
+  });
+  const native = doomerboardPort();
+  const read = native.read;
+  let announced = false;
+  native.read = vi.fn(async (selection) => {
+    if (
+      selection.audience === "mine" &&
+      selection.scope === "combined" &&
+      selection.windowDays === 1
+    ) {
+      if (!announced) {
+        announced = true;
+        announcePendingSelection();
+      }
+      await pendingSelectionFinished;
+    }
+    return read(selection);
+  });
+  const stateDelivery = createSanitizedDesktopStateDelivery(
+    createBrowserSanitizedDesktopStateAdapter(
+      "current",
+      () => new Date("2026-08-31T10:00:00.000Z"),
+      undefined,
+      "synced",
+    ),
+  );
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={stateDelivery} />
+    </QueryClientProvider>,
+  );
+
+  await screen.findByText("global-combined-1-v1");
+  await pendingSelectionStarted;
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Friends" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+
+  expect(screen.getByRole("status", { name: "Loading Doomerboard" })).toBeTruthy();
+  expect(screen.queryByText("Your Leaderboard is lonely")).toBeNull();
+  expect(screen.queryByText("Leaderboard unavailable")).toBeNull();
+
+  finishPendingSelection();
+  expect(await screen.findByText("mine-combined-1-v1")).toBeTruthy();
+});
+
 test("a native revision refreshes only the active Doomerboard", async () => {
   const native = doomerboardPort();
   const stateDelivery = createSanitizedDesktopStateDelivery(
