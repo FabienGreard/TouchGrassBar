@@ -8,6 +8,7 @@ import {
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 
 const doomerboardStaleTimeMs = 5 * 60 * 1_000;
+const doomerboardNativeReadLimit = 3;
 const defaultDoomerboardQuery: DoomerboardQuery = {
   audience: "global",
   scope: "combined",
@@ -44,6 +45,13 @@ type DoomerboardPort = {
 
 type DoomerboardQueryPort = Pick<DoomerboardPort, "read">;
 type DoomerboardMutationPort = Pick<DoomerboardPort, "add">;
+type DoomerboardReadOutcome = Awaited<ReturnType<DoomerboardQueryPort["read"]>>;
+type PendingDoomerboardRead = {
+  query: DoomerboardQuery;
+  reject: (reason?: unknown) => void;
+  resolve: (outcome: DoomerboardReadOutcome) => void;
+};
+type ScheduleDoomerboardRead = (query: DoomerboardQuery) => Promise<DoomerboardReadOutcome>;
 
 type CreateDoomerboardQueryOptionsInput = {
   native: DoomerboardQueryPort;
@@ -56,6 +64,41 @@ type PrefetchDoomerboardSelectionsInput = Omit<CreateDoomerboardQueryOptionsInpu
   activeSelection: DoomerboardQuery;
   client: QueryClient;
 };
+
+const doomerboardReadSchedulers = new WeakMap<DoomerboardQueryPort, ScheduleDoomerboardRead>();
+
+function createDoomerboardReadScheduler(native: DoomerboardQueryPort): ScheduleDoomerboardRead {
+  const pending: PendingDoomerboardRead[] = [];
+  let activeReads = 0;
+  const startPendingReads = () => {
+    while (activeReads < doomerboardNativeReadLimit) {
+      const read = pending.shift();
+      if (read === undefined) return;
+      activeReads += 1;
+      void Promise.resolve()
+        .then(() => native.read(read.query))
+        .then(read.resolve, read.reject)
+        .finally(() => {
+          activeReads -= 1;
+          startPendingReads();
+        });
+    }
+  };
+  return (query) =>
+    new Promise((resolve, reject) => {
+      pending.push({ query, reject, resolve });
+      startPendingReads();
+    });
+}
+
+function scheduleDoomerboardRead(native: DoomerboardQueryPort, query: DoomerboardQuery) {
+  let schedule = doomerboardReadSchedulers.get(native);
+  if (schedule === undefined) {
+    schedule = createDoomerboardReadScheduler(native);
+    doomerboardReadSchedulers.set(native, schedule);
+  }
+  return schedule(query);
+}
 
 function currentRankingDay(now = new Date()) {
   return now.toISOString().slice(0, 10);
@@ -97,7 +140,7 @@ function createDoomerboardQueryOptions({
   return queryOptions({
     gcTime: 30 * 60 * 1_000,
     queryFn: async (): Promise<DoomerboardView> => {
-      const outcome = await native.read(selection);
+      const outcome = await scheduleDoomerboardRead(native, selection);
       if (!outcome.ok) throw new Error("Doomerboard unavailable");
       const parsed = doomerboardViewSchema.safeParse(outcome.value);
       if (!parsed.success || parsed.data.status !== "ready") {

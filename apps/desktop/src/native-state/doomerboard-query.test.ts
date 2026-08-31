@@ -114,26 +114,53 @@ test("prefetch makes every Doomerboard selection available from cache", async ()
   expect(native.read).toHaveBeenCalledTimes(18);
 });
 
-test("prefetch limits native reads to three at a time", async () => {
+test("all Doomerboard queries share one three-read native limit", async () => {
   let activeReads = 0;
   let maximumActiveReads = 0;
+  let releaseReads!: () => void;
+  const readsReleased = new Promise<void>((resolve) => {
+    releaseReads = resolve;
+  });
   const native: DoomerboardQueryPort = {
     read: vi.fn(async () => {
       activeReads += 1;
       maximumActiveReads = Math.max(maximumActiveReads, activeReads);
-      await new Promise((resolve) => setTimeout(resolve, 1));
+      await readsReleased;
       activeReads -= 1;
       return { ok: true as const, value: readyView };
     }),
   };
+  const firstClient = new QueryClient();
+  const secondClient = new QueryClient();
 
-  await prefetchDoomerboardSelections({
-    activeSelection: defaultDoomerboardQuery,
-    client: new QueryClient(),
-    native,
-    profileKey: "TG-234567",
-    rankingDay: "2026-08-31",
-  });
+  const reads = Promise.all([
+    prefetchDoomerboardSelections({
+      activeSelection: defaultDoomerboardQuery,
+      client: firstClient,
+      native,
+      profileKey: "TG-234567",
+      rankingDay: "2026-08-31",
+    }),
+    prefetchDoomerboardSelections({
+      activeSelection: defaultDoomerboardQuery,
+      client: secondClient,
+      native,
+      profileKey: "TG-765432",
+      rankingDay: "2026-09-01",
+    }),
+    firstClient.fetchQuery(
+      createDoomerboardQueryOptions({
+        native,
+        profileKey: "TG-234567",
+        rankingDay: "2026-08-31",
+        selection: defaultDoomerboardQuery,
+      }),
+    ),
+  ]);
+
+  await vi.waitFor(() => expect(activeReads).toBeGreaterThanOrEqual(3));
+  releaseReads();
+  await reads;
 
   expect(maximumActiveReads).toBe(3);
 });
