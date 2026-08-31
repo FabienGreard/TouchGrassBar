@@ -13,10 +13,7 @@ import type {
 } from "@touchgrass/ui";
 
 import { useCopyText } from "@/components/use-copy-text";
-import {
-  defaultDoomerboardQuery,
-  type DoomerboardQuery,
-} from "@/native-state/doomerboard-delivery";
+import { defaultDoomerboardQuery, type DoomerboardQuery } from "@/native-state/doomerboard-query";
 
 const emptyProviders: readonly DoomerboardProvider[] = [];
 

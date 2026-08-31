@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { REVISION_NOTICE_EVENT } from "@touchgrass/contracts";
 
-import type { DoomerboardPort, DoomerboardPortOutcome } from "@/native-state/doomerboard-delivery";
+import type { DoomerboardPort, DoomerboardPortOutcome } from "@/native-state/doomerboard-query";
 
 type StopListening = () => void;
 type TauriDoomerboardBindings = {
@@ -11,8 +11,6 @@ type TauriDoomerboardBindings = {
   listen: (event: string, receive: (event: { payload: unknown }) => void) => Promise<StopListening>;
   onFocusChanged: (receive: (event: { payload: boolean }) => void) => Promise<StopListening>;
 };
-
-const remoteRefreshIntervalMs = 5 * 60 * 1_000;
 
 const defaultBindings: TauriDoomerboardBindings = {
   invoke: (command, args) => invoke<unknown>(command, args),
@@ -64,22 +62,26 @@ function createTauriDoomerboardAdapter(
         return unavailable();
       }
     },
+    subscribeFocus: async (receive) => {
+      try {
+        return {
+          ok: true,
+          value: await bindings.onFocusChanged(({ payload: focused }) => receive(focused)),
+        };
+      } catch {
+        return unavailable();
+      }
+    },
     subscribe: async (receive) => {
       let closed = false;
       let stopRevision: StopListening | null = null;
-      let stopFocus: StopListening | null = null;
       let rolloverTimer: ReturnType<typeof setTimeout> | null = null;
-      let remoteRefreshTimer: ReturnType<typeof setInterval> | null = null;
       const stopAll = () => {
         closed = true;
         if (rolloverTimer !== null) clearTimeout(rolloverTimer);
-        if (remoteRefreshTimer !== null) clearInterval(remoteRefreshTimer);
         rolloverTimer = null;
-        remoteRefreshTimer = null;
         stopSafely(stopRevision);
-        stopSafely(stopFocus);
         stopRevision = null;
-        stopFocus = null;
       };
       const scheduleRollover = () => {
         if (closed) return;
@@ -94,12 +96,6 @@ function createTauriDoomerboardAdapter(
         stopRevision = await bindings.listen(REVISION_NOTICE_EVENT, () => {
           if (!closed) receive();
         });
-        stopFocus = await bindings.onFocusChanged(({ payload: focused }) => {
-          if (!closed && focused) receive();
-        });
-        remoteRefreshTimer = setInterval(() => {
-          if (!closed) receive();
-        }, remoteRefreshIntervalMs);
         scheduleRollover();
         return {
           ok: true,

@@ -17,10 +17,7 @@ import { LoadingPanel } from "@/components/panel/loading-panel";
 import { PanelHeader, type PanelUpdateAction } from "@/components/panel/panel-header";
 import { ProviderCard } from "@/components/panel/provider-card";
 import { UsageOverview, type UsagePresentation } from "@/components/panel/usage-overview";
-import {
-  defaultDoomerboardQuery,
-  type DoomerboardQuery,
-} from "@/native-state/doomerboard-delivery";
+import { defaultDoomerboardQuery, type DoomerboardQuery } from "@/native-state/doomerboard-query";
 
 function updateActionPresentation(
   updateState: UpdateState | null,

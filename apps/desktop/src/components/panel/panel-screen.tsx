@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { focusManager, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import {
   type AddTokenmaxxerFailure,
@@ -9,9 +10,16 @@ import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tok
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import {
-  createDoomerboardDelivery,
+  addTokenmaxxer,
+  createDoomerboardQueryOptions,
+  currentRankingDay,
   defaultDoomerboardQuery,
-} from "@/native-state/doomerboard-delivery";
+  doomerboardAudienceKey,
+  doomerboardRankingDayKey,
+  prefetchDoomerboardSelections,
+  type DoomerboardPort,
+  type DoomerboardPortOutcome,
+} from "@/native-state/doomerboard-query";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 import { createTauriDoomerboardAdapter } from "@/native-state/tauri-doomerboard-adapter";
 import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
@@ -28,6 +36,7 @@ type PanelPresentation = Pick<
 >;
 
 type PanelScreenProps = {
+  doomerboardPort?: DoomerboardPort | undefined;
   hasNativeRuntime: boolean;
   presentation?: PanelPresentation | undefined;
   stateDelivery: SanitizedDesktopStateDelivery;
@@ -44,7 +53,29 @@ const apiEquivalentCost = new Intl.NumberFormat("en-US", {
   style: "currency",
 });
 
-function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
+function retainAsyncSubscription(start: () => Promise<DoomerboardPortOutcome<() => void>>) {
+  let disposed = false;
+  let stop: (() => void) | null = null;
+  void start()
+    .then((subscription) => {
+      if (!subscription.ok) return;
+      if (disposed) subscription.value();
+      else stop = subscription.value;
+    })
+    .catch(() => undefined);
+  return () => {
+    disposed = true;
+    stop?.();
+  };
+}
+
+function PanelScreen({
+  doomerboardPort,
+  hasNativeRuntime,
+  presentation = {},
+  stateDelivery,
+}: PanelScreenProps) {
+  const queryClient = useQueryClient();
   const [addTokenmaxxerFailure, setAddTokenmaxxerFailure] = useState<AddTokenmaxxerFailure | null>(
     null,
   );
@@ -52,7 +83,9 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   const [addTokenmaxxerInFlight, setAddTokenmaxxerInFlight] = useState(false);
   const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
-  const [doomerboard] = useState(() => createDoomerboardDelivery(createTauriDoomerboardAdapter()));
+  const [doomerboard] = useState(() => doomerboardPort ?? createTauriDoomerboardAdapter());
+  const prefetchedDoomerboardGeneration = useRef<string | null>(null);
+  const [rankingDay, setRankingDay] = useState(currentRankingDay);
   const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
   const deliveryView = useSyncExternalStore(
     stateDelivery.subscribe,
@@ -64,11 +97,19 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
     updates.getSnapshot,
     updates.getSnapshot,
   );
-  const doomerboardView = useSyncExternalStore(
-    doomerboard.subscribe,
-    doomerboard.getSnapshot,
-    doomerboard.getSnapshot,
-  );
+  const profileKey =
+    deliveryView.snapshot?.profile?.status === "ready"
+      ? deliveryView.snapshot.profile.touchGrassId
+      : null;
+  const doomerboardView = useQuery({
+    ...createDoomerboardQueryOptions({
+      native: doomerboard,
+      profileKey: profileKey ?? "profile-unavailable",
+      rankingDay,
+      selection: doomerboardSelection,
+    }),
+    enabled: hasNativeRuntime && profileKey !== null,
+  });
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
@@ -86,22 +127,61 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
-    let disposed = false;
-    let stop: () => void = () => undefined;
-    void doomerboard.activate().then((unsubscribe) => {
-      if (disposed) unsubscribe();
-      else stop = unsubscribe;
-    });
+    return retainAsyncSubscription(() =>
+      doomerboard.subscribe(() => {
+        const nextRankingDay = currentRankingDay();
+        if (nextRankingDay !== rankingDay) {
+          setRankingDay(nextRankingDay);
+          return;
+        }
+        if (profileKey === null) return;
+        void queryClient.invalidateQueries(
+          {
+            queryKey: doomerboardRankingDayKey(profileKey, rankingDay),
+            refetchType: "active",
+          },
+          { cancelRefetch: false },
+        );
+      }),
+    );
+  }, [doomerboard, hasNativeRuntime, profileKey, queryClient, rankingDay]);
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return undefined;
+    const stop = retainAsyncSubscription(() =>
+      doomerboard.subscribeFocus((focused) => focusManager.setFocused(focused)),
+    );
     return () => {
-      disposed = true;
       stop();
+      focusManager.setFocused(undefined);
     };
   }, [doomerboard, hasNativeRuntime]);
 
   useEffect(() => {
-    if (!hasNativeRuntime) return;
-    void doomerboard.select(doomerboardSelection);
-  }, [doomerboard, doomerboardSelection, hasNativeRuntime]);
+    if (!hasNativeRuntime || profileKey === null) {
+      prefetchedDoomerboardGeneration.current = null;
+      return;
+    }
+    if (doomerboardView.data === undefined) return;
+    const generation = `${profileKey}:${rankingDay}`;
+    if (prefetchedDoomerboardGeneration.current === generation) return;
+    prefetchedDoomerboardGeneration.current = generation;
+    void prefetchDoomerboardSelections({
+      activeSelection: doomerboardSelection,
+      client: queryClient,
+      native: doomerboard,
+      profileKey,
+      rankingDay,
+    });
+  }, [
+    doomerboard,
+    doomerboardSelection,
+    doomerboardView.data,
+    hasNativeRuntime,
+    profileKey,
+    queryClient,
+    rankingDay,
+  ]);
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
@@ -164,8 +244,8 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   const currentProfile =
     presentation.currentProfile === undefined ? nativeProfile : presentation.currentProfile;
   const nativeDoomerboardRows =
-    doomerboardView.view?.status === "ready"
-      ? doomerboardView.view.rows.map((row) => {
+    doomerboardView.data?.status === "ready"
+      ? doomerboardView.data.rows.map((row) => {
           const presentedRow: NonNullable<PanelViewProps["doomerboardRows"]>[number] = {
             displayName: row.displayName,
             rank: row.rank,
@@ -210,16 +290,21 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
         setAddTokenmaxxerInFlight(true);
         void (async () => {
           const outcome = hasNativeRuntime
-            ? await doomerboard.addTokenmaxxer(touchGrassId)
+            ? await addTokenmaxxer(doomerboard, touchGrassId)
             : ({ status: "unavailable" } as const);
           const current = addTokenmaxxerRequests.finish(request);
           setAddTokenmaxxerInFlight(addTokenmaxxerRequests.inFlight());
           if (!current) return;
           if (outcome.status === "added" || outcome.status === "already-added") {
             const nextSelection = { ...doomerboardSelection, audience: "mine" as const };
+            if (profileKey !== null) {
+              await queryClient.invalidateQueries({
+                queryKey: doomerboardAudienceKey(profileKey, rankingDay, "mine"),
+                refetchType: "none",
+              });
+            }
             setDoomerboardSelection(nextSelection);
             setAddTokenmaxxerOpen(false);
-            void doomerboard.read(nextSelection);
             return;
           }
           setAddTokenmaxxerFailure(outcome.status);
