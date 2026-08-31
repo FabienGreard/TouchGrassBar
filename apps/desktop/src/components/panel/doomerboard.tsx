@@ -18,9 +18,24 @@ import { defaultDoomerboardQuery, type DoomerboardQuery } from "@/native-state/d
 const emptyProviders: readonly DoomerboardProvider[] = [];
 
 const doomerboardSkeletonCards = [
-  { card: "min-h-[112px]", key: "second", medal: "h-[29px] w-[29px]" },
-  { card: "min-h-[136px]", key: "first", medal: "h-[33px] w-[33px]" },
-  { card: "min-h-[112px]", key: "third", medal: "h-[29px] w-[29px]" },
+  {
+    card: "min-h-[112px] border-rank-silver-border bg-rank-silver",
+    key: "second",
+    medal: "h-[29px] w-[29px] bg-rank-silver text-[12px]",
+    rank: 2,
+  },
+  {
+    card: "min-h-[136px] border-rank-gold-border bg-rank-gold",
+    key: "first",
+    medal: "h-[33px] w-[33px] bg-rank-gold text-[15px]",
+    rank: 1,
+  },
+  {
+    card: "min-h-[112px] border-rank-bronze-border bg-rank-bronze",
+    key: "third",
+    medal: "h-[29px] w-[29px] bg-rank-bronze text-[12px]",
+    rank: 3,
+  },
 ] as const;
 
 function DoomerboardSkeleton() {
@@ -40,17 +55,21 @@ function DoomerboardSkeleton() {
       >
         {doomerboardSkeletonCards.map((style) => (
           <div
-            className={`relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border border-pearl-line bg-pearl-surface px-2 py-2 shadow-rank-card contrast-more:border-pearl-ink ${style.card}`}
+            className={`relative flex flex-col items-center rounded-t-[13px] rounded-b-[8px] border px-1 py-2 text-center shadow-rank-card backdrop-blur-[8px] ${style.card}`}
+            data-doomerboard-skeleton-rank={style.rank}
             key={style.key}
           >
             <span
-              className={`absolute -top-3.5 rounded-full bg-pearl-control shadow-control ${style.medal}`}
-            />
-            <span className="mt-[18px] h-1.5 w-12 rounded-full bg-pearl-control" />
-            <span className="mt-auto h-2.5 w-16 rounded-full bg-pearl-control" />
-            <span className="mt-1.5 h-1.5 w-12 rounded-full bg-pearl-control" />
-            <span className="mt-3 h-3 w-14 rounded-full bg-pearl-control" />
-            <span className="mt-1.5 h-1.5 w-10 rounded-full bg-pearl-control" />
+              className={`absolute -top-3.5 grid place-items-center rounded-full font-extrabold text-pearl-ink/20 shadow-control contrast-more:text-pearl-ink/40 ${style.medal}`}
+              data-slot="doomerboard-skeleton-medal"
+            >
+              {style.rank}
+            </span>
+            <span className="mt-[18px] h-1.5 w-12 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-auto h-2.5 w-16 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-1.5 h-1.5 w-12 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-3 h-3 w-14 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
+            <span className="mt-1.5 h-1.5 w-10 rounded-full bg-pearl-ink/10 contrast-more:bg-pearl-ink/25" />
           </div>
         ))}
       </div>
