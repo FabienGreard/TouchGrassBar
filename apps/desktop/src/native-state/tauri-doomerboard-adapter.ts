@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { REVISION_NOTICE_EVENT } from "@touchgrass/contracts";
 
-import type { DoomerboardPort, DoomerboardPortOutcome } from "@/native-state/doomerboard-delivery";
+import type { DoomerboardPort, DoomerboardPortOutcome } from "@/native-state/doomerboard-query";
 
 type StopListening = () => void;
 type TauriDoomerboardBindings = {
@@ -12,13 +12,18 @@ type TauriDoomerboardBindings = {
   onFocusChanged: (receive: (event: { payload: boolean }) => void) => Promise<StopListening>;
 };
 
-const remoteRefreshIntervalMs = 5 * 60 * 1_000;
-
 const defaultBindings: TauriDoomerboardBindings = {
   invoke: (command, args) => invoke<unknown>(command, args),
   listen: (event, receive) => listen<unknown>(event, receive),
   onFocusChanged: (receive) => getCurrentWindow().onFocusChanged(receive),
 };
+
+let nextDoomerboardReadSequence = 0;
+
+function createDoomerboardReadId() {
+  nextDoomerboardReadSequence += 1;
+  return `${Date.now().toString(36)}-${nextDoomerboardReadSequence.toString(36)}`;
+}
 
 function unavailable<Value>(): DoomerboardPortOutcome<Value> {
   return {
@@ -44,21 +49,41 @@ function createTauriDoomerboardAdapter(
   bindings: TauriDoomerboardBindings = defaultBindings,
 ): DoomerboardPort {
   return {
-    add: async (touchGrassId) => {
+    add: async (profileKey, touchGrassId) => {
       try {
         return {
           ok: true,
-          value: await bindings.invoke("add_tokenmaxxer", { touchGrassId }),
+          value: await bindings.invoke("add_tokenmaxxer", { profileKey, touchGrassId }),
         };
       } catch {
         return unavailable();
       }
     },
-    read: async (query) => {
+    read: async (profileKey, query, signal) => {
+      if (signal?.aborted) return unavailable();
+      const requestId = createDoomerboardReadId();
+      const read = bindings.invoke("get_doomerboard", { profileKey, query, requestId });
+      const cancelRead = () => {
+        void bindings.invoke("cancel_doomerboard_read", { requestId }).catch(() => undefined);
+      };
+      signal?.addEventListener("abort", cancelRead, { once: true });
+      if (signal?.aborted) cancelRead();
       try {
         return {
           ok: true,
-          value: await bindings.invoke("get_doomerboard", { query }),
+          value: await read,
+        };
+      } catch {
+        return unavailable();
+      } finally {
+        signal?.removeEventListener("abort", cancelRead);
+      }
+    },
+    subscribeFocus: async (receive) => {
+      try {
+        return {
+          ok: true,
+          value: await bindings.onFocusChanged(({ payload: focused }) => receive(focused)),
         };
       } catch {
         return unavailable();
@@ -67,19 +92,13 @@ function createTauriDoomerboardAdapter(
     subscribe: async (receive) => {
       let closed = false;
       let stopRevision: StopListening | null = null;
-      let stopFocus: StopListening | null = null;
       let rolloverTimer: ReturnType<typeof setTimeout> | null = null;
-      let remoteRefreshTimer: ReturnType<typeof setInterval> | null = null;
       const stopAll = () => {
         closed = true;
         if (rolloverTimer !== null) clearTimeout(rolloverTimer);
-        if (remoteRefreshTimer !== null) clearInterval(remoteRefreshTimer);
         rolloverTimer = null;
-        remoteRefreshTimer = null;
         stopSafely(stopRevision);
-        stopSafely(stopFocus);
         stopRevision = null;
-        stopFocus = null;
       };
       const scheduleRollover = () => {
         if (closed) return;
@@ -94,12 +113,6 @@ function createTauriDoomerboardAdapter(
         stopRevision = await bindings.listen(REVISION_NOTICE_EVENT, () => {
           if (!closed) receive();
         });
-        stopFocus = await bindings.onFocusChanged(({ payload: focused }) => {
-          if (!closed && focused) receive();
-        });
-        remoteRefreshTimer = setInterval(() => {
-          if (!closed) receive();
-        }, remoteRefreshIntervalMs);
         scheduleRollover();
         return {
           ok: true,

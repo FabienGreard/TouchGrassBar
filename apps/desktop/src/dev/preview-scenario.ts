@@ -11,6 +11,7 @@ import {
 } from "@/components/screens/onboarding/onboarding-flow";
 
 type BrowserFixtureName = "current" | "loading" | "stale" | "update" | "unavailable";
+type DoomerboardPreviewStatus = "loading" | "ready";
 type UpdatePreviewStatus = Extract<
   UpdateState["update"]["status"],
   "available" | "checking" | "downloading" | "failed" | "idle" | "installing" | "upToDate"
@@ -39,6 +40,7 @@ const updatePreviewStatuses = [
 ] as const satisfies readonly { key: UpdatePreviewStatus; label: string }[];
 
 type DevPreviewScenario = {
+  doomerboardStatus: DoomerboardPreviewStatus;
   fixture: BrowserFixtureName;
   onboarding: {
     codexState: CodingProviderAccessState;
@@ -62,6 +64,10 @@ function resolveFixture(params: URLSearchParams): BrowserFixtureName {
     candidate === "update"
     ? candidate
     : "unavailable";
+}
+
+function resolveDoomerboardStatus(params: URLSearchParams): DoomerboardPreviewStatus {
+  return params.get("doomerboardStatus") === "loading" ? "loading" : "ready";
 }
 
 function resolveProviderState(
@@ -128,6 +134,7 @@ function resolveDevPreviewScenario(search: string): DevPreviewScenario {
   const settingsProviderExcluded = params.get("providerState") === "excluded";
 
   return {
+    doomerboardStatus: resolveDoomerboardStatus(params),
     fixture,
     onboarding: {
       codexState: resolveProviderState(params, "codexState", "detected"),
@@ -153,6 +160,7 @@ export {
 export type {
   BrowserFixtureName,
   DevPreviewScenario,
+  DoomerboardPreviewStatus,
   OnboardingSetupPreviewState,
   SettingsProfilePreviewState,
   UpdatePreviewStatus,

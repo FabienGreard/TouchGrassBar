@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -13,6 +14,7 @@ if (!rootElement) {
 }
 
 const root = createRoot(rootElement);
+const queryClient = new QueryClient();
 const hasNativeRuntime = "__TAURI_INTERNALS__" in window;
 
 if (hasNativeRuntime) {
@@ -20,7 +22,11 @@ if (hasNativeRuntime) {
 }
 
 function render(application: ReactNode) {
-  root.render(<StrictMode>{application}</StrictMode>);
+  root.render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>{application}</QueryClientProvider>
+    </StrictMode>,
+  );
 }
 
 function renderNativeSurface(application: ReactNode, surface: DesktopSurface) {

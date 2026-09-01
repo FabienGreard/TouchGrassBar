@@ -14,6 +14,7 @@ import {
   syncPreviewStatuses,
   updatePreviewStatuses,
   type BrowserFixtureName,
+  type DoomerboardPreviewStatus,
   type UpdatePreviewStatus,
 } from "@/dev/preview-scenario";
 import {
@@ -272,6 +273,7 @@ function PreviewControlRow({
 type FixtureSwitcherOptionProps = {
   active: boolean;
   children: ReactNode;
+  doomerboardStatus?: DoomerboardPreviewStatus | undefined;
   fixture: BrowserFixtureName;
   syncStatus?: SyncStatus | undefined;
   updateStatus?: UpdatePreviewStatus | undefined;
@@ -280,14 +282,19 @@ type FixtureSwitcherOptionProps = {
 function FixtureSwitcherOption({
   active,
   children,
+  doomerboardStatus,
   fixture,
   syncStatus,
   updateStatus,
 }: FixtureSwitcherOptionProps) {
   const syncQuery = syncStatus ? `&syncStatus=${encodeURIComponent(syncStatus)}` : "";
   const updateQuery = updateStatus ? `&updateStatus=${encodeURIComponent(updateStatus)}` : "";
+  const doomerboardQuery = doomerboardStatus === "loading" ? "&doomerboardStatus=loading" : "";
   return (
-    <PreviewSwitcherOption active={active} href={`?fixture=${fixture}${updateQuery}${syncQuery}`}>
+    <PreviewSwitcherOption
+      active={active}
+      href={`?fixture=${fixture}${updateQuery}${syncQuery}${doomerboardQuery}`}
+    >
       {children}
     </PreviewSwitcherOption>
   );
@@ -315,11 +322,13 @@ function PreviewSwitcherOption({ active, children, href }: PreviewSwitcherOption
 }
 
 function DevFixtureSwitcher({
+  activeDoomerboardStatus,
   activeFixture,
   activeSyncStatus,
   activeUpdateStatus,
   devInstance,
 }: {
+  activeDoomerboardStatus?: DoomerboardPreviewStatus | undefined;
   activeFixture: BrowserFixtureName;
   activeSyncStatus?: SyncStatus | undefined;
   activeUpdateStatus?: UpdatePreviewStatus | undefined;
@@ -332,6 +341,7 @@ function DevFixtureSwitcher({
       instanceLabel={devInstance?.label}
     >
       <FixtureOptions
+        activeDoomerboardStatus={activeDoomerboardStatus}
         activeFixture={activeFixture}
         activeSyncStatus={activeSyncStatus}
         activeUpdateStatus={activeUpdateStatus}
@@ -341,10 +351,12 @@ function DevFixtureSwitcher({
 }
 
 function FixtureOptions({
+  activeDoomerboardStatus,
   activeFixture,
   activeSyncStatus,
   activeUpdateStatus,
 }: {
+  activeDoomerboardStatus?: DoomerboardPreviewStatus | undefined;
   activeFixture: BrowserFixtureName;
   activeSyncStatus?: SyncStatus | undefined;
   activeUpdateStatus?: UpdatePreviewStatus | undefined;
@@ -353,6 +365,7 @@ function FixtureOptions({
     <PreviewControlRow aria-label="Panel fixtures" label="Panel">
       <FixtureSwitcherOption
         active={activeFixture === "loading"}
+        doomerboardStatus={activeDoomerboardStatus}
         fixture="loading"
         syncStatus={activeSyncStatus}
         updateStatus={activeUpdateStatus}
@@ -361,6 +374,7 @@ function FixtureOptions({
       </FixtureSwitcherOption>
       <FixtureSwitcherOption
         active={activeFixture === "unavailable"}
+        doomerboardStatus={activeDoomerboardStatus}
         fixture="unavailable"
         syncStatus={activeSyncStatus}
         updateStatus={activeUpdateStatus}
@@ -369,6 +383,7 @@ function FixtureOptions({
       </FixtureSwitcherOption>
       <FixtureSwitcherOption
         active={activeFixture === "current"}
+        doomerboardStatus={activeDoomerboardStatus}
         fixture="current"
         syncStatus={activeSyncStatus}
         updateStatus={activeUpdateStatus}
@@ -377,6 +392,7 @@ function FixtureOptions({
       </FixtureSwitcherOption>
       <FixtureSwitcherOption
         active={activeFixture === "update"}
+        doomerboardStatus={activeDoomerboardStatus}
         fixture="update"
         syncStatus={activeSyncStatus}
         updateStatus={activeUpdateStatus === "idle" ? "available" : activeUpdateStatus}
@@ -385,6 +401,7 @@ function FixtureOptions({
       </FixtureSwitcherOption>
       <FixtureSwitcherOption
         active={activeFixture === "stale"}
+        doomerboardStatus={activeDoomerboardStatus}
         fixture="stale"
         syncStatus={activeSyncStatus}
         updateStatus={activeUpdateStatus}
@@ -396,6 +413,7 @@ function FixtureOptions({
 }
 
 function DevPreviewSwitcher({
+  activeDoomerboardStatus = "ready",
   activeFixture,
   activeSurface,
   activeSyncStatus,
@@ -407,6 +425,7 @@ function DevPreviewSwitcher({
   settingsProviderEnabled = true,
   settingsProviderPreviewState,
 }: {
+  activeDoomerboardStatus?: DoomerboardPreviewStatus | undefined;
   activeFixture: BrowserFixtureName;
   activeSurface: PreviewSurface;
   activeSyncStatus: SyncStatus;
@@ -421,6 +440,8 @@ function DevPreviewSwitcher({
   const fixture = encodeURIComponent(activeFixture);
   const syncStatus = encodeURIComponent(activeSyncStatus);
   const updateStatus = encodeURIComponent(activeUpdateStatus);
+  const doomerboardStatusQuery =
+    activeDoomerboardStatus === "loading" ? "&doomerboardStatus=loading" : "";
   const settingsProviderState = settingsProviderPreviewState
     ? `&providerState=${encodeURIComponent(
         settingsProviderEnabled ? settingsProviderPreviewState : "excluded",
@@ -439,26 +460,26 @@ function DevPreviewSwitcher({
     providerState?: CodingProviderAccessState;
     step?: OnboardingStep;
   }) =>
-    `?window=onboarding&fixture=${fixture}&updateStatus=${updateStatus}&onboardingStep=${encodeURIComponent(step)}&codexState=${encodeURIComponent(codexState)}&providerState=${encodeURIComponent(providerState)}&syncStatus=${syncStatus}`;
+    `?window=onboarding&fixture=${fixture}&updateStatus=${updateStatus}&onboardingStep=${encodeURIComponent(step)}&codexState=${encodeURIComponent(codexState)}&providerState=${encodeURIComponent(providerState)}&syncStatus=${syncStatus}${doomerboardStatusQuery}`;
 
   return (
     <FixtureSwitcher data-dev-only="preview-switcher" instanceLabel={devInstance?.label}>
       <PreviewControlRow aria-label="Native surfaces" label="Surface">
         <PreviewSwitcherOption
           active={activeSurface === "panel"}
-          href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${syncStatus}`}
+          href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${syncStatus}${doomerboardStatusQuery}`}
         >
           Panel
         </PreviewSwitcherOption>
         <PreviewSwitcherOption
           active={activeSurface === "settings"}
-          href={`?window=settings&fixture=${fixture}&updateStatus=${updateStatus}${settingsProviderState}&syncStatus=${syncStatus}`}
+          href={`?window=settings&fixture=${fixture}&updateStatus=${updateStatus}${settingsProviderState}&syncStatus=${syncStatus}${doomerboardStatusQuery}`}
         >
           Settings
         </PreviewSwitcherOption>
         <PreviewSwitcherOption
           active={activeSurface === "onboarding"}
-          href={`?window=onboarding&fixture=${fixture}&updateStatus=${updateStatus}${onboardingQuery}&syncStatus=${syncStatus}`}
+          href={`?window=onboarding&fixture=${fixture}&updateStatus=${updateStatus}${onboardingQuery}&syncStatus=${syncStatus}${doomerboardStatusQuery}`}
         >
           Onboarding
         </PreviewSwitcherOption>
@@ -466,15 +487,30 @@ function DevPreviewSwitcher({
       {activeSurface === "panel" ? (
         <div className="border-t border-pearl-border/70 pt-1.5">
           <FixtureOptions
+            activeDoomerboardStatus={activeDoomerboardStatus}
             activeFixture={activeFixture}
             activeSyncStatus={activeSyncStatus}
             activeUpdateStatus={activeUpdateStatus}
           />
+          <PreviewControlRow aria-label="Doomerboard preview states" label="Board">
+            <PreviewSwitcherOption
+              active={activeDoomerboardStatus === "ready"}
+              href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${syncStatus}`}
+            >
+              Ready
+            </PreviewSwitcherOption>
+            <PreviewSwitcherOption
+              active={activeDoomerboardStatus === "loading"}
+              href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${syncStatus}&doomerboardStatus=loading`}
+            >
+              Loading
+            </PreviewSwitcherOption>
+          </PreviewControlRow>
           <PreviewControlRow aria-label="Update preview states" label="Update">
             {updatePreviewStatuses.map((status) => (
               <PreviewSwitcherOption
                 active={activeUpdateStatus === status.key}
-                href={`?fixture=${fixture}&updateStatus=${encodeURIComponent(status.key)}&syncStatus=${syncStatus}`}
+                href={`?fixture=${fixture}&updateStatus=${encodeURIComponent(status.key)}&syncStatus=${syncStatus}${doomerboardStatusQuery}`}
                 key={status.key}
               >
                 {status.label}
@@ -485,7 +521,7 @@ function DevPreviewSwitcher({
             {syncPreviewStatuses.map((status) => (
               <PreviewSwitcherOption
                 active={activeSyncStatus === status.key}
-                href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${encodeURIComponent(status.key)}`}
+                href={`?fixture=${fixture}&updateStatus=${updateStatus}&syncStatus=${encodeURIComponent(status.key)}${doomerboardStatusQuery}`}
                 key={status.key}
               >
                 {status.label}
@@ -503,7 +539,7 @@ function DevPreviewSwitcher({
           {updatePreviewStatuses.map((status) => (
             <PreviewSwitcherOption
               active={activeUpdateStatus === status.key}
-              href={`?window=settings&fixture=${fixture}&updateStatus=${encodeURIComponent(status.key)}${settingsProviderState}&syncStatus=${syncStatus}#settings-general`}
+              href={`?window=settings&fixture=${fixture}&updateStatus=${encodeURIComponent(status.key)}${settingsProviderState}&syncStatus=${syncStatus}${doomerboardStatusQuery}#settings-general`}
               key={status.key}
             >
               {status.label}
@@ -520,7 +556,7 @@ function DevPreviewSwitcher({
                   ? !settingsProviderEnabled
                   : settingsProviderEnabled && settingsProviderPreviewState === state.key
               }
-              href={`?window=settings&fixture=${fixture}&updateStatus=${updateStatus}&providerState=${encodeURIComponent(state.key)}&syncStatus=${syncStatus}#settings-providers`}
+              href={`?window=settings&fixture=${fixture}&updateStatus=${updateStatus}&providerState=${encodeURIComponent(state.key)}&syncStatus=${syncStatus}${doomerboardStatusQuery}#settings-providers`}
               key={state.key}
             >
               {state.label}

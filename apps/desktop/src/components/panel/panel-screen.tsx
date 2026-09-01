@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { focusManager, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import {
   type AddTokenmaxxerFailure,
@@ -9,9 +10,19 @@ import { subscribeToPanelAddTokenmaxxer } from "@/components/panel/panel-add-tok
 import { createPanelKeyboardHandler } from "@/components/panel/panel-keyboard";
 import { PanelView, type PanelViewProps } from "@/components/panel/panel-view";
 import {
-  createDoomerboardDelivery,
+  addTokenmaxxer,
+  cancelDoomerboardAudience,
+  cancelDoomerboardRankingDay,
+  createDoomerboardQueryOptions,
+  currentRankingDay,
   defaultDoomerboardQuery,
-} from "@/native-state/doomerboard-delivery";
+  doomerboardProfileAudienceFilter,
+  doomerboardRankingDayKey,
+  prefetchDoomerboardSelections,
+  type DoomerboardPort,
+  type DoomerboardPortOutcome,
+  type DoomerboardQuery,
+} from "@/native-state/doomerboard-query";
 import type { SanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 import { createTauriDoomerboardAdapter } from "@/native-state/tauri-doomerboard-adapter";
 import { createTauriUpdateAdapter } from "@/native-state/tauri-update-adapter";
@@ -20,6 +31,7 @@ import { createUpdateDelivery } from "@/native-state/update-delivery";
 type PanelPresentation = Pick<
   PanelViewProps,
   | "currentProfile"
+  | "doomerboardLoading"
   | "doomerboardRows"
   | "onUpdate"
   | "tokenmaxxerRows"
@@ -28,9 +40,28 @@ type PanelPresentation = Pick<
 >;
 
 type PanelScreenProps = {
+  doomerboardPort?: DoomerboardPort | undefined;
   hasNativeRuntime: boolean;
   presentation?: PanelPresentation | undefined;
   stateDelivery: SanitizedDesktopStateDelivery;
+};
+
+type DoomerboardCacheState = {
+  controller: AbortController;
+  prefetchStatus: "waiting" | "running" | "complete" | "canceled";
+  profileKey: string;
+  rankingDay: string;
+};
+
+type UseDoomerboardCacheInput = {
+  activeSelection: DoomerboardQuery;
+  client: QueryClient;
+  dataReady: boolean;
+  hasNativeRuntime: boolean;
+  native: DoomerboardPort;
+  profileKey: string | null;
+  rankingDay: string;
+  setRankingDay: (rankingDay: string) => void;
 };
 
 const compactTokenScore = new Intl.NumberFormat("en-US", {
@@ -44,7 +75,136 @@ const apiEquivalentCost = new Intl.NumberFormat("en-US", {
   style: "currency",
 });
 
-function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: PanelScreenProps) {
+function retainAsyncSubscription(start: () => Promise<DoomerboardPortOutcome<() => void>>) {
+  let disposed = false;
+  let stop: (() => void) | null = null;
+  void start()
+    .then((subscription) => {
+      if (!subscription.ok) return;
+      if (disposed) subscription.value();
+      else stop = subscription.value;
+    })
+    .catch(() => undefined);
+  return () => {
+    disposed = true;
+    stop?.();
+  };
+}
+
+function deliveredProfileKey(stateDelivery: SanitizedDesktopStateDelivery) {
+  const profile = stateDelivery.getSnapshot().snapshot?.profile;
+  return profile?.status === "ready" ? profile.touchGrassId : null;
+}
+
+function useDoomerboardCache({
+  activeSelection,
+  client,
+  dataReady,
+  hasNativeRuntime,
+  native,
+  profileKey,
+  rankingDay,
+  setRankingDay,
+}: UseDoomerboardCacheInput) {
+  const cacheState = useRef<DoomerboardCacheState | null>(null);
+
+  useEffect(() => {
+    if (!hasNativeRuntime) return undefined;
+    return retainAsyncSubscription(() =>
+      native.subscribe(() => {
+        const currentCacheState = cacheState.current;
+        if (
+          currentCacheState?.profileKey === profileKey &&
+          currentCacheState.rankingDay === rankingDay
+        ) {
+          if (currentCacheState.prefetchStatus === "running") {
+            currentCacheState.prefetchStatus = "canceled";
+            currentCacheState.controller.abort();
+          }
+        }
+        const nextRankingDay = currentRankingDay();
+        if (nextRankingDay !== rankingDay) {
+          setRankingDay(nextRankingDay);
+          return;
+        }
+        if (profileKey === null) return;
+        const queryKey = doomerboardRankingDayKey(profileKey, rankingDay);
+        void (async () => {
+          await cancelDoomerboardRankingDay(client, native, profileKey, rankingDay);
+          await client.invalidateQueries({ queryKey, refetchType: "active" });
+        })();
+      }),
+    );
+  }, [client, hasNativeRuntime, native, profileKey, rankingDay, setRankingDay]);
+
+  useEffect(() => {
+    const previousCacheState = cacheState.current;
+    const cacheChanged =
+      previousCacheState !== null &&
+      (!hasNativeRuntime ||
+        profileKey === null ||
+        previousCacheState.profileKey !== profileKey ||
+        previousCacheState.rankingDay !== rankingDay);
+    if (cacheChanged) {
+      previousCacheState.controller.abort();
+      void cancelDoomerboardRankingDay(
+        client,
+        native,
+        previousCacheState.profileKey,
+        previousCacheState.rankingDay,
+      );
+      client.removeQueries({
+        queryKey: doomerboardRankingDayKey(
+          previousCacheState.profileKey,
+          previousCacheState.rankingDay,
+        ),
+      });
+      cacheState.current = null;
+    }
+    if (!hasNativeRuntime || profileKey === null) return;
+    if (cacheState.current === null) {
+      cacheState.current = {
+        controller: new AbortController(),
+        prefetchStatus: "waiting",
+        profileKey,
+        rankingDay,
+      };
+    }
+    if (!dataReady) return;
+    const currentCacheState = cacheState.current;
+    if (currentCacheState.prefetchStatus !== "waiting") return;
+    currentCacheState.prefetchStatus = "running";
+    void prefetchDoomerboardSelections({
+      activeSelection,
+      client,
+      native,
+      profileKey,
+      rankingDay,
+      signal: currentCacheState.controller.signal,
+    }).then(() => {
+      if (cacheState.current !== currentCacheState) return;
+      currentCacheState.prefetchStatus = currentCacheState.controller.signal.aborted
+        ? "canceled"
+        : "complete";
+    });
+  }, [activeSelection, client, dataReady, hasNativeRuntime, native, profileKey, rankingDay]);
+
+  useEffect(
+    () => () => {
+      cacheState.current?.controller.abort();
+      cacheState.current = null;
+    },
+    [],
+  );
+}
+
+function PanelScreen({
+  doomerboardPort,
+  hasNativeRuntime,
+  presentation = {},
+  stateDelivery,
+}: PanelScreenProps) {
+  const queryClient = useQueryClient();
   const [addTokenmaxxerFailure, setAddTokenmaxxerFailure] = useState<AddTokenmaxxerFailure | null>(
     null,
   );
@@ -52,7 +212,8 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   const [addTokenmaxxerInFlight, setAddTokenmaxxerInFlight] = useState(false);
   const [addTokenmaxxerRequests] = useState(createAddTokenmaxxerRequestGuard);
   const [doomerboardSelection, setDoomerboardSelection] = useState(defaultDoomerboardQuery);
-  const [doomerboard] = useState(() => createDoomerboardDelivery(createTauriDoomerboardAdapter()));
+  const [doomerboard] = useState(() => doomerboardPort ?? createTauriDoomerboardAdapter());
+  const [rankingDay, setRankingDay] = useState(currentRankingDay);
   const [updates] = useState(() => createUpdateDelivery(createTauriUpdateAdapter()));
   const deliveryView = useSyncExternalStore(
     stateDelivery.subscribe,
@@ -64,11 +225,40 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
     updates.getSnapshot,
     updates.getSnapshot,
   );
-  const doomerboardView = useSyncExternalStore(
-    doomerboard.subscribe,
-    doomerboard.getSnapshot,
-    doomerboard.getSnapshot,
-  );
+  const profileKey =
+    deliveryView.snapshot?.profile?.status === "ready"
+      ? deliveryView.snapshot.profile.touchGrassId
+      : null;
+  useEffect(() => {
+    let subscribedProfileKey = deliveredProfileKey(stateDelivery);
+    return stateDelivery.subscribe(() => {
+      const nextProfileKey = deliveredProfileKey(stateDelivery);
+      if (nextProfileKey === subscribedProfileKey) return;
+      subscribedProfileKey = nextProfileKey;
+      addTokenmaxxerRequests.invalidate();
+      setAddTokenmaxxerFailure(null);
+      setAddTokenmaxxerOpen(false);
+    });
+  }, [addTokenmaxxerRequests, stateDelivery]);
+  const doomerboardView = useQuery({
+    ...createDoomerboardQueryOptions({
+      native: doomerboard,
+      profileKey: profileKey ?? "profile-unavailable",
+      rankingDay,
+      selection: doomerboardSelection,
+    }),
+    enabled: hasNativeRuntime && profileKey !== null,
+  });
+  useDoomerboardCache({
+    activeSelection: doomerboardSelection,
+    client: queryClient,
+    dataReady: doomerboardView.data !== undefined,
+    hasNativeRuntime,
+    native: doomerboard,
+    profileKey,
+    rankingDay,
+    setRankingDay,
+  });
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
@@ -86,22 +276,14 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
-    let disposed = false;
-    let stop: () => void = () => undefined;
-    void doomerboard.activate().then((unsubscribe) => {
-      if (disposed) unsubscribe();
-      else stop = unsubscribe;
-    });
+    const stop = retainAsyncSubscription(() =>
+      doomerboard.subscribeFocus((focused) => focusManager.setFocused(focused)),
+    );
     return () => {
-      disposed = true;
       stop();
+      focusManager.setFocused(undefined);
     };
   }, [doomerboard, hasNativeRuntime]);
-
-  useEffect(() => {
-    if (!hasNativeRuntime) return;
-    void doomerboard.select(doomerboardSelection);
-  }, [doomerboard, doomerboardSelection, hasNativeRuntime]);
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
@@ -164,8 +346,8 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
   const currentProfile =
     presentation.currentProfile === undefined ? nativeProfile : presentation.currentProfile;
   const nativeDoomerboardRows =
-    doomerboardView.view?.status === "ready"
-      ? doomerboardView.view.rows.map((row) => {
+    doomerboardView.data?.status === "ready"
+      ? doomerboardView.data.rows.map((row) => {
           const presentedRow: NonNullable<PanelViewProps["doomerboardRows"]>[number] = {
             displayName: row.displayName,
             rank: row.rank,
@@ -196,6 +378,7 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       addTokenmaxxerOpen={addTokenmaxxerOpen}
       addTokenmaxxerSubmitting={addTokenmaxxerInFlight}
       currentProfile={currentProfile}
+      doomerboardLoading={presentation.doomerboardLoading ?? doomerboardView.isLoading}
       doomerboardRows={
         presentation.doomerboardRows ??
         (doomerboardSelection.audience === "global" ? nativeDoomerboardRows : undefined)
@@ -204,24 +387,56 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
       error={deliveryView.phase === "degraded"}
       nativeGlass
       onAddTokenmaxxer={(touchGrassId) => {
+        const submissionProfileKey = profileKey;
         const request = addTokenmaxxerRequests.begin();
         if (request === null) return;
         setAddTokenmaxxerFailure(null);
         setAddTokenmaxxerInFlight(true);
         void (async () => {
-          const outcome = hasNativeRuntime
-            ? await doomerboard.addTokenmaxxer(touchGrassId)
-            : ({ status: "unavailable" } as const);
-          const current = addTokenmaxxerRequests.finish(request);
-          setAddTokenmaxxerInFlight(addTokenmaxxerRequests.inFlight());
-          if (!current) return;
+          const outcome =
+            hasNativeRuntime && submissionProfileKey !== null
+              ? await addTokenmaxxer(doomerboard, submissionProfileKey, touchGrassId)
+              : ({ status: "unavailable" } as const);
+          const finishRequest = () => {
+            const current = addTokenmaxxerRequests.finish(request);
+            setAddTokenmaxxerInFlight(addTokenmaxxerRequests.inFlight());
+            return current && deliveredProfileKey(stateDelivery) === submissionProfileKey;
+          };
           if (outcome.status === "added" || outcome.status === "already-added") {
+            const nextRankingDay = currentRankingDay();
             const nextSelection = { ...doomerboardSelection, audience: "mine" as const };
+            if (
+              submissionProfileKey !== null &&
+              deliveredProfileKey(stateDelivery) === submissionProfileKey
+            ) {
+              await cancelDoomerboardAudience(
+                queryClient,
+                doomerboard,
+                submissionProfileKey,
+                "mine",
+              );
+              await queryClient.invalidateQueries({
+                ...doomerboardProfileAudienceFilter(submissionProfileKey, "mine"),
+                refetchType: "none",
+              });
+            }
+            if (!finishRequest()) return;
+            if (submissionProfileKey !== null) {
+              void queryClient.prefetchQuery(
+                createDoomerboardQueryOptions({
+                  native: doomerboard,
+                  profileKey: submissionProfileKey,
+                  rankingDay: nextRankingDay,
+                  selection: nextSelection,
+                }),
+              );
+            }
+            setRankingDay(nextRankingDay);
             setDoomerboardSelection(nextSelection);
             setAddTokenmaxxerOpen(false);
-            void doomerboard.read(nextSelection);
             return;
           }
+          if (!finishRequest()) return;
           setAddTokenmaxxerFailure(outcome.status);
         })();
       }}
@@ -235,6 +450,17 @@ function PanelScreen({ hasNativeRuntime, presentation = {}, stateDelivery }: Pan
         setAddTokenmaxxerOpen(open);
       }}
       onDoomerboardSelectionChange={setDoomerboardSelection}
+      onDoomerboardSelectionIntent={(selection) => {
+        if (!hasNativeRuntime || profileKey === null) return;
+        void queryClient.prefetchQuery(
+          createDoomerboardQueryOptions({
+            native: doomerboard,
+            profileKey,
+            rankingDay,
+            selection,
+          }),
+        );
+      }}
       onRefresh={() => {
         void stateDelivery.requestRefresh();
       }}

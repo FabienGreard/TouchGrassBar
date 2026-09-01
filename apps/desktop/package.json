@@ -15,6 +15,7 @@
     "typecheck": "bunx --bun tsc --noEmit"
   },
   "dependencies": {
+    "@tanstack/react-query": "5.102.8",
     "@tauri-apps/api": "2.11.1",
     "@touchgrass/contracts": "workspace:*",
     "@touchgrass/ui": "workspace:*",

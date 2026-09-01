@@ -17,10 +17,7 @@ import { LoadingPanel } from "@/components/panel/loading-panel";
 import { PanelHeader, type PanelUpdateAction } from "@/components/panel/panel-header";
 import { ProviderCard } from "@/components/panel/provider-card";
 import { UsageOverview, type UsagePresentation } from "@/components/panel/usage-overview";
-import {
-  defaultDoomerboardQuery,
-  type DoomerboardQuery,
-} from "@/native-state/doomerboard-delivery";
+import { defaultDoomerboardQuery, type DoomerboardQuery } from "@/native-state/doomerboard-query";
 
 function updateActionPresentation(
   updateState: UpdateState | null,
@@ -83,6 +80,7 @@ type PanelViewProps = {
   addTokenmaxxerOpen?: boolean | undefined;
   addTokenmaxxerSubmitting?: boolean | undefined;
   currentProfile?: CurrentProfile | null | undefined;
+  doomerboardLoading?: boolean | undefined;
   doomerboardRows?: readonly DoomerboardRow[] | undefined;
   doomerboardSelection?: DoomerboardQuery | undefined;
   error: boolean;
@@ -91,6 +89,7 @@ type PanelViewProps = {
   onAddTokenmaxxerInputChange?: (() => void) | undefined;
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
   onDoomerboardSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
+  onDoomerboardSelectionIntent?: ((selection: DoomerboardQuery) => void) | undefined;
   onRefresh: () => void;
   onSettings: () => void;
   onUpdate?: (() => void) | undefined;
@@ -107,6 +106,7 @@ function PanelView({
   addTokenmaxxerOpen = false,
   addTokenmaxxerSubmitting = false,
   currentProfile,
+  doomerboardLoading = false,
   doomerboardRows,
   doomerboardSelection = defaultDoomerboardQuery,
   error,
@@ -115,6 +115,7 @@ function PanelView({
   onAddTokenmaxxerInputChange = () => undefined,
   onAddTokenmaxxerOpenChange = () => undefined,
   onDoomerboardSelectionChange = () => undefined,
+  onDoomerboardSelectionIntent = () => undefined,
   onRefresh,
   onSettings,
   onUpdate = () => undefined,
@@ -164,8 +165,10 @@ function PanelView({
             <Doomerboard
               currentProfile={currentProfile}
               key="doomerboard"
+              loading={doomerboardLoading}
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
               onSelectionChange={onDoomerboardSelectionChange}
+              onSelectionIntent={onDoomerboardSelectionIntent}
               providers={visibleProviders}
               rows={doomerboardRows}
               selection={doomerboardSelection}

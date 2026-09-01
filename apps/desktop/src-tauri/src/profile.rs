@@ -978,6 +978,16 @@ impl ProfileCoordinator {
         }))
     }
 
+    pub(crate) fn active_sync_credentials_for(
+        &self,
+        expected_touch_grass_id: &str,
+    ) -> Result<Option<ActiveSyncCredentials>, ProfileError> {
+        if self.lifecycle.ready_touch_grass_id().as_deref() != Some(expected_touch_grass_id) {
+            return Ok(None);
+        }
+        self.active_sync_credentials()
+    }
+
     /// Reuse a newer session or replace the rejected session with one Recovery Key sign-in.
     pub(crate) fn refresh_active_sync_session(
         &self,
@@ -994,6 +1004,17 @@ impl ProfileCoordinator {
             return Ok(Some(current_session));
         }
         self.refresh_session_for(&touch_grass_id).map(Some)
+    }
+
+    pub(crate) fn refresh_active_sync_session_for(
+        &self,
+        rejected_session: &Secret,
+        expected_touch_grass_id: &str,
+    ) -> Result<Option<Secret>, ProfileError> {
+        if self.lifecycle.ready_touch_grass_id().as_deref() != Some(expected_touch_grass_id) {
+            return Ok(None);
+        }
+        self.refresh_active_sync_session(rejected_session)
     }
 
     pub(crate) fn is_active_sync_session(
@@ -1471,6 +1492,11 @@ impl ProfileTransport for HttpProfileTransport {
 }
 
 #[cfg(test)]
+pub(crate) fn ready_test_coordinator() -> (String, ProfileCoordinator) {
+    tests::ready_coordinator()
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         fs,
@@ -1882,6 +1908,19 @@ mod tests {
         }
     }
 
+    pub(super) fn ready_coordinator() -> (String, ProfileCoordinator) {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture
+            .coordinator
+            .retry_pending()
+            .expect("create ready test Profile");
+        (
+            fixture.transport.touch_grass_id().to_owned(),
+            fixture.coordinator,
+        )
+    }
+
     #[test]
     fn recovery_key_suffix_is_limited_to_the_real_final_characters() {
         let key = Secret::new("not-a-secret".to_owned());
@@ -2148,6 +2187,42 @@ mod tests {
         assert!(!first.session.expose().is_empty());
         assert_eq!(fixture.transport.exchange_count(), 1);
         assert!(!fixture.custody.contains(SecretKind::ConvexJwt));
+    }
+
+    #[test]
+    fn profile_bound_sync_authority_rejects_another_profile() {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture.coordinator.retry_pending().unwrap();
+        let profile_key = fixture.transport.touch_grass_id();
+        let other_profile_key = if profile_key == "TG-234567" {
+            "TG-234568"
+        } else {
+            "TG-234567"
+        };
+
+        let credentials = fixture
+            .coordinator
+            .active_sync_credentials_for(profile_key)
+            .unwrap()
+            .expect("matching Profile authority");
+        let sign_ins_before_mismatch = fixture.transport.sign_in_count();
+        assert!(
+            fixture
+                .coordinator
+                .active_sync_credentials_for(other_profile_key)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            fixture
+                .coordinator
+                .refresh_active_sync_session_for(&credentials.session, other_profile_key)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fixture.transport.sign_in_count(), sign_ins_before_mismatch);
+        assert_eq!(fixture.transport.exchange_count(), 1);
     }
 
     #[test]

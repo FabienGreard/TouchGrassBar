@@ -1,12 +1,16 @@
 #![cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    io::Read,
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    future::Future,
+    sync::{
+        Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
     time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose};
 use convex::{ConvexClient, FunctionResult, Value};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -27,7 +31,11 @@ const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const MAX_ROWS: usize = 100;
 const MAX_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_JWT_BYTES: usize = 8 * 1_024;
+const MAX_READ_REQUEST_ID_BYTES: usize = 64;
+const MAX_COMPLETED_READ_IDS: usize = 256;
+const JWT_REFRESH_MARGIN_SECONDS: i64 = 60;
 const CONVEX_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+const READ_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -155,7 +163,98 @@ pub fn add_tokenmaxxer_outcome_schema() -> Schema {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransportError {
     AuthorityRejected,
+    Canceled,
     Unavailable,
+}
+
+#[derive(Default)]
+struct DoomerboardReadCancellation {
+    abort_handle: Mutex<Option<tokio::task::AbortHandle>>,
+    canceled: AtomicBool,
+}
+
+impl DoomerboardReadCancellation {
+    fn cancel(&self) {
+        self.canceled.store(true, AtomicOrdering::Release);
+        if let Ok(mut abort_handle) = self.abort_handle.lock()
+            && let Some(abort_handle) = abort_handle.take()
+        {
+            abort_handle.abort();
+        }
+    }
+
+    fn clear(&self) {
+        if let Ok(mut abort_handle) = self.abort_handle.lock() {
+            *abort_handle = None;
+        }
+    }
+
+    fn is_canceled(&self) -> bool {
+        self.canceled.load(AtomicOrdering::Acquire)
+    }
+
+    fn register(&self, abort_handle: tokio::task::AbortHandle) {
+        let Ok(mut current) = self.abort_handle.lock() else {
+            abort_handle.abort();
+            return;
+        };
+        if self.is_canceled() {
+            abort_handle.abort();
+            return;
+        }
+        *current = Some(abort_handle);
+    }
+}
+
+fn run_abortable<T>(
+    runtime: &tokio::runtime::Runtime,
+    cancellation: Option<&DoomerboardReadCancellation>,
+    future: impl Future<Output = Result<T, TransportError>> + Send + 'static,
+) -> Result<T, TransportError>
+where
+    T: Send + 'static,
+{
+    if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+        return Err(TransportError::Canceled);
+    }
+    let task = runtime.spawn(future);
+    if let Some(cancellation) = cancellation {
+        cancellation.register(task.abort_handle());
+    }
+    let result = runtime.block_on(task);
+    if let Some(cancellation) = cancellation {
+        cancellation.clear();
+    }
+    match result {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => Err(TransportError::Canceled),
+        Err(_) => Err(TransportError::Unavailable),
+    }
+}
+
+struct RegisteredDoomerboardRead {
+    begun: bool,
+    cancellation: Arc<DoomerboardReadCancellation>,
+}
+
+#[derive(Default)]
+struct DoomerboardReadRegistry {
+    completed: BTreeSet<String>,
+    completed_order: VecDeque<String>,
+    reads: BTreeMap<String, RegisteredDoomerboardRead>,
+}
+
+impl DoomerboardReadRegistry {
+    fn record_completed(&mut self, request_id: &str) {
+        if self.completed.insert(request_id.to_owned()) {
+            self.completed_order.push_back(request_id.to_owned());
+        }
+        while self.completed_order.len() > MAX_COMPLETED_READ_IDS {
+            if let Some(expired) = self.completed_order.pop_front() {
+                self.completed.remove(&expired);
+            }
+        }
+    }
 }
 
 enum ConvexCall {
@@ -180,94 +279,377 @@ trait DoomerboardTransport: Send + Sync {
         &self,
         session: &Secret,
         query: DoomerboardQueryV1,
+        cancellation: &DoomerboardReadCancellation,
     ) -> Result<Vec<DoomerboardRowV1>, TransportError>;
 }
 
-#[derive(Clone)]
-struct HttpDoomerboardTransport {
-    auth_site_url: Option<&'static str>,
-    convex_url: Option<&'static str>,
-    client: reqwest::blocking::Client,
+struct FetchedConvexToken {
+    refresh_after_unix_seconds: i64,
+    token: Zeroizing<String>,
 }
 
-impl HttpDoomerboardTransport {
-    #[cfg(target_os = "macos")]
-    fn from_build_configuration() -> Self {
-        Self {
-            auth_site_url: option_env!("CONVEX_SITE_URL").filter(|value| !value.is_empty()),
-            convex_url: option_env!("CONVEX_URL").filter(|value| !value.is_empty()),
-            client: crate::native_https_client(),
-        }
-    }
+trait ConvexTokenProvider: Send + Sync {
+    fn fetch(
+        &self,
+        session: &Secret,
+        now_unix_seconds: i64,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<FetchedConvexToken, TransportError>;
+}
 
+trait DoomerboardConnection: Send + Sync {
+    fn authenticate(
+        &self,
+        token: Zeroizing<String>,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<(), TransportError>;
+    fn call(
+        &self,
+        call: ConvexCall,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<FunctionResult, TransportError>;
+}
+
+trait DoomerboardConnectionFactory: Send + Sync {
+    fn connect(
+        &self,
+        convex_url: &str,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<Arc<dyn DoomerboardConnection>, TransportError>;
+}
+
+#[derive(Clone)]
+struct HttpConvexTokenProvider {
+    auth_site_url: Option<&'static str>,
+    client: reqwest::Client,
+    runtime: Option<Arc<tokio::runtime::Runtime>>,
+}
+
+impl HttpConvexTokenProvider {
     fn endpoint(&self, path: &str) -> Result<String, TransportError> {
         let base = self.auth_site_url.ok_or(TransportError::Unavailable)?;
         Ok(format!("{}{path}", base.trim_end_matches('/')))
     }
+}
 
-    fn fetch_convex_token(&self, session: &Secret) -> Result<Zeroizing<String>, TransportError> {
-        let response = self
+#[derive(Deserialize)]
+struct ConvexJwtClaims {
+    exp: i64,
+}
+
+fn convex_jwt_refresh_after(token: &str, now_unix_seconds: i64) -> i64 {
+    let Some(payload) = token.split('.').nth(1) else {
+        return now_unix_seconds;
+    };
+    let decoded = general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| general_purpose::URL_SAFE.decode(payload));
+    let Ok(decoded) = decoded else {
+        return now_unix_seconds;
+    };
+    serde_json::from_slice::<ConvexJwtClaims>(&decoded)
+        .map(|claims| claims.exp.saturating_sub(JWT_REFRESH_MARGIN_SECONDS))
+        .unwrap_or(now_unix_seconds)
+}
+
+impl ConvexTokenProvider for HttpConvexTokenProvider {
+    fn fetch(
+        &self,
+        session: &Secret,
+        now_unix_seconds: i64,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<FetchedConvexToken, TransportError> {
+        let runtime = self.runtime.as_deref().ok_or(TransportError::Unavailable)?;
+        let endpoint = self.endpoint(CONVEX_TOKEN_PATH)?;
+        let client = self.client.clone();
+        let session = Zeroizing::new(session.expose().to_owned());
+        run_abortable(runtime, cancellation, async move {
+            let response = client
+                .get(endpoint)
+                .bearer_auth(session.as_str())
+                .send()
+                .await
+                .map_err(|_| TransportError::Unavailable)?;
+            if matches!(response.status().as_u16(), 401 | 403) {
+                return Err(TransportError::AuthorityRejected);
+            }
+            let mut response = response
+                .error_for_status()
+                .map_err(|_| TransportError::Unavailable)?;
+            let mut body = Zeroizing::new(Vec::with_capacity(MAX_TOKEN_RESPONSE_BYTES));
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| TransportError::Unavailable)?
+            {
+                if body.len().saturating_add(chunk.len()) > MAX_TOKEN_RESPONSE_BYTES {
+                    return Err(TransportError::Unavailable);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            let response: ConvexTokenResponse =
+                serde_json::from_slice(body.as_slice()).map_err(|_| TransportError::Unavailable)?;
+            if response.token.is_empty() || response.token.len() > MAX_JWT_BYTES {
+                return Err(TransportError::Unavailable);
+            }
+            let token = Zeroizing::new(response.token);
+            Ok(FetchedConvexToken {
+                refresh_after_unix_seconds: convex_jwt_refresh_after(
+                    token.as_str(),
+                    now_unix_seconds,
+                ),
+                token,
+            })
+        })
+    }
+}
+
+struct ReusableDoomerboardConnection {
+    client: Mutex<ConvexClient>,
+    runtime: Arc<tokio::runtime::Runtime>,
+}
+
+impl DoomerboardConnection for ReusableDoomerboardConnection {
+    fn authenticate(
+        &self,
+        token: Zeroizing<String>,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<(), TransportError> {
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            return Err(TransportError::Canceled);
+        }
+        let mut client = self
             .client
-            .get(self.endpoint(CONVEX_TOKEN_PATH)?)
-            .bearer_auth(session.expose())
-            .send()
+            .lock()
             .map_err(|_| TransportError::Unavailable)?;
-        if matches!(response.status().as_u16(), 401 | 403) {
-            return Err(TransportError::AuthorityRejected);
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            return Err(TransportError::Canceled);
         }
-        let response = response
-            .error_for_status()
-            .map_err(|_| TransportError::Unavailable)?;
-        let mut body = Zeroizing::new(Vec::with_capacity(MAX_TOKEN_RESPONSE_BYTES));
-        response
-            .take((MAX_TOKEN_RESPONSE_BYTES + 1) as u64)
-            .read_to_end(&mut body)
-            .map_err(|_| TransportError::Unavailable)?;
-        if body.len() > MAX_TOKEN_RESPONSE_BYTES {
-            return Err(TransportError::Unavailable);
+        self.runtime
+            .block_on(client.set_auth(Some(token.as_str().to_owned())));
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            Err(TransportError::Canceled)
+        } else {
+            Ok(())
         }
-        let response: ConvexTokenResponse =
-            serde_json::from_slice(body.as_slice()).map_err(|_| TransportError::Unavailable)?;
-        if response.token.is_empty() || response.token.len() > MAX_JWT_BYTES {
-            return Err(TransportError::Unavailable);
+    }
+
+    fn call(
+        &self,
+        call: ConvexCall,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<FunctionResult, TransportError> {
+        let mut client = self
+            .client
+            .lock()
+            .map_err(|_| TransportError::Unavailable)?
+            .clone();
+        run_abortable(self.runtime.as_ref(), cancellation, async move {
+            tokio::time::timeout(CONVEX_CALL_TIMEOUT, async move {
+                let result = match call {
+                    ConvexCall::Mutation {
+                        arguments,
+                        function_name,
+                    } => client.mutation(function_name, arguments).await,
+                    ConvexCall::Query {
+                        arguments,
+                        function_name,
+                    } => client.query(function_name, arguments).await,
+                };
+                result.map_err(|_| TransportError::Unavailable)
+            })
+            .await
+            .map_err(|_| TransportError::Unavailable)?
+        })
+    }
+}
+
+struct ReusableDoomerboardConnectionFactory {
+    runtime: Option<Arc<tokio::runtime::Runtime>>,
+}
+
+impl DoomerboardConnectionFactory for ReusableDoomerboardConnectionFactory {
+    fn connect(
+        &self,
+        convex_url: &str,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<Arc<dyn DoomerboardConnection>, TransportError> {
+        let runtime = self.runtime.clone().ok_or(TransportError::Unavailable)?;
+        let connection_runtime = runtime.clone();
+        let convex_url = convex_url.to_owned();
+        run_abortable(runtime.as_ref(), cancellation, async move {
+            let client =
+                tokio::time::timeout(CONVEX_CALL_TIMEOUT, ConvexClient::new(convex_url.as_str()))
+                    .await
+                    .map_err(|_| TransportError::Unavailable)?
+                    .map_err(|_| TransportError::Unavailable)?;
+            Ok(Arc::new(ReusableDoomerboardConnection {
+                client: Mutex::new(client),
+                runtime: connection_runtime,
+            }) as Arc<dyn DoomerboardConnection>)
+        })
+    }
+}
+
+struct CachedDoomerboardConnection {
+    connection: Arc<dyn DoomerboardConnection>,
+    refresh_after_unix_seconds: i64,
+    session: Secret,
+}
+
+struct HttpDoomerboardTransport {
+    connection: RwLock<Option<CachedDoomerboardConnection>>,
+    connection_factory: Arc<dyn DoomerboardConnectionFactory>,
+    convex_url: Option<&'static str>,
+    now_unix_seconds: Arc<dyn Fn() -> i64 + Send + Sync>,
+    token_provider: Arc<dyn ConvexTokenProvider>,
+}
+
+impl HttpDoomerboardTransport {
+    fn new(
+        convex_url: Option<&'static str>,
+        token_provider: Arc<dyn ConvexTokenProvider>,
+        connection_factory: Arc<dyn DoomerboardConnectionFactory>,
+        now_unix_seconds: Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> Self {
+        Self {
+            connection: RwLock::new(None),
+            connection_factory,
+            convex_url,
+            now_unix_seconds,
+            token_provider,
         }
-        Ok(Zeroizing::new(response.token))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn from_build_configuration() -> Self {
+        let runtime = tokio::runtime::Runtime::new().ok().map(Arc::new);
+        Self::new(
+            option_env!("CONVEX_URL").filter(|value| !value.is_empty()),
+            Arc::new(HttpConvexTokenProvider {
+                auth_site_url: option_env!("CONVEX_SITE_URL").filter(|value| !value.is_empty()),
+                client: crate::native_async_https_client(),
+                runtime: runtime.clone(),
+            }),
+            Arc::new(ReusableDoomerboardConnectionFactory { runtime }),
+            Arc::new(|| OffsetDateTime::now_utc().unix_timestamp()),
+        )
+    }
+
+    fn connection_read(
+        &self,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<RwLockReadGuard<'_, Option<CachedDoomerboardConnection>>, TransportError> {
+        let Some(cancellation) = cancellation else {
+            return self
+                .connection
+                .read()
+                .map_err(|_| TransportError::Unavailable);
+        };
+        loop {
+            if cancellation.is_canceled() {
+                return Err(TransportError::Canceled);
+            }
+            match self.connection.try_read() {
+                Ok(cached) => return Ok(cached),
+                Err(TryLockError::Poisoned(_)) => return Err(TransportError::Unavailable),
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::park_timeout(READ_CANCELLATION_POLL_INTERVAL);
+                }
+            }
+        }
+    }
+
+    fn connection_write(
+        &self,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<RwLockWriteGuard<'_, Option<CachedDoomerboardConnection>>, TransportError> {
+        let Some(cancellation) = cancellation else {
+            return self
+                .connection
+                .write()
+                .map_err(|_| TransportError::Unavailable);
+        };
+        loop {
+            if cancellation.is_canceled() {
+                return Err(TransportError::Canceled);
+            }
+            match self.connection.try_write() {
+                Ok(cached) => return Ok(cached),
+                Err(TryLockError::Poisoned(_)) => return Err(TransportError::Unavailable),
+                Err(TryLockError::WouldBlock) => {
+                    std::thread::park_timeout(READ_CANCELLATION_POLL_INTERVAL);
+                }
+            }
+        }
+    }
+
+    fn can_reuse(
+        cached: &CachedDoomerboardConnection,
+        session: &Secret,
+        now_unix_seconds: i64,
+    ) -> bool {
+        cached.session.expose() == session.expose()
+            && now_unix_seconds < cached.refresh_after_unix_seconds
     }
 
     fn authenticated_call(
         &self,
         session: &Secret,
         call: ConvexCall,
+        cancellation: Option<&DoomerboardReadCancellation>,
     ) -> Result<FunctionResult, TransportError> {
-        let convex_url = self
-            .convex_url
-            .ok_or(TransportError::Unavailable)?
-            .to_owned();
-        let jwt = self.fetch_convex_token(session)?;
-        tokio::runtime::Runtime::new()
-            .map_err(|_| TransportError::Unavailable)?
-            .block_on(async move {
-                tokio::time::timeout(CONVEX_CALL_TIMEOUT, async move {
-                    let mut client = ConvexClient::new(&convex_url)
-                        .await
-                        .map_err(|_| TransportError::Unavailable)?;
-                    client.set_auth(Some(jwt.as_str().to_owned())).await;
-                    let result = match call {
-                        ConvexCall::Mutation {
-                            arguments,
-                            function_name,
-                        } => client.mutation(function_name, arguments).await,
-                        ConvexCall::Query {
-                            arguments,
-                            function_name,
-                        } => client.query(function_name, arguments).await,
-                    };
-                    client.set_auth(None).await;
-                    result.map_err(|_| TransportError::Unavailable)
-                })
-                .await
-                .map_err(|_| TransportError::Unavailable)?
-            })
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            return Err(TransportError::Canceled);
+        }
+        let convex_url = self.convex_url.ok_or(TransportError::Unavailable)?;
+        let now_unix_seconds = (self.now_unix_seconds)();
+        {
+            let cached = self.connection_read(cancellation)?;
+            if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+                return Err(TransportError::Canceled);
+            }
+            if let Some(cached) = cached.as_ref()
+                && Self::can_reuse(cached, session, now_unix_seconds)
+            {
+                return cached.connection.call(call, cancellation);
+            }
+        }
+
+        let mut cached = self.connection_write(cancellation)?;
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            return Err(TransportError::Canceled);
+        }
+        if let Some(current) = cached.as_ref()
+            && Self::can_reuse(current, session, now_unix_seconds)
+        {
+            return current.connection.call(call, cancellation);
+        }
+
+        let fetched = self
+            .token_provider
+            .fetch(session, now_unix_seconds, cancellation)?;
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            return Err(TransportError::Canceled);
+        }
+        let connection = match cached.as_ref() {
+            Some(current) => current.connection.clone(),
+            None => self.connection_factory.connect(convex_url, cancellation)?,
+        };
+        if let Err(error) = connection.authenticate(fetched.token, cancellation) {
+            *cached = None;
+            return Err(error);
+        }
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            *cached = None;
+            return Err(TransportError::Canceled);
+        }
+        *cached = Some(CachedDoomerboardConnection {
+            connection: connection.clone(),
+            refresh_after_unix_seconds: fetched.refresh_after_unix_seconds,
+            session: session.clone(),
+        });
+        connection.call(call, cancellation)
     }
 }
 
@@ -298,6 +680,7 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
                 arguments: add_tokenmaxxer_arguments(touch_grass_id),
                 function_name: ADD_TOKENMAXXER_MUTATION,
             },
+            None,
         )?;
         parse_function_result(result, |value| {
             parse_add_tokenmaxxer_status(value).ok_or(TransportError::Unavailable)
@@ -308,6 +691,7 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
         &self,
         session: &Secret,
         query: DoomerboardQueryV1,
+        cancellation: &DoomerboardReadCancellation,
     ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
         let result = self.authenticated_call(
             session,
@@ -315,6 +699,7 @@ impl DoomerboardTransport for HttpDoomerboardTransport {
                 arguments: doomerboard_query_arguments(query, OffsetDateTime::now_utc()),
                 function_name: doomerboard_query_name(query),
             },
+            Some(cancellation),
         )?;
         parse_function_result(result, |value| parse_selected_rows(query, value))
     }
@@ -363,6 +748,7 @@ struct ConvexTokenResponse {
 pub(crate) struct DoomerboardRuntime {
     coordinator: Arc<Mutex<ProfileCoordinator>>,
     online_gate: OnlineFeatureGate,
+    read_registry: Arc<Mutex<DoomerboardReadRegistry>>,
     transport: Arc<dyn DoomerboardTransport>,
 }
 
@@ -375,19 +761,117 @@ impl DoomerboardRuntime {
         Self {
             coordinator,
             online_gate,
+            read_registry: Arc::new(Mutex::new(DoomerboardReadRegistry::default())),
             transport,
         }
     }
 
-    fn with_active_session<T>(
+    pub(crate) fn begin_read(&self, request_id: &str) -> Result<(), ()> {
+        if !valid_read_request_id(request_id) {
+            return Err(());
+        }
+        let mut registry = self.read_registry.lock().map_err(|_| ())?;
+        if registry.completed.contains(request_id) {
+            return Err(());
+        }
+        match registry.reads.entry(request_id.to_owned()) {
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                if entry.get().begun {
+                    return Err(());
+                }
+                entry.get_mut().begun = true;
+                Ok(())
+            }
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(RegisteredDoomerboardRead {
+                    begun: true,
+                    cancellation: Arc::new(DoomerboardReadCancellation::default()),
+                });
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn cancel_read(&self, request_id: &str) {
+        if !valid_read_request_id(request_id) {
+            return;
+        }
+        let cancellation = {
+            let Ok(mut registry) = self.read_registry.lock() else {
+                return;
+            };
+            if registry.completed.contains(request_id) {
+                return;
+            }
+            registry
+                .reads
+                .entry(request_id.to_owned())
+                .or_insert_with(|| RegisteredDoomerboardRead {
+                    begun: false,
+                    cancellation: Arc::new(DoomerboardReadCancellation::default()),
+                })
+                .cancellation
+                .clone()
+        };
+        cancellation.cancel();
+    }
+
+    pub(crate) fn abandon_read(&self, request_id: &str) {
+        let cancellation = {
+            let Ok(mut registry) = self.read_registry.lock() else {
+                return;
+            };
+            let cancellation = registry
+                .reads
+                .remove(request_id)
+                .map(|read| read.cancellation);
+            registry.record_completed(request_id);
+            cancellation
+        };
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+        }
+    }
+
+    fn finish_read(&self, request_id: &str, cancellation: &Arc<DoomerboardReadCancellation>) {
+        if let Ok(mut registry) = self.read_registry.lock()
+            && registry
+                .reads
+                .get(request_id)
+                .is_some_and(|current| Arc::ptr_eq(&current.cancellation, cancellation))
+        {
+            registry.reads.remove(request_id);
+            registry.record_completed(request_id);
+        }
+    }
+
+    fn read_cancellation(&self, request_id: &str) -> Option<Arc<DoomerboardReadCancellation>> {
+        if !valid_read_request_id(request_id) {
+            return None;
+        }
+        self.read_registry
+            .lock()
+            .ok()?
+            .reads
+            .get(request_id)
+            .filter(|read| read.begun)
+            .map(|read| read.cancellation.clone())
+    }
+
+    fn with_active_session_for<T>(
         &self,
+        expected_touch_grass_id: &str,
         operation: impl Fn(&Secret) -> Result<T, TransportError>,
     ) -> Result<T, TransportError> {
         let session = self
             .coordinator
             .lock()
             .ok()
-            .and_then(|coordinator| coordinator.active_sync_credentials().ok())
+            .and_then(|coordinator| {
+                coordinator
+                    .active_sync_credentials_for(expected_touch_grass_id)
+                    .ok()
+            })
             .flatten()
             .map(|credentials| credentials.session)
             .ok_or(TransportError::Unavailable)?;
@@ -397,7 +881,11 @@ impl DoomerboardRuntime {
                     .coordinator
                     .lock()
                     .ok()
-                    .and_then(|coordinator| coordinator.refresh_active_sync_session(&session).ok())
+                    .and_then(|coordinator| {
+                        coordinator
+                            .refresh_active_sync_session_for(&session, expected_touch_grass_id)
+                            .ok()
+                    })
                     .flatten()
                     .ok_or(TransportError::Unavailable)?;
                 operation(&refreshed)
@@ -406,34 +894,64 @@ impl DoomerboardRuntime {
         }
     }
 
-    pub(crate) fn read(&self, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
+    pub(crate) fn read(
+        &self,
+        request_id: &str,
+        expected_touch_grass_id: &str,
+        query: DoomerboardQueryV1,
+    ) -> DoomerboardViewV1 {
+        let Some(cancellation) = self.read_cancellation(request_id) else {
+            return DoomerboardViewV1::unavailable();
+        };
         if self.online_gate.is_paused() || !query.is_valid() {
+            self.finish_read(request_id, &cancellation);
             return DoomerboardViewV1::unavailable();
         }
-        match self.with_active_session(|session| self.transport.read(session, query)) {
+        let result = self.with_active_session_for(expected_touch_grass_id, |session| {
+            self.transport.read(session, query, cancellation.as_ref())
+        });
+        self.finish_read(request_id, &cancellation);
+        match result {
             Ok(rows) => DoomerboardViewV1::ready(rows),
-            Err(TransportError::AuthorityRejected | TransportError::Unavailable) => {
-                DoomerboardViewV1::unavailable()
-            }
+            Err(
+                TransportError::AuthorityRejected
+                | TransportError::Canceled
+                | TransportError::Unavailable,
+            ) => DoomerboardViewV1::unavailable(),
         }
     }
 
-    pub(crate) fn add(&self, touch_grass_id: &str) -> AddTokenmaxxerOutcomeV1 {
+    pub(crate) fn add(
+        &self,
+        expected_touch_grass_id: &str,
+        touch_grass_id: &str,
+    ) -> AddTokenmaxxerOutcomeV1 {
         if !valid_touch_grass_id(touch_grass_id) {
             return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Invalid);
         }
         if self.online_gate.is_paused() {
             return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable);
         }
-        let status =
-            match self.with_active_session(|session| self.transport.add(session, touch_grass_id)) {
-                Ok(status) => status,
-                Err(TransportError::AuthorityRejected | TransportError::Unavailable) => {
-                    AddTokenmaxxerStatusV1::Unavailable
-                }
-            };
+        let status = match self.with_active_session_for(expected_touch_grass_id, |session| {
+            self.transport.add(session, touch_grass_id)
+        }) {
+            Ok(status) => status,
+            Err(
+                TransportError::AuthorityRejected
+                | TransportError::Canceled
+                | TransportError::Unavailable,
+            ) => AddTokenmaxxerStatusV1::Unavailable,
+        };
         AddTokenmaxxerOutcomeV1::new(status)
     }
+}
+
+fn valid_read_request_id(request_id: &str) -> bool {
+    !request_id.is_empty()
+        && request_id.len() <= MAX_READ_REQUEST_ID_BYTES
+        && request_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 #[cfg(target_os = "macos")]
@@ -637,7 +1155,7 @@ fn parse_selected_rows(
 mod tests {
     use super::*;
     #[cfg(target_os = "macos")]
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
     #[cfg(target_os = "macos")]
     #[derive(Default)]
@@ -660,10 +1178,299 @@ mod tests {
             &self,
             _session: &Secret,
             _query: DoomerboardQueryV1,
+            _cancellation: &DoomerboardReadCancellation,
         ) -> Result<Vec<DoomerboardRowV1>, TransportError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(Vec::new())
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct CountingTokenProvider {
+        calls: AtomicUsize,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ConvexTokenProvider for CountingTokenProvider {
+        fn fetch(
+            &self,
+            _session: &Secret,
+            _now_unix_seconds: i64,
+            _cancellation: Option<&DoomerboardReadCancellation>,
+        ) -> Result<FetchedConvexToken, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(FetchedConvexToken {
+                refresh_after_unix_seconds: 2_000,
+                token: Zeroizing::new("test-jwt".to_owned()),
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct CountingConnection {
+        authentications: AtomicUsize,
+        call_tokens: Mutex<Vec<String>>,
+        calls: AtomicUsize,
+        cancel_after_authentication: AtomicBool,
+        current_token: Mutex<Option<String>>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl DoomerboardConnection for CountingConnection {
+        fn authenticate(
+            &self,
+            token: Zeroizing<String>,
+            cancellation: Option<&DoomerboardReadCancellation>,
+        ) -> Result<(), TransportError> {
+            self.authentications.fetch_add(1, Ordering::Relaxed);
+            *self
+                .current_token
+                .lock()
+                .map_err(|_| TransportError::Unavailable)? = Some(token.as_str().to_owned());
+            if self
+                .cancel_after_authentication
+                .swap(false, Ordering::Relaxed)
+            {
+                let cancellation = cancellation.ok_or(TransportError::Unavailable)?;
+                cancellation.cancel();
+                return Err(TransportError::Canceled);
+            }
+            Ok(())
+        }
+
+        fn call(
+            &self,
+            _call: ConvexCall,
+            _cancellation: Option<&DoomerboardReadCancellation>,
+        ) -> Result<FunctionResult, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let token = self
+                .current_token
+                .lock()
+                .map_err(|_| TransportError::Unavailable)?
+                .clone()
+                .ok_or(TransportError::Unavailable)?;
+            self.call_tokens
+                .lock()
+                .map_err(|_| TransportError::Unavailable)?
+                .push(token);
+            Ok(FunctionResult::Value(Value::Null))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct SessionTokenProvider;
+
+    #[cfg(target_os = "macos")]
+    impl ConvexTokenProvider for SessionTokenProvider {
+        fn fetch(
+            &self,
+            session: &Secret,
+            _now_unix_seconds: i64,
+            _cancellation: Option<&DoomerboardReadCancellation>,
+        ) -> Result<FetchedConvexToken, TransportError> {
+            let token = match session.expose() {
+                "session-a" => "token-a",
+                "session-b" => "token-b",
+                _ => return Err(TransportError::Unavailable),
+            };
+            Ok(FetchedConvexToken {
+                refresh_after_unix_seconds: 2_000,
+                token: Zeroizing::new(token.to_owned()),
+            })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct CountingConnectionFactory {
+        calls: AtomicUsize,
+        connection: Arc<CountingConnection>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl DoomerboardConnectionFactory for CountingConnectionFactory {
+        fn connect(
+            &self,
+            _convex_url: &str,
+            _cancellation: Option<&DoomerboardReadCancellation>,
+        ) -> Result<Arc<dyn DoomerboardConnection>, TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.connection.clone())
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn reuses_one_authenticated_convex_connection_for_the_same_session() {
+        let token_provider = Arc::new(CountingTokenProvider::default());
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            token_provider.clone(),
+            connection_factory.clone(),
+            Arc::new(|| 1_000),
+        );
+        let session = Secret::test_only();
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&session, call(), None)
+            .expect("first authenticated call");
+        transport
+            .authenticated_call(&session, call(), None)
+            .expect("second authenticated call");
+
+        assert_eq!(token_provider.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.authentications.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn reauthenticates_the_reused_connection_when_the_session_changes() {
+        let token_provider = Arc::new(CountingTokenProvider::default());
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            token_provider.clone(),
+            connection_factory.clone(),
+            Arc::new(|| 1_000),
+        );
+        let first_session = Secret::test_only();
+        let replacement_session = Secret::new("replacement-session".to_owned());
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&first_session, call(), None)
+            .expect("first authenticated call");
+        transport
+            .authenticated_call(&replacement_session, call(), None)
+            .expect("replacement authenticated call");
+
+        assert_eq!(token_provider.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.authentications.load(Ordering::Relaxed), 2);
+        assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn canceled_authentication_cannot_reuse_another_profiles_authority() {
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            Arc::new(SessionTokenProvider),
+            connection_factory,
+            Arc::new(|| 1_000),
+        );
+        let first_session = Secret::new("session-a".to_owned());
+        let canceled_session = Secret::new("session-b".to_owned());
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&first_session, call(), None)
+            .expect("first Profile call");
+        connection
+            .cancel_after_authentication
+            .store(true, Ordering::Relaxed);
+        let cancellation = DoomerboardReadCancellation::default();
+        assert!(matches!(
+            transport.authenticated_call(&canceled_session, call(), Some(&cancellation)),
+            Err(TransportError::Canceled)
+        ));
+        transport
+            .authenticated_call(&first_session, call(), None)
+            .expect("restored Profile call");
+
+        assert_eq!(
+            connection
+                .call_tokens
+                .lock()
+                .expect("recorded call tokens")
+                .as_slice(),
+            ["token-a", "token-a"]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn refreshes_authentication_when_the_cached_jwt_reaches_its_margin() {
+        let now = Arc::new(AtomicI64::new(1_000));
+        let token_provider = Arc::new(CountingTokenProvider::default());
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            token_provider.clone(),
+            connection_factory.clone(),
+            {
+                let now = now.clone();
+                Arc::new(move || now.load(Ordering::Relaxed))
+            },
+        );
+        let session = Secret::test_only();
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&session, call(), None)
+            .expect("first authenticated call");
+        now.store(2_000, Ordering::Relaxed);
+        transport
+            .authenticated_call(&session, call(), None)
+            .expect("refreshed authenticated call");
+
+        assert_eq!(token_provider.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(connection.authentications.load(Ordering::Relaxed), 2);
+        assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn reads_the_jwt_expiry_with_a_refresh_margin() {
+        let payload = general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":2060}"#);
+        let token = format!("header.{payload}.signature");
+
+        assert_eq!(convex_jwt_refresh_after(&token, 1_000), 2_000);
+    }
+
+    #[test]
+    fn refreshes_immediately_when_the_jwt_expiry_is_not_valid() {
+        assert_eq!(convex_jwt_refresh_after("not-a-jwt", 1_000), 1_000);
+        assert_eq!(
+            convex_jwt_refresh_after("header.not-base64.signature", 1_000),
+            1_000
+        );
     }
 
     fn cost(micros: i64) -> Value {
@@ -802,6 +1609,170 @@ mod tests {
     }
 
     #[test]
+    fn read_cancellation_aborts_registered_async_work() {
+        let runtime = tokio::runtime::Runtime::new().expect("test runtime");
+        let cancellation = DoomerboardReadCancellation::default();
+        let task = runtime.spawn(async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        cancellation.register(task.abort_handle());
+
+        cancellation.cancel();
+
+        let error = runtime
+            .block_on(task)
+            .expect_err("canceled task must not complete");
+        assert!(error.is_cancelled());
+    }
+
+    #[test]
+    fn read_cancellation_interrupts_a_blocked_token_fetch() {
+        use std::{net::TcpListener, sync::mpsc, thread, time::Duration};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind token test server");
+        let address = listener.local_addr().expect("read token test address");
+        let (accepted_send, accepted_receive) = mpsc::sync_channel(1);
+        let (release_send, release_receive) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept token request");
+            accepted_send.send(()).expect("report accepted request");
+            release_receive
+                .recv_timeout(Duration::from_secs(2))
+                .expect("release token server");
+        });
+
+        let auth_site_url: &'static str = Box::leak(format!("http://{address}").into_boxed_str());
+        let provider = HttpConvexTokenProvider {
+            auth_site_url: Some(auth_site_url),
+            client: crate::native_async_https_client(),
+            runtime: Some(Arc::new(
+                tokio::runtime::Runtime::new().expect("token test runtime"),
+            )),
+        };
+        let cancellation = Arc::new(DoomerboardReadCancellation::default());
+        let worker_cancellation = cancellation.clone();
+        let (result_send, result_receive) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let result = provider.fetch(
+                &Secret::test_only(),
+                1_000,
+                Some(worker_cancellation.as_ref()),
+            );
+            result_send.send(result).expect("report fetch result");
+        });
+
+        accepted_receive
+            .recv_timeout(Duration::from_secs(2))
+            .expect("token request must start");
+        cancellation.cancel();
+        assert!(matches!(
+            result_receive
+                .recv_timeout(Duration::from_secs(1))
+                .expect("canceled token fetch must return"),
+            Err(TransportError::Canceled)
+        ));
+
+        release_send.send(()).expect("release token server");
+        worker.join().expect("join token worker");
+        server.join().expect("join token server");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn read_registry_preserves_early_cancellation_and_ignores_late_cancellation() {
+        let transport = Arc::new(CountingTransport::default());
+        let runtime = DoomerboardRuntime::new(
+            Arc::new(Mutex::new(crate::profile::production_coordinator(
+                crate::lifecycle::DesktopLifecycle::unavailable(),
+            ))),
+            transport.clone(),
+            OnlineFeatureGate::default(),
+        );
+
+        runtime
+            .begin_read("cancel-after-begin")
+            .expect("begin read");
+        runtime.cancel_read("cancel-after-begin");
+        let cancellation = runtime
+            .read_cancellation("cancel-after-begin")
+            .expect("registered cancellation");
+        assert!(cancellation.is_canceled());
+        assert_eq!(
+            runtime.read(
+                "cancel-after-begin",
+                "TG-234567",
+                query(
+                    DoomerboardAudienceV1::Global,
+                    DoomerboardScopeV1::Combined,
+                    1,
+                ),
+            ),
+            DoomerboardViewV1::unavailable()
+        );
+
+        runtime.cancel_read("cancel-before-begin");
+        runtime
+            .begin_read("cancel-before-begin")
+            .expect("begin pre-canceled read");
+        let cancellation = runtime
+            .read_cancellation("cancel-before-begin")
+            .expect("pre-canceled registration");
+        assert!(cancellation.is_canceled());
+        assert_eq!(
+            runtime.read(
+                "cancel-before-begin",
+                "TG-234567",
+                query(
+                    DoomerboardAudienceV1::Global,
+                    DoomerboardScopeV1::Combined,
+                    1,
+                ),
+            ),
+            DoomerboardViewV1::unavailable()
+        );
+
+        runtime.cancel_read("cancel-before-begin");
+        assert!(runtime.read_cancellation("cancel-before-begin").is_none());
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn profile_bound_read_rejects_another_profile_before_transport() {
+        let (profile_key, coordinator) = crate::profile::ready_test_coordinator();
+        let other_profile_key = if profile_key == "TG-234567" {
+            "TG-234568"
+        } else {
+            "TG-234567"
+        };
+        let transport = Arc::new(CountingTransport::default());
+        let runtime = DoomerboardRuntime::new(
+            Arc::new(Mutex::new(coordinator)),
+            transport.clone(),
+            OnlineFeatureGate::default(),
+        );
+        let selected = query(DoomerboardAudienceV1::Mine, DoomerboardScopeV1::Combined, 1);
+
+        runtime
+            .begin_read("wrong-profile-read")
+            .expect("begin read");
+        assert_eq!(
+            runtime.read("wrong-profile-read", other_profile_key, selected),
+            DoomerboardViewV1::unavailable()
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+
+        runtime
+            .begin_read("matching-profile-read")
+            .expect("begin matching read");
+        assert_eq!(
+            runtime.read("matching-profile-read", &profile_key, selected),
+            DoomerboardViewV1::ready(Vec::new())
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn add_mutation_sends_only_the_public_touch_grass_id() {
         assert_eq!(
             add_tokenmaxxer_arguments("TG-234567"),
@@ -850,11 +1821,15 @@ mod tests {
         );
 
         assert_eq!(
-            runtime.read(query(
-                DoomerboardAudienceV1::Global,
-                DoomerboardScopeV1::Combined,
-                1,
-            )),
+            runtime.read(
+                "paused-read",
+                "TG-234567",
+                query(
+                    DoomerboardAudienceV1::Global,
+                    DoomerboardScopeV1::Combined,
+                    1,
+                )
+            ),
             DoomerboardViewV1::unavailable()
         );
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
@@ -874,13 +1849,13 @@ mod tests {
         );
 
         assert_eq!(
-            runtime.add("private-input"),
+            runtime.add("TG-234567", "private-input"),
             AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Invalid)
         );
         let paused =
             DoomerboardRuntime::new(coordinator, transport.clone(), OnlineFeatureGate::paused());
         assert_eq!(
-            paused.add("TG-234567"),
+            paused.add("TG-234567", "TG-234568"),
             AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable)
         );
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);

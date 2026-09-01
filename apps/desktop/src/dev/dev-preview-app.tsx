@@ -124,6 +124,7 @@ function DevPreviewApp() {
     scenario.fixture === "current" || scenario.fixture === "update";
   const updateState = previewUpdateState(updateStatus, autoUpdates);
   const panelPresentation = {
+    doomerboardLoading: scenario.doomerboardStatus === "loading",
     onUpdate: () => setUpdateStatus("downloading"),
     updateState,
     ...(hasCurrentPanelPresentation
@@ -240,6 +241,7 @@ function DevPreviewApp() {
         portalContainer={recoveryPortalContainer}
       />
       <DevPreviewSwitcher
+        activeDoomerboardStatus={scenario.doomerboardStatus}
         activeFixture={scenario.fixture}
         activeSurface={scenario.surface}
         activeSyncStatus={scenario.syncStatus}
