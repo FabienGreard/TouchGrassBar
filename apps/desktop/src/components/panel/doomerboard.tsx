@@ -105,13 +105,13 @@ function TokenmaxxersEmpty({
 }) {
   return (
     <div
-      aria-label="My Tokenmaxxers empty"
+      aria-label="My friends empty"
       className="mx-3.5 flex h-full flex-col items-center justify-center rounded-[12px] border border-dashed border-pearl-line bg-pearl-surface px-6 py-3.5 text-center shadow-surface contrast-more:border-pearl-ink"
     >
       <InviteIcon aria-hidden="true" size={20} />
       <strong className="mt-1.5 text-[10px]">Your Leaderboard is lonely</strong>
       <small className="mt-0.5 max-w-[260px] text-[8px] leading-3.5 text-pearl-muted contrast-more:text-pearl-ink">
-        Add Tokenmaxxers by TouchGrass ID to compare scores.
+        Add friends by TouchGrass ID to compare scores.
       </small>
       <div className="mt-2">
         <Button onClick={onAddTokenmaxxer} type="button">
@@ -170,9 +170,9 @@ function Doomerboard({
           ? "Loading Doomerboard"
           : selection.audience === "mine"
             ? rowsEmpty
-              ? "My Tokenmaxxers empty"
+              ? "My friends empty"
               : selectedRows !== undefined
-                ? "My Tokenmaxxers rankings"
+                ? "My friends rankings"
                 : "Leaderboard unavailable"
             : rowsEmpty
               ? "Leaderboard unavailable"

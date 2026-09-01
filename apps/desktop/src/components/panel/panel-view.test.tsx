@@ -732,7 +732,7 @@ describe("panel states", () => {
     const markup = renderToStaticMarkup(<TokenmaxxersEmpty />);
 
     expect(markup).toContain("Your Leaderboard is lonely");
-    expect(markup).toContain("Add Tokenmaxxers by TouchGrass ID to compare scores.");
+    expect(markup).toContain("Add friends by TouchGrass ID to compare scores.");
     expect(markup).toContain("Add a Tokenmaxxer");
     expect(markup).toContain('data-icon-provider="hugeicons"');
     expect(markup).toContain('data-icon-tone="default"');
@@ -767,7 +767,7 @@ describe("panel states", () => {
         { audience: "mine", scope: "combined", windowDays: 1 },
         "Combined",
         "Today",
-        "My Tokenmaxxers rankings",
+        "My friends rankings",
       ],
     ] as const) {
       const markup = renderToStaticMarkup(
@@ -803,7 +803,7 @@ describe("panel states", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="My Tokenmaxxers rankings"');
+    expect(markup).toContain('aria-label="My friends rankings"');
     expect(markup).toContain("TOUCH GRASS?");
     expect(markup).toContain("STILL ONLINE");
     expect(markup).toContain("Fabien");

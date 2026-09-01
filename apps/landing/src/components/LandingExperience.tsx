@@ -496,7 +496,7 @@ function DownloadSection() {
           <span>A tiny monument</span>
           <span>to your token problem.</span>
         </h2>
-        <p>See how your Codex and Claude token usage compares with other Tokenmaxxers.</p>
+        <p>See how your Codex and Claude token usage compares with friends.</p>
         <a
           className="d-macos-download compact"
           data-analytics-event="download clicked"

@@ -186,7 +186,7 @@ function PanelHeader({
             </PanelMenuItem>
             <PanelMenuItem onSelect={onAddTokenmaxxer}>
               <InviteIcon aria-hidden="true" />
-              Add a Tokenmaxxer…
+              Add a friend…
             </PanelMenuItem>
             <PanelMenuItem onSelect={onSettings}>
               <SettingsIcon aria-hidden="true" />

@@ -804,7 +804,7 @@ async fn add_tokenmaxxer(
     let runtime = runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || runtime.add(&profile_key, &touch_grass_id))
         .await
-        .map_err(|_| "Add Tokenmaxxer unavailable".to_owned())
+        .map_err(|_| "Add friend unavailable".to_owned())
 }
 
 #[tauri::command]
@@ -1381,7 +1381,7 @@ pub fn run() {
 
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh now").build(app)?;
             let add_tokenmaxxer =
-                MenuItemBuilder::with_id("add_tokenmaxxer", "Add a Tokenmaxxer…").build(app)?;
+                MenuItemBuilder::with_id("add_tokenmaxxer", "Add a friend…").build(app)?;
             let settings = MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             #[cfg(debug_assertions)]
             let quit_label = development_instance.as_ref().map_or_else(

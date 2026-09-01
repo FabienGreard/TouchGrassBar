@@ -648,11 +648,11 @@ test("Add Tokenmaxxer discards a pending Mine result before selecting it", async
     button: 0,
     ctrlKey: false,
   });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a Tokenmaxxer…" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a friend…" }));
   fireEvent.change(screen.getByLabelText("TouchGrass ID"), {
     target: { value: "TG-234567" },
   });
-  const submit = screen.getByRole("button", { name: "Add Tokenmaxxer" }).closest("form");
+  const submit = screen.getByRole("button", { name: "Add friend" }).closest("form");
   if (submit === null) throw new Error("Missing Add Tokenmaxxer form");
   fireEvent.submit(submit);
 
@@ -698,11 +698,11 @@ test("Add Tokenmaxxer refreshes Mine when Mine is already selected", async () =>
     button: 0,
     ctrlKey: false,
   });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a Tokenmaxxer…" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a friend…" }));
   fireEvent.change(screen.getByLabelText("TouchGrass ID"), {
     target: { value: "TG-234567" },
   });
-  const submit = screen.getByRole("button", { name: "Add Tokenmaxxer" }).closest("form");
+  const submit = screen.getByRole("button", { name: "Add friend" }).closest("form");
   if (submit === null) throw new Error("Missing Add Tokenmaxxer form");
   fireEvent.submit(submit);
 
@@ -747,11 +747,11 @@ test("Add Tokenmaxxer refreshes the completion Ranking Day after UTC midnight", 
     button: 0,
     ctrlKey: false,
   });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a Tokenmaxxer…" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a friend…" }));
   fireEvent.change(screen.getByLabelText("TouchGrass ID"), {
     target: { value: "TG-234567" },
   });
-  const submit = screen.getByRole("button", { name: "Add Tokenmaxxer" }).closest("form");
+  const submit = screen.getByRole("button", { name: "Add friend" }).closest("form");
   if (submit === null) throw new Error("Missing Add Tokenmaxxer form");
   fireEvent.submit(submit);
 
@@ -812,11 +812,11 @@ test("Add Tokenmaxxer ignores a delayed completion after the Profile changes", a
     button: 0,
     ctrlKey: false,
   });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a Tokenmaxxer…" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a friend…" }));
   fireEvent.change(screen.getByLabelText("TouchGrass ID"), {
     target: { value: "TG-234567" },
   });
-  const submit = screen.getByRole("button", { name: "Add Tokenmaxxer" }).closest("form");
+  const submit = screen.getByRole("button", { name: "Add friend" }).closest("form");
   if (submit === null) throw new Error("Missing Add Tokenmaxxer form");
   fireEvent.submit(submit);
   await waitFor(() => expect(native.add).toHaveBeenCalledOnce());
@@ -902,11 +902,11 @@ test("Add Tokenmaxxer ignores a Profile change while Mine cancellation is pendin
     button: 0,
     ctrlKey: false,
   });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a Tokenmaxxer…" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Add a friend…" }));
   fireEvent.change(screen.getByLabelText("TouchGrass ID"), {
     target: { value: "TG-234567" },
   });
-  const submit = screen.getByRole("button", { name: "Add Tokenmaxxer" }).closest("form");
+  const submit = screen.getByRole("button", { name: "Add friend" }).closest("form");
   if (submit === null) throw new Error("Missing Add Tokenmaxxer form");
   fireEvent.submit(submit);
   await cancellationStarted;
