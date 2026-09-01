@@ -636,8 +636,12 @@ impl HttpDoomerboardTransport {
             Some(current) => current.connection.clone(),
             None => self.connection_factory.connect(convex_url, cancellation)?,
         };
-        connection.authenticate(fetched.token, cancellation)?;
+        if let Err(error) = connection.authenticate(fetched.token, cancellation) {
+            *cached = None;
+            return Err(error);
+        }
         if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            *cached = None;
             return Err(TransportError::Canceled);
         }
         *cached = Some(CachedDoomerboardConnection {
@@ -1229,17 +1233,32 @@ mod tests {
     #[derive(Default)]
     struct CountingConnection {
         authentications: AtomicUsize,
+        call_tokens: Mutex<Vec<String>>,
         calls: AtomicUsize,
+        cancel_after_authentication: AtomicBool,
+        current_token: Mutex<Option<String>>,
     }
 
     #[cfg(target_os = "macos")]
     impl DoomerboardConnection for CountingConnection {
         fn authenticate(
             &self,
-            _token: Zeroizing<String>,
-            _cancellation: Option<&DoomerboardReadCancellation>,
+            token: Zeroizing<String>,
+            cancellation: Option<&DoomerboardReadCancellation>,
         ) -> Result<(), TransportError> {
             self.authentications.fetch_add(1, Ordering::Relaxed);
+            *self
+                .current_token
+                .lock()
+                .map_err(|_| TransportError::Unavailable)? = Some(token.as_str().to_owned());
+            if self
+                .cancel_after_authentication
+                .swap(false, Ordering::Relaxed)
+            {
+                let cancellation = cancellation.ok_or(TransportError::Unavailable)?;
+                cancellation.cancel();
+                return Err(TransportError::Canceled);
+            }
             Ok(())
         }
 
@@ -1249,7 +1268,41 @@ mod tests {
             _cancellation: Option<&DoomerboardReadCancellation>,
         ) -> Result<FunctionResult, TransportError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
+            let token = self
+                .current_token
+                .lock()
+                .map_err(|_| TransportError::Unavailable)?
+                .clone()
+                .ok_or(TransportError::Unavailable)?;
+            self.call_tokens
+                .lock()
+                .map_err(|_| TransportError::Unavailable)?
+                .push(token);
             Ok(FunctionResult::Value(Value::Null))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Default)]
+    struct SessionTokenProvider;
+
+    #[cfg(target_os = "macos")]
+    impl ConvexTokenProvider for SessionTokenProvider {
+        fn fetch(
+            &self,
+            session: &Secret,
+            _now_unix_seconds: i64,
+            _cancellation: Option<&DoomerboardReadCancellation>,
+        ) -> Result<FetchedConvexToken, TransportError> {
+            let token = match session.expose() {
+                "session-a" => "token-a",
+                "session-b" => "token-b",
+                _ => return Err(TransportError::Unavailable),
+            };
+            Ok(FetchedConvexToken {
+                refresh_after_unix_seconds: 2_000,
+                token: Zeroizing::new(token.to_owned()),
+            })
         }
     }
 
@@ -1338,6 +1391,52 @@ mod tests {
         assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
         assert_eq!(connection.authentications.load(Ordering::Relaxed), 2);
         assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn canceled_authentication_cannot_reuse_another_profiles_authority() {
+        let connection = Arc::new(CountingConnection::default());
+        let connection_factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection: connection.clone(),
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            Arc::new(SessionTokenProvider),
+            connection_factory,
+            Arc::new(|| 1_000),
+        );
+        let first_session = Secret::new("session-a".to_owned());
+        let canceled_session = Secret::new("session-b".to_owned());
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+
+        transport
+            .authenticated_call(&first_session, call(), None)
+            .expect("first Profile call");
+        connection
+            .cancel_after_authentication
+            .store(true, Ordering::Relaxed);
+        let cancellation = DoomerboardReadCancellation::default();
+        assert!(matches!(
+            transport.authenticated_call(&canceled_session, call(), Some(&cancellation)),
+            Err(TransportError::Canceled)
+        ));
+        transport
+            .authenticated_call(&first_session, call(), None)
+            .expect("restored Profile call");
+
+        assert_eq!(
+            connection
+                .call_tokens
+                .lock()
+                .expect("recorded call tokens")
+                .as_slice(),
+            ["token-a", "token-a"]
+        );
     }
 
     #[test]
