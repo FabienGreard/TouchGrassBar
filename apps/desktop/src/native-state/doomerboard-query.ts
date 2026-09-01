@@ -38,6 +38,7 @@ type DoomerboardQuery = {
 type DoomerboardPort = {
   add: (profileKey: string, touchGrassId: string) => Promise<DoomerboardPortOutcome<unknown>>;
   read: (
+    profileKey: string,
     query: DoomerboardQuery,
     signal?: AbortSignal | undefined,
   ) => Promise<DoomerboardPortOutcome<unknown>>;
@@ -108,7 +109,7 @@ function createDoomerboardReadScheduler(native: DoomerboardQueryPort): Doomerboa
       if (read === undefined) return;
       active.add(read);
       void Promise.resolve()
-        .then(() => native.read(read.query, read.controller.signal))
+        .then(() => native.read(read.profileKey, read.query, read.controller.signal))
         .then(read.resolve, read.reject)
         .finally(() => {
           active.delete(read);

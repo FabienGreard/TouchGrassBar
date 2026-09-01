@@ -47,6 +47,11 @@ test("a fresh Doomerboard selection uses one native read", async () => {
   await expect(client.fetchQuery(options)).resolves.toEqual(readyView);
 
   expect(native.read).toHaveBeenCalledOnce();
+  expect(native.read).toHaveBeenCalledWith(
+    "TG-234567",
+    defaultDoomerboardQuery,
+    expect.any(AbortSignal),
+  );
 });
 
 test("a Doomerboard read rejects fields outside the public contract", async () => {
@@ -126,7 +131,7 @@ test("prefetch starts with the nearest Doomerboard selections", async () => {
   });
   const startedSelections: DoomerboardQuery[] = [];
   const native: DoomerboardQueryPort = {
-    read: vi.fn(async (selection) => {
+    read: vi.fn(async (_profileKey, selection) => {
       startedSelections.push(selection);
       await readsReleased;
       return { ok: true as const, value: readyView };
@@ -304,9 +309,9 @@ test("canceling queries removes their queued native reads", async () => {
   await Promise.all([runningReads, canceledReads, foregroundRead]);
 
   expect(native.read).toHaveBeenCalledTimes(4);
-  expect(vi.mocked(native.read).mock.calls[3]?.[0]).toEqual(foregroundSelection);
+  expect(vi.mocked(native.read).mock.calls[3]?.[1]).toEqual(foregroundSelection);
   for (const selection of canceledSelections) {
-    expect(vi.mocked(native.read).mock.calls.map(([query]) => query)).not.toContain(selection);
+    expect(vi.mocked(native.read).mock.calls.map(([, query]) => query)).not.toContain(selection);
   }
 });
 
@@ -318,7 +323,7 @@ test("canceling active reads releases native capacity for current work", async (
   if (currentSelection === undefined) throw new Error("Missing test selection");
   const native: DoomerboardQueryPort = {
     read: vi.fn(
-      (selection, signal?: AbortSignal) =>
+      (_profileKey, selection, signal?: AbortSignal) =>
         new Promise<DoomerboardPortOutcome<unknown>>((resolve) => {
           activeReads += 1;
           maximumActiveReads = Math.max(maximumActiveReads, activeReads);
@@ -379,7 +384,7 @@ test("canceling one audience across Ranking Days preserves the other audience", 
   }> = [];
   const native: DoomerboardQueryPort = {
     read: vi.fn(
-      (selection, signal) =>
+      (_profileKey, selection, signal) =>
         new Promise<DoomerboardPortOutcome<unknown>>((resolve) => {
           pending.push({
             audience: selection.audience,

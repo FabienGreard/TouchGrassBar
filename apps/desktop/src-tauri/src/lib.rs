@@ -757,6 +757,7 @@ fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
 async fn get_doomerboard(
     window: WebviewWindow,
     runtime: State<'_, doomerboard::DoomerboardRuntime>,
+    profile_key: String,
     query: doomerboard::DoomerboardQueryV1,
     request_id: String,
 ) -> Result<doomerboard::DoomerboardViewV1, String> {
@@ -766,9 +767,12 @@ async fn get_doomerboard(
         .begin_read(&request_id)
         .map_err(|()| "Doomerboard unavailable".to_owned())?;
     let read_runtime = runtime.clone();
+    let read_profile_key = profile_key;
     let read_request_id = request_id.clone();
-    match tauri::async_runtime::spawn_blocking(move || read_runtime.read(&read_request_id, query))
-        .await
+    match tauri::async_runtime::spawn_blocking(move || {
+        read_runtime.read(&read_request_id, &read_profile_key, query)
+    })
+    .await
     {
         Ok(view) => Ok(view),
         Err(_) => {

@@ -81,12 +81,13 @@ describe("Tauri Doomerboard adapter", () => {
     const receive = vi.fn();
     const adapter = createTauriDoomerboardAdapter(bindings);
 
-    await expect(adapter.read(defaultDoomerboardQuery)).resolves.toEqual({
+    await expect(adapter.read("TG-7K4P9D", defaultDoomerboardQuery)).resolves.toEqual({
       ok: true,
       value: readyView,
     });
     const subscription = await adapter.subscribe(receive);
     expect(bindings.invoke).toHaveBeenCalledWith("get_doomerboard", {
+      profileKey: "TG-7K4P9D",
       query: defaultDoomerboardQuery,
       requestId: expect.any(String),
     });
@@ -128,7 +129,7 @@ describe("Tauri Doomerboard adapter", () => {
     };
     const adapter = createTauriDoomerboardAdapter(bindings);
     const controller = new AbortController();
-    const read = adapter.read(defaultDoomerboardQuery, controller.signal);
+    const read = adapter.read("TG-7K4P9D", defaultDoomerboardQuery, controller.signal);
 
     await readStarted;
     controller.abort();

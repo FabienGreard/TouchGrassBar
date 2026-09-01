@@ -1492,6 +1492,11 @@ impl ProfileTransport for HttpProfileTransport {
 }
 
 #[cfg(test)]
+pub(crate) fn ready_test_coordinator() -> (String, ProfileCoordinator) {
+    tests::ready_coordinator()
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         fs,
@@ -1901,6 +1906,19 @@ mod tests {
                 assert!(!boundary.contains(&value), "public secret value");
             }
         }
+    }
+
+    pub(super) fn ready_coordinator() -> (String, ProfileCoordinator) {
+        let fixture = ProfileFixture::new();
+        fixture.complete_bootstrap();
+        fixture
+            .coordinator
+            .retry_pending()
+            .expect("create ready test Profile");
+        (
+            fixture.transport.touch_grass_id().to_owned(),
+            fixture.coordinator,
+        )
     }
 
     #[test]

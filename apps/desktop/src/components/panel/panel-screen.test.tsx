@@ -35,7 +35,7 @@ function doomerboardPort(): TestDoomerboardPort {
       ok: true as const,
       value: { contractVersion: 1, status: "added" },
     })),
-    read: vi.fn(async (selection) => ({
+    read: vi.fn(async (_profileKey, selection) => ({
       ok: true as const,
       value: {
         contractVersion: 1,
@@ -126,7 +126,7 @@ test("audience intent prefetches before the current Doomerboard finishes", async
   });
   const native = doomerboardPort();
   const read = native.read;
-  native.read = vi.fn(async (selection) => {
+  native.read = vi.fn(async (profileKey, selection) => {
     if (
       selection.audience === "global" &&
       selection.scope === "combined" &&
@@ -135,7 +135,7 @@ test("audience intent prefetches before the current Doomerboard finishes", async
       announceCurrentRead();
       await currentReadFinished;
     }
-    return read(selection);
+    return read(profileKey, selection);
   });
   const stateDelivery = createSanitizedDesktopStateDelivery(
     createBrowserSanitizedDesktopStateAdapter(
@@ -157,6 +157,7 @@ test("audience intent prefetches before the current Doomerboard finishes", async
     fireEvent.pointerEnter(screen.getByRole("tab", { name: "Friends" }));
     await waitFor(() =>
       expect(native.read).toHaveBeenCalledWith(
+        "TG-7K4P9D",
         { audience: "mine", scope: "combined", windowDays: 1 },
         expect.any(AbortSignal),
       ),
@@ -165,7 +166,7 @@ test("audience intent prefetches before the current Doomerboard finishes", async
     const intendedReads = vi
       .mocked(native.read)
       .mock.calls.filter(
-        ([selection]) =>
+        ([, selection]) =>
           selection.audience === "mine" &&
           selection.scope === "combined" &&
           selection.windowDays === 1,
@@ -188,7 +189,7 @@ test("switching to a pending Doomerboard shows a skeleton until its scores arriv
   const native = doomerboardPort();
   const read = native.read;
   let announced = false;
-  native.read = vi.fn(async (selection) => {
+  native.read = vi.fn(async (profileKey, selection) => {
     if (
       selection.audience === "mine" &&
       selection.scope === "combined" &&
@@ -200,7 +201,7 @@ test("switching to a pending Doomerboard shows a skeleton until its scores arriv
       }
       await pendingSelectionFinished;
     }
-    return read(selection);
+    return read(profileKey, selection);
   });
   const stateDelivery = createSanitizedDesktopStateDelivery(
     createBrowserSanitizedDesktopStateAdapter(
@@ -244,7 +245,7 @@ test("returning to a pending selection reuses its native read", async () => {
   const native = doomerboardPort();
   const read = native.read;
   let announced = false;
-  native.read = vi.fn(async (selection) => {
+  native.read = vi.fn(async (profileKey, selection) => {
     if (
       selection.audience === "mine" &&
       selection.scope === "combined" &&
@@ -256,7 +257,7 @@ test("returning to a pending selection reuses its native read", async () => {
       }
       await pendingSelectionFinished;
     }
-    return read(selection);
+    return read(profileKey, selection);
   });
   const stateDelivery = createSanitizedDesktopStateDelivery(
     createBrowserSanitizedDesktopStateAdapter(
@@ -293,7 +294,7 @@ test("returning to a pending selection reuses its native read", async () => {
   const pendingReads = vi
     .mocked(native.read)
     .mock.calls.filter(
-      ([selection]) =>
+      ([, selection]) =>
         selection.audience === "mine" &&
         selection.scope === "combined" &&
         selection.windowDays === 1,
@@ -347,8 +348,8 @@ test("a late prefetch cannot replace a newer Doomerboard revision", async () => 
   const native = doomerboardPort();
   const read = native.read;
   let oldPrefetchPending = true;
-  native.read = vi.fn(async (selection) => {
-    const outcome = await read(selection);
+  native.read = vi.fn(async (profileKey, selection) => {
+    const outcome = await read(profileKey, selection);
     if (
       oldPrefetchPending &&
       selection.audience === "mine" &&
@@ -404,13 +405,13 @@ test("a revision before prefetch starts still warms the new revision", async () 
   const native = doomerboardPort();
   const read = native.read;
   let firstReadPending = true;
-  native.read = vi.fn(async (selection) => {
+  native.read = vi.fn(async (profileKey, selection) => {
     if (firstReadPending) {
       firstReadPending = false;
       announceFirstRead();
       await firstReadFinished;
     }
-    return read(selection);
+    return read(profileKey, selection);
   });
   const stateDelivery = createSanitizedDesktopStateDelivery(
     createBrowserSanitizedDesktopStateAdapter(
@@ -448,13 +449,13 @@ test("StrictMode effect replay still prefetches every selection", async () => {
   const native = doomerboardPort();
   const read = native.read;
   let firstReadPending = true;
-  native.read = vi.fn(async (selection) => {
+  native.read = vi.fn(async (profileKey, selection) => {
     if (firstReadPending) {
       firstReadPending = false;
       announceFirstRead();
       await firstReadFinished;
     }
-    return read(selection);
+    return read(profileKey, selection);
   });
   const stateDelivery = createSanitizedDesktopStateDelivery(
     createBrowserSanitizedDesktopStateAdapter(
@@ -523,7 +524,7 @@ test("a Profile change discards reads from the previous prefetch", async () => {
   });
   const native = doomerboardPort();
   let oldPrefetchPending = true;
-  native.read = vi.fn(async (selection) => {
+  native.read = vi.fn(async (_profileKey, selection) => {
     const isOldPrefetch =
       oldPrefetchPending &&
       selection.audience === "mine" &&
@@ -598,7 +599,7 @@ test("Add Tokenmaxxer discards a pending Mine result before selecting it", async
       value: { contractVersion: 1, status: "added" },
     };
   });
-  native.read = vi.fn(async (selection) => {
+  native.read = vi.fn(async (_profileKey, selection) => {
     const oldMineRead =
       oldMineReadPending &&
       selection.audience === "mine" &&

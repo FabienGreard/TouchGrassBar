@@ -858,33 +858,6 @@ impl DoomerboardRuntime {
             .map(|read| read.cancellation.clone())
     }
 
-    fn with_active_session<T>(
-        &self,
-        operation: impl Fn(&Secret) -> Result<T, TransportError>,
-    ) -> Result<T, TransportError> {
-        let session = self
-            .coordinator
-            .lock()
-            .ok()
-            .and_then(|coordinator| coordinator.active_sync_credentials().ok())
-            .flatten()
-            .map(|credentials| credentials.session)
-            .ok_or(TransportError::Unavailable)?;
-        match operation(&session) {
-            Err(TransportError::AuthorityRejected) => {
-                let refreshed = self
-                    .coordinator
-                    .lock()
-                    .ok()
-                    .and_then(|coordinator| coordinator.refresh_active_sync_session(&session).ok())
-                    .flatten()
-                    .ok_or(TransportError::Unavailable)?;
-                operation(&refreshed)
-            }
-            result => result,
-        }
-    }
-
     fn with_active_session_for<T>(
         &self,
         expected_touch_grass_id: &str,
@@ -921,7 +894,12 @@ impl DoomerboardRuntime {
         }
     }
 
-    pub(crate) fn read(&self, request_id: &str, query: DoomerboardQueryV1) -> DoomerboardViewV1 {
+    pub(crate) fn read(
+        &self,
+        request_id: &str,
+        expected_touch_grass_id: &str,
+        query: DoomerboardQueryV1,
+    ) -> DoomerboardViewV1 {
         let Some(cancellation) = self.read_cancellation(request_id) else {
             return DoomerboardViewV1::unavailable();
         };
@@ -929,7 +907,7 @@ impl DoomerboardRuntime {
             self.finish_read(request_id, &cancellation);
             return DoomerboardViewV1::unavailable();
         }
-        let result = self.with_active_session(|session| {
+        let result = self.with_active_session_for(expected_touch_grass_id, |session| {
             self.transport.read(session, query, cancellation.as_ref())
         });
         self.finish_read(request_id, &cancellation);
@@ -1722,6 +1700,7 @@ mod tests {
         assert_eq!(
             runtime.read(
                 "cancel-after-begin",
+                "TG-234567",
                 query(
                     DoomerboardAudienceV1::Global,
                     DoomerboardScopeV1::Combined,
@@ -1742,6 +1721,7 @@ mod tests {
         assert_eq!(
             runtime.read(
                 "cancel-before-begin",
+                "TG-234567",
                 query(
                     DoomerboardAudienceV1::Global,
                     DoomerboardScopeV1::Combined,
@@ -1754,6 +1734,42 @@ mod tests {
         runtime.cancel_read("cancel-before-begin");
         assert!(runtime.read_cancellation("cancel-before-begin").is_none());
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn profile_bound_read_rejects_another_profile_before_transport() {
+        let (profile_key, coordinator) = crate::profile::ready_test_coordinator();
+        let other_profile_key = if profile_key == "TG-234567" {
+            "TG-234568"
+        } else {
+            "TG-234567"
+        };
+        let transport = Arc::new(CountingTransport::default());
+        let runtime = DoomerboardRuntime::new(
+            Arc::new(Mutex::new(coordinator)),
+            transport.clone(),
+            OnlineFeatureGate::default(),
+        );
+        let selected = query(DoomerboardAudienceV1::Mine, DoomerboardScopeV1::Combined, 1);
+
+        runtime
+            .begin_read("wrong-profile-read")
+            .expect("begin read");
+        assert_eq!(
+            runtime.read("wrong-profile-read", other_profile_key, selected),
+            DoomerboardViewV1::unavailable()
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+
+        runtime
+            .begin_read("matching-profile-read")
+            .expect("begin matching read");
+        assert_eq!(
+            runtime.read("matching-profile-read", &profile_key, selected),
+            DoomerboardViewV1::ready(Vec::new())
+        );
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]
@@ -1807,6 +1823,7 @@ mod tests {
         assert_eq!(
             runtime.read(
                 "paused-read",
+                "TG-234567",
                 query(
                     DoomerboardAudienceV1::Global,
                     DoomerboardScopeV1::Combined,

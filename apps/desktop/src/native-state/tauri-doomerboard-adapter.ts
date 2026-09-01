@@ -59,10 +59,10 @@ function createTauriDoomerboardAdapter(
         return unavailable();
       }
     },
-    read: async (query, signal) => {
+    read: async (profileKey, query, signal) => {
       if (signal?.aborted) return unavailable();
       const requestId = createDoomerboardReadId();
-      const read = bindings.invoke("get_doomerboard", { query, requestId });
+      const read = bindings.invoke("get_doomerboard", { profileKey, query, requestId });
       const cancelRead = () => {
         void bindings.invoke("cancel_doomerboard_read", { requestId }).catch(() => undefined);
       };
