@@ -22,6 +22,11 @@ type DoomerboardProvider = {
   provider: CodingProvider;
 };
 type DoomerboardAudience = "global" | "mine";
+type DoomerboardToolbarSelection = {
+  audience: DoomerboardAudience;
+  period: string;
+  provider: string;
+};
 type CurrentProfile = {
   displayName: string;
   touchGrassId: string;
@@ -30,22 +35,31 @@ type CopyStatus = "copied" | "idle" | "unavailable";
 
 function QuerySelector({
   label,
+  onIntent = () => undefined,
   onValueChange,
   options,
   value,
 }: {
   label: string;
+  onIntent?: ((value: string) => void) | undefined;
   onValueChange: (value: string) => void;
   options: readonly QueryOption[];
   value: string;
 }) {
   const selectedLabel = options.find((option) => option.value === value)?.label ?? value;
+  const announceAlternativeIntents = () => {
+    for (const option of options) {
+      if (option.value !== value) onIntent(option.value);
+    }
+  };
 
   return (
     <PanelMenu>
       <PanelMenuTrigger asChild>
         <Button
           aria-label={`Select Leaderboard ${label}`}
+          onFocus={announceAlternativeIntents}
+          onPointerEnter={announceAlternativeIntents}
           size="quiet"
           type="button"
           variant="ghost"
@@ -130,6 +144,7 @@ function DoomerboardToolbar({
   onCopyCurrentProfile,
   onPeriodChange,
   onProviderChange,
+  onSelectionIntent = () => undefined,
   period,
   provider,
   providers,
@@ -141,6 +156,7 @@ function DoomerboardToolbar({
   onCopyCurrentProfile?: (() => void) | undefined;
   onPeriodChange: (period: string) => void;
   onProviderChange: (provider: string) => void;
+  onSelectionIntent?: ((selection: DoomerboardToolbarSelection) => void) | undefined;
   period: string;
   provider: string;
   providers: readonly DoomerboardProvider[];
@@ -152,6 +168,10 @@ function DoomerboardToolbar({
       value: providerId,
     })),
   ];
+  const announceAudienceIntent = (nextAudience: DoomerboardAudience) => {
+    if (nextAudience === audience) return;
+    onSelectionIntent({ audience: nextAudience, period, provider });
+  };
 
   return (
     <>
@@ -167,6 +187,7 @@ function DoomerboardToolbar({
         <div className="flex items-center gap-0.5 text-pearl-muted">
           <QuerySelector
             label="period"
+            onIntent={(nextPeriod) => onSelectionIntent({ audience, period: nextPeriod, provider })}
             onValueChange={onPeriodChange}
             options={periodOptions}
             value={period}
@@ -176,6 +197,9 @@ function DoomerboardToolbar({
           </span>
           <QuerySelector
             label="provider"
+            onIntent={(nextProvider) =>
+              onSelectionIntent({ audience, period, provider: nextProvider })
+            }
             onValueChange={onProviderChange}
             options={providerOptions}
             value={provider}
@@ -188,8 +212,20 @@ function DoomerboardToolbar({
           onValueChange={(value) => onAudienceChange(value as DoomerboardAudience)}
           value={audience}
         >
-          <SegmentedControlItem value="mine">Friends</SegmentedControlItem>
-          <SegmentedControlItem value="global">Global</SegmentedControlItem>
+          <SegmentedControlItem
+            onFocus={() => announceAudienceIntent("mine")}
+            onPointerEnter={() => announceAudienceIntent("mine")}
+            value="mine"
+          >
+            Friends
+          </SegmentedControlItem>
+          <SegmentedControlItem
+            onFocus={() => announceAudienceIntent("global")}
+            onPointerEnter={() => announceAudienceIntent("global")}
+            value="global"
+          >
+            Global
+          </SegmentedControlItem>
         </SegmentedControl>
       </div>
     </>

@@ -233,6 +233,37 @@ function sameDoomerboardQuery(left: DoomerboardQuery, right: DoomerboardQuery) {
   );
 }
 
+function prioritizedDoomerboardSelections(activeSelection: DoomerboardQuery) {
+  const nearestSelections: DoomerboardQuery[] = [
+    {
+      ...activeSelection,
+      audience: activeSelection.audience === "global" ? "mine" : "global",
+    },
+    ...doomerboardWindows
+      .filter((windowDays) => windowDays !== activeSelection.windowDays)
+      .map((windowDays) => ({
+        audience: activeSelection.audience,
+        scope: activeSelection.scope,
+        windowDays,
+      })),
+    ...doomerboardScopes
+      .filter((scope) => scope !== activeSelection.scope)
+      .map((scope) => ({
+        audience: activeSelection.audience,
+        scope,
+        windowDays: activeSelection.windowDays,
+      })),
+  ];
+  return [
+    ...nearestSelections,
+    ...allDoomerboardSelections.filter(
+      (selection) =>
+        !sameDoomerboardQuery(selection, activeSelection) &&
+        !nearestSelections.some((nearest) => sameDoomerboardQuery(selection, nearest)),
+    ),
+  ];
+}
+
 function createDoomerboardQueryOptions({
   native,
   profileKey,
@@ -290,9 +321,7 @@ async function prefetchDoomerboardSelections({
     void cancelDoomerboardRankingDay(client, native, profileKey, rankingDay);
   };
   signal?.addEventListener("abort", cancelPrefetch, { once: true });
-  const pending = allDoomerboardSelections.filter(
-    (selection) => !sameDoomerboardQuery(selection, activeSelection),
-  );
+  const pending = prioritizedDoomerboardSelections(activeSelection);
   let nextIndex = 0;
   const prefetchNext = async (): Promise<void> => {
     if (signal?.aborted) return;

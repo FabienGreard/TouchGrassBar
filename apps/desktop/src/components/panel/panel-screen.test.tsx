@@ -115,6 +115,67 @@ test("switching audience uses the prefetched Doomerboard", async () => {
   expect(native.read).toHaveBeenCalledTimes(18);
 });
 
+test("audience intent prefetches before the current Doomerboard finishes", async () => {
+  let announceCurrentRead!: () => void;
+  let finishCurrentRead!: () => void;
+  const currentReadStarted = new Promise<void>((resolve) => {
+    announceCurrentRead = resolve;
+  });
+  const currentReadFinished = new Promise<void>((resolve) => {
+    finishCurrentRead = resolve;
+  });
+  const native = doomerboardPort();
+  const read = native.read;
+  native.read = vi.fn(async (selection) => {
+    if (
+      selection.audience === "global" &&
+      selection.scope === "combined" &&
+      selection.windowDays === 1
+    ) {
+      announceCurrentRead();
+      await currentReadFinished;
+    }
+    return read(selection);
+  });
+  const stateDelivery = createSanitizedDesktopStateDelivery(
+    createBrowserSanitizedDesktopStateAdapter(
+      "current",
+      () => new Date("2026-08-31T10:00:00.000Z"),
+      undefined,
+      "synced",
+    ),
+  );
+
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={stateDelivery} />
+    </QueryClientProvider>,
+  );
+
+  await currentReadStarted;
+  try {
+    fireEvent.pointerEnter(screen.getByRole("tab", { name: "Friends" }));
+    await waitFor(() =>
+      expect(native.read).toHaveBeenCalledWith(
+        { audience: "mine", scope: "combined", windowDays: 1 },
+        expect.any(AbortSignal),
+      ),
+    );
+    fireEvent.focus(screen.getByRole("tab", { name: "Friends" }));
+    const intendedReads = vi
+      .mocked(native.read)
+      .mock.calls.filter(
+        ([selection]) =>
+          selection.audience === "mine" &&
+          selection.scope === "combined" &&
+          selection.windowDays === 1,
+      );
+    expect(intendedReads).toHaveLength(1);
+  } finally {
+    finishCurrentRead();
+  }
+});
+
 test("switching to a pending Doomerboard shows a skeleton until its scores arrive", async () => {
   let announcePendingSelection!: () => void;
   let finishPendingSelection!: () => void;

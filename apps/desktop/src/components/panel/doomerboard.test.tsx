@@ -64,3 +64,62 @@ test("loading keeps the real gold, silver, and bronze podium tones", () => {
     );
   }
 });
+
+test("audience hover and focus announce the exact Doomerboard selection", () => {
+  const onSelectionIntent = vi.fn();
+  render(<Doomerboard onSelectionIntent={onSelectionIntent} rows={[]} />);
+
+  const myTokenmaxxers = screen.getByRole("tab", { name: "Friends" });
+  fireEvent.pointerEnter(myTokenmaxxers);
+  fireEvent.focus(myTokenmaxxers);
+
+  expect(onSelectionIntent).toHaveBeenNthCalledWith(1, {
+    audience: "mine",
+    scope: "combined",
+    windowDays: 1,
+  });
+  expect(onSelectionIntent).toHaveBeenNthCalledWith(2, {
+    audience: "mine",
+    scope: "combined",
+    windowDays: 1,
+  });
+});
+
+test("period and Coding Provider intent announce their alternative selections", () => {
+  const onSelectionIntent = vi.fn();
+  render(
+    <Doomerboard
+      onSelectionIntent={onSelectionIntent}
+      providers={[
+        { displayName: "Codex", provider: "codex" },
+        { displayName: "Claude", provider: "claude" },
+      ]}
+      rows={[]}
+    />,
+  );
+
+  fireEvent.pointerEnter(screen.getByRole("button", { name: "Select Leaderboard period" }));
+  expect(onSelectionIntent).toHaveBeenNthCalledWith(1, {
+    audience: "global",
+    scope: "combined",
+    windowDays: 7,
+  });
+  expect(onSelectionIntent).toHaveBeenNthCalledWith(2, {
+    audience: "global",
+    scope: "combined",
+    windowDays: 30,
+  });
+
+  onSelectionIntent.mockClear();
+  fireEvent.focus(screen.getByRole("button", { name: "Select Leaderboard provider" }));
+  expect(onSelectionIntent).toHaveBeenNthCalledWith(1, {
+    audience: "global",
+    scope: "codex",
+    windowDays: 1,
+  });
+  expect(onSelectionIntent).toHaveBeenNthCalledWith(2, {
+    audience: "global",
+    scope: "claude",
+    windowDays: 1,
+  });
+});

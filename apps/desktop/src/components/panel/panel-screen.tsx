@@ -396,7 +396,7 @@ function PanelScreen({
           const outcome =
             hasNativeRuntime && submissionProfileKey !== null
               ? await addTokenmaxxer(doomerboard, submissionProfileKey, touchGrassId)
-            : ({ status: "unavailable" } as const);
+              : ({ status: "unavailable" } as const);
           const finishRequest = () => {
             const current = addTokenmaxxerRequests.finish(request);
             setAddTokenmaxxerInFlight(addTokenmaxxerRequests.inFlight());
@@ -450,6 +450,17 @@ function PanelScreen({
         setAddTokenmaxxerOpen(open);
       }}
       onDoomerboardSelectionChange={setDoomerboardSelection}
+      onDoomerboardSelectionIntent={(selection) => {
+        if (!hasNativeRuntime || profileKey === null) return;
+        void queryClient.prefetchQuery(
+          createDoomerboardQueryOptions({
+            native: doomerboard,
+            profileKey,
+            rankingDay,
+            selection,
+          }),
+        );
+      }}
       onRefresh={() => {
         void stateDelivery.requestRefresh();
       }}

@@ -119,6 +119,40 @@ test("prefetch makes every Doomerboard selection available from cache", async ()
   expect(native.read).toHaveBeenCalledTimes(18);
 });
 
+test("prefetch starts with the nearest Doomerboard selections", async () => {
+  let releaseReads!: () => void;
+  const readsReleased = new Promise<void>((resolve) => {
+    releaseReads = resolve;
+  });
+  const startedSelections: DoomerboardQuery[] = [];
+  const native: DoomerboardQueryPort = {
+    read: vi.fn(async (selection) => {
+      startedSelections.push(selection);
+      await readsReleased;
+      return { ok: true as const, value: readyView };
+    }),
+  };
+  const client = new QueryClient();
+
+  const prefetch = prefetchDoomerboardSelections({
+    activeSelection: defaultDoomerboardQuery,
+    client,
+    native,
+    profileKey: "TG-234567",
+    rankingDay: "2026-08-31",
+  });
+
+  await vi.waitFor(() => expect(startedSelections).toHaveLength(3));
+  expect(startedSelections).toEqual([
+    { audience: "mine", scope: "combined", windowDays: 1 },
+    { audience: "global", scope: "combined", windowDays: 7 },
+    { audience: "global", scope: "combined", windowDays: 30 },
+  ]);
+
+  releaseReads();
+  await prefetch;
+});
+
 test("prefetched Doomerboard selections stay cached for the Ranking Day", async () => {
   vi.useFakeTimers();
   const native = port();

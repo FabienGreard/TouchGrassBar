@@ -89,6 +89,7 @@ type PanelViewProps = {
   onAddTokenmaxxerInputChange?: (() => void) | undefined;
   onAddTokenmaxxerOpenChange?: ((open: boolean) => void) | undefined;
   onDoomerboardSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
+  onDoomerboardSelectionIntent?: ((selection: DoomerboardQuery) => void) | undefined;
   onRefresh: () => void;
   onSettings: () => void;
   onUpdate?: (() => void) | undefined;
@@ -114,6 +115,7 @@ function PanelView({
   onAddTokenmaxxerInputChange = () => undefined,
   onAddTokenmaxxerOpenChange = () => undefined,
   onDoomerboardSelectionChange = () => undefined,
+  onDoomerboardSelectionIntent = () => undefined,
   onRefresh,
   onSettings,
   onUpdate = () => undefined,
@@ -166,6 +168,7 @@ function PanelView({
               loading={doomerboardLoading}
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
               onSelectionChange={onDoomerboardSelectionChange}
+              onSelectionIntent={onDoomerboardSelectionIntent}
               providers={visibleProviders}
               rows={doomerboardRows}
               selection={doomerboardSelection}

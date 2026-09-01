@@ -127,6 +127,7 @@ function Doomerboard({
   loading = false,
   onAddTokenmaxxer = () => undefined,
   onSelectionChange = () => undefined,
+  onSelectionIntent = () => undefined,
   providers = emptyProviders,
   rows,
   selection = defaultDoomerboardQuery,
@@ -136,6 +137,7 @@ function Doomerboard({
   loading?: boolean | undefined;
   onAddTokenmaxxer?: (() => void) | undefined;
   onSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
+  onSelectionIntent?: ((selection: DoomerboardQuery) => void) | undefined;
   providers?: readonly DoomerboardProvider[] | undefined;
   rows?: readonly DoomerboardRow[] | undefined;
   selection?: DoomerboardQuery | undefined;
@@ -188,6 +190,23 @@ function Doomerboard({
         onCopyCurrentProfile={currentProfile ? () => void copyText() : undefined}
         onPeriodChange={updatePeriod}
         onProviderChange={updateProvider}
+        onSelectionIntent={({ audience, period: nextPeriod, provider: nextProvider }) => {
+          const windowDays =
+            nextPeriod === "today"
+              ? 1
+              : nextPeriod === "week"
+                ? 7
+                : nextPeriod === "month"
+                  ? 30
+                  : null;
+          if (
+            windowDays === null ||
+            (nextProvider !== "claude" && nextProvider !== "codex" && nextProvider !== "combined")
+          ) {
+            return;
+          }
+          onSelectionIntent({ audience, scope: nextProvider, windowDays });
+        }}
         period={period}
         provider={selection.scope}
         providers={providers}
