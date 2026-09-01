@@ -35,10 +35,10 @@ describe("Add Tokenmaxxer dialog validation", () => {
 
   test.each([
     ["invalid", "Use the format TG-ABC123."],
-    ["not-found", "Tokenmaxxer not found."],
+    ["not-found", "Friend not found."],
     ["self", "You cannot add your own TouchGrass ID."],
-    ["limit-reached", "You can add up to 100 Tokenmaxxers."],
-    ["unavailable", "Could not add the Tokenmaxxer. Try again."],
+    ["limit-reached", "You can add up to 100 friends."],
+    ["unavailable", "Could not add the friend. Try again."],
   ] as const)("reports the %s outcome", (failure, expected) => {
     expect(
       addTokenmaxxerHelpText({

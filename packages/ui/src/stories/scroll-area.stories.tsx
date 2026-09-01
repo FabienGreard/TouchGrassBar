@@ -4,7 +4,7 @@ import { ScrollArea } from "../index";
 
 const ranks = Array.from({ length: 12 }, (_, index) => ({
   id: `#TG-STORY${String(index + 1).padStart(2, "0")}`,
-  name: `Tokenmaxxer ${index + 1}`,
+  name: `Friend ${index + 1}`,
   rank: index + 1,
 }));
 

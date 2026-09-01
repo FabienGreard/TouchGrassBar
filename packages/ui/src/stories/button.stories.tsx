@@ -49,7 +49,7 @@ export const Secondary: Story = {
 
 export const Ghost: Story = {
   args: {
-    children: "Tokenmaxxers",
+    children: "Friends",
     size: "quiet",
     variant: "ghost",
   },

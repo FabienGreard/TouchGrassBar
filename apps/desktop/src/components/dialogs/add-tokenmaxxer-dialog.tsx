@@ -53,11 +53,11 @@ function AddTokenmaxxerDialog({
         position={portalContainer ? "container" : "viewport"}
       >
         <div className="relative px-8 text-center">
-          <DialogTitle className="m-0 text-[14px] font-bold">Add a Tokenmaxxer</DialogTitle>
+          <DialogTitle className="m-0 text-[14px] font-bold">Add a friend</DialogTitle>
           <span className="absolute -top-1 -right-1 text-[16px]">
             <DialogClose asChild>
               <Button
-                aria-label="Close add Tokenmaxxer dialog"
+                aria-label="Close add friend dialog"
                 size="icon"
                 type="button"
                 variant="ghost"
@@ -112,7 +112,7 @@ function AddTokenmaxxerDialog({
               </Button>
             </DialogClose>
             <Button disabled={!valid || submitting} size="default" type="submit">
-              Add Tokenmaxxer
+              Add friend
             </Button>
           </div>
         </form>

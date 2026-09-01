@@ -4,10 +4,10 @@ type AddTokenmaxxerFailure = Exclude<AddTokenmaxxerStatusV1, "added" | "already-
 
 const addTokenmaxxerFailureText = {
   invalid: "Use the format TG-ABC123.",
-  "limit-reached": "You can add up to 100 Tokenmaxxers.",
-  "not-found": "Tokenmaxxer not found.",
+  "limit-reached": "You can add up to 100 friends.",
+  "not-found": "Friend not found.",
   self: "You cannot add your own TouchGrass ID.",
-  unavailable: "Could not add the Tokenmaxxer. Try again.",
+  unavailable: "Could not add the friend. Try again.",
 } satisfies Record<AddTokenmaxxerFailure, string>;
 
 function createAddTokenmaxxerRequestGuard() {
@@ -49,7 +49,7 @@ function addTokenmaxxerHelpText({
   if (failure) return addTokenmaxxerFailureText[failure];
   return touchGrassId.length > 0 && !valid
     ? "Use the format TG-ABC123."
-    : "Ask the Tokenmaxxer for their TouchGrass ID.";
+    : "Ask your friend for their TouchGrass ID.";
 }
 
 export { addTokenmaxxerHelpText, createAddTokenmaxxerRequestGuard, normalizeTouchGrassId };
