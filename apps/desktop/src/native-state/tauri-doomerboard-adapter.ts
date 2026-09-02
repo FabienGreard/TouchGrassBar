@@ -5,7 +5,7 @@ import { REVISION_NOTICE_EVENT } from "@touchgrass/contracts";
 
 import type { DoomerboardPort, DoomerboardPortOutcome } from "@/native-state/doomerboard-query";
 
-type StopListening = () => void;
+type StopListening = () => void | Promise<void>;
 type TauriDoomerboardBindings = {
   invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
   listen: (event: string, receive: (event: { payload: unknown }) => void) => Promise<StopListening>;
@@ -34,7 +34,12 @@ function unavailable<Value>(): DoomerboardPortOutcome<Value> {
 
 function stopSafely(stop: StopListening | null) {
   try {
-    stop?.();
+    const cleanup = stop?.();
+    if (cleanup !== undefined) {
+      void cleanup.catch(() => {
+        // Tauri cleanup failures are private transport details.
+      });
+    }
   } catch {
     // Tauri cleanup failures are private transport details.
   }
@@ -81,9 +86,10 @@ function createTauriDoomerboardAdapter(
     },
     subscribeFocus: async (receive) => {
       try {
+        const stop = await bindings.onFocusChanged(({ payload: focused }) => receive(focused));
         return {
           ok: true,
-          value: await bindings.onFocusChanged(({ payload: focused }) => receive(focused)),
+          value: () => stopSafely(stop),
         };
       } catch {
         return unavailable();

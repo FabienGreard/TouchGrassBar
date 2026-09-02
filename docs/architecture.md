@@ -181,20 +181,21 @@ Claude quota and Claude Observed Usage are independent observations. A quota
 failure does not block a new local usage aggregate. The usage scanner reads
 main and subagent JSONL files with byte, file, traversal, and time limits.
 
-The scanner accepts three exact Claude Code and Agent SDK schema pairs. The
-pairs are `2.1.223` and `0.3.223`, `2.1.224` and `0.3.224`, and `2.1.241` and
-`0.3.241`. Other versions fail closed. For Claude Code `2.1.241`, the scanner
-accepts one exact message iteration when its counters equal the top-level
-counters. It also accepts one exact `thinking_tokens` value when it is not more
-than `output_tokens`. These fields are breakdowns. The scanner does not add
-them to the top-level counters. Non-null `fallback_credit`, mismatched
-iterations, and other output-token detail shapes make a record partial and
-unpriced.
+The scanner accepts four exact Claude Code and Agent SDK schema pairs. The
+pairs are `2.1.223` and `0.3.223`, `2.1.224` and `0.3.224`, `2.1.241` and
+`0.3.241`, and `2.1.258` and `0.3.258`. Other versions fail closed. For Claude
+Code `2.1.241` and `2.1.258`, the scanner accepts one exact message iteration
+when its counters equal the top-level counters. It also accepts one exact
+`thinking_tokens` value when it is not more than `output_tokens`. These fields
+are breakdowns. The scanner does not add them to the top-level counters.
+Non-null `fallback_credit`, mismatched iterations, and other output-token detail
+shapes make a record partial and unpriced.
 
 The scanner can ignore one synthetic API-error record from Claude Code
-`2.1.241`. Its wrapper, message, content, and zero counters must match the
-reviewed shape. Its extended usage fields must also be null. A different
-API-error shape fails closed.
+`2.1.241` or `2.1.258`. Its wrapper, message, content, and zero counters must
+match the reviewed shape. Its extended usage fields must also be null. The
+`2.1.258` shape also requires an HTTP error status, non-empty error details, and
+a non-empty request identifier. A different API-error shape fails closed.
 
 The scanner reads approved wrapper, model, token, modifier, and paid-tool
 metadata only. It resolves `supersedes` before it groups files by the salted

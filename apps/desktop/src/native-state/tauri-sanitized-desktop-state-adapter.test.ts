@@ -94,6 +94,32 @@ describe("Tauri Sanitized Desktop State adapter", () => {
     expect(stopRevisionNotices).toHaveBeenCalledOnce();
   });
 
+  test("attaches rejection handling to asynchronous listener cleanup", async () => {
+    const revisionCleanup = Promise.resolve();
+    const focusCleanup = Promise.resolve();
+    const revisionCleanupCatch = vi.spyOn(revisionCleanup, "catch");
+    const focusCleanupCatch = vi.spyOn(focusCleanup, "catch");
+    const stopRevisionNotices = vi.fn(() => revisionCleanup);
+    const stopFocusChanges = vi.fn(() => focusCleanup);
+    const bindings: TauriSanitizedDesktopStateBindings = {
+      invoke: vi.fn(async () => undefined),
+      listen: vi.fn(async () => stopRevisionNotices),
+      onFocusChanged: vi.fn(async () => stopFocusChanges),
+    };
+    const adapter = createTauriSanitizedDesktopStateAdapter(bindings);
+
+    const subscription = await adapter.subscribeToInvalidations(() => undefined);
+    expect(subscription.ok).toBe(true);
+    if (!subscription.ok) throw new Error("expected connected adapter");
+
+    subscription.value();
+
+    expect(stopRevisionNotices).toHaveBeenCalledOnce();
+    expect(stopFocusChanges).toHaveBeenCalledOnce();
+    expect(revisionCleanupCatch).toHaveBeenCalledOnce();
+    expect(focusCleanupCatch).toHaveBeenCalledOnce();
+  });
+
   test("times out partial listener setup and cleans late resources", async () => {
     vi.useFakeTimers();
     try {

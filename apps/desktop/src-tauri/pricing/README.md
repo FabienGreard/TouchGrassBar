@@ -154,10 +154,10 @@ Use these primary sources for a Claude update:
 - [Claude release notes](https://platform.claude.com/docs/en/release-notes/overview)
 - [Anthropic TypeScript SDK usage types](https://github.com/anthropics/anthropic-sdk-typescript/blob/3b45cd3b69c956ac63384fdb09ce1d8109f3fa80/src/resources/beta/messages/messages.ts#L4053-L4105)
 
-The Claude transcript allow-list has three verified pairs. Claude Code
+The Claude transcript allow-list has four verified pairs. Claude Code
 `2.1.223` pairs with `@anthropic-ai/claude-agent-sdk` `0.3.223`. Claude Code
 `2.1.224` pairs with SDK version `0.3.224`. Claude Code `2.1.241` pairs with SDK
-version `0.3.241`.
+version `0.3.241`. Claude Code `2.1.258` pairs with SDK version `0.3.258`.
 
 The public package review on 2026-08-26 resolved each moving channel to an
 exact package record and checked its npm `dist.integrity` value:
@@ -169,15 +169,28 @@ exact package record and checked its npm `dist.integrity` value:
 | Latest      | `@anthropic-ai/claude-code`      | `2.1.246` | `sha512-E2PEKkal9D05dWnsc2fcPclJpEbJbnIE3D1vp33aPrsFbmdbqyNzEcc9/SeFIj53hvP/M5BuHygOFbeoBWEAOg==` |
 | Latest pair | `@anthropic-ai/claude-agent-sdk` | `0.3.246` | `sha512-FtR0HoHHNqeqJWjZN8qLUAzZVFUI9ztXYNPPwv98Ecmv9qq2QTauI8IzkY26CC0mleWAqb9RQEW2C0OtiUliug==` |
 
+The partial transcript review on 2026-09-02 also resolved the current latest
+pair and checked its npm `dist.integrity` value:
+
+| Channel     | Package                          | Version   | Integrity                                                                                         |
+| ----------- | -------------------------------- | --------- | ------------------------------------------------------------------------------------------------- |
+| Latest      | `@anthropic-ai/claude-code`      | `2.1.258` | `sha512-Zis1AYrHuCcK4V1tXJUkzJdklFsTvvqIcj7gk4K8lyEeJOW99ZoQH/E+WxugMqDEO7xncYZ41gydxlkSTmj/2Q==` |
+| Latest pair | `@anthropic-ai/claude-agent-sdk` | `0.3.258` | `sha512-RxJ5fSPCGCxX5qO/b4IPXhldvtLHeYBAzTUJ4eOzO+gTrepZQSDmwSlQD6nnoEquKGJzOMHCjhdEtBfDjbDWUg==` |
+
+This partial review updates only the Claude latest-package checkpoints. It
+does not review the stable channel or any Codex area, so the shared
+`reviewedAt` date does not change.
+
 These public package records do not prove a private transcript shape. They do
 not add a Claude Code version to the transcript allow-list.
 
-The scanner ignores one synthetic API-error record from Claude Code `2.1.241`.
-The record must match the reviewed shape exactly. This check includes the
-wrapper, message, content, zero-token counters, zero paid-tool counters, and
-null extended usage fields. A different API-error shape fails closed. A
-different transcript version stays partial or unavailable until controlled
-fixtures prove that schema.
+The scanner ignores one synthetic API-error record from Claude Code `2.1.241`
+or `2.1.258`. The record must match the reviewed shape exactly. This check
+includes the wrapper, message, content, zero-token counters, zero paid-tool
+counters, and null extended usage fields. The `2.1.258` record also requires an
+HTTP error status, non-empty error details, and a non-empty request identifier.
+A different API-error shape fails closed. A different transcript version stays
+partial or unavailable until controlled fixtures prove that schema.
 
 The `2026-09-02-v1` review added Claude Fable 5.1 and Claude Mythos 5.1.
 Anthropic

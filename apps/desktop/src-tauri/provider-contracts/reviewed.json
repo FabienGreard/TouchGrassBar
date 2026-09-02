@@ -196,10 +196,10 @@
   },
   "claude": {
     "reviewedStableVersion": "2.1.231",
-    "reviewedLatestVersion": "2.1.246",
+    "reviewedLatestVersion": "2.1.258",
     "stablePackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/stable",
     "latestPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/latest",
-    "reviewedAgentSdkVersion": "0.3.246",
+    "reviewedAgentSdkVersion": "0.3.258",
     "agentSdkPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-agent-sdk/latest",
     "usageTypesSourceUrl": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
     "usageInterfaces": {
