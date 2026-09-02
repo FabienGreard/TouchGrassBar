@@ -40,7 +40,7 @@ use crate::sanitized::{
 
 const INITIALIZE_REQUEST_ID: i64 = 1;
 const DEFAULT_LIMIT_ID: &str = "codex";
-const IGNORED_CODEX_LIMIT_NAME: &str = "GPT-5.3-Codex-Spark";
+const IGNORED_CODEX_LIMIT_NAMES: [&str; 2] = ["GPT-5.3-Codex-Spark", "gpt-reserve"];
 const ACCOUNT_USAGE_REFRESH_MINUTES: i64 = 30;
 const MAX_APP_SERVER_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_APP_SERVER_BUFFERED_BYTES: usize = 4 * MAX_APP_SERVER_MESSAGE_BYTES;
@@ -181,7 +181,7 @@ impl CodexQuotaObservation {
                 .as_deref()
                 .is_some_and(is_ignored_codex_limit)
             {
-                debug_event("quota_ignored class=codex_spark");
+                debug_event("quota_ignored class=unsupported_model_specific");
                 ignored_limit_ids.insert(limit_id);
                 continue;
             }
@@ -214,11 +214,11 @@ impl CodexQuotaObservation {
             .is_some_and(is_ignored_codex_limit)
         {
             self.ignored_limit_ids.insert(limit_id);
-            debug_event("quota_update_ignored class=codex_spark");
+            debug_event("quota_update_ignored class=unsupported_model_specific");
             return Ok(false);
         }
         if self.ignored_limit_ids.contains(&limit_id) {
-            debug_event("quota_update_ignored class=codex_spark");
+            debug_event("quota_update_ignored class=unsupported_model_specific");
             return Ok(false);
         }
         let current = self.buckets.get_mut(&limit_id).ok_or(())?;
@@ -326,7 +326,8 @@ fn normalized_limit_name(name: &str) -> String {
 }
 
 fn is_ignored_codex_limit(name: &str) -> bool {
-    normalized_limit_name(name) == IGNORED_CODEX_LIMIT_NAME
+    let normalized_name = normalized_limit_name(name);
+    IGNORED_CODEX_LIMIT_NAMES.contains(&normalized_name.as_str())
 }
 
 fn complete_window(window: RawRateLimitWindow) -> Result<RateLimitWindow, ()> {
@@ -1343,6 +1344,38 @@ mod tests {
                     "limitId": "spark",
                     "limitName": "GPT-5.3-Codex-Spark",
                     "primary": {{"usedPercent": 50, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }}
+                }}"#,
+            ),
+        );
+        let snapshot = CodexQuotaObservation::from_full_read(&fixture)
+            .unwrap()
+            .sanitized_snapshot(observed_at())
+            .unwrap();
+        let ProviderSnapshot::Current { quota_lanes, .. } = snapshot else {
+            panic!("expected current snapshot");
+        };
+
+        assert_eq!(quota_lanes.len(), 2);
+        assert_eq!(quota_lanes[0].label, "5-hour limit");
+        assert_eq!(quota_lanes[1].label, "Weekly limit");
+    }
+
+    #[test]
+    fn full_read_ignores_the_gpt_reserve_quota() {
+        let fixture = full_fixture().replace(
+            "\"rateLimitsByLimitId\": null",
+            &format!(
+                r#""rateLimitsByLimitId": {{
+                  "codex": {{
+                    "limitId": "codex",
+                    "primary": {{"usedPercent": 26, "windowDurationMins": 300, "resetsAt": {PRIMARY_RESET}}},
+                    "secondary": {{"usedPercent": 82, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }},
+                  "codex-base-model-inference": {{
+                    "limitId": "codex-base-model-inference",
+                    "limitName": "gpt-reserve",
+                    "secondary": {{"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
                   }}
                 }}"#,
             ),

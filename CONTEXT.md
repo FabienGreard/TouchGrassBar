@@ -26,7 +26,8 @@ _Avoid_: Day, billing period
 
 **Quota Lane**:
 One provider-reported limit with its provider-defined label, unit, remaining value, and Quota Window. Its provider-native values remain visible even when its remaining share contributes to Overall Quota Headroom. At reset, the old lane leaves the active set but remains in the stale Quota Snapshot until the provider reports the next window.
-The model-specific Codex `GPT-5.3-Codex-Spark` weekly limit is not a supported Quota Lane.
+The model-specific Codex `GPT-5.3-Codex-Spark` weekly limit and the Codex
+`gpt-reserve` fallback limit are not supported Quota Lanes.
 _Avoid_: Token Score, usage total, quota headroom
 
 **Provider Quota Headroom**:
