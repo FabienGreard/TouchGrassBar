@@ -100,6 +100,33 @@ describe("Tauri Doomerboard adapter", () => {
     expect(stopRevision).toHaveBeenCalledOnce();
   });
 
+  test("attaches rejection handling to asynchronous listener cleanup", async () => {
+    const revisionCleanup = Promise.resolve();
+    const focusCleanup = Promise.resolve();
+    const revisionCleanupCatch = vi.spyOn(revisionCleanup, "catch");
+    const focusCleanupCatch = vi.spyOn(focusCleanup, "catch");
+    const stopRevision = vi.fn(() => revisionCleanup);
+    const stopFocus = vi.fn(() => focusCleanup);
+    const bindings: TauriDoomerboardBindings = {
+      invoke: vi.fn(async () => readyView),
+      listen: vi.fn(async () => stopRevision),
+      onFocusChanged: vi.fn(async () => stopFocus),
+    };
+    const adapter = createTauriDoomerboardAdapter(bindings);
+
+    const revisionSubscription = await adapter.subscribe(() => undefined);
+    const focusSubscription = await adapter.subscribeFocus(() => undefined);
+    if (!revisionSubscription.ok || !focusSubscription.ok) {
+      throw new Error("expected connected subscriptions");
+    }
+
+    revisionSubscription.value();
+    focusSubscription.value();
+
+    expect(revisionCleanupCatch).toHaveBeenCalledOnce();
+    expect(focusCleanupCatch).toHaveBeenCalledOnce();
+  });
+
   test("cancels the matching native read when its signal aborts", async () => {
     let announceRead!: () => void;
     let finishRead!: () => void;

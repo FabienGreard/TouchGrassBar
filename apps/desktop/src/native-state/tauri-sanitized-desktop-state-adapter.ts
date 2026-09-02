@@ -5,7 +5,7 @@ import { REVISION_NOTICE_EVENT } from "@touchgrass/contracts";
 
 import type { SanitizedDesktopStatePort } from "@/native-state/sanitized-desktop-state-delivery";
 
-type StopListening = () => void;
+type StopListening = () => void | Promise<void>;
 const SUBSCRIPTION_SETUP_TIMEOUT_MS = 1_000;
 
 export type TauriSanitizedDesktopStateBindings = {
@@ -22,7 +22,12 @@ const defaultBindings: TauriSanitizedDesktopStateBindings = {
 
 function stopSafely(stopListening: StopListening) {
   try {
-    stopListening();
+    const cleanup = stopListening();
+    if (cleanup !== undefined) {
+      void cleanup.catch(() => {
+        // Tauri cleanup failures are private transport details.
+      });
+    }
   } catch {
     // Tauri cleanup failures are private transport details.
   }
