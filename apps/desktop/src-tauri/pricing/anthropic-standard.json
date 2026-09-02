@@ -1,10 +1,46 @@
 {
   "schemaVersion": 1,
-  "basis": "anthropic-standard-2026-08-26-v1",
+  "basis": "anthropic-standard-2026-09-02-v1",
   "batchFactor": 0.5,
   "usInferenceFactor": 1.1,
   "webSearchUsdPerThousand": 10.0,
   "models": [
+    {
+      "name": "claude-fable-5-1",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-09-01",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 10.0,
+          "cacheWrite5mUsdPerMillion": 12.5,
+          "cacheWrite1hUsdPerMillion": 20.0,
+          "cacheReadUsdPerMillion": 0.25,
+          "cacheReadMultiplier": 0.025,
+          "outputUsdPerMillion": 50.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-mythos-5-1",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-09-01",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 10.0,
+          "cacheWrite5mUsdPerMillion": 12.5,
+          "cacheWrite1hUsdPerMillion": 20.0,
+          "cacheReadUsdPerMillion": 0.25,
+          "cacheReadMultiplier": 0.025,
+          "outputUsdPerMillion": 50.0
+        }
+      ],
+      "fastPeriods": []
+    },
     {
       "name": "claude-fable-5",
       "aliases": [],

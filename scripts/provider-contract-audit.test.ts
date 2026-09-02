@@ -1156,6 +1156,90 @@ The September price change will now occur.`,
     );
   });
 
+  test("detects a cache read multiplier that the pricing page does not document", async () => {
+    const scenario = createScenario();
+    const manifest = clone(anthropicManifest);
+    const period = manifest.models[0]?.standardPeriods[0] as
+      | { cacheReadMultiplier?: number; cacheReadUsdPerMillion: number }
+      | undefined;
+    if (!period) throw new Error("The test price period is absent.");
+    period.cacheReadMultiplier = 0.025;
+    period.cacheReadUsdPerMillion = 0.05;
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.claude.pricingManifestPath}`,
+      json(manifest),
+    );
+
+    const report = await scenario.audit();
+    const summaries = report.findings
+      .filter((entry) => entry.provider === "claude" && entry.code === "pricing-modifier-changed")
+      .map((entry) => entry.summary);
+
+    expect(report.status).toBe("review-required");
+    expect(summaries).toEqual(
+      expect.arrayContaining([expect.stringContaining("0.025x cache read exception")]),
+    );
+  });
+
+  test("accepts a declared cache read multiplier that the pricing page documents", async () => {
+    const scenario = createScenario();
+    const manifest = clone(anthropicManifest);
+    const period = manifest.models[0]?.standardPeriods[0] as
+      | { cacheReadMultiplier?: number; cacheReadUsdPerMillion: number }
+      | undefined;
+    if (!period) throw new Error("The test price period is absent.");
+    period.cacheReadMultiplier = 0.025;
+    period.cacheReadUsdPerMillion = 0.05;
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.claude.pricingManifestPath}`,
+      json(manifest),
+    );
+    scenario.contract.claude.pricingManifestSemanticSha256 = semanticJsonSha256(manifest);
+    const documentedPricing = anthropicPricing
+      .replace(
+        "| Cache read (hit) | 0.1x base input price |",
+        "| Cache read (hit) | 0.1x base input price (0.025x on Claude Sonnet 5) |",
+      )
+      .replace("| $0.2 / MTok |", "| $0.05 / MTok |");
+    const ruleWindow = scenario.contract.claude.pricingRuleWindows[0];
+    if (!ruleWindow) throw new Error("The Claude test rule window is absent.");
+    ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
+      documentedPricing,
+      ruleWindow.startHeading,
+      ruleWindow.endHeading,
+    );
+    scenario.remoteSources.set(scenario.contract.claude.pricingSourceUrl, documentedPricing);
+
+    const report = await scenario.audit();
+    const summaries = report.findings
+      .filter((entry) => entry.provider === "claude" && entry.area === "pricing")
+      .map((entry) => entry.summary);
+
+    expect(summaries).toEqual([]);
+  });
+
+  test("detects a cache read price that contradicts its declared multiplier", async () => {
+    const scenario = createScenario();
+    const manifest = clone(anthropicManifest);
+    const period = manifest.models[0]?.standardPeriods[0];
+    if (!period) throw new Error("The test price period is absent.");
+    period.cacheReadUsdPerMillion = 0.5;
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.claude.pricingManifestPath}`,
+      json(manifest),
+    );
+
+    const report = await scenario.audit();
+    const summaries = report.findings
+      .filter((entry) => entry.provider === "claude" && entry.code === "pricing-modifier-changed")
+      .map((entry) => entry.summary);
+
+    expect(report.status).toBe("review-required");
+    expect(summaries).toEqual(
+      expect.arrayContaining([expect.stringContaining("does not match its declared multiplier")]),
+    );
+  });
+
   test("detects changed OpenAI Fast rates and pricing modifiers", async () => {
     const scenario = createScenario();
     scenario.remoteSources.set(
