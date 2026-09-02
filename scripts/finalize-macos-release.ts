@@ -17,12 +17,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createLatestManifest, parseStableReleaseTag, releaseAssetNames } from "./release-contract";
-
-type ArtifactRecord = {
-  bytes: number;
-  name: string;
-  sha256: string;
-};
+import {
+  createReleaseNotes,
+  createReleaseSummaryForTag,
+  updaterReleaseNotes,
+  type ArtifactRecord,
+} from "./release-notes";
 
 type SignatureFacts = {
   cdhash: string;
@@ -522,25 +522,6 @@ function toolchainVersions() {
   };
 }
 
-function releaseNotes(tag: string, records: ArtifactRecord[]) {
-  return `Signed and notarized TouchGrassBar draft candidate ${tag}.
-
-This Release is a draft. Do not publish it until the exact candidate reaches GO_TO_PUBLISH and the public-release environment receives approval.
-
-Sanitized trust checks:
-
-- Developer ID signature, hardened runtime, and timestamp: PASS
-- App and DMG notarization and stapling: PASS
-- App and DMG Gatekeeper assessment: PASS
-- Tauri updater signature: PASS
-- Apple-silicon artifact binding: PASS
-
-Candidate assets:
-
-${records.map((record) => `- ${record.name}: ${record.bytes} bytes; SHA-256 ${record.sha256}`).join("\n")}
-`;
-}
-
 function finalizeRelease() {
   const tag = requiredEnvironment("RELEASE_TAG");
   const commit = requiredEnvironment("RELEASE_COMMIT");
@@ -548,6 +529,7 @@ function finalizeRelease() {
   const mainCiRunId = requiredEnvironment("RELEASE_MAIN_CI_RUN_ID");
   const expectedIdentity = requiredEnvironment("APPLE_SIGNING_IDENTITY");
   const { version } = parseStableReleaseTag(tag);
+  const releaseSummary = createReleaseSummaryForTag(tag);
   if (
     process.platform !== "darwin" ||
     process.arch !== "arm64" ||
@@ -604,7 +586,7 @@ function finalizeRelease() {
     const capturedAt = new Date().toISOString();
     const signature = readFileSync(updaterSignaturePath, "utf8").trim();
     const latestManifest = createLatestManifest({
-      notes: `TouchGrassBar ${version}`,
+      notes: updaterReleaseNotes(releaseSummary.changes),
       pubDate: capturedAt,
       signature,
       tag,
@@ -647,14 +629,20 @@ function finalizeRelease() {
       toolchains: toolchainVersions(),
       workflowRunId,
     });
-    writeFileSync(join(outputDirectory, names.receipt), `${JSON.stringify(receipt, null, 2)}\n`, {
+    const receiptPath = join(outputDirectory, names.receipt);
+    writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, {
       encoding: "utf8",
       mode: 0o644,
     });
-    writeFileSync(join(outputDirectory, "release-notes.md"), releaseNotes(tag, trustArtifacts), {
-      encoding: "utf8",
-      mode: 0o644,
-    });
+    const releaseArtifacts = [...trustArtifacts, artifactRecord(receiptPath)];
+    writeFileSync(
+      join(outputDirectory, "release-notes.md"),
+      createReleaseNotes(releaseSummary, releaseArtifacts),
+      {
+        encoding: "utf8",
+        mode: 0o644,
+      },
+    );
     rmSync(configurationPath, { force: true });
     console.log(`Release trust: PASS (${trustArtifacts.length} checked artifacts, arm64).`);
   } finally {

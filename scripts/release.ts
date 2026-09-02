@@ -7,6 +7,7 @@ import {
   releaseRepository,
   verifyDatabaseFixtureCandidate,
 } from "./release-contract";
+import { createReleaseSummary } from "./release-notes";
 
 type ReleaseLevel = "major" | "minor" | "patch";
 type StableVersion = {
@@ -168,6 +169,7 @@ function release(argumentsList: string[]) {
   const current = latestStableTag(remoteTags);
   const next = bumpStableVersion(current, options.level);
   verifyDatabaseFixtureCandidate(next, publishedStableReleaseTags(releaseRepository));
+  const releaseSummary = createReleaseSummary(current.tag, next, commit);
   if (remoteTags.includes(next)) {
     throw new Error(`Remote release tag already exists: ${next}.`);
   }
@@ -176,6 +178,8 @@ function release(argumentsList: string[]) {
   console.log(`Commit: ${commit}`);
   console.log(`Main CI run: ${ciRun}`);
   console.log("Release governance: PASS");
+  console.log("Release notes:");
+  for (const change of releaseSummary.changes) console.log(`- ${change}`);
 
   if (!options.execute) {
     console.log("Action: preview only");

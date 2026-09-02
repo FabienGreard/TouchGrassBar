@@ -110,6 +110,28 @@ runs the same check. The complete fixture lifecycle and the schema change
 checklist are linked from
 [`apps/desktop/src-tauri/tests/fixtures/releases/README.md`](../apps/desktop/src-tauri/tests/fixtures/releases/README.md).
 
+## User-facing release notes
+
+The release preview requires at least one user-facing change. For the best
+wording, add one or more `Release-note:` trailers to the commit message:
+
+```text
+fix(codex): hide reserve quota lane
+
+Release-note: The Codex usage panel no longer shows the internal reserve limit.
+```
+
+Use `Release-note: none` when a `feat`, `fix`, or `perf` commit has no
+user-facing effect. Without a trailer, the release-note generator uses the
+Conventional Commit subject as a fallback. It excludes release, development,
+test, documentation, build, and CI scopes.
+
+The GitHub Release description puts the user-facing changes and DMG download
+first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,
+and SHA-256 evidence in a collapsed technical section. GitHub shows draft
+status, so the description must not contain temporary draft wording. The same
+change summary is stored in `latest.json` for the in-app updater.
+
 After the automated preview passes, use the execution command printed by the
 script. The script creates and pushes the annotated tag. The tag starts the
 release workflow.
