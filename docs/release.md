@@ -126,6 +126,11 @@ user-facing effect. Without a trailer, the release-note generator uses the
 Conventional Commit subject as a fallback. It excludes release, development,
 test, documentation, build, and CI scopes.
 
+When one squash commit contains more than one user-facing change, add one
+`Release-note:` trailer for each change. The fallback uses only the top-level
+Conventional Commit subject. It does not infer release notes from nested commit
+text in the squash commit body.
+
 The GitHub Release description puts the user-facing changes and DMG download
 first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,
 and SHA-256 evidence in a collapsed technical section. GitHub shows draft
