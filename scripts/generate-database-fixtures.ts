@@ -312,18 +312,6 @@ const definitions: FixtureDefinition[] = [
     hasExplicitVersions: true,
   },
   {
-    tag: "v0.0.21",
-    sourceCommit: "b70bc85156b18f29a953ae0c53b17cbbd994290e",
-    releaseStatus: "official",
-    revision: "321",
-    lifecycleVersion: 5,
-    updateStateVersion: 3,
-    codexUsageIndexVersion: 9,
-    hasClaudeUsageIndex: true,
-    hasTopModelUsage: true,
-    hasExplicitVersions: true,
-  },
-  {
     tag: "v0.0.22",
     sourceCommit: "candidate",
     releaseStatus: "candidate",
