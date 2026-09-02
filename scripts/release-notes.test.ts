@@ -29,6 +29,23 @@ describe("release notes", () => {
     ]);
   });
 
+  test("keeps every reviewed note from a multi-change squash commit", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: [
+            "Release-note: Price the new Claude models.",
+            "Release-note: Complete usage refreshes after the latest update starts.",
+          ].join("\n"),
+          subject: "feat(pricing): support new Claude models",
+        },
+      ]),
+    ).toEqual([
+      "Price the new Claude models.",
+      "Complete usage refreshes after the latest update starts.",
+    ]);
+  });
+
   test("selects the previous stable tag and ignores prereleases", () => {
     expect(previousStableTag("v1.2.0", ["v1.0.0", "v1.1.0", "v1.2.0-beta.1", "v1.2.0"])).toBe(
       "v1.1.0",
