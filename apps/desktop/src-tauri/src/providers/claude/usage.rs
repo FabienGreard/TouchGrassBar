@@ -5808,7 +5808,7 @@ mod tests {
         assert_eq!(detail.api_equivalent_cost_usd, Some(18.0));
         assert_eq!(
             local.pricing_basis.as_deref(),
-            Some("anthropic-standard-2026-08-26-v1")
+            Some("anthropic-standard-2026-09-02-v1")
         );
 
         let UsageTotal::Current {
@@ -6063,7 +6063,7 @@ mod tests {
                 .unwrap()
         };
         let initial = read_daily();
-        let changed_basis = pricing_catalog_with_basis("anthropic-standard-2026-08-26-v2");
+        let changed_basis = pricing_catalog_with_basis("anthropic-standard-2026-09-02-v2");
         let cutoff = now().date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
 
         refresh_daily_aggregates_with_catalog(
@@ -6080,7 +6080,7 @@ mod tests {
 
     #[test]
     fn mixed_retained_price_books_keep_bounded_provenance_during_incomplete_scan() {
-        const NEW_BASIS: &str = "anthropic-standard-2026-08-26-v2";
+        const NEW_BASIS: &str = "anthropic-standard-2026-09-02-v2";
 
         let fixture = FixtureRoot::new();
         let config = fixture.config();

@@ -260,19 +260,19 @@
     ],
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/claude/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/anthropic-standard.json",
-    "pricingManifestSemanticSha256": "7463b4ecd6907dd417d71854fd3189c2a7c92cf1643d948f4cc7675b8ad107c9",
+    "pricingManifestSemanticSha256": "582c77db51a2c5aeadb14b83f899282a8f806fbfc4189e9d9ec44352485bdbeb",
     "pricingRuleWindows": [
       {
         "id": "model-token-pricing",
         "startHeading": "## Model pricing",
         "endHeading": "## Cloud platform pricing",
-        "semanticSha256": "6faa37d1e327b4df2c0677a2f9a9e531171f76ef666e22aa146f60e36132a194"
+        "semanticSha256": "3f937db56d6b09238ea547eb216c79d86959f707d35484268ba503f6610673c5"
       },
       {
         "id": "feature-pricing-rules",
         "startHeading": "## Feature-specific pricing",
         "endHeading": "## Claude Managed Agents pricing",
-        "semanticSha256": "aa1b24bc114d202bad49fb15fa0bfe820ba09dbfc59f149c4724c9cebe8c5f6c"
+        "semanticSha256": "85292a5e99f9ff07bf91ffb04dda7e1decda4043dd31ee2919ab57ed92c94c34"
       }
     ],
     "pricingEvidence": {
@@ -289,8 +289,27 @@
         {
           "id": "release-notes",
           "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
-          "windowSemanticSha256": "3929e07917d410a48a26fb228d5d4ee06aefba970692581a4fe8f01eee2c371f",
+          "windowSemanticSha256": "32b8ad23269812e84f1d8707c34a21807cee168568295fcefebdb2a4863d8c4d",
           "sections": [
+            {
+              "id": "fable-mythos-5-1-launch",
+              "heading": "### September 1, 2026",
+              "selector": "We've launched **Claude Fable 5.1**",
+              "date": "2026-09-01",
+              "semanticSha256": "8658cd31f76c435123058b56f083d97f1edc70e5d516a00a0e3d9cf1a4518393",
+              "checkpoints": [
+                {
+                  "model": "claude-fable-5-1",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-mythos-5-1",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "sonnet-5-canceled-increase",
               "heading": "### August 10, 2026",

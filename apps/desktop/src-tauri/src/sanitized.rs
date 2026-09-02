@@ -2231,6 +2231,33 @@ impl RefreshInbox {
         RefreshSources(self.pending_sources.swap(0, Ordering::AcqRel))
     }
 
+    fn peek_sources(&self) -> RefreshSources {
+        RefreshSources(self.pending_sources.load(Ordering::Acquire))
+    }
+
+    /// Claims the pending sources for one refresh attempt.
+    ///
+    /// The in-flight flag is set before the pending bits are cleared, so a
+    /// waiter never observes an idle coordinator between the two. Clearing
+    /// first leaves a window where no source is pending and no refresh is in
+    /// flight, which reports a refresh as finished before it has started.
+    ///
+    /// Returns `None` when admission is closed, leaving the pending bits for
+    /// the next loop.
+    fn claim_refresh(&self) -> Option<RefreshSources> {
+        if !self.try_start_refresh() {
+            return None;
+        }
+        Some(self.take_sources())
+    }
+
+    /// Whether no source is pending and no refresh is in flight. This is the
+    /// completion condition, so it must never hold while a claimed attempt is
+    /// still on its way to setting the in-flight flag.
+    fn is_idle(&self) -> bool {
+        self.pending_sources.load(Ordering::Acquire) == 0 && !self.in_flight.load(Ordering::Acquire)
+    }
+
     fn try_start_refresh(&self) -> bool {
         let _admission = self
             .admission
@@ -2628,17 +2655,21 @@ impl CoordinatorWorker {
             if self.local_usage_catch_up_is_due() {
                 self.inbox.record(RefreshSource::LocalUsageCatchUp);
             }
-            let sources = self.inbox.take_sources();
-            if sources.is_empty() || !self.refresh_is_due(sources, now) {
+            // Decide on the pending bits without clearing them. Clearing here
+            // would expose an idle coordinator until admission sets the
+            // in-flight flag, and a waiter sampling that gap reports a refresh
+            // that has not run.
+            let peeked = self.inbox.peek_sources();
+            if peeked.is_empty() || !self.refresh_is_due(peeked, now) {
+                // A source that is not due is dropped, as before.
+                let _ = self.inbox.take_sources();
                 continue;
             }
 
-            if !self.inbox.try_start_refresh() {
-                self.inbox
-                    .pending_sources
-                    .fetch_or(sources.0, Ordering::AcqRel);
+            // Admission failure leaves the bits pending for the next loop.
+            let Some(sources) = self.inbox.claim_refresh() else {
                 continue;
-            }
+            };
             let refresh_started = Instant::now();
             self.inbox
                 .provider_settings_pending
@@ -3615,19 +3646,7 @@ impl NativeCore {
             {
                 return Err("refresh coordinator unavailable");
             }
-            let pending = self
-                .inner
-                .coordinator
-                .inbox
-                .pending_sources
-                .load(Ordering::Acquire);
-            let in_flight = self
-                .inner
-                .coordinator
-                .inbox
-                .in_flight
-                .load(Ordering::Acquire);
-            if pending == 0 && !in_flight {
+            if self.inner.coordinator.inbox.is_idle() {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -4591,6 +4610,81 @@ mod tests {
             );
             thread::yield_now();
         }
+    }
+
+    fn idle_test_inbox(paused: bool) -> (RefreshInbox, Receiver<()>) {
+        let (wake, receiver) = std::sync::mpsc::sync_channel(1);
+        let inbox = RefreshInbox {
+            admission: Mutex::new(()),
+            pending_sources: AtomicU8::new(0),
+            provider_settings_pending: AtomicBool::new(false),
+            provider_settings_generation: Arc::new(AtomicU64::new(0)),
+            in_flight: AtomicBool::new(false),
+            paused: AtomicBool::new(paused),
+            stopping: AtomicBool::new(false),
+            wake,
+        };
+        (inbox, receiver)
+    }
+
+    #[test]
+    fn claiming_a_refresh_is_never_observably_idle() {
+        let (inbox, _receiver) = idle_test_inbox(false);
+        let inbox = Arc::new(inbox);
+        assert!(inbox.is_idle());
+
+        inbox.record(RefreshSource::Manual);
+        assert!(!inbox.is_idle(), "a recorded source must not read as idle");
+
+        // Hold admission so the claim blocks partway through. Whatever the
+        // claim has already done to the inbox is observable here, which is
+        // exactly what a waiter would see mid-claim.
+        let admission = inbox.admission.lock().unwrap();
+        let claiming = Arc::clone(&inbox);
+        let claimer = thread::spawn(move || claiming.claim_refresh().map(|sources| sources.0));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            // The claim must set the in-flight flag before it clears the
+            // pending bits. Clearing first leaves this window reading idle,
+            // and a waiter sampling it treats an unstarted refresh as done.
+            assert!(
+                !inbox.is_idle(),
+                "a refresh blocked on admission must never read as idle"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(admission);
+
+        let sources = claimer
+            .join()
+            .expect("claim thread")
+            .expect("admission opened");
+        assert_eq!(sources, RefreshSource::Manual.bit());
+        assert!(
+            !inbox.is_idle(),
+            "a claimed refresh must stay busy until it completes"
+        );
+        assert_eq!(
+            inbox.peek_sources().0,
+            0,
+            "claiming clears the pending bits"
+        );
+
+        inbox.in_flight.store(false, Ordering::Release);
+        assert!(inbox.is_idle(), "a completed refresh reads as idle");
+    }
+
+    #[test]
+    fn a_refused_claim_keeps_its_sources_pending() {
+        let (inbox, _receiver) = idle_test_inbox(true);
+        inbox.record(RefreshSource::Manual);
+
+        assert!(inbox.claim_refresh().is_none(), "paused admission refuses");
+        assert!(
+            inbox.peek_sources().contains(RefreshSource::Manual),
+            "a refused claim leaves the source for the next loop"
+        );
+        assert!(!inbox.is_idle(), "a pending source is not idle");
     }
 
     #[test]

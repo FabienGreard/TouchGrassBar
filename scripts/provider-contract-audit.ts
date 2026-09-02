@@ -238,6 +238,7 @@ type OpenAiManifest = {
 };
 
 type AnthropicManifestPeriod = {
+  cacheReadMultiplier?: number;
   cacheReadUsdPerMillion: number;
   cacheWrite1hUsdPerMillion: number;
   cacheWrite5mUsdPerMillion: number;
@@ -2352,6 +2353,83 @@ async function auditClaude(context: AuditContext) {
   }
 }
 
+const STANDARD_CACHE_READ_MULTIPLIER = 0.1;
+const REDUCED_CACHE_READ_MULTIPLIER = 0.025;
+
+// Anthropic prices a cache read at 0.1x base input, with a published 0.025x
+// exception named for specific models. The manifest declares the multiplier per
+// period, so the reviewed set of reduced-rate models must equal the documented
+// set exactly. A model added to or dropped from the published exception is a
+// pricing-rule change that requires review.
+function auditAnthropicCacheReadMultipliers(
+  context: AuditContext,
+  manifest: AnthropicManifest,
+  source: string,
+) {
+  const exception =
+    /Cache read \(hit\)\s*\|\s*0\.1x base input price \(0\.025x on ([^)]+)\)/iu.exec(source);
+  const documented = new Set(
+    (exception?.[1] ?? "")
+      .split(/\s*(?:,|\band\b)\s*/u)
+      .map((entry) => plainMarkdown(entry).trim().toLowerCase())
+      .filter((entry) => entry.length > 0),
+  );
+  const declared = new Set(
+    manifest.models
+      .filter((model) =>
+        [...model.standardPeriods, ...model.fastPeriods].some(
+          (period) => period.cacheReadMultiplier === REDUCED_CACHE_READ_MULTIPLIER,
+        ),
+      )
+      .flatMap((model) => reviewedModelNames(model)),
+  );
+  const undocumented = [...declared].filter((name) => !documented.has(name));
+  const unclaimed = [...documented].filter((name) => !declared.has(name));
+
+  for (const model of manifest.models) {
+    for (const period of [...model.standardPeriods, ...model.fastPeriods]) {
+      const multiplier = period.cacheReadMultiplier ?? STANDARD_CACHE_READ_MULTIPLIER;
+      if (
+        multiplier !== STANDARD_CACHE_READ_MULTIPLIER &&
+        multiplier !== REDUCED_CACHE_READ_MULTIPLIER
+      ) {
+        finding(
+          context,
+          "claude",
+          "pricing",
+          "review-required",
+          "pricing-modifier-changed",
+          `${model.name}: the bundled cache read multiplier is not a documented Anthropic rate.`,
+          context.contract.claude.pricingSourceUrl,
+        );
+      }
+      if (!ratesEqual(period.cacheReadUsdPerMillion, period.inputUsdPerMillion * multiplier)) {
+        finding(
+          context,
+          "claude",
+          "pricing",
+          "review-required",
+          "pricing-modifier-changed",
+          `${model.name}: the bundled cache read price does not match its declared multiplier.`,
+          context.contract.claude.pricingSourceUrl,
+        );
+      }
+    }
+  }
+
+  if (undocumented.length > 0 || unclaimed.length > 0) {
+    finding(
+      context,
+      "claude",
+      "pricing",
+      "review-required",
+      "pricing-modifier-changed",
+      `The documented 0.025x cache read exception changed: ${undocumented.length} bundled model(s) are not named and ${unclaimed.length} named model(s) have no bundled rule.`,
+      context.contract.claude.pricingSourceUrl,
+    );
+  }
+}
+
 function auditAnthropicPricing(context: AuditContext, manifest: AnthropicManifest, source: string) {
   auditPricingRuleWindows(context, "claude", source);
   const official = anthropicRates(source);
@@ -2498,6 +2576,8 @@ function auditAnthropicPricing(context: AuditContext, manifest: AnthropicManifes
       }
     }
   }
+
+  auditAnthropicCacheReadMultipliers(context, manifest, source);
 
   const normalized = plainMarkdown(source);
   const modifierChecks = [

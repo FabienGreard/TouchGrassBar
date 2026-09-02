@@ -117,6 +117,15 @@ writes, cache reads, and output. The Rust parser checks the published cache
 factors. It also checks that date ranges do not overlap and that each fast-mode
 period is inside a standard price period.
 
+Cache writes are always 1.25 times base input for 5 minutes and 2 times base
+input for 1 hour. Anthropic prices a cache read at 0.1 times base input, with a
+published 0.025 times exception. A period that uses the exception must declare
+`cacheReadMultiplier`. Omitting the field means the 0.1 times rule. The Rust
+parser rejects any other multiplier and rejects a cache read rate that does not
+match the multiplier the period declares. The audit compares the declared set
+against the models the pricing page names in that exception. Do not add a third
+multiplier without an official Anthropic source.
+
 The pricing code applies these supported modifiers:
 
 - Batch uses 0.5 times the token rates.
@@ -169,6 +178,29 @@ wrapper, message, content, zero-token counters, zero paid-tool counters, and
 null extended usage fields. A different API-error shape fails closed. A
 different transcript version stays partial or unavailable until controlled
 fixtures prove that schema.
+
+The `2026-09-02-v1` review added Claude Fable 5.1 and Claude Mythos 5.1.
+Anthropic
+[launched both on 2026-09-01](https://platform.claude.com/docs/en/release-notes/overview).
+That release note supplies the inclusive start date and states the reduced cache
+read price. The periods stay open because no first-party source publishes a next
+effective change. Claude Mythos 5.1 has limited availability through Project
+Glasswing. Its public list price is the same and it is priced from the same
+public table. Neither model appears in the Fast mode table, so both carry no
+fast period. Both support `inference_geo`, so the 1.1 times US inference
+modifier applies. These rates apply to one million tokens:
+
+| Usage                |   USD |
+| -------------------- | ----: |
+| Input                | 10.00 |
+| 5-minute cache write | 12.50 |
+| 1-hour cache write   | 20.00 |
+| Cache read           |  0.25 |
+| Output               | 50.00 |
+
+This review checked Claude pricing only. It did not review the Claude
+transcript allow-list, the Claude parser fixtures, or any Codex area, so the
+`reviewedAt` checkpoint stays at its previous date.
 
 The `2026-08-26-v1` review removed the planned Sonnet 5 increase. Anthropic
 [canceled it on 2026-08-10](https://platform.claude.com/docs/en/release-notes/overview).

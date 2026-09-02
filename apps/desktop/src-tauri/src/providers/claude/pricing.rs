@@ -5,6 +5,13 @@ use time::{Date, Month};
 
 const ANTHROPIC_STANDARD_PRICING_JSON: &str =
     include_str!("../../../pricing/anthropic-standard.json");
+/// Anthropic documents a cache read at 0.1x the base input price, with a
+/// published 0.025x exception for Claude Fable 5.1 and Claude Mythos 5.1. A
+/// period declares which documented multiplier it uses; any other value is
+/// rejected so an unreviewed cache rate cannot enter the catalog.
+const STANDARD_CACHE_READ_MULTIPLIER: f64 = 0.1;
+const DOCUMENTED_CACHE_READ_MULTIPLIERS: [f64; 2] = [STANDARD_CACHE_READ_MULTIPLIER, 0.025];
+
 const PRICING_RULES_FINGERPRINT: &str = "service-tier-default-standard;priority-standard-rate;fast-batch-unavailable;missing-paid-metadata-unavailable;web-fetch-no-extra-charge;missing-code-execution-counter-zero;positive-code-execution-unavailable;unknown-paid-tool-unavailable";
 
 #[derive(Deserialize)]
@@ -37,6 +44,7 @@ struct RawPricePeriod {
     cache_write_5m_usd_per_million: f64,
     cache_write_1h_usd_per_million: f64,
     cache_read_usd_per_million: f64,
+    cache_read_multiplier: Option<f64>,
     output_usd_per_million: f64,
 }
 
@@ -384,6 +392,15 @@ fn parse_price_periods(
                 .as_deref()
                 .map(parse_ranking_day)
                 .transpose()?;
+            let cache_read_multiplier = period
+                .cache_read_multiplier
+                .unwrap_or(STANDARD_CACHE_READ_MULTIPLIER);
+            if !DOCUMENTED_CACHE_READ_MULTIPLIERS
+                .into_iter()
+                .any(|documented| approximately_equal(cache_read_multiplier, documented))
+            {
+                return Err(());
+            }
             let rates = [
                 period.input_usd_per_million,
                 period.cache_write_5m_usd_per_million,
@@ -403,7 +420,7 @@ fn parse_price_periods(
                 )
                 || !approximately_equal(
                     period.cache_read_usd_per_million,
-                    period.input_usd_per_million * 0.1,
+                    period.input_usd_per_million * cache_read_multiplier,
                 )
             {
                 return Err(());
@@ -567,19 +584,19 @@ mod tests {
         let manifest = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON)
             .expect("valid bundled manifest");
         let changed_basis = parse_pricing_manifest(&ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "anthropic-standard-2026-08-26-v1",
-            "anthropic-standard-2026-08-26-v2",
+            "anthropic-standard-2026-09-02-v1",
+            "anthropic-standard-2026-09-02-v2",
             1,
         ))
         .expect("valid changed basis");
 
-        assert_eq!(manifest.basis(), "anthropic-standard-2026-08-26-v1");
+        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-02-v1");
         assert!(manifest.semantic_fingerprint().starts_with("fnv1a64:"));
         assert_ne!(
             manifest.semantic_fingerprint(),
             changed_basis.semantic_fingerprint()
         );
-        assert_eq!(manifest.models.len(), 15);
+        assert_eq!(manifest.models.len(), 17);
     }
 
     #[test]
@@ -605,6 +622,63 @@ mod tests {
         assert!(parse_pricing_manifest(&unknown_field).is_err());
         assert!(parse_pricing_manifest(&bad_cache_rate).is_err());
         assert!(parse_pricing_manifest(&overlap.to_string()).is_err());
+    }
+
+    #[test]
+    fn cache_read_multiplier_must_be_a_documented_anthropic_rate() {
+        let undocumented_multiplier = ANTHROPIC_STANDARD_PRICING_JSON.replacen(
+            "\"cacheReadMultiplier\": 0.025",
+            "\"cacheReadMultiplier\": 0.05",
+            1,
+        );
+        let rate_without_its_declared_multiplier = ANTHROPIC_STANDARD_PRICING_JSON.replacen(
+            "\"cacheReadUsdPerMillion\": 0.25,\n          \"cacheReadMultiplier\": 0.025,",
+            "\"cacheReadUsdPerMillion\": 0.25,",
+            1,
+        );
+        let standard_rate_claiming_the_reduced_multiplier = ANTHROPIC_STANDARD_PRICING_JSON
+            .replacen(
+                "\"cacheReadUsdPerMillion\": 0.5,",
+                "\"cacheReadUsdPerMillion\": 0.5, \"cacheReadMultiplier\": 0.025,",
+                1,
+            );
+
+        assert!(parse_pricing_manifest(&undocumented_multiplier).is_err());
+        assert!(parse_pricing_manifest(&rate_without_its_declared_multiplier).is_err());
+        assert!(parse_pricing_manifest(&standard_rate_claiming_the_reduced_multiplier).is_err());
+    }
+
+    #[test]
+    fn prices_the_reduced_fable_5_1_cache_read_rate() {
+        let manifest = catalog().expect("bundled catalog");
+
+        for model in ["claude-fable-5-1", "claude-mythos-5-1"] {
+            let decision = manifest.price_message(
+                model,
+                date("2026-09-01"),
+                BillableUsage {
+                    input_tokens: 1_000_000,
+                    cache_creation_input_tokens: 2_000_000,
+                    cache_creation_5m_input_tokens: Some(1_000_000),
+                    cache_creation_1h_input_tokens: Some(1_000_000),
+                    cache_read_input_tokens: 1_000_000,
+                    output_tokens: 1_000_000,
+                    ..usage()
+                },
+            );
+
+            // 10 input + 12.50 5m write + 20 1h write + 0.25 cache read + 50 output.
+            assert_cost(decision.clone(), 92.75);
+            assert_eq!(decision.priced_tokens, 5_000_000);
+        }
+
+        // The launch day is inclusive; the day before it has no bundled rule.
+        assert!(
+            manifest
+                .price_message("claude-fable-5-1", date("2026-08-31"), usage())
+                .cost_usd
+                .is_none()
+        );
     }
 
     #[test]
