@@ -487,15 +487,9 @@ fn project_period(
         return UsageTotal::Unavailable;
     };
     let cost = selected_period_cost(evidence, &selected);
-    let trend_previous_tokens = (selected.coverage == UsageCoverage::Complete
-        && selected.evidence_basis != UsageEvidenceBasis::Mixed)
-        .then(|| select_usage_period(evidence, period_days(today, length, length), now))
-        .flatten()
-        .filter(|previous| {
-            previous.coverage == UsageCoverage::Complete
-                && previous.evidence_basis != UsageEvidenceBasis::Mixed
-        })
-        .map(|previous| previous.observed_tokens);
+    let trend_previous_tokens =
+        select_usage_period(evidence, period_days(today, length, length), now)
+            .map(|previous| previous.observed_tokens);
     let trend = trend_previous_tokens
         .and_then(|previous| trend_percent(selected.observed_tokens, previous));
     let observed_at = selected
@@ -1317,7 +1311,52 @@ mod tests {
     }
 
     #[test]
-    fn sparse_provider_windows_omit_token_trends() {
+    fn complete_mixed_periods_keep_token_trends() {
+        let now = now();
+        let provider_reported_tokens = period_days(now.date(), 6, 1)
+            .chain(period_days(now.date(), 7, 7))
+            .map(|day| (day, 100))
+            .collect();
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(provider_reported_tokens),
+            provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::new(),
+            local_usage_evidence: BTreeMap::from([(
+                now.date(),
+                usage_detail(now, 200, UsageCoverage::Complete),
+            )]),
+            local_cost_evidence: BTreeMap::new(),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: None,
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+        };
+
+        let periods = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current {
+            evidence_basis,
+            coverage,
+            observed_tokens,
+            trend_percent,
+            trend_previous_tokens,
+            ..
+        } = periods.seven_days
+        else {
+            panic!("complete mixed seven-day usage must remain available");
+        };
+
+        assert_eq!(evidence_basis, UsageEvidenceBasis::Mixed);
+        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(observed_tokens, 800);
+        assert_eq!(trend_previous_tokens, Some(700));
+        assert!((trend_percent.unwrap() - 14.285_714_285_714_286).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sparse_provider_windows_keep_best_effort_token_trends() {
         let now = now();
         let evidence = ProviderUsageEvidence {
             provider_reported_tokens: Some(BTreeMap::from([
@@ -1345,18 +1384,26 @@ mod tests {
         let UsageTotal::Current {
             coverage,
             trend_percent,
+            trend_previous_tokens,
             ..
         } = periods.seven_days
         else {
             panic!("seven-day provider usage must remain available");
         };
         assert_eq!(coverage, UsageCoverage::Partial);
-        assert_eq!(trend_percent, None);
+        assert_eq!(trend_previous_tokens, Some(200));
+        assert_eq!(trend_percent, Some(100.0));
 
-        let UsageTotal::Current { trend_percent, .. } = periods.thirty_days else {
+        let UsageTotal::Current {
+            trend_percent,
+            trend_previous_tokens,
+            ..
+        } = periods.thirty_days
+        else {
             panic!("30-day provider usage must remain available");
         };
-        assert_eq!(trend_percent, None);
+        assert_eq!(trend_previous_tokens, Some(200));
+        assert_eq!(trend_percent, Some(200.0));
     }
 
     #[test]
@@ -1408,15 +1455,27 @@ mod tests {
             .unwrap()
             .coverage = UsageCoverage::Partial;
         let periods_with_partial_previous = calculate_usage_periods(&evidence, now);
-        let UsageTotal::Current { trend_percent, .. } = periods_with_partial_previous.today else {
+        let UsageTotal::Current {
+            trend_percent,
+            trend_previous_tokens,
+            ..
+        } = periods_with_partial_previous.today
+        else {
             panic!("provider Today usage must remain available");
         };
-        assert_eq!(trend_percent, None);
+        assert_eq!(trend_previous_tokens, Some(100));
+        assert_eq!(trend_percent, Some(100.0));
 
-        let UsageTotal::Current { trend_percent, .. } = periods.seven_days else {
+        let UsageTotal::Current {
+            trend_percent,
+            trend_previous_tokens,
+            ..
+        } = periods.seven_days
+        else {
             panic!("provider 7-day usage must remain available");
         };
-        assert_eq!(trend_percent, None);
+        assert_eq!(trend_previous_tokens, Some(50));
+        assert_eq!(trend_percent, Some(500.0));
     }
 
     #[test]

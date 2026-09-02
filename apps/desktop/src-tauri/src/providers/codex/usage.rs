@@ -40,11 +40,11 @@ const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_SUPPORTED_CODEX_CLI_MINOR: u16 = 130;
-const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 150;
+const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 151;
 const MIN_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 148;
-const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 150;
-const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 17;
-const ROLLOUT_PARSER_VERSION: i64 = 18;
+const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 151;
+const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 18;
+const ROLLOUT_PARSER_VERSION: i64 = 19;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
@@ -924,14 +924,14 @@ pub(crate) struct LocalUsageObservation {
     scan_status: UsageScanStatus,
     has_excluded_usage: bool,
     latest_pending_modified_at: Option<OffsetDateTime>,
-    latest_error_modified_at: Option<OffsetDateTime>,
+    latest_incomplete_modified_at: Option<OffsetDateTime>,
     scan_scope_known: bool,
 }
 
 fn period_scan_status(
     scan_status: UsageScanStatus,
     latest_pending_modified_at: Option<OffsetDateTime>,
-    latest_error_modified_at: Option<OffsetDateTime>,
+    latest_incomplete_modified_at: Option<OffsetDateTime>,
     period_start: OffsetDateTime,
     scan_scope_known: bool,
 ) -> UsageScanStatus {
@@ -941,7 +941,7 @@ fn period_scan_status(
     if latest_pending_modified_at.is_some_and(|modified_at| modified_at >= period_start) {
         return UsageScanStatus::Indexing;
     }
-    if latest_error_modified_at.is_some_and(|modified_at| modified_at >= period_start) {
+    if latest_incomplete_modified_at.is_some_and(|modified_at| modified_at >= period_start) {
         return UsageScanStatus::Unavailable;
     }
     UsageScanStatus::Complete
@@ -956,7 +956,7 @@ impl Default for LocalUsageObservation {
             scan_status: UsageScanStatus::Unavailable,
             has_excluded_usage: false,
             latest_pending_modified_at: None,
-            latest_error_modified_at: None,
+            latest_incomplete_modified_at: None,
             scan_scope_known: false,
         }
     }
@@ -968,7 +968,7 @@ impl LocalUsageObservation {
         period_scan_status(
             self.scan_status,
             self.latest_pending_modified_at,
-            self.latest_error_modified_at,
+            self.latest_incomplete_modified_at,
             period_start,
             self.scan_scope_known,
         )
@@ -4177,8 +4177,8 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
 }
 
 fn promote_compatible_parser_rows(connection: &Connection) -> Result<usize, ()> {
-    // Parser 18 adds CLI 0.149 and 0.150 support. It does not change rows that
-    // parser 17 accepted. Promote only rows with complete, included evidence.
+    // Parser 19 adds CLI 0.151 support. It does not change rows that parser 18
+    // accepted. Promote only rows with complete, included evidence.
     connection
         .execute(
             "UPDATE codex_usage_files
@@ -5578,28 +5578,30 @@ fn read_indexed_usage(
         .map_err(|_| ())?
         .collect::<Result<BTreeMap<_, _>, _>>()
         .map_err(|_| ())?;
-    let (latest_pending_modified_ns, latest_error_modified_ns, has_excluded_files) = connection
-        .query_row(
-            "SELECT
+    let (latest_pending_modified_ns, latest_incomplete_modified_ns, has_excluded_files) =
+        connection
+            .query_row(
+                "SELECT
                MAX(CASE WHEN completion_state NOT IN (
                                 'complete', 'error', 'deferred', 'deferred-error'
                               )
                         THEN modified_ns END),
                MAX(CASE WHEN completion_state IN ('error', 'deferred-error')
+                                  OR usage_excluded = 1
                         THEN modified_ns END),
                COALESCE(MAX(usage_excluded), 0)
              FROM codex_usage_files
              WHERE modified_ns >= ?1",
-            [cutoff_modified_ns],
-            |row| {
-                Ok((
-                    row.get::<_, Option<i64>>(0)?,
-                    row.get::<_, Option<i64>>(1)?,
-                    row.get::<_, bool>(2)?,
-                ))
-            },
-        )
-        .map_err(|_| ())?;
+                [cutoff_modified_ns],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                },
+            )
+            .map_err(|_| ())?;
     if has_excluded_files {
         for detail in rows.values_mut() {
             detail.complete = false;
@@ -5631,7 +5633,7 @@ fn read_indexed_usage(
             .into_iter()
             .chain(latest_pending_modified_hint)
             .max(),
-        latest_error_modified_at: parse_modified_at(latest_error_modified_ns)?,
+        latest_incomplete_modified_at: parse_modified_at(latest_incomplete_modified_ns)?,
         scan_scope_known,
     })
 }
@@ -6688,8 +6690,8 @@ fn provider_usage_evidence(
                         *day,
                         DailyUsageEvidence {
                             observed_tokens: detail.observed_tokens,
-                            coverage: if !local.has_excluded_usage
-                                && local.period_scan_status(*day, 1) == UsageScanStatus::Complete
+                            coverage: if local.period_scan_status(*day, 1)
+                                == UsageScanStatus::Complete
                             {
                                 UsageCoverage::Complete
                             } else {
@@ -7940,6 +7942,62 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_index_counts_a_reviewed_codex_0_151_root() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-09-02T12:00:00Z", &Rfc3339).unwrap();
+        let observed = token_usage(70, 20, 0, 30);
+        let mut token_count = token_count_usage_line("2026-09-02T10:00:02Z", observed, observed);
+        token_count["ordinal"] = json!(3);
+        fs::write(
+            &fixture.rollout,
+            jsonl([
+                json!({
+                    "ordinal": 0,
+                    "timestamp": "2026-09-02T10:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "cli_version": "0.151.0-alpha.7.2",
+                        "history_mode": "paginated",
+                        "id": "reviewed-0-151-root",
+                        "originator": "codex_app",
+                        "session_id": "reviewed-0-151-root",
+                        "source": "cli",
+                        "thread_source": "cli",
+                        "timestamp": "2026-09-02T10:00:00Z"
+                    }
+                }),
+                json!({
+                    "ordinal": 1,
+                    "timestamp": "2026-09-02T10:00:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": "turn-fixture",
+                        "model_context_window": 1_050_000,
+                        "collaboration_mode_kind": "default",
+                        "started_at": 0
+                    }
+                }),
+                json!({
+                    "ordinal": 2,
+                    "timestamp": "2026-09-02T10:00:01Z",
+                    "type": "turn_context",
+                    "payload": { "model": "gpt-5.6-sol" }
+                }),
+                token_count,
+            ]),
+        )
+        .unwrap();
+
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+            .expect("the reviewed Codex 0.151 usage must index");
+
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+        assert!(!indexed.has_excluded_usage);
+    }
+
+    #[test]
     fn sqlite_index_rejects_noncontiguous_reviewed_codex_0_150_ordinals() {
         let fixture = TempUsage::new();
         let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
@@ -8913,7 +8971,7 @@ mod tests {
             "timestamp": "2026-08-06T10:00:00Z",
             "type": "session_meta",
             "payload": {
-                "cli_version": "0.151.0-alpha.1",
+                "cli_version": "0.152.0-alpha.1",
                 "source": { "subagent": { "thread_spawn": {} } }
             }
         })
@@ -9384,6 +9442,63 @@ mod tests {
         let stale_result = run_usage_passes(&stale, now, 3);
         assert_eq!(indexed_tokens_for_path(&stale.database, &stale_child), 100);
         assert!(!stale_result.has_excluded_usage);
+    }
+
+    #[test]
+    fn old_excluded_rollouts_do_not_reduce_recent_usage_coverage() {
+        let fixture = TempUsage::new();
+        let current_rollout = fixture.root.join("sessions/current.jsonl");
+        let now = OffsetDateTime::parse("2026-08-10T12:00:00Z", &Rfc3339).unwrap();
+        let old_modified_at = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(
+            &fixture.rollout,
+            copied_child_rollout("missing-child", "missing-parent", 1_100),
+        )
+        .unwrap();
+        set_modified_at(&fixture.rollout, old_modified_at);
+        fs::write(
+            &current_rollout,
+            root_rollout(100).replace("2026-08-06", "2026-08-10"),
+        )
+        .unwrap();
+        set_modified_at(&current_rollout, now - Duration::minutes(1));
+
+        let local = run_usage_passes(&fixture, now, 3);
+        let periods = project_usage_periods(None, Some(&local), now);
+        let UsageTotal::Current { coverage, .. } = periods.today else {
+            panic!("recent local usage must remain available");
+        };
+
+        assert!(local.has_excluded_usage);
+        assert_eq!(coverage, UsageCoverage::Complete);
+    }
+
+    #[test]
+    fn recent_excluded_rollouts_reduce_recent_usage_coverage() {
+        let fixture = TempUsage::new();
+        let current_rollout = fixture.root.join("sessions/current.jsonl");
+        let now = OffsetDateTime::parse("2026-08-10T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(
+            &fixture.rollout,
+            copied_child_rollout("missing-child", "missing-parent", 1_100),
+        )
+        .unwrap();
+        set_modified_at(&fixture.rollout, now - Duration::minutes(1));
+        fs::write(
+            &current_rollout,
+            root_rollout(100).replace("2026-08-06", "2026-08-10"),
+        )
+        .unwrap();
+        set_modified_at(&current_rollout, now - Duration::minutes(1));
+
+        let local = run_usage_passes(&fixture, now, 3);
+        let periods = project_usage_periods(None, Some(&local), now);
+        let UsageTotal::Current { coverage, .. } = periods.today else {
+            panic!("recent local usage must remain available");
+        };
+
+        assert!(local.has_excluded_usage);
+        assert_eq!(coverage, UsageCoverage::Partial);
     }
 
     #[test]
@@ -11735,8 +11850,9 @@ mod tests {
         assert!(is_supported_cli_version("0.148.0-alpha.21"));
         assert!(is_supported_cli_version("0.149.1"));
         assert!(is_supported_cli_version("0.150.0-alpha.8"));
+        assert!(is_supported_cli_version("0.151.0-alpha.7.2"));
         assert!(!is_supported_cli_version("0.129.9"));
-        assert!(!is_supported_cli_version("0.151.0"));
+        assert!(!is_supported_cli_version("0.152.0"));
         assert!(!is_supported_cli_version("1.0.0"));
         assert!(!is_supported_cli_version("private value"));
     }

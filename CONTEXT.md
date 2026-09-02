@@ -63,7 +63,7 @@ Token throughput counted under provider-specific rules without double-counting o
 _Avoid_: Billed tokens, normalized tokens, productivity
 
 **Usage Trend**:
-The percentage change in Observed Tokens between one displayed period and the equal period immediately before it. Both periods use the same per-Ranking-Day source-selection rule. An omitted provider bucket can use valid local evidence; it does not count as zero. A trend is unavailable when either period is mixed or partial. The previous period must contain at least one observed bucket and a non-zero token total. A Combined Usage Trend is weighted by each contributing provider's previous Observed Tokens. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
+The percentage change in known Observed Tokens between one displayed period and the equal period immediately before it. Both periods use the same per-Ranking-Day source-selection rule. An omitted provider bucket can use valid local evidence; it does not count as zero. Mixed and partial periods keep a best-effort trend from their selected known tokens, without imputing missing usage. A trend is unavailable only when the previous period has no observed bucket or has a zero token total. A Combined Usage Trend is weighted by each contributing provider's known previous Observed Tokens. API-Equivalent Cost and pricing evidence do not affect Usage Trend.
 _Avoid_: Cost trend, spend change, price change
 
 **Token Score**:

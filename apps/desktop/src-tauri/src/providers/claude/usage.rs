@@ -5479,7 +5479,7 @@ mod tests {
     }
 
     #[test]
-    fn index_retains_sixty_days_without_reporting_a_partial_trend() {
+    fn index_retains_sixty_days_and_reports_a_best_effort_partial_trend() {
         let fixture = FixtureRoot::new();
         let config = fixture.config();
         write_transcript(
@@ -5517,8 +5517,8 @@ mod tests {
             panic!("30-day usage must be available");
         };
         assert_eq!(observed_tokens, 200);
-        assert_eq!(trend_previous_tokens, None);
-        assert_eq!(trend_percent, None);
+        assert_eq!(trend_previous_tokens, Some(100));
+        assert_eq!(trend_percent, Some(100.0));
     }
 
     #[test]
