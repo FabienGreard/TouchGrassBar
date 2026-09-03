@@ -42,7 +42,8 @@ const repository = "FabienGreard/TouchGrassBar";
 const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
 const nestedConventionalSubjectPattern =
-  /^(?:[-*+][ \t]+)?(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
+  /^(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
+const markdownSubjectPrefixPattern = /^(?:(?:[-*+>]|[0-9]+[.)])[ \t]+|\[[ xX]\][ \t]+)/u;
 
 function command(executable: string, argumentsList: string[]) {
   const result = spawnSync(executable, argumentsList, {
@@ -104,6 +105,16 @@ function sentence(value: string) {
   return /[.!?]$/u.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
+function isNestedConventionalSubject(line: string) {
+  let candidate = line.trimStart();
+  while (true) {
+    const withoutPrefix = candidate.replace(markdownSubjectPrefixPattern, "").trimStart();
+    if (withoutPrefix === candidate) break;
+    candidate = withoutPrefix;
+  }
+  return nestedConventionalSubjectPattern.test(candidate);
+}
+
 function releaseTrailersFromBody(body: string): ReleaseTrailers {
   const lines = body.split(/\r?\n/u);
   while (lines.at(-1)?.trim() === "") lines.pop();
@@ -112,7 +123,7 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
     return { modes: [], notes: [] };
   }
-  if (lines.some((line) => nestedConventionalSubjectPattern.test(line))) {
+  if (lines.some(isNestedConventionalSubject)) {
     return { modes: [], notes: [] };
   }
   const modes: string[] = [];
