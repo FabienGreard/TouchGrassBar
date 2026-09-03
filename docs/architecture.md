@@ -175,27 +175,34 @@ change. This decision is recorded in
 
 ## Refresh and backend transport
 
-A separate Rust provider-refresh coordinator shows cached state immediately and refreshes after launch, when stale data is opened, on manual request, wake, network recovery, and every five minutes. Refresh work is single-flight and coalesced; failures preserve stale values and back off. A persistent enabled-by-default provider policy filters refresh adapters before provider work starts. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Provider Quota Headroom does not enter Overall Quota Headroom or make the result incomplete. Its Observed Usage and API-Equivalent Cost do not enter Combined totals. Its private local history remains stored. TouchGrassBar reads Claude quota by running `/usage` through the installed Claude CLI in a bounded private terminal. It does not install or change a Claude status-line bridge. It can accept Claude's standard trust prompt for the isolated probe directory, which Claude can record in provider-owned settings. TouchGrassBar stores a private exact-session cleanup marker in that directory so a later run can remove a probe transcript after a crash. It discards terminal output after it reduces the result to the two quota lanes. A refresh that contains only a Codex provider notification, local usage catch-up, or both does not start a Claude quota probe.
+A separate Rust provider-refresh coordinator shows cached state immediately and refreshes after launch, when stale data is opened, on manual request, wake, network recovery, and every five minutes. Refresh work is single-flight and coalesced; failures preserve stale values and back off. A persistent enabled-by-default provider policy filters refresh adapters before provider work starts. A disabled provider remains visible in registry order with unavailable Quota Lanes. TouchGrassBar does not start later refresh or probe work for it. Its Provider Quota Headroom does not enter Overall Quota Headroom or make the result incomplete. Its Observed Usage and API-Equivalent Cost do not enter Combined totals. Its private local history remains stored. TouchGrassBar reads Claude quota by running `/usage` through the installed Claude CLI in a bounded private terminal. It does not install or change a Claude status-line bridge. It can accept Claude's standard trust prompt for the isolated probe directory, which Claude can record in provider-owned settings. TouchGrassBar stores a private exact-session cleanup marker in that directory so a later run can remove a probe transcript after a crash. It identifies each quota candidate and horizon from its own shape: a percentage counter immediately followed by the reset clause that belongs to it. Heading text is not a parse gate. When a plan renders both provider-wide and model-specific weekly candidates with the same shape, the compacted all-model marker selects the provider-wide candidate. A missing or renamed marker falls back to shape. A window it cannot read leaves its own lane out instead of discarding the window it could read. It discards terminal output after it reduces the result to those quota lanes. A refresh that contains only a Codex provider notification, local usage catch-up, or both does not start a Claude quota probe.
 
 Claude quota and Claude Observed Usage are independent observations. A quota
 failure does not block a new local usage aggregate. The usage scanner reads
 main and subagent JSONL files with byte, file, traversal, and time limits.
 
-The scanner accepts four exact Claude Code and Agent SDK schema pairs. The
+The scanner records four reviewed Claude Code and Agent SDK schema pairs. The
 pairs are `2.1.223` and `0.3.223`, `2.1.224` and `0.3.224`, `2.1.241` and
-`0.3.241`, and `2.1.258` and `0.3.258`. Other versions fail closed. For Claude
-Code `2.1.241` and `2.1.258`, the scanner accepts one exact message iteration
-when its counters equal the top-level counters. It also accepts one exact
-`thinking_tokens` value when it is not more than `output_tokens`. These fields
-are breakdowns. The scanner does not add them to the top-level counters.
-Non-null `fallback_credit`, mismatched iterations, and other output-token detail
-shapes make a record partial and unpriced.
+`0.3.241`, and `2.1.258` and `0.3.258`. The reviewed set does not gate parsing.
+A record from another version with a reviewed shape keeps its known Observed
+Tokens and leaves its Ranking Day partial and unpriced. A reviewed-version
+record with an unreviewed shape also keeps only its known top-level counters and
+leaves the day partial and unpriced. Only a record whose version and usage shape
+are both unreviewed withholds its counters. [ADR 0020](adr/0020-audit-coding-provider-contracts-against-reviewed-snapshots.md)
+records why identity does not gate observation.
 
-The scanner can ignore one synthetic API-error record from Claude Code
-`2.1.241` or `2.1.258`. Its wrapper, message, content, and zero counters must
-match the reviewed shape. Its extended usage fields must also be null. The
-`2.1.258` shape also requires an HTTP error status, non-empty error details, and
-a non-empty request identifier. A different API-error shape fails closed.
+The scanner accepts one message iteration when its counters equal the top-level
+counters. It also accepts one exact `thinking_tokens` value when it is not more
+than `output_tokens`. These fields are breakdowns. The scanner does not add them
+to the top-level counters. Non-null `fallback_credit`, mismatched iterations,
+and other output-token detail shapes make a record partial and unpriced.
+
+The scanner can ignore a synthetic API-error record in either reviewed shape:
+the earlier shape that carries no HTTP status, error details, or request
+identifier, and the later shape that carries an HTTP error status, non-empty
+error details, and a non-empty request identifier. Its wrapper, message,
+content, and zero counters must match the reviewed shape, and its extended usage
+fields must be null. A different API-error shape fails closed.
 
 The scanner reads approved wrapper, model, token, modifier, and paid-tool
 metadata only. It resolves `supersedes` before it groups files by the salted

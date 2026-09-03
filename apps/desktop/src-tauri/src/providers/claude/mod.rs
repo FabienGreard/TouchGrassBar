@@ -69,27 +69,46 @@ impl ClaudeRateLimitWindow {
     }
 }
 
+/// The quota windows one `/usage` reading could resolve.
+///
+/// A window is absent when the screen did not show it or this parser could not
+/// read it. An absent window leaves its Quota Lane out instead of discarding
+/// the window that was read, so one changed section cannot blank the provider.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ClaudeQuotaObservation {
     observed_at: OffsetDateTime,
-    five_hour: ClaudeRateLimitWindow,
-    seven_day: ClaudeRateLimitWindow,
+    five_hour: Option<ClaudeRateLimitWindow>,
+    seven_day: Option<ClaudeRateLimitWindow>,
 }
 
 impl ClaudeQuotaObservation {
+    /// Whether both supported windows were read. The probe waits for a complete
+    /// reading and settles for a partial one only when it runs out of time.
+    pub(super) fn is_complete(&self) -> bool {
+        self.five_hour.is_some() && self.seven_day.is_some()
+    }
+
     fn sanitized_snapshot(&self, now: OffsetDateTime) -> Result<ProviderSnapshot, ()> {
         if self.observed_at > now {
             return Err(());
         }
-        let five_hour = self.five_hour.validate(now)?;
-        let seven_day = self.seven_day.validate(now)?;
+        let mut quota_lanes = Vec::new();
+        for (window, label) in [
+            (self.five_hour, "5-hour limit"),
+            (self.seven_day, "Weekly limit"),
+        ] {
+            let Some(window) = window else {
+                continue;
+            };
+            quota_lanes.push(window.validate(now)?.sanitized_lane(label)?);
+        }
+        if quota_lanes.is_empty() {
+            return Err(());
+        }
         Ok(ProviderSnapshot::Current {
             provider: CodingProvider::Claude,
             observed_at: self.observed_at.format(&Rfc3339).map_err(|_| ())?,
-            quota_lanes: vec![
-                five_hour.sanitized_lane("5-hour limit")?,
-                seven_day.sanitized_lane("Weekly limit")?,
-            ],
+            quota_lanes,
         })
     }
 }
@@ -354,14 +373,19 @@ fn format_debug_quota_report(
         return Err(());
     };
     let mut report = format!(
-        "[TouchGrassBar][claude-quota-report] availability=current observed_age_seconds={} lane_count={}",
+        "[TouchGrassBar][claude-quota-report] availability={} observed_age_seconds={} lane_count={}",
+        if observation.is_complete() {
+            "current"
+        } else {
+            "current-partial"
+        },
         (now - observation.observed_at).whole_seconds().max(0),
         quota_lanes.len()
     );
-    for (index, lane) in quota_lanes.iter().enumerate() {
-        let lane_name = match index {
-            0 => "five_hour",
-            1 => "seven_day",
+    for lane in &quota_lanes {
+        let lane_name = match lane.label.as_str() {
+            "5-hour limit" => "five_hour",
+            "Weekly limit" => "seven_day",
             _ => return Err(()),
         };
         let remaining = lane.remaining.ok_or(())?;
@@ -379,14 +403,14 @@ fn format_debug_quota_report(
 pub(super) fn fixture_observation(now: OffsetDateTime) -> ClaudeQuotaObservation {
     ClaudeQuotaObservation {
         observed_at: now,
-        five_hour: ClaudeRateLimitWindow {
+        five_hour: Some(ClaudeRateLimitWindow {
             resets_at: (now + time::Duration::hours(2)).unix_timestamp(),
             used_percentage: 23.5,
-        },
-        seven_day: ClaudeRateLimitWindow {
+        }),
+        seven_day: Some(ClaudeRateLimitWindow {
             resets_at: (now + time::Duration::days(3)).unix_timestamp(),
             used_percentage: 41.25,
-        },
+        }),
     }
 }
 
@@ -646,7 +670,7 @@ mod tests {
         let now = OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000);
         let expected_usage = fixture_usage(now, 777);
         let mut invalid_quota = fixture_observation(now);
-        invalid_quota.five_hour.used_percentage = 101.0;
+        invalid_quota.five_hour.as_mut().unwrap().used_percentage = 101.0;
         let adapter = ClaudeProviderObservationAdapter::fixture_with_usage(
             Arc::new(FixedClock(now)),
             Ok(invalid_quota),
