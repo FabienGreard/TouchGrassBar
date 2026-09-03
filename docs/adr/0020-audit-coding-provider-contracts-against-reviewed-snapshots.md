@@ -56,8 +56,11 @@ Tokens. Do not use it where an added sibling cannot change the meaning of the
 fields already read, which includes the Codex quota payloads: a Quota Lane
 reports a provider-defined percentage, and blanking it over an unrelated new
 field serves nobody. Those payloads record unknown keys in a bounded, value-free
-collector instead, keep serving their lanes, and report the drift as a review
-signal.
+collector instead and keep serving their lanes. A debug build also logs the
+drift once per payload kind as a development aid. The audit, not the running
+installation, is what tells a maintainer that a payload changed, because it
+reads the published provider schemas; a release build reports no runtime
+drift.
 
 The Claude `/usage` reading follows from the same distinction. Headings,
 ordering, and decoration are presentation that changes without the quota

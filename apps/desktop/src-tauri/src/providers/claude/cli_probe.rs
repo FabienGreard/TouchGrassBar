@@ -458,6 +458,37 @@ fn javascript_hash_base36(value: &str) -> String {
 /// gap means they came from different parts of the screen.
 const MAX_WINDOW_SPAN_CHARS: usize = 160;
 
+/// The compacted counter that opens every quota window.
+const COUNTER_MARKER: &str = "%used";
+
+/// The compacted marker for the supported all-model weekly window.
+///
+/// This is a preference, never a gate. A plan can render a second, model-
+/// specific weekly window that has the same shape as the supported one, and
+/// publishing that percentage as the `Weekly limit` lane would report the wrong
+/// provider-native limit. When the marker is readable it selects the supported
+/// window; when a release renames it, selection falls back to shape alone.
+const ALL_MODELS_MARKER: &str = "allmodels";
+
+/// One quota window read from the screen, with the evidence used to prefer it
+/// over another window of the same horizon.
+struct QuotaCandidate {
+    window: super::ClaudeRateLimitWindow,
+    marked: bool,
+}
+
+impl QuotaCandidate {
+    /// Whether this candidate should replace one already held for its horizon.
+    ///
+    /// A marked window always beats an unmarked one, so a model-specific weekly
+    /// window cannot displace the supported all-model window. Between two
+    /// windows with the same evidence the later one wins, because a redrawn
+    /// terminal repeats the whole screen and the last rendering is current.
+    fn supersedes(&self, current: &Self) -> bool {
+        self.marked || !current.marked
+    }
+}
+
 /// Reduce the `/usage` screen to the quota windows it shows.
 ///
 /// The screen is presentation: headings, ordering, and decoration change
@@ -480,21 +511,37 @@ pub(super) fn parse_usage_output(
     // offset, so an index found here also addresses `compact`, which keeps the
     // original case that the timezone name needs.
     let matchable = compact.to_ascii_lowercase();
+    let counters = matchable
+        .match_indices(COUNTER_MARKER)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
 
-    let mut five_hour = None;
-    let mut seven_day = None;
-    for (percent_end, _) in matchable.match_indices("%used") {
-        let Ok(used_percentage) = extract_used_percentage(&compact[..percent_end]) else {
+    let mut five_hour: Option<QuotaCandidate> = None;
+    let mut seven_day: Option<QuotaCandidate> = None;
+    let mut window_start = 0;
+    for (position, &counter_end) in counters.iter().enumerate() {
+        // A window owns the text from the end of the previous window up to its
+        // own counter, which is where its heading renders.
+        let heading = &matchable[window_start..counter_end];
+        window_start = counter_end;
+        // Its reset clause cannot reach past the next counter, so a window that
+        // lost its own clause cannot borrow the next window's.
+        let next_counter = counters
+            .get(position + 1)
+            .copied()
+            .unwrap_or(matchable.len());
+        let Ok(used_percentage) = extract_used_percentage(&compact[..counter_end]) else {
             continue;
         };
-        let tail = &compact[percent_end..];
+        let tail = &compact[counter_end..next_counter];
         let span_end = tail
             .char_indices()
             .nth(MAX_WINDOW_SPAN_CHARS)
             .map_or(tail.len(), |(index, _)| index);
         // Locate the clause without case, then read it from the original text,
         // where the timezone name keeps its capitals.
-        let Some((reset_start, reset_end)) = reset_bounds(&matchable[percent_end..][..span_end])
+        let Some((reset_start, reset_end)) =
+            reset_bounds(&matchable[counter_end..next_counter][..span_end])
         else {
             continue;
         };
@@ -509,15 +556,22 @@ pub(super) fn parse_usage_output(
         let Ok(resets_at) = parse_reset(reset, observed_at, horizon) else {
             continue;
         };
-        let window = super::ClaudeRateLimitWindow {
-            resets_at,
-            used_percentage,
+        let candidate = QuotaCandidate {
+            window: super::ClaudeRateLimitWindow {
+                resets_at,
+                used_percentage,
+            },
+            marked: heading.contains(ALL_MODELS_MARKER),
         };
-        // A redrawn terminal repeats the whole screen. The last readable
-        // rendering of each window is the current one.
-        match horizon {
-            ResetHorizon::FiveHours => five_hour = Some(window),
-            ResetHorizon::SevenDays => seven_day = Some(window),
+        let selected = match horizon {
+            ResetHorizon::FiveHours => &mut five_hour,
+            ResetHorizon::SevenDays => &mut seven_day,
+        };
+        if selected
+            .as_ref()
+            .is_none_or(|current| candidate.supersedes(current))
+        {
+            *selected = Some(candidate);
         }
     }
 
@@ -526,8 +580,8 @@ pub(super) fn parse_usage_output(
     }
     Ok(ClaudeQuotaObservation {
         observed_at,
-        five_hour,
-        seven_day,
+        five_hour: five_hour.map(|candidate| candidate.window),
+        seven_day: seven_day.map(|candidate| candidate.window),
     })
 }
 
@@ -864,6 +918,75 @@ Resets 6:50pm (Not/AZone)"[..],
         ] {
             assert!(parse_usage_output(unreadable, test_time()).is_err());
         }
+    }
+
+    #[test]
+    fn cli_usage_prefers_the_all_model_weekly_window_over_a_model_specific_one() {
+        // A plan can render a second weekly window for one model family. It has
+        // the same shape as the supported all-model window, so shape alone
+        // would publish the wrong provider-native limit.
+        let output = r#"
+          Current session
+          42% used
+          Resets 6:50pm (Europe/Paris)
+
+          Current week (all models)
+          4% used
+          Resets Aug 10 at 6am (Europe/Paris)
+
+          Current week (Opus)
+          81% used
+          Resets Aug 10 at 6am (Europe/Paris)
+        "#
+        .as_bytes();
+
+        let observation = parse_usage_output(output, test_time()).unwrap();
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
+    }
+
+    #[test]
+    fn cli_usage_keeps_the_latest_all_model_window_across_a_redraw() {
+        // The marker selects the supported window; between two windows carrying
+        // it, the later rendering is the current one.
+        let output = r#"
+          Current week (all models)
+          1% used
+          Resets Aug 10 at 6am (Europe/Paris)
+          Current week (Opus)
+          70% used
+          Resets Aug 10 at 6am (Europe/Paris)
+
+          Current week (all models)
+          4% used
+          Resets Aug 10 at 6am (Europe/Paris)
+          Current week (Opus)
+          81% used
+          Resets Aug 10 at 6am (Europe/Paris)
+        "#
+        .as_bytes();
+
+        let observation = parse_usage_output(output, test_time()).unwrap();
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
+    }
+
+    #[test]
+    fn cli_usage_does_not_borrow_the_next_window_reset_clause() {
+        // A window that lost its own reset clause must stay unread rather than
+        // take the following window's and publish an invented pairing.
+        let output = r#"
+          Current session
+          42% used
+
+          Current week (all models)
+          4% used
+          Resets Aug 10 at 6am (Europe/Paris)
+        "#
+        .as_bytes();
+
+        let observation = parse_usage_output(output, test_time()).unwrap();
+        assert!(observation.five_hour.is_none());
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
     }
 
     #[test]

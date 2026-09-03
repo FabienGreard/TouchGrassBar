@@ -360,10 +360,15 @@ fn normalized_limit_name(name: &str) -> String {
 
 /// Record that a quota payload carried fields this parser does not know.
 ///
-/// The lane keeps serving its provider-native values. The signal exists so the
-/// contract audit and a maintainer can see the drift instead of it staying
-/// silent. It reports each payload kind once per process so a repeating refresh
-/// cannot flood the log, and it never records the unknown key names, which are
+/// The lane keeps serving its provider-native values. This is a development
+/// aid: it is a debug-build event, so a release build stays silent. The
+/// contract audit is what detects this drift for a maintainer, because it reads
+/// the published provider schemas rather than a running installation. Reporting
+/// runtime drift from a release build would need a sanitized diagnostic surface
+/// that does not exist yet.
+///
+/// It reports each payload kind once per process so a repeating refresh cannot
+/// flood the log, and it never records the unknown key names, which are
 /// provider material.
 fn report_quota_schema_drift(source: &'static str) {
     static REPORTED: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
