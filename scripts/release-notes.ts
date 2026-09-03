@@ -53,6 +53,7 @@ const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release",
 const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:[ \t]+\S/u;
 const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
 const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/u;
+const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/u;
 const standardGitTrailerTokens = new Set([
   "acked-by",
   "approved-by",
@@ -199,11 +200,14 @@ function candidateIsNestedConventionalSubject(value: string) {
     if (withoutPrefix === candidate) break;
     candidate = withoutPrefix;
   }
+  const withoutHash = candidate.replace(gitOnelineHashPrefixPattern, "");
+  const hasHashPrefix = withoutHash !== candidate;
+  candidate = withoutHash;
   const match = nestedConventionalSubjectPattern.exec(candidate);
   return (
     !releaseTrailerSubjectPattern.test(candidate) &&
     match !== null &&
-    !ordinaryBodyFieldPattern.test(candidate)
+    (hasHashPrefix || !ordinaryBodyFieldPattern.test(candidate))
   );
 }
 

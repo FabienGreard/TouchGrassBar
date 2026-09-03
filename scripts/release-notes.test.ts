@@ -228,6 +228,26 @@ describe("release notes", () => {
     ).toEqual(["Keep the earlier reviewed note."]);
   });
 
+  test("ignores a hash-prefixed nested subject in earlier squash text", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "abc1234 fix(parser): describe the nested change",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
   test.each([
     "note(parser): describe the nested change",
     "status(parser): describe the nested change",

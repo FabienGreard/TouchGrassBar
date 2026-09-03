@@ -123,15 +123,17 @@ Release-note: The Codex usage panel no longer shows the internal reserve limit.
 
 Use `Release-note: none` when a `feat`, `fix`, or `perf` commit has no
 user-facing effect. Without a trailer, the release-note generator uses the
-Conventional Commit subject as a fallback. It excludes release, development,
-test, documentation, build, and CI scopes.
+Conventional Commit subject as a fallback. The release-note generator excludes
+release, development, test, documentation, build, and CI scopes.
 
 When one squash commit contains more than one user-facing change, add one
-`Release-note:` trailer for each change. The fallback uses only the top-level
-Conventional Commit subject. It does not infer release notes from nested commit
-text in the squash commit body. It reads release-note fields only from the final
-top-level trailer block. If the earlier body contains a nested Conventional
-Commit subject, it ignores that final block because its owner is ambiguous.
+`Release-note:` trailer for each change. An inferred fallback uses only the
+top-level Conventional Commit subject. The release-note generator does not infer
+release notes from nested commit text in the squash commit body. The release-note
+generator reads release-note fields only from the final top-level trailer block.
+If the earlier body contains a nested Conventional Commit subject, the
+release-note generator ignores the final trailer block because the final trailer
+block has an ambiguous owner.
 
 If an uneditable squash commit has incomplete or technical fallback text, add
 one later release commit. Put `Release-note-mode: replace` and all reviewed
