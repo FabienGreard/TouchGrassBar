@@ -155,12 +155,9 @@ describe("release notes", () => {
             subject: "fix(desktop): keep the reviewed behavior",
           },
           {
-            body: [
-              boundary,
-              "",
-              "Release-note-mode: replace",
-              "Release-note: Nested note.",
-            ].join("\n"),
+            body: [boundary, "", "Release-note-mode: replace", "Release-note: Nested note."].join(
+              "\n",
+            ),
             subject: "chore(release): collect squashed work",
           },
         ]),
@@ -402,6 +399,35 @@ describe("release notes", () => {
       ).toEqual({ modes: [], notes: ["Keep this reviewed note."] });
     },
   );
+
+  test.each(["BREAKING CHANGE", "BREAKING-CHANGE"])(
+    "keeps a breaking-change footer in the final block: %s",
+    (token) => {
+      expect(
+        releaseTrailersFromBody(
+          [
+            "Release-note-mode: replace",
+            "Release-note: Keep this reviewed note.",
+            `${token}: The API format changed.`,
+          ].join("\n"),
+        ),
+      ).toEqual({
+        modes: ["replace"],
+        notes: ["Keep this reviewed note."],
+      });
+    },
+  );
+
+  test("rejects an unsupported release-note mode", () => {
+    expect(() =>
+      releaseChangesFromCommits([
+        {
+          body: "Release-note-mode: replac\nRelease-note: The reviewed replacement.",
+          subject: "docs(release): replace earlier notes",
+        },
+      ]),
+    ).toThrow("Release-note mode is unsupported: replac.");
+  });
 
   test("treats an adjacent unknown lower-case field as ambiguous", () => {
     expect(

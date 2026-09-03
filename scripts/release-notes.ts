@@ -52,6 +52,7 @@ const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
 const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
 const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
+const trailerLinePattern = /^((?:BREAKING CHANGE)|[A-Za-z0-9-]+):[ \t]*(.*)$/iu;
 const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/iu;
 const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/iu;
 const gitOnelineDecorationPrefixPattern = /^\([^\r\n]*?\)[ \t]+/u;
@@ -59,6 +60,8 @@ const nestedMessageBoundaryPattern = /^(?:nested commit message|squashed commit 
 const standardGitTrailerTokens = new Set([
   "acked-by",
   "approved-by",
+  "breaking change",
+  "breaking-change",
   "cc",
   "closes",
   "co-authored-by",
@@ -283,7 +286,7 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   const lines = body.split(/\r?\n/u);
   while (lines.at(-1)?.trim() === "") lines.pop();
   let start = lines.length;
-  while (start > 0 && /^[A-Za-z0-9-]+:[ \t]*.*$/u.test(lines[start - 1]!)) start -= 1;
+  while (start > 0 && trailerLinePattern.test(lines[start - 1]!)) start -= 1;
   if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
     return { modes: [], notes: [] };
   }
@@ -300,7 +303,7 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   const modes: string[] = [];
   const notes: string[] = [];
   for (const line of lines.slice(start)) {
-    const match = /^([A-Za-z0-9-]+):[ \t]*(.*)$/u.exec(line);
+    const match = trailerLinePattern.exec(line);
     if (!match) continue;
     const token = match[1]!.toLowerCase();
     const value = match[2]!.trim();
@@ -315,6 +318,12 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
     commit,
     trailers: releaseTrailersFromBody(commit.body),
   }));
+  const unsupportedMode = analyzedCommits
+    .flatMap(({ trailers }) => trailers.modes)
+    .find((mode) => mode.toLowerCase() !== "replace");
+  if (unsupportedMode) {
+    throw new Error(`Release-note mode is unsupported: ${unsupportedMode}.`);
+  }
   const replacements = analyzedCommits.filter(({ trailers }) =>
     trailers.modes.some((mode) => mode.toLowerCase() === "replace"),
   );
