@@ -50,10 +50,9 @@ type StableVersion = {
 const repository = "FabienGreard/TouchGrassBar";
 const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
-const nestedConventionalSubjectPattern =
-  /^(?:(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?|[a-z][a-z0-9-]*\([^\r\n)]+\))!?:[ \t]+\S/u;
-const compactNestedConventionalSubjectPattern = /^[a-z][a-z0-9-]*(?:\([^\r\n)]+\))?!?:[ \t]+\S/u;
+const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:[ \t]+\S/u;
 const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
+const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/u;
 const standardGitTrailerTokens = new Set([
   "acked-by",
   "approved-by",
@@ -200,9 +199,11 @@ function candidateIsNestedConventionalSubject(value: string) {
     if (withoutPrefix === candidate) break;
     candidate = withoutPrefix;
   }
+  const match = nestedConventionalSubjectPattern.exec(candidate);
   return (
     !releaseTrailerSubjectPattern.test(candidate) &&
-    nestedConventionalSubjectPattern.test(candidate)
+    match !== null &&
+    !ordinaryBodyFieldPattern.test(candidate)
   );
 }
 
@@ -257,12 +258,8 @@ function hasNestedConventionalSubject(lines: readonly string[]) {
 }
 
 function isCompactNestedConventionalSubject(line: string) {
-  const token = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:/u.exec(line)?.[1];
-  return (
-    token !== undefined &&
-    !standardGitTrailerTokens.has(token) &&
-    compactNestedConventionalSubjectPattern.test(line)
-  );
+  const token = nestedConventionalSubjectPattern.exec(line)?.[1];
+  return token !== undefined && !standardGitTrailerTokens.has(token);
 }
 
 function releaseTrailersFromBody(body: string): ReleaseTrailers {

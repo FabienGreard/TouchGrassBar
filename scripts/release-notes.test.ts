@@ -208,6 +208,51 @@ describe("release notes", () => {
     ).toEqual(["Keep the earlier reviewed note."]);
   });
 
+  test("ignores an unscoped custom subject in earlier squash text", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "security: describe the nested change",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
+  test.each([
+    "note(parser): describe the nested change",
+    "status(parser): describe the nested change",
+    "note!: describe the nested change",
+    "status!: describe the nested change",
+  ])("ignores a scoped or breaking nested body subject: %s", (nestedSubject) => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            nestedSubject,
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
   test.each(["co-authored-by", "reviewed-by", "signed-off-by", "tested-by"])(
     "keeps a lower-case standard Git trailer in the final block: %s",
     (token) => {
