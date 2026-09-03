@@ -250,7 +250,11 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
     return { modes: [], notes: [] };
   }
-  if (hasNestedConventionalSubject(lines.slice(0, start))) {
+  const nestedSubjectCandidates = [
+    ...lines.slice(0, start),
+    ...lines.slice(start).filter((line) => !releaseTrailerSubjectPattern.test(line)),
+  ];
+  if (hasNestedConventionalSubject(nestedSubjectCandidates)) {
     return { modes: [], notes: [] };
   }
   const modes: string[] = [];
