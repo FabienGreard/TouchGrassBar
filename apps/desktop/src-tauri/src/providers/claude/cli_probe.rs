@@ -26,6 +26,7 @@ use crate::providers::process::{
 const MAX_CLI_OUTPUT_BYTES: usize = 1024 * 1024;
 const CLI_OUTPUT_CHUNK_BYTES: usize = 8 * 1024;
 const STARTUP_DELAY: StdDuration = StdDuration::from_secs(2);
+const SAFE_PROMPT_INPUT_DELAY: StdDuration = StdDuration::from_secs(1);
 pub(super) const PROBE_SESSION_MARKER: &str = ".touchgrassbar-claude-probe-session";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,19 +43,11 @@ enum ProbeCompletionStage {
 }
 
 impl ProbeCompletionStage {
-    const fn partial_event(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
-            Self::Timeout => "cli_probe_partial stage=timeout",
-            Self::OutputLimit => "cli_probe_partial stage=output_limit",
-            Self::OutputClosed => "cli_probe_partial stage=output_closed",
-        }
-    }
-
-    const fn failure_event(self) -> &'static str {
-        match self {
-            Self::Timeout => "cli_probe_failed stage=timeout",
-            Self::OutputLimit => "cli_probe_failed stage=output_limit",
-            Self::OutputClosed => "cli_probe_failed stage=output_closed",
+            Self::Timeout => "timeout",
+            Self::OutputLimit => "output_limit",
+            Self::OutputClosed => "output_closed",
         }
     }
 }
@@ -68,11 +61,19 @@ fn finish_capture(
     stage: ProbeCompletionStage,
 ) -> Result<ClaudeQuotaObservation, ProbeFailure> {
     if let Some(observation) = partial {
-        probe_event(stage.partial_event());
+        super::debug_event(&format!("cli_probe_partial stage={}", stage.name()));
         return Ok(observation);
     }
-    probe_event(stage.failure_event());
+    super::debug_event(&format!("cli_probe_failed stage={}", stage.name()));
     Err(ProbeFailure::Unavailable)
+}
+
+#[derive(Default)]
+struct AcceptedSafePrompts {
+    legacy_folder_trust: bool,
+    quick_safety_check: bool,
+    ready_to_code: bool,
+    continue_prompt: bool,
 }
 
 pub(super) fn probe_usage(
@@ -158,9 +159,11 @@ fn capture_usage_output(
     let deadline = started_at
         .checked_add(timeout)
         .ok_or(ProbeFailure::Unavailable)?;
+    let safe_prompt_input_at = started_at + SAFE_PROMPT_INPUT_DELAY;
+    let mut usage_input_at = started_at + STARTUP_DELAY;
     let mut usage_sent = false;
     let mut output = Zeroizing::new(Vec::new());
-    let mut accepted_prompts = [false; 5];
+    let mut accepted_prompts = AcceptedSafePrompts::default();
     // The screen draws over several chunks, so a reading that resolves only one
     // window may simply be early. Keep the best one and use it only when the
     // probe runs out of time or output.
@@ -175,12 +178,6 @@ fn capture_usage_output(
         if now >= deadline {
             return finish_capture(partial, ProbeCompletionStage::Timeout);
         }
-        if !usage_sent && now.duration_since(started_at) >= STARTUP_DELAY {
-            process
-                .write_all(b"/usage\r", deadline.saturating_duration_since(now))
-                .map_err(|_| ProbeFailure::Unavailable)?;
-            usage_sent = true;
-        }
 
         match process.receive_timeout(StdDuration::from_millis(100)) {
             Ok(chunk) => {
@@ -188,19 +185,6 @@ fn capture_usage_output(
                     return finish_capture(partial, ProbeCompletionStage::OutputLimit);
                 }
                 output.extend_from_slice(&chunk);
-                handle_safe_prompts(
-                    &output,
-                    process,
-                    &mut accepted_prompts,
-                    deadline.saturating_duration_since(Instant::now()),
-                )
-                .map_err(|()| ProbeFailure::Unavailable)?;
-                if usage_sent && let Ok(observation) = parse_usage_output(&output, observed_at) {
-                    if observation.is_complete() {
-                        return Ok(observation);
-                    }
-                    partial = Some(observation);
-                }
             }
             Err(ProviderProcessError::TimedOut) => {}
             Err(ProviderProcessError::Cancelled) if cancelled() => {
@@ -211,35 +195,99 @@ fn capture_usage_output(
                 return finish_capture(partial, ProbeCompletionStage::OutputClosed);
             }
         }
+
+        let now = Instant::now();
+        if now >= safe_prompt_input_at
+            && handle_safe_prompts(
+                &output,
+                process,
+                &mut accepted_prompts,
+                deadline.saturating_duration_since(now),
+            )
+            .map_err(|()| ProbeFailure::Unavailable)?
+        {
+            usage_sent = false;
+            usage_input_at = now + STARTUP_DELAY;
+        }
+        if !usage_sent && now >= usage_input_at {
+            process
+                .write_all(b"/usage\r", deadline.saturating_duration_since(now))
+                .map_err(|_| ProbeFailure::Unavailable)?;
+            usage_sent = true;
+        }
+        if usage_sent && let Ok(observation) = parse_usage_output(&output, observed_at) {
+            if observation.is_complete() {
+                return Ok(observation);
+            }
+            partial = Some(observation);
+        }
     }
 }
 
 fn handle_safe_prompts(
     output: &[u8],
     process: &ProviderProcess,
-    accepted: &mut [bool; 5],
+    accepted: &mut AcceptedSafePrompts,
     timeout: StdDuration,
-) -> Result<(), ()> {
-    const PROMPTS: [(&str, &[u8]); 5] = [
-        ("doyoutrustthefilesinthisfolder?", b"y\r"),
-        ("quicksafetycheck:", b"\r"),
-        ("yes,itrustthisfolder", b"\r"),
-        ("readytocodehere?", b"\r"),
-        ("pressentertocontinue", b"\r"),
-    ];
+) -> Result<bool, ()> {
+    const QUICK_SAFETY_CHECK: &str = "quicksafetycheck:";
+    const TRUST_FOLDER_CHOICE: &str = "yes,itrustthisfolder";
     let stripped = strip_ansi_escapes::strip(output);
     let normalized = String::from_utf8_lossy(&stripped)
         .to_ascii_lowercase()
         .chars()
         .filter(|character| !character.is_whitespace() && !character.is_control())
         .collect::<String>();
-    for (index, (prompt, response)) in PROMPTS.iter().enumerate() {
-        if !accepted[index] && normalized.contains(prompt) {
-            process.write_all(response, timeout).map_err(|_| ())?;
-            accepted[index] = true;
-        }
+    let mut responded = false;
+    if !accepted.quick_safety_check
+        && normalized.contains(QUICK_SAFETY_CHECK)
+        && normalized.contains(TRUST_FOLDER_CHOICE)
+    {
+        process.write_all(b"\x1b[B\r", timeout).map_err(|_| ())?;
+        accepted.quick_safety_check = true;
+        responded = true;
     }
-    Ok(())
+    responded |= respond_once(
+        &normalized,
+        "doyoutrustthefilesinthisfolder?",
+        b"y\r",
+        process,
+        &mut accepted.legacy_folder_trust,
+        timeout,
+    )?;
+    responded |= respond_once(
+        &normalized,
+        "readytocodehere?",
+        b"\r",
+        process,
+        &mut accepted.ready_to_code,
+        timeout,
+    )?;
+    responded |= respond_once(
+        &normalized,
+        "pressentertocontinue",
+        b"\r",
+        process,
+        &mut accepted.continue_prompt,
+        timeout,
+    )?;
+    Ok(responded)
+}
+
+fn respond_once(
+    normalized: &str,
+    prompt: &str,
+    response: &[u8],
+    process: &ProviderProcess,
+    accepted: &mut bool,
+    timeout: StdDuration,
+) -> Result<bool, ()> {
+    if *accepted || !normalized.contains(prompt) {
+        return Ok(false);
+    }
+    process.write_all(response, timeout).map_err(|_| ())?;
+    *accepted = true;
+    Ok(true)
 }
 
 fn probe_session_id() -> Result<&'static str, ()> {
@@ -499,7 +547,7 @@ const ALL_MODELS_MARKER: &str = "allmodels";
 /// over another window of the same horizon.
 struct QuotaCandidate {
     window: super::ClaudeRateLimitWindow,
-    marked: bool,
+    has_all_models_marker: bool,
 }
 
 impl QuotaCandidate {
@@ -510,7 +558,7 @@ impl QuotaCandidate {
     /// windows with the same evidence the later one wins, because a redrawn
     /// terminal repeats the whole screen and the last rendering is current.
     fn supersedes(&self, current: &Self) -> bool {
-        self.marked || !current.marked
+        self.has_all_models_marker || !current.has_all_models_marker
     }
 }
 
@@ -590,7 +638,7 @@ pub(super) fn parse_usage_output(
                 resets_at,
                 used_percentage,
             },
-            marked: heading.contains(ALL_MODELS_MARKER),
+            has_all_models_marker: heading.contains(ALL_MODELS_MARKER),
         };
         let selected = match horizon {
             ResetHorizon::FiveHours => &mut five_hour,
@@ -1163,6 +1211,110 @@ Resets 6:50pm (Europe/Paris)"
         ));
         assert!(probe_directory.join(PROBE_SESSION_MARKER).is_file());
         assert!(blocked_transcript.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_probe_accepts_the_quick_safety_check_before_requesting_usage() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = FixtureRoot::new();
+        let executable = fixture.0.join("claude-cli");
+        fs::write(
+            &executable,
+            br##"#!/bin/sh
+printf '%s\n' \
+  'Quick safety check: Is this a project you created or one you trust?' \
+  '> No, exit' \
+  '  Yes, I trust this folder'
+IFS= read -r selection
+expected_selection=$(printf '\033[B')
+[ "$selection" = "$expected_selection" ] || exit 2
+[ -f "${0}.ready" ] || exit 4
+IFS= read -r command
+[ "$command" = '/usage' ] || exit 3
+printf '%s\n' \
+  'Current session' \
+  '42% used' \
+  'Resets 6:50pm (Europe/Paris)' \
+  'Current week (all models)' \
+  '4% used' \
+  'Resets Aug 10 at 6am (Europe/Paris)'
+while :; do sleep 1; done
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let probe_directory = fixture.0.join("probe");
+        let processes = ProviderProcessSupervisor::default();
+        let ready_marker = executable.with_extension("ready");
+        let readiness = thread::spawn(move || {
+            thread::sleep(StdDuration::from_millis(750));
+            fs::write(ready_marker, b"ready").unwrap();
+        });
+
+        let observation = probe_usage(
+            &processes,
+            &executable,
+            &probe_directory,
+            test_time(),
+            StdDuration::from_secs(5),
+            &|| false,
+        );
+        readiness.join().unwrap();
+        let observation = observation.unwrap();
+
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_probe_retries_usage_after_a_late_quick_safety_check() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = FixtureRoot::new();
+        let executable = fixture.0.join("claude-cli");
+        fs::write(
+            &executable,
+            br##"#!/bin/sh
+IFS= read -r early_command
+[ "$early_command" = '/usage' ] || exit 2
+printf '%s\n' \
+  'Quick safety check: Is this a project you created or one you trust?' \
+  '> No, exit' \
+  '  Yes, I trust this folder'
+IFS= read -r selection
+expected_selection=$(printf '\033[B')
+[ "$selection" = "$expected_selection" ] || exit 3
+IFS= read -r command
+[ "$command" = '/usage' ] || exit 4
+printf '%s\n' \
+  'Current session' \
+  '42% used' \
+  'Resets 6:50pm (Europe/Paris)' \
+  'Current week (all models)' \
+  '4% used' \
+  'Resets Aug 10 at 6am (Europe/Paris)'
+while :; do sleep 1; done
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let processes = ProviderProcessSupervisor::default();
+
+        let observation = probe_usage(
+            &processes,
+            &executable,
+            &fixture.0.join("probe"),
+            test_time(),
+            StdDuration::from_secs(7),
+            &|| false,
+        )
+        .unwrap();
+
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
     }
 
     #[cfg(unix)]

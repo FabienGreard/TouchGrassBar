@@ -196,10 +196,12 @@ shapes: the earlier shape that carries no HTTP status, error details, or request
 identifier, and the later shape that carries all three. The record must match a
 reviewed shape exactly. This check
 includes the wrapper, message, content, zero-token counters, zero paid-tool
-counters, and null extended usage fields. The `2.1.258` record also requires an
-HTTP error status, non-empty error details, and a non-empty request identifier.
-A different API-error shape fails closed. A different transcript version stays
-partial or unavailable until controlled fixtures prove that schema.
+counters, and null extended usage fields. The later reviewed shape also requires
+an HTTP error status, non-empty error details, and a non-empty request
+identifier. A different API-error shape fails closed. Transcript identity does
+not gate known top-level counters: an unreviewed version with a reviewed usage
+shape stays partial, while a record with both an unreviewed version and an
+unreviewed usage shape withholds its counters.
 
 The `2026-09-02-v1` review added Claude Fable 5.1 and Claude Mythos 5.1.
 Anthropic
