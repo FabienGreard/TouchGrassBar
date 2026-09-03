@@ -134,20 +134,20 @@ top-level trailer block. If the earlier body contains a nested Conventional
 Commit subject, it ignores that final block because its owner is ambiguous.
 
 If an uneditable squash commit has incomplete or technical fallback text, add
-one later release commit with `Release-note-mode: replace` and the complete set
-of reviewed `Release-note:` trailers. Only one replacement summary is allowed
-in a tag range. It replaces every fallback and trailer from earlier commits in
-that range. Later commits still contribute their explicit trailers or fallback
-subjects. The replacement commit must have at least one explicit user-facing
-`Release-note:` trailer.
+one later release commit. Put `Release-note-mode: replace` and all reviewed
+`Release-note:` trailers in that commit. Only one replacement summary is
+allowed in a tag range. It replaces every fallback and trailer from earlier
+commits in that range. Later commits still contribute their explicit trailers
+or fallback subjects. The replacement commit must have at least one explicit
+user-facing `Release-note:` trailer.
 
-The generator normally starts at the previous tag. If a metadata-only rewrite
-means that the tag is no longer an ancestor of `main`, the generator requires
-exactly one first-parent commit with the same tree and subject as the tagged
-commit. It starts at that equivalent commit. This prevents both duplicate old
-notes and the loss of a later repeated patch. The full-changelog link uses the
-same equivalent commit as its comparison baseline. The immutable release tag
-stays unchanged.
+The generator normally starts at the previous tag. A metadata-only rewrite can
+remove that tag from the `main` history. In that case, the generator requires
+exactly one first-parent commit. That commit must have the same tree and subject
+as the tagged commit. The generator starts at that equivalent commit. This
+prevents duplicate old notes and the loss of a later repeated patch. The
+full-changelog link uses the same equivalent commit as its comparison baseline.
+The immutable release tag stays unchanged.
 
 The GitHub Release description puts the user-facing changes and DMG download
 first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,
