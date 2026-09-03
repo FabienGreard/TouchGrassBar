@@ -131,6 +131,16 @@ When one squash commit contains more than one user-facing change, add one
 Conventional Commit subject. It does not infer release notes from nested commit
 text in the squash commit body.
 
+If an uneditable squash commit has incomplete or technical fallback text, add
+one later release commit with `Release-note-mode: replace` and the complete set
+of reviewed `Release-note:` trailers. Only one replacement summary is allowed
+in a tag range. It replaces every fallback and trailer from earlier commits in
+that range.
+
+The generator compares both sides of the previous-tag boundary by stable patch
+identity. This prevents a metadata-only rewrite of `main` from listing already
+released changes again. The immutable release tag stays unchanged.
+
 The GitHub Release description puts the user-facing changes and DMG download
 first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,
 and SHA-256 evidence in a collapsed technical section. GitHub shows draft

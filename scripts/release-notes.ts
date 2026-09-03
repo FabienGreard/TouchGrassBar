@@ -82,9 +82,16 @@ function sentence(value: string) {
 }
 
 function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
+  const replacements = commits.filter((commit) =>
+    /^Release-note-mode:\s*replace\s*$/imu.test(commit.body),
+  );
+  if (replacements.length > 1) {
+    throw new Error("Release notes have more than one replacement summary.");
+  }
+  const selectedCommits = replacements.length === 1 ? replacements : commits;
   const changes: string[] = [];
   const seen = new Set<string>();
-  for (const commit of commits) {
+  for (const commit of selectedCommits) {
     const trailers = [...commit.body.matchAll(/^Release-note:\s*(.+)$/gimu)].map((match) =>
       match[1]!.trim(),
     );
@@ -108,19 +115,28 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
       changes.push(change);
     }
   }
+  if (replacements.length === 1 && changes.length === 0) {
+    throw new Error("The replacement release summary has no user-facing note.");
+  }
   return changes;
+}
+
+function releaseHistoryArguments(previousTag: string, target: string) {
+  return [
+    "log",
+    "--cherry-pick",
+    "--right-only",
+    "--first-parent",
+    "--reverse",
+    "--format=%s%x00%b%x1e",
+    `${previousTag}...${target}`,
+  ];
 }
 
 function releaseCommits(previousTag: string, target: string) {
   command("git", ["rev-parse", "--verify", `${previousTag}^{commit}`]);
   command("git", ["rev-parse", "--verify", `${target}^{commit}`]);
-  const output = command("git", [
-    "log",
-    "--first-parent",
-    "--reverse",
-    "--format=%s%x00%b%x1e",
-    `${previousTag}..${target}`,
-  ]);
+  const output = command("git", releaseHistoryArguments(previousTag, target));
   if (output.length === 0) return [];
   return output.split("\x1e").flatMap((rawRecord) => {
     const record = rawRecord.trim();
@@ -222,6 +238,7 @@ export {
   createReleaseSummaryForTag,
   previousStableTag,
   releaseChangesFromCommits,
+  releaseHistoryArguments,
   updaterReleaseNotes,
 };
 export type { ArtifactRecord, ReleaseCommit, ReleaseSummary };

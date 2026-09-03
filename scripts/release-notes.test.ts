@@ -4,6 +4,7 @@ import {
   createReleaseNotes,
   previousStableTag,
   releaseChangesFromCommits,
+  releaseHistoryArguments,
   updaterReleaseNotes,
 } from "./release-notes";
 
@@ -43,6 +44,55 @@ describe("release notes", () => {
     ).toEqual([
       "Price the new Claude models.",
       "Complete usage refreshes after the latest update starts.",
+    ]);
+  });
+
+  test("uses one reviewed replacement summary for an uneditable squash commit", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "",
+          subject: "fix(providers): fail closed on payload shape, not provider identity",
+        },
+        {
+          body: [
+            "Release-note-mode: replace",
+            "Release-note: Claude usage remains visible after compatible Claude Code updates.",
+            "Release-note: Provider quota lanes tolerate unrelated response fields.",
+          ].join("\n"),
+          subject: "chore(release): prepare database fixture",
+        },
+      ]),
+    ).toEqual([
+      "Claude usage remains visible after compatible Claude Code updates.",
+      "Provider quota lanes tolerate unrelated response fields.",
+    ]);
+  });
+
+  test("rejects more than one replacement summary", () => {
+    expect(() =>
+      releaseChangesFromCommits([
+        {
+          body: "Release-note-mode: replace\nRelease-note: First summary.",
+          subject: "docs(release): add first summary",
+        },
+        {
+          body: "Release-note-mode: replace\nRelease-note: Second summary.",
+          subject: "docs(release): add second summary",
+        },
+      ]),
+    ).toThrow("Release notes have more than one replacement summary.");
+  });
+
+  test("compares rewritten histories by stable patch identity", () => {
+    expect(releaseHistoryArguments("v1.1.0", "candidate")).toEqual([
+      "log",
+      "--cherry-pick",
+      "--right-only",
+      "--first-parent",
+      "--reverse",
+      "--format=%s%x00%b%x1e",
+      "v1.1.0...candidate",
     ]);
   });
 
