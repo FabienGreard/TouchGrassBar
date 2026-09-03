@@ -34,8 +34,45 @@ pub(super) enum ProbeFailure {
     Unavailable,
 }
 
+#[derive(Clone, Copy)]
+enum ProbeCompletionStage {
+    Timeout,
+    OutputLimit,
+    OutputClosed,
+}
+
+impl ProbeCompletionStage {
+    const fn partial_event(self) -> &'static str {
+        match self {
+            Self::Timeout => "cli_probe_partial stage=timeout",
+            Self::OutputLimit => "cli_probe_partial stage=output_limit",
+            Self::OutputClosed => "cli_probe_partial stage=output_closed",
+        }
+    }
+
+    const fn failure_event(self) -> &'static str {
+        match self {
+            Self::Timeout => "cli_probe_failed stage=timeout",
+            Self::OutputLimit => "cli_probe_failed stage=output_limit",
+            Self::OutputClosed => "cli_probe_failed stage=output_closed",
+        }
+    }
+}
+
 fn probe_event(event: &'static str) {
     super::debug_event(event);
+}
+
+fn finish_capture(
+    partial: Option<ClaudeQuotaObservation>,
+    stage: ProbeCompletionStage,
+) -> Result<ClaudeQuotaObservation, ProbeFailure> {
+    if let Some(observation) = partial {
+        probe_event(stage.partial_event());
+        return Ok(observation);
+    }
+    probe_event(stage.failure_event());
+    Err(ProbeFailure::Unavailable)
 }
 
 pub(super) fn probe_usage(
@@ -136,12 +173,7 @@ fn capture_usage_output(
         }
         let now = Instant::now();
         if now >= deadline {
-            if let Some(observation) = partial {
-                probe_event("cli_probe_partial stage=timeout");
-                return Ok(observation);
-            }
-            probe_event("cli_probe_failed stage=timeout");
-            return Err(ProbeFailure::Unavailable);
+            return finish_capture(partial, ProbeCompletionStage::Timeout);
         }
         if !usage_sent && now.duration_since(started_at) >= STARTUP_DELAY {
             process
@@ -153,12 +185,7 @@ fn capture_usage_output(
         match process.receive_timeout(StdDuration::from_millis(100)) {
             Ok(chunk) => {
                 if output.len().saturating_add(chunk.len()) > MAX_CLI_OUTPUT_BYTES {
-                    if let Some(observation) = partial {
-                        probe_event("cli_probe_partial stage=output_limit");
-                        return Ok(observation);
-                    }
-                    probe_event("cli_probe_failed stage=output_limit");
-                    return Err(ProbeFailure::Unavailable);
+                    return finish_capture(partial, ProbeCompletionStage::OutputLimit);
                 }
                 output.extend_from_slice(&chunk);
                 handle_safe_prompts(
@@ -181,12 +208,7 @@ fn capture_usage_output(
                 return Err(ProbeFailure::Cancelled);
             }
             Err(_) => {
-                if let Some(observation) = partial {
-                    probe_event("cli_probe_partial stage=output_closed");
-                    return Ok(observation);
-                }
-                probe_event("cli_probe_failed stage=output_closed");
-                return Err(ProbeFailure::Unavailable);
+                return finish_capture(partial, ProbeCompletionStage::OutputClosed);
             }
         }
     }
@@ -453,13 +475,16 @@ fn javascript_hash_base36(value: &str) -> String {
     encoded.into_iter().rev().collect()
 }
 
-/// The largest compacted distance between a `% used` counter and the `Resets`
-/// clause that belongs to it. One window renders the two together, so a wider
-/// gap means they came from different parts of the screen.
+/// The largest compacted span inspected after a `% used` counter. One window
+/// renders its `Resets` clause immediately after the counter, and the bound
+/// limits the reset text that the parser can inspect.
 const MAX_WINDOW_SPAN_CHARS: usize = 160;
 
 /// The compacted counter that opens every quota window.
 const COUNTER_MARKER: &str = "%used";
+
+/// The compacted clause that closes one quota window.
+const RESET_MARKER: &str = "resets";
 
 /// The compacted marker for the supported all-model weekly window.
 ///
@@ -524,8 +549,9 @@ pub(super) fn parse_usage_output(
         // own counter, which is where its heading renders.
         let heading = &matchable[window_start..counter_end];
         window_start = counter_end;
-        // Its reset clause cannot reach past the next counter, so a window that
-        // lost its own clause cannot borrow the next window's.
+        // Its reset clause cannot reach past the next counter. The marker must
+        // also be the next compacted content, so a missing next-window counter
+        // cannot let this counter borrow that window's reset.
         let next_counter = counters
             .get(position + 1)
             .copied()
@@ -545,6 +571,9 @@ pub(super) fn parse_usage_output(
         else {
             continue;
         };
+        if reset_start != COUNTER_MARKER.len() + RESET_MARKER.len() {
+            continue;
+        }
         let reset = &tail[reset_start..reset_end];
         // A weekly reset names the day it lands on. A session reset carries a
         // clock alone.
@@ -616,9 +645,7 @@ fn extract_used_percentage(prefix: &str) -> Result<f64, ()> {
 /// The caller searches lowercased text and slices the original with the result,
 /// which `to_ascii_lowercase` keeps aligned byte for byte.
 fn reset_bounds(section: &str) -> Option<(usize, usize)> {
-    const MARKER: &str = "resets";
-
-    let start = section.find(MARKER)? + MARKER.len();
+    let start = section.find(RESET_MARKER)? + RESET_MARKER.len();
     let end = section[start..].find(')')? + start + 1;
     Some((start, end))
 }
@@ -987,6 +1014,23 @@ Resets 6:50pm (Not/AZone)"[..],
         let observation = parse_usage_output(output, test_time()).unwrap();
         assert!(observation.five_hour.is_none());
         assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
+    }
+
+    #[test]
+    fn cli_usage_does_not_borrow_a_reset_when_the_next_counter_is_missing() {
+        // The next window can retain its reset after its counter changes shape.
+        // The preceding counter must not become that window's percentage.
+        let output = r#"
+          Current session
+          42% used
+
+          Current week (all models)
+          Usage data unavailable
+          Resets Aug 10 at 6am (Europe/Paris)
+        "#
+        .as_bytes();
+
+        assert!(parse_usage_output(output, test_time()).is_err());
     }
 
     #[test]

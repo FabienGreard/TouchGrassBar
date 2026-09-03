@@ -109,6 +109,23 @@ struct CodexQuotaObservation {
     ignored_limit_ids: BTreeSet<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum QuotaSchemaDriftSource {
+    FullRead,
+    Snapshot,
+    Notification,
+}
+
+impl QuotaSchemaDriftSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::FullRead => "full_read",
+            Self::Snapshot => "snapshot",
+            Self::Notification => "notification",
+        }
+    }
+}
+
 // A Quota Lane reports a provider-defined percentage against a provider-defined
 // window. A field this parser has not seen cannot change what `usedPercent`
 // means, so an added sibling must not blank the lane. These payloads therefore
@@ -184,10 +201,22 @@ struct RawRateLimitWindow {
 
 impl CodexQuotaObservation {
     fn from_full_read(payload: &str) -> Result<Self, ()> {
+        let (observation, drift) = Self::parse_full_read(payload)?;
+        for source in drift {
+            report_quota_schema_drift(source);
+        }
+        Ok(observation)
+    }
+
+    fn parse_full_read(payload: &str) -> Result<(Self, BTreeSet<QuotaSchemaDriftSource>), ()> {
         let response: FullRateLimitsResponse = serde_json::from_str(payload).map_err(|_| ())?;
         let _ = response.rate_limit_reset_credits;
+        let mut drift = BTreeSet::new();
         if !response.unknown.is_empty() {
-            report_quota_schema_drift("full_read");
+            drift.insert(QuotaSchemaDriftSource::FullRead);
+        }
+        if response.rate_limits.schema_drifted() {
+            drift.insert(QuotaSchemaDriftSource::Snapshot);
         }
         let snapshots = match response.rate_limits_by_limit_id {
             Some(snapshots) => snapshots,
@@ -196,6 +225,9 @@ impl CodexQuotaObservation {
         let mut buckets = BTreeMap::new();
         let mut ignored_limit_ids = BTreeSet::new();
         for (limit_id, snapshot) in snapshots {
+            if snapshot.schema_drifted() {
+                drift.insert(QuotaSchemaDriftSource::Snapshot);
+            }
             if snapshot
                 .limit_id
                 .as_deref()
@@ -212,9 +244,6 @@ impl CodexQuotaObservation {
                 ignored_limit_ids.insert(limit_id);
                 continue;
             }
-            if snapshot.schema_drifted() {
-                report_quota_schema_drift("snapshot");
-            }
             if let Some(bucket) = complete_bucket(snapshot)? {
                 buckets.insert(limit_id, bucket);
             }
@@ -222,10 +251,13 @@ impl CodexQuotaObservation {
         if buckets.is_empty() && ignored_limit_ids.is_empty() {
             return Err(());
         }
-        Ok(Self {
-            buckets,
-            ignored_limit_ids,
-        })
+        Ok((
+            Self {
+                buckets,
+                ignored_limit_ids,
+            },
+            drift,
+        ))
     }
 
     fn merge_sparse(&mut self, payload: &str) -> Result<bool, ()> {
@@ -233,7 +265,7 @@ impl CodexQuotaObservation {
             serde_json::from_str(payload).map_err(|_| ())?;
         validate_sparse_snapshot(&notification.rate_limits)?;
         if !notification.unknown.is_empty() || notification.rate_limits.schema_drifted() {
-            report_quota_schema_drift("notification");
+            report_quota_schema_drift(QuotaSchemaDriftSource::Notification);
         }
         let limit_id = notification
             .rate_limits
@@ -370,14 +402,14 @@ fn normalized_limit_name(name: &str) -> String {
 /// It reports each payload kind once per process so a repeating refresh cannot
 /// flood the log, and it never records the unknown key names, which are
 /// provider material.
-fn report_quota_schema_drift(source: &'static str) {
-    static REPORTED: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
+fn report_quota_schema_drift(source: QuotaSchemaDriftSource) {
+    static REPORTED: OnceLock<Mutex<BTreeSet<QuotaSchemaDriftSource>>> = OnceLock::new();
     let reported = REPORTED.get_or_init(|| Mutex::new(BTreeSet::new()));
     let Ok(mut reported) = reported.lock() else {
         return;
     };
     if reported.insert(source) {
-        debug_event(&format!("quota_schema_drift source={source}"));
+        debug_event(&format!("quota_schema_drift source={}", source.as_str()));
     }
 }
 
@@ -1630,6 +1662,58 @@ mod tests {
             assert!(!output.contains(prohibited), "leaked {prohibited}");
         }
         assert!(!debug_observation_summary(&observation).contains("sentinel-secret"));
+    }
+
+    #[test]
+    fn full_read_records_drift_from_the_default_snapshot_when_limit_ids_are_present() {
+        let extended = full_fixture()
+            .replacen(
+                "\"limitId\": \"codex\"",
+                "\"limitId\": \"codex\", \"futureDefaultField\": true",
+                1,
+            )
+            .replace(
+                "\"rateLimitsByLimitId\": null",
+                &format!(
+                    r#""rateLimitsByLimitId": {{
+                      "codex": {{
+                        "limitId": "codex",
+                        "primary": {{"usedPercent": 26, "windowDurationMins": 300, "resetsAt": {PRIMARY_RESET}}},
+                        "secondary": {{"usedPercent": 82, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                      }}
+                    }}"#,
+                ),
+            );
+
+        let (_, drift) = CodexQuotaObservation::parse_full_read(&extended).unwrap();
+
+        assert_eq!(drift, BTreeSet::from([QuotaSchemaDriftSource::Snapshot]));
+    }
+
+    #[test]
+    fn full_read_records_drift_from_an_ignored_model_snapshot() {
+        let extended = full_fixture().replace(
+            "\"rateLimitsByLimitId\": null",
+            &format!(
+                r#""rateLimitsByLimitId": {{
+                  "codex": {{
+                    "limitId": "codex",
+                    "primary": {{"usedPercent": 26, "windowDurationMins": 300, "resetsAt": {PRIMARY_RESET}}},
+                    "secondary": {{"usedPercent": 82, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }},
+                  "spark": {{
+                    "limitId": "spark",
+                    "limitName": "GPT-5.3-Codex-Spark",
+                    "futureIgnoredField": true,
+                    "primary": {{"usedPercent": 50, "windowDurationMins": 10080, "resetsAt": {SECONDARY_RESET}}}
+                  }}
+                }}"#,
+            ),
+        );
+
+        let (_, drift) = CodexQuotaObservation::parse_full_read(&extended).unwrap();
+
+        assert_eq!(drift, BTreeSet::from([QuotaSchemaDriftSource::Snapshot]));
     }
 
     #[test]

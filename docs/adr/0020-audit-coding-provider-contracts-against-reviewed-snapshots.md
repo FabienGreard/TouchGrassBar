@@ -43,30 +43,39 @@ outage.
 Identity therefore does not gate observation. The reviewed Claude Code version
 set decides whether a Ranking Day can claim complete coverage and a priced
 estimate. It does not decide whether that day's Observed Tokens exist. A record
-from an unreviewed version is read with the same structural checks; it keeps its
-tokens and leaves the day partial. Only a record that is unreviewed _and_
-carries an unreviewed shape withholds its counters, because nothing has then
-checked what those counters mean. Reporting zero tokens for work that happened
-is a worse failure than reporting them as partial: an omitted bucket is not
-proof of zero usage.
+from an unreviewed version with a reviewed shape keeps its known counters and
+leaves the day partial. A reviewed-version record with an unreviewed shape also
+keeps the top-level counters whose meaning that version established, ignores
+the unknown fields, and leaves the day partial. The parser never adds an
+unknown field to Observed Tokens. Only a record whose version and shape are both
+unreviewed withholds its counters, because nothing has then checked what those
+counters mean. Reporting zero tokens for work that happened is a worse failure
+than reporting known counters as partial: an omitted bucket is not proof of
+zero usage.
 
-The same rule sorts `deny_unknown_fields`. Keep it wherever an unknown field
-could be a subset that double-counts, which is every struct feeding Observed
-Tokens. Do not use it where an added sibling cannot change the meaning of the
-fields already read, which includes the Codex quota payloads: a Quota Lane
-reports a provider-defined percentage, and blanking it over an unrelated new
-field serves nobody. Those payloads record unknown keys in a bounded, value-free
-collector instead and keep serving their lanes. A debug build also logs the
-drift once per payload kind as a development aid. The audit, not the running
-installation, is what tells a maintainer that a payload changed, because it
-reads the published provider schemas; a release build reports no runtime
-drift.
+The same rule limits `deny_unknown_fields`. Keep it where an unknown field can
+change the meaning of the counters the parser reads or where the parser cannot
+separate a total from a repeated subset. The Claude top-level usage object is
+an explicit exception: it reads only named reviewed counters, never adds an
+unknown field, records whether the shape is reviewed, and applies the
+version-and-shape rule above. Do not use `deny_unknown_fields` where an added
+sibling cannot change the meaning of the fields already read. This includes
+the Codex quota payloads: a Quota Lane reports a provider-defined percentage,
+and blanking it over an unrelated new field serves nobody. Those payloads
+record unknown keys in a bounded, value-free collector instead and keep
+serving their lanes. A debug build also logs the drift once per payload kind as
+a development aid. The audit, not the running installation, is what tells a
+maintainer that a payload changed, because it reads the published provider
+schemas; a release build reports no runtime drift.
 
 The Claude `/usage` reading follows from the same distinction. Headings,
 ordering, and decoration are presentation that changes without the quota
-changing, so the reading matches each window by its own shape rather than by
-label text, and a window it cannot read leaves its own lane out instead of
-discarding the window it could read.
+changing, so the reading identifies a candidate and its horizon from the
+percentage-and-reset shape. Heading text is never a parse gate. When a plan
+shows two weekly candidates with the same shape, the compacted all-model marker
+is a bounded preference for the supported provider-wide window. A missing or
+renamed marker falls back to shape. A window the parser cannot read leaves its
+own lane out instead of discarding the window it could read.
 
 This amendment does not relax review. It moves the consequence of an unreviewed
 provider release from an outage to a visible partial result, and leaves the
