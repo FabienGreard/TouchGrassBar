@@ -5,6 +5,7 @@ import {
   previousStableTag,
   releaseChangesFromCommits,
   releaseHistoryArguments,
+  releaseTrailersFromBody,
   selectEquivalentReleaseCommit,
   updaterReleaseNotes,
 } from "./release-notes";
@@ -117,6 +118,31 @@ describe("release notes", () => {
         },
       ]),
     ).toThrow("The replacement release summary has no user-facing note.");
+  });
+
+  test("ignores release markers in nested squash text", () => {
+    const body = [
+      "Nested commit message:",
+      "Release-note-mode: replace",
+      "Release-note: A nested note that must not replace the summary.",
+      "",
+      "The top-level squash summary continues here.",
+      "",
+      "Release-note: The reviewed top-level note.",
+    ].join("\n");
+
+    expect(releaseTrailersFromBody(body)).toEqual({
+      modes: [],
+      notes: ["The reviewed top-level note."],
+    });
+    expect(
+      releaseChangesFromCommits([
+        {
+          body,
+          subject: "fix(release): keep only top-level release trailers",
+        },
+      ]),
+    ).toEqual(["The reviewed top-level note."]);
   });
 
   test("rejects more than one replacement summary", () => {

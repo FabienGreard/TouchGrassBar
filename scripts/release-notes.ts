@@ -19,6 +19,11 @@ type ReleaseHistoryCommit = {
   tree: string;
 };
 
+type ReleaseTrailers = {
+  modes: string[];
+  notes: string[];
+};
+
 type ReleaseSummary = {
   changes: string[];
   comparisonBaseline: string;
@@ -97,27 +102,53 @@ function sentence(value: string) {
   return /[.!?]$/u.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
+function releaseTrailersFromBody(body: string): ReleaseTrailers {
+  const lines = body.split(/\r?\n/u);
+  while (lines.at(-1)?.trim() === "") lines.pop();
+  let start = lines.length;
+  while (start > 0 && /^[A-Za-z0-9-]+:[ \t]*.*$/u.test(lines[start - 1]!)) start -= 1;
+  if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
+    return { modes: [], notes: [] };
+  }
+  const modes: string[] = [];
+  const notes: string[] = [];
+  for (const line of lines.slice(start)) {
+    const match = /^([A-Za-z0-9-]+):[ \t]*(.*)$/u.exec(line);
+    if (!match) continue;
+    const token = match[1]!.toLowerCase();
+    const value = match[2]!.trim();
+    if (token === "release-note-mode" && value) modes.push(value);
+    if (token === "release-note" && value) notes.push(value);
+  }
+  return { modes, notes };
+}
+
 function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
-  const replacements = commits.filter((commit) =>
-    /^Release-note-mode:[ \t]*replace[ \t]*$/imu.test(commit.body),
+  const analyzedCommits = commits.map((commit) => ({
+    commit,
+    trailers: releaseTrailersFromBody(commit.body),
+  }));
+  const replacements = analyzedCommits.filter(({ trailers }) =>
+    trailers.modes.some((mode) => mode.toLowerCase() === "replace"),
   );
   if (replacements.length > 1) {
     throw new Error("Release notes have more than one replacement summary.");
   }
   const replacement = replacements[0];
-  const selectedCommits = replacement ? commits.slice(commits.indexOf(replacement)) : commits;
+  const selectedCommits = replacement
+    ? analyzedCommits.slice(analyzedCommits.indexOf(replacement))
+    : analyzedCommits;
   const changes: string[] = [];
   const seen = new Set<string>();
-  for (const commit of selectedCommits) {
-    const trailers = [...commit.body.matchAll(/^Release-note:[ \t]*(\S(?:.*\S)?)[ \t]*$/gimu)].map(
-      (match) => match[1]!,
-    );
-    const reviewedTrailers = trailers.filter((trailer) => trailer.toLowerCase() !== "none");
-    if (commit === replacement && reviewedTrailers.length === 0) {
+  for (const analyzed of selectedCommits) {
+    const { commit, trailers } = analyzed;
+    const { notes } = trailers;
+    const reviewedTrailers = notes.filter((note) => note.toLowerCase() !== "none");
+    if (analyzed === replacement && reviewedTrailers.length === 0) {
       throw new Error("The replacement release summary has no user-facing note.");
     }
     const candidates =
-      trailers.length > 0
+      notes.length > 0
         ? reviewedTrailers
         : (() => {
             const conventional = /^(feat|fix|perf)(?:\(([^)]+)\))?!?:\s+(.+)$/u.exec(
@@ -284,6 +315,7 @@ export {
   previousStableTag,
   releaseChangesFromCommits,
   releaseHistoryArguments,
+  releaseTrailersFromBody,
   selectEquivalentReleaseCommit,
   updaterReleaseNotes,
 };
