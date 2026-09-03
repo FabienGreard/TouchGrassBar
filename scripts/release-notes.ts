@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
+import { decodeHTMLStrict } from "entities";
+import { markdownToMdast } from "satteri";
 
 type ArtifactRecord = {
   bytes: number;
@@ -24,6 +26,13 @@ type ReleaseTrailers = {
   notes: string[];
 };
 
+type MarkdownNode = {
+  alt?: string | null;
+  children?: MarkdownNode[];
+  type: string;
+  value?: string;
+};
+
 type ReleaseSummary = {
   changes: string[];
   comparisonBaseline: string;
@@ -42,9 +51,19 @@ const repository = "FabienGreard/TouchGrassBar";
 const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
 const nestedConventionalSubjectPattern =
-  /^(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
+  /^(?:(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?|[a-z][a-z0-9-]*\([^\r\n)]+\))!?:[ \t]+\S/u;
+const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
 const markdownSubjectPrefixPattern =
-  /^(?:(?:[0-9]+[.)]|\[[ xX]\])[ \t]+|<\/?[A-Za-z][^>\r\n]*>[ \t]*|[^\p{L}\p{N}\s]+[ \t]*)/u;
+  /^(?:(?:[-*+]|#{1,6}|[0-9]+[.)])[ \t]+|>[ \t]?|\[[ xX]\][ \t]+|`+|\*{1,3}|_{1,3}|~~|!?\[|\|[ \t]*)/u;
+const htmlTagStartPattern = /^<\/?[A-Za-z][A-Za-z0-9-]*(?=[\t\f />])/u;
+const htmlDeclarationStartPattern = /^<![A-Z]/u;
+const markdownSubjectContainerTypes = new Set([
+  "code",
+  "heading",
+  "html",
+  "paragraph",
+  "tableCell",
+]);
 
 function command(executable: string, argumentsList: string[]) {
   const result = spawnSync(executable, argumentsList, {
@@ -106,14 +125,121 @@ function sentence(value: string) {
   return /[.!?]$/u.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
-function isNestedConventionalSubject(line: string) {
-  let candidate = line.trimStart();
+function leadingHtmlMarkupLength(value: string) {
+  const delimitedPrefixes: ReadonlyArray<readonly [string, string]> = [
+    ["<!--", "-->"],
+    ["<![CDATA[", "]]>"],
+    ["<?", "?>"],
+  ];
+  for (const [opening, closing] of delimitedPrefixes) {
+    if (!value.startsWith(opening)) continue;
+    const end = value.indexOf(closing, opening.length);
+    return end === -1 ? 0 : end + closing.length;
+  }
+  if (!htmlTagStartPattern.test(value) && !htmlDeclarationStartPattern.test(value)) return 0;
+  let quote = "";
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (quote) {
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === ">") return index + 1;
+  }
+  return 0;
+}
+
+function unescapedPipeIndices(value: string) {
+  const indices: number[] = [];
+  let backslashes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (character === "|" && backslashes % 2 === 0) indices.push(index);
+    backslashes = 0;
+  }
+  return indices;
+}
+
+function markdownSubjectCandidates(line: string, everyTableCell = false) {
+  const pipes = unescapedPipeIndices(line);
+  if (pipes.length === 0) return [line];
+  const firstContent = line.length - line.trimStart().length;
+  const lastContent = line.trimEnd().length - 1;
+  if (!everyTableCell && pipes[0] !== firstContent && pipes.at(-1) !== lastContent) {
+    return [line];
+  }
+  return [line, ...pipes.map((index) => line.slice(index + 1))];
+}
+
+function candidateIsNestedConventionalSubject(value: string) {
+  let candidate = value.trimStart();
   while (true) {
     const withoutPrefix = candidate.replace(markdownSubjectPrefixPattern, "").trimStart();
     if (withoutPrefix === candidate) break;
     candidate = withoutPrefix;
   }
-  return nestedConventionalSubjectPattern.test(candidate);
+  return (
+    !releaseTrailerSubjectPattern.test(candidate) &&
+    nestedConventionalSubjectPattern.test(candidate)
+  );
+}
+
+function withoutHtmlMarkup(value: string) {
+  let result = "";
+  for (let index = 0; index < value.length;) {
+    const markupLength = value[index] === "<" ? leadingHtmlMarkupLength(value.slice(index)) : 0;
+    if (markupLength > 0) {
+      index += markupLength;
+      continue;
+    }
+    result += value[index];
+    index += 1;
+  }
+  return result;
+}
+
+function renderedMarkdown(node: MarkdownNode): string {
+  if (node.type === "html") return decodeHTMLStrict(withoutHtmlMarkup(node.value ?? ""));
+  if (node.type === "image") return node.alt ?? "";
+  if (node.type === "break") return "\n";
+  if (node.value !== undefined) return node.value;
+  return node.children?.map(renderedMarkdown).join("") ?? "";
+}
+
+function renderedTextHasNestedSubject(value: string) {
+  return value
+    .split(/\r?\n/u)
+    .some((line) => markdownSubjectCandidates(line).some(candidateIsNestedConventionalSubject));
+}
+
+function markdownTreeHasNestedSubject(node: MarkdownNode): boolean {
+  if (
+    markdownSubjectContainerTypes.has(node.type) &&
+    renderedTextHasNestedSubject(renderedMarkdown(node))
+  ) {
+    return true;
+  }
+  if (markdownSubjectContainerTypes.has(node.type)) return false;
+  return node.children?.some(markdownTreeHasNestedSubject) ?? false;
+}
+
+function markdownHasNestedSubject(value: string) {
+  return markdownTreeHasNestedSubject(markdownToMdast(value) as MarkdownNode);
+}
+
+function hasNestedConventionalSubject(lines: readonly string[]) {
+  if (markdownHasNestedSubject(lines.join("\n"))) return true;
+  return lines.some((line) =>
+    markdownSubjectCandidates(line).some((candidate) => markdownHasNestedSubject(candidate)),
+  );
 }
 
 function releaseTrailersFromBody(body: string): ReleaseTrailers {
@@ -124,7 +250,7 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
     return { modes: [], notes: [] };
   }
-  if (lines.some(isNestedConventionalSubject)) {
+  if (hasNestedConventionalSubject(lines.slice(0, start))) {
     return { modes: [], notes: [] };
   }
   const modes: string[] = [];

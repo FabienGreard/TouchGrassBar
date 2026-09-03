@@ -182,7 +182,26 @@ describe("release notes", () => {
     "[fix(parser): describe the nested change](https://example.com)",
     "| fix(parser): describe the nested change |",
     "| **fix(parser): describe the nested change** |",
+    "| abc123 | fix(parser): describe the nested change |",
+    "| &#92;| fix(parser): describe the nested change |",
     "<code>fix(parser): describe the nested change</code>",
+    '<span title=">">fix(parser): describe the nested change</span>',
+    '<span title="&quot;">fix(parser): describe the nested change</span>',
+    "<!-- marker -->fix(parser): describe the nested change",
+    "<?marker?>fix(parser): describe the nested change",
+    "<!DOCTYPE html>fix(parser): describe the nested change",
+    "<![CDATA[marker]]>fix(parser): describe the nested change",
+    "&nbsp;fix(parser): describe the nested change",
+    "&#32;fix(parser): describe the nested change",
+    "&#x66;ix(parser): describe the nested change",
+    "f&#105;x(parser): describe the nested change",
+    "fix(parser)&#58; describe the nested change",
+    "security(parser): describe the nested change",
+    "&ast;&ast;fix(parser): describe the nested change&ast;&ast;",
+    "&vert; fix(parser): describe the nested change &vert;",
+    "**fix**(parser): describe the nested change",
+    "<strong>fix</strong>(parser): describe the nested change",
+    "[fix](https://example.com)(parser): describe the nested change",
   ])("does not parse a prefixed nested subject as a trailer: %s", (nestedSubject) => {
     expect(
       releaseChangesFromCommits([
@@ -191,13 +210,78 @@ describe("release notes", () => {
           subject: "fix(desktop): keep the reviewed behavior",
         },
         {
-          body: [nestedSubject, "Release-note-mode: replace", "Release-note: Nested note."].join(
-            "\n",
-          ),
+          body: [
+            nestedSubject,
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
           subject: "chore(release): collect squashed work",
         },
       ]),
     ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
+  test("does not parse a nested subject from a GFM table without outer pipes", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "Change | Detail",
+            "--- | ---",
+            "abc123 | fix(parser): describe the nested change",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
+  test("does not parse a nested subject from a quoted GFM table", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "> Change | Detail",
+            "> --- | ---",
+            "> abc123 | fix(parser): describe the nested change",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
+  test.each([
+    "@fix(parser): ask the owner",
+    "(fix(parser): explanatory text",
+    "value | fix(parser): explanatory text",
+    String.raw`value \| fix(parser): explanatory text`,
+    "status: active",
+    "note: explain the parser behavior",
+    ["```yaml", "status: active", "```"].join("\n"),
+    ["Header only", "--- | ---", "value | fix(parser): explanatory text"].join("\n"),
+  ])("keeps top-level trailers after non-Markdown punctuation: %s", (bodyLine) => {
+    expect(
+      releaseTrailersFromBody([bodyLine, "", "Release-note: Keep this note."].join("\n")),
+    ).toEqual({
+      modes: [],
+      notes: ["Keep this note."],
+    });
   });
 
   test("rejects more than one replacement summary", () => {

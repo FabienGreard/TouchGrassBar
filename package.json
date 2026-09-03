@@ -53,9 +53,11 @@
   },
   "devDependencies": {
     "convex": "1.43.0",
+    "entities": "7.0.1",
     "oxfmt": "0.64.0",
     "oxlint": "1.76.0",
     "react-doctor": "0.9.3",
+    "satteri": "0.9.5",
     "turbo": "2.10.8",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
