@@ -5,6 +5,7 @@ mod registry;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
     sync::{
@@ -13,6 +14,11 @@ use std::{
         mpsc,
     },
     thread,
+};
+
+use serde::{
+    Deserialize, Deserializer,
+    de::{IgnoredAny, MapAccess, Visitor},
 };
 
 use crate::sanitized::{
@@ -87,6 +93,74 @@ pub(crate) fn codex_usage_schema_version(connection: &rusqlite::Connection) -> R
 
 pub(crate) fn claude_usage_schema_version(connection: &rusqlite::Connection) -> Result<i64, ()> {
     claude::usage_index_schema_version(connection)
+}
+
+const MAX_UNKNOWN_FIELDS: usize = 64;
+const MAX_UNKNOWN_KEY_BYTES: usize = 128;
+
+/// Bounded record of the keys a provider payload carried that this parser does
+/// not know.
+///
+/// Provider payloads gain fields between releases. Rejecting the whole payload
+/// for an added sibling turns every upstream release into an outage, so the
+/// adapters flatten this collector into a struct instead of using
+/// `deny_unknown_fields` wherever an added field cannot change the meaning of
+/// the fields already read. It keeps at most a bounded number of bounded keys
+/// and discards every value, so an oversized or hostile payload cannot grow
+/// native memory. Keep `deny_unknown_fields` on anything that feeds Observed
+/// Tokens, where an unknown field may be a subset that would double-count.
+#[derive(Debug, Default)]
+pub(crate) struct BoundedUnknownFields {
+    fields: BTreeMap<String, IgnoredAny>,
+    overflowed: bool,
+}
+
+impl BoundedUnknownFields {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.fields.is_empty() && !self.overflowed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.fields.len()
+    }
+}
+
+impl<'de> Deserialize<'de> for BoundedUnknownFields {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(BoundedUnknownFieldsVisitor)
+    }
+}
+
+struct BoundedUnknownFieldsVisitor;
+
+impl<'de> Visitor<'de> for BoundedUnknownFieldsVisitor {
+    type Value = BoundedUnknownFields;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a bounded map of unknown provider metadata")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut unknown = BoundedUnknownFields::default();
+        while let Some(key) = map.next_key::<String>()? {
+            let value = map.next_value::<IgnoredAny>()?;
+            if key.len() > MAX_UNKNOWN_KEY_BYTES || unknown.fields.len() >= MAX_UNKNOWN_FIELDS {
+                unknown.overflowed = true;
+                continue;
+            }
+            if unknown.fields.insert(key, value).is_some() {
+                unknown.overflowed = true;
+            }
+        }
+        Ok(unknown)
+    }
 }
 
 pub(crate) trait ProviderEnablementPolicy: Send + Sync {
@@ -1642,5 +1716,29 @@ mod tests {
                 .and_then(|top| top.model.as_deref()),
             Some("Claude Sonnet 4.5")
         );
+    }
+
+    #[test]
+    fn unknown_provider_metadata_storage_is_bounded() {
+        let fields = (0..=MAX_UNKNOWN_FIELDS)
+            .map(|index| format!(r#""unknown_{index}":{index}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let unknown: BoundedUnknownFields = serde_json::from_str(&format!("{{{fields}}}")).unwrap();
+
+        assert_eq!(unknown.len(), MAX_UNKNOWN_FIELDS);
+        assert!(unknown.overflowed);
+        assert!(!unknown.is_empty());
+
+        let long_key = "x".repeat(MAX_UNKNOWN_KEY_BYTES + 1);
+        let unknown: BoundedUnknownFields =
+            serde_json::from_str(&format!(r#"{{"{long_key}":1}}"#)).unwrap();
+
+        assert_eq!(unknown.len(), 0);
+        assert!(unknown.overflowed);
+        assert!(!unknown.is_empty());
+
+        let known: BoundedUnknownFields = serde_json::from_str("{}").unwrap();
+        assert!(known.is_empty());
     }
 }

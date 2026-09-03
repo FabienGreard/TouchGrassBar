@@ -847,7 +847,7 @@ function codexVersionIsSupported(
 }
 
 function claudeParserVersions(source: string): string[] {
-  const match = /const\s+SUPPORTED_CLAUDE_CODE_VERSIONS:[^=]+=\s*\[([^\]]+)\]/su.exec(source);
+  const match = /const\s+REVIEWED_CLAUDE_CODE_VERSIONS:[^=]+=\s*\[([^\]]+)\]/su.exec(source);
   if (!match?.[1]) throw new Error("The Claude parser versions are unavailable.");
   const versions = [...match[1].matchAll(/"([^"]+)"/gu)].map((entry) => entry[1] ?? "");
   if (versions.length === 0 || versions.some((version) => !version)) {
@@ -2143,7 +2143,7 @@ async function auditClaude(context: AuditContext) {
         "parser",
         "unavailable",
         "invalid-local-contract",
-        "claude-parser: the exact version allow-list cannot be read.",
+        "claude-parser: the reviewed version set cannot be read.",
       );
     }
   }
@@ -2208,7 +2208,7 @@ async function auditClaude(context: AuditContext) {
           "parser",
           "review-required",
           "unsupported-version",
-          `Claude Code ${channel} ${version} is outside the exact transcript allow-list.`,
+          `Claude Code ${channel} ${version} is outside the reviewed transcript set. Its usage counts as partial until a fixture proves the shape.`,
           url,
         );
       }

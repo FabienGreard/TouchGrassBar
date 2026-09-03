@@ -154,10 +154,17 @@ Use these primary sources for a Claude update:
 - [Claude release notes](https://platform.claude.com/docs/en/release-notes/overview)
 - [Anthropic TypeScript SDK usage types](https://github.com/anthropics/anthropic-sdk-typescript/blob/3b45cd3b69c956ac63384fdb09ce1d8109f3fa80/src/resources/beta/messages/messages.ts#L4053-L4105)
 
-The Claude transcript allow-list has four verified pairs. Claude Code
+The reviewed Claude Code version set has four verified pairs. Claude Code
 `2.1.223` pairs with `@anthropic-ai/claude-agent-sdk` `0.3.223`. Claude Code
 `2.1.224` pairs with SDK version `0.3.224`. Claude Code `2.1.241` pairs with SDK
 version `0.3.241`. Claude Code `2.1.258` pairs with SDK version `0.3.258`.
+
+The reviewed set does not gate parsing. A version outside it is read with the
+same structural checks, contributes its Observed Tokens, and leaves its Ranking
+Day partial and unpriced until a fixture proves the shape. Claude Code ships
+faster than this parser is reviewed, so a version gate would report zero tokens
+for work that happened. Only an unreviewed version that also carries an
+unreviewed usage shape withholds its counters.
 
 The public package review on 2026-08-26 resolved each moving channel to an
 exact package record and checked its npm `dist.integrity` value:
@@ -182,10 +189,12 @@ does not review the stable channel or any Codex area, so the shared
 `reviewedAt` date does not change.
 
 These public package records do not prove a private transcript shape. They do
-not add a Claude Code version to the transcript allow-list.
+not add a Claude Code version to the reviewed set.
 
-The scanner ignores one synthetic API-error record from Claude Code `2.1.241`
-or `2.1.258`. The record must match the reviewed shape exactly. This check
+The scanner ignores a synthetic API-error record in either of two reviewed
+shapes: the earlier shape that carries no HTTP status, error details, or request
+identifier, and the later shape that carries all three. The record must match a
+reviewed shape exactly. This check
 includes the wrapper, message, content, zero-token counters, zero paid-tool
 counters, and null extended usage fields. The `2.1.258` record also requires an
 HTTP error status, non-empty error details, and a non-empty request identifier.
@@ -211,8 +220,8 @@ modifier applies. These rates apply to one million tokens:
 | Cache read           |  0.25 |
 | Output               | 50.00 |
 
-This review checked Claude pricing only. It did not review the Claude
-transcript allow-list, the Claude parser fixtures, or any Codex area, so the
+This review checked Claude pricing only. It did not review the reviewed Claude
+Code version set, the Claude parser fixtures, or any Codex area, so the
 `reviewedAt` checkpoint stays at its previous date.
 
 The `2026-08-26-v1` review removed the planned Sonnet 5 increase. Anthropic
@@ -303,8 +312,9 @@ Use this process when the audit reports a new Claude Code or Agent SDK version:
    bun run audit:providers -- --format markdown
    ```
 
-8. Add the exact Claude Code version to the allow-list only after every fixture
-   passes. Update the reviewed package versions, signatures, semantic markers,
+8. Add the exact Claude Code version to the reviewed set only after every
+   fixture passes. Adding it is what lets that version's days claim complete
+   coverage and a priced estimate; its tokens already count without it. Update the reviewed package versions, signatures, semantic markers,
    and full-review date as applicable. Delete the temporary config and raw
    JSONL. Never commit or attach them.
 

@@ -124,6 +124,10 @@ fn capture_usage_output(
     let mut usage_sent = false;
     let mut output = Zeroizing::new(Vec::new());
     let mut accepted_prompts = [false; 5];
+    // The screen draws over several chunks, so a reading that resolves only one
+    // window may simply be early. Keep the best one and use it only when the
+    // probe runs out of time or output.
+    let mut partial: Option<ClaudeQuotaObservation> = None;
 
     loop {
         if cancelled() {
@@ -132,6 +136,10 @@ fn capture_usage_output(
         }
         let now = Instant::now();
         if now >= deadline {
+            if let Some(observation) = partial {
+                probe_event("cli_probe_partial stage=timeout");
+                return Ok(observation);
+            }
             probe_event("cli_probe_failed stage=timeout");
             return Err(ProbeFailure::Unavailable);
         }
@@ -145,6 +153,10 @@ fn capture_usage_output(
         match process.receive_timeout(StdDuration::from_millis(100)) {
             Ok(chunk) => {
                 if output.len().saturating_add(chunk.len()) > MAX_CLI_OUTPUT_BYTES {
+                    if let Some(observation) = partial {
+                        probe_event("cli_probe_partial stage=output_limit");
+                        return Ok(observation);
+                    }
                     probe_event("cli_probe_failed stage=output_limit");
                     return Err(ProbeFailure::Unavailable);
                 }
@@ -157,7 +169,10 @@ fn capture_usage_output(
                 )
                 .map_err(|()| ProbeFailure::Unavailable)?;
                 if usage_sent && let Ok(observation) = parse_usage_output(&output, observed_at) {
-                    return Ok(observation);
+                    if observation.is_complete() {
+                        return Ok(observation);
+                    }
+                    partial = Some(observation);
                 }
             }
             Err(ProviderProcessError::TimedOut) => {}
@@ -166,6 +181,10 @@ fn capture_usage_output(
                 return Err(ProbeFailure::Cancelled);
             }
             Err(_) => {
+                if let Some(observation) = partial {
+                    probe_event("cli_probe_partial stage=output_closed");
+                    return Ok(observation);
+                }
                 probe_event("cli_probe_failed stage=output_closed");
                 return Err(ProbeFailure::Unavailable);
             }
@@ -434,6 +453,19 @@ fn javascript_hash_base36(value: &str) -> String {
     encoded.into_iter().rev().collect()
 }
 
+/// The largest compacted distance between a `% used` counter and the `Resets`
+/// clause that belongs to it. One window renders the two together, so a wider
+/// gap means they came from different parts of the screen.
+const MAX_WINDOW_SPAN_CHARS: usize = 160;
+
+/// Reduce the `/usage` screen to the quota windows it shows.
+///
+/// The screen is presentation: headings, ordering, and decoration change
+/// between Claude Code releases without the quota changing. This reads each
+/// window by its own shape instead — a percentage counter followed by the reset
+/// clause that belongs to it — and tells the two supported windows apart by
+/// whether the reset names a day. A window this parser cannot read is left
+/// absent rather than failing the whole probe.
 pub(super) fn parse_usage_output(
     output: &[u8],
     observed_at: OffsetDateTime,
@@ -444,18 +476,58 @@ pub(super) fn parse_usage_output(
         .chars()
         .filter(|character| !character.is_whitespace() && !character.is_control())
         .collect::<String>();
-    let session_start = compact.rfind("Currentsession").ok_or(())?;
-    let weekly_offset = compact[session_start..]
-        .find("Currentweek(allmodels)")
-        .ok_or(())?;
-    let weekly_start = session_start + weekly_offset;
-    let session = &compact[session_start..weekly_start];
-    let weekly = &compact[weekly_start..];
+    // Matching is case-insensitive. `to_ascii_lowercase` keeps every byte
+    // offset, so an index found here also addresses `compact`, which keeps the
+    // original case that the timezone name needs.
+    let matchable = compact.to_ascii_lowercase();
 
+    let mut five_hour = None;
+    let mut seven_day = None;
+    for (percent_end, _) in matchable.match_indices("%used") {
+        let Ok(used_percentage) = extract_used_percentage(&compact[..percent_end]) else {
+            continue;
+        };
+        let tail = &compact[percent_end..];
+        let span_end = tail
+            .char_indices()
+            .nth(MAX_WINDOW_SPAN_CHARS)
+            .map_or(tail.len(), |(index, _)| index);
+        // Locate the clause without case, then read it from the original text,
+        // where the timezone name keeps its capitals.
+        let Some((reset_start, reset_end)) = reset_bounds(&matchable[percent_end..][..span_end])
+        else {
+            continue;
+        };
+        let reset = &tail[reset_start..reset_end];
+        // A weekly reset names the day it lands on. A session reset carries a
+        // clock alone.
+        let horizon = if reset_names_a_day(reset) {
+            ResetHorizon::SevenDays
+        } else {
+            ResetHorizon::FiveHours
+        };
+        let Ok(resets_at) = parse_reset(reset, observed_at, horizon) else {
+            continue;
+        };
+        let window = super::ClaudeRateLimitWindow {
+            resets_at,
+            used_percentage,
+        };
+        // A redrawn terminal repeats the whole screen. The last readable
+        // rendering of each window is the current one.
+        match horizon {
+            ResetHorizon::FiveHours => five_hour = Some(window),
+            ResetHorizon::SevenDays => seven_day = Some(window),
+        }
+    }
+
+    if five_hour.is_none() && seven_day.is_none() {
+        return Err(());
+    }
     Ok(ClaudeQuotaObservation {
         observed_at,
-        five_hour: quota_window(session, observed_at, ResetHorizon::FiveHours)?,
-        seven_day: quota_window(weekly, observed_at, ResetHorizon::SevenDays)?,
+        five_hour,
+        seven_day,
     })
 }
 
@@ -465,23 +537,15 @@ enum ResetHorizon {
     SevenDays,
 }
 
-fn quota_window(
-    section: &str,
-    observed_at: OffsetDateTime,
-    horizon: ResetHorizon,
-) -> Result<super::ClaudeRateLimitWindow, ()> {
-    let used_percentage = extract_used_percentage(section)?;
-    let reset = extract_reset(section)?;
-    let resets_at = parse_reset(reset, observed_at, horizon)?;
-    Ok(super::ClaudeRateLimitWindow {
-        resets_at,
-        used_percentage,
-    })
+fn reset_names_a_day(reset: &str) -> bool {
+    let Some(timezone_start) = reset.rfind('(') else {
+        return false;
+    };
+    split_reset_at(&reset[..timezone_start])
+        .is_some_and(|(date_text, _)| parse_month_day(date_text).is_ok())
 }
 
-fn extract_used_percentage(section: &str) -> Result<f64, ()> {
-    let percent_end = section.find("%used").ok_or(())?;
-    let prefix = &section[..percent_end];
+fn extract_used_percentage(prefix: &str) -> Result<f64, ()> {
     let percent_start = prefix
         .char_indices()
         .rev()
@@ -493,13 +557,28 @@ fn extract_used_percentage(section: &str) -> Result<f64, ()> {
         .ok_or(())
 }
 
-fn extract_reset(section: &str) -> Result<&str, ()> {
-    let reset = section
-        .split_once("Resets")
-        .map(|(_, reset)| reset)
-        .ok_or(())?;
-    let timezone_end = reset.find(')').ok_or(())?;
-    Ok(&reset[..=timezone_end])
+/// The bounds of the `Resets ... (Zone)` clause inside one window.
+///
+/// The caller searches lowercased text and slices the original with the result,
+/// which `to_ascii_lowercase` keeps aligned byte for byte.
+fn reset_bounds(section: &str) -> Option<(usize, usize)> {
+    const MARKER: &str = "resets";
+
+    let start = section.find(MARKER)? + MARKER.len();
+    let end = section[start..].find(')')? + start + 1;
+    Some((start, end))
+}
+
+/// Split a weekly reset into its date and clock halves, without case, so a
+/// relabelled screen still parses.
+fn split_reset_at(local_reset: &str) -> Option<(&str, &str)> {
+    const SEPARATOR: &str = "at";
+
+    let index = local_reset.to_ascii_lowercase().find(SEPARATOR)?;
+    Some((
+        &local_reset[..index],
+        &local_reset[index + SEPARATOR.len()..],
+    ))
 }
 
 fn parse_reset(reset: &str, observed_at: OffsetDateTime, horizon: ResetHorizon) -> Result<i64, ()> {
@@ -530,7 +609,7 @@ fn parse_reset(reset: &str, observed_at: OffsetDateTime, horizon: ResetHorizon) 
             validate_reset(local, observed_at, 6 * 60 * 60)
         }
         ResetHorizon::SevenDays => {
-            let (date_text, time_text) = local_reset.split_once("at").ok_or(())?;
+            let (date_text, time_text) = split_reset_at(local_reset).ok_or(())?;
             let (month, day) = parse_month_day(date_text)?;
             let (hour, minute) = parse_clock(time_text)?;
             let mut year = observed_local.year();
@@ -637,6 +716,7 @@ mod tests {
     use time::{Duration, format_description::well_known::Rfc3339};
 
     use super::*;
+    use crate::sanitized::ProviderSnapshot;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -683,18 +763,124 @@ mod tests {
 
         let observation = parse_usage_output(output, test_time()).unwrap();
         assert_eq!(observation.observed_at, test_time());
-        assert_eq!(observation.five_hour.used_percentage, 42.0);
-        assert_eq!(observation.seven_day.used_percentage, 4.0);
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
         assert_eq!(
-            observation.five_hour.resets_at,
+            observation.five_hour.unwrap().resets_at,
             (test_time() + Duration::hours(2) + Duration::minutes(20)).unix_timestamp()
         );
         assert_eq!(
-            observation.seven_day.resets_at,
+            observation.seven_day.unwrap().resets_at,
             OffsetDateTime::parse("2026-08-10T04:00:00Z", &Rfc3339)
                 .unwrap()
                 .unix_timestamp()
         );
+    }
+
+    #[test]
+    fn cli_usage_survives_renamed_headings_and_reordered_sections() {
+        // Headings, ordering, and decoration are presentation. A release that
+        // changes them must not blank the Quota Lanes.
+        let output = r#"
+          Weekly allowance (every model)
+          4% Used
+          RESETS Aug 10 at 6am (Europe/Paris)
+
+          This session
+          ▌ 42% used
+          Resets 6:50pm (Europe/Paris)
+        "#
+        .as_bytes();
+
+        let observation = parse_usage_output(output, test_time()).unwrap();
+        assert!(observation.is_complete());
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
+    }
+
+    #[test]
+    fn cli_usage_keeps_the_window_it_can_read_when_the_other_changes() {
+        // One unreadable section leaves its lane out. Discarding the readable
+        // window too would report no quota at all.
+        let output = r#"
+          Current session
+          42% used
+          Resets 6:50pm (Europe/Paris)
+
+          Current week (all models)
+          4 out of 100 credits remaining until the cycle rolls over
+        "#
+        .as_bytes();
+
+        let observation = parse_usage_output(output, test_time()).unwrap();
+        assert!(!observation.is_complete());
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
+        assert!(observation.seven_day.is_none());
+
+        let ProviderSnapshot::Current { quota_lanes, .. } =
+            observation.sanitized_snapshot(test_time()).unwrap()
+        else {
+            panic!("a readable window must still publish its lane");
+        };
+        assert_eq!(quota_lanes.len(), 1);
+        assert_eq!(quota_lanes[0].label, "5-hour limit");
+    }
+
+    #[test]
+    fn cli_usage_reads_the_latest_redraw_and_rejects_an_unreadable_screen() {
+        // The terminal repeats the whole screen as it redraws. The last
+        // readable rendering of each window is the current one.
+        let redrawn = r#"
+          Current session
+          10% used
+          Resets 6:50pm (Europe/Paris)
+          Current week (all models)
+          1% used
+          Resets Aug 10 at 6am (Europe/Paris)
+
+          Current session
+          42% used
+          Resets 6:50pm (Europe/Paris)
+          Current week (all models)
+          4% used
+          Resets Aug 10 at 6am (Europe/Paris)
+        "#
+        .as_bytes();
+
+        let observation = parse_usage_output(redrawn, test_time()).unwrap();
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
+        assert_eq!(observation.seven_day.unwrap().used_percentage, 4.0);
+
+        for unreadable in [
+            &b"Current session
+Resets 6:50pm (Europe/Paris)"[..],
+            &b"Current session
+42% used
+no reset clause here"[..],
+            &b"Current session
+42% used
+Resets 6:50pm (Not/AZone)"[..],
+            &b"Loading your usage..."[..],
+        ] {
+            assert!(parse_usage_output(unreadable, test_time()).is_err());
+        }
+    }
+
+    #[test]
+    fn cli_usage_does_not_pair_a_counter_with_a_distant_reset() {
+        // A counter and the reset clause that belongs to it render together. A
+        // stray percentage far from any reset must not borrow another window's.
+        let filler = "x".repeat(MAX_WINDOW_SPAN_CHARS + 40);
+        let output = format!(
+            "99% used
+{filler}
+Current session
+42% used
+Resets 6:50pm (Europe/Paris)"
+        );
+
+        let observation = parse_usage_output(output.as_bytes(), test_time()).unwrap();
+        assert_eq!(observation.five_hour.unwrap().used_percentage, 42.0);
     }
 
     #[test]

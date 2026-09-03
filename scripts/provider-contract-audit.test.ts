@@ -465,7 +465,7 @@ function createScenario() {
     [`${workspaceRoot}/${contract.codex.pricingManifestPath}`, json(openAiManifest)],
     [
       `${workspaceRoot}/${contract.claude.parserSourcePath}`,
-      'const SUPPORTED_CLAUDE_CODE_VERSIONS: [&str; 1] = ["2.1.224"];',
+      'const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 1] = ["2.1.224"];',
     ],
     [`${workspaceRoot}/${contract.claude.pricingManifestPath}`, json(anthropicManifest)],
   ]);

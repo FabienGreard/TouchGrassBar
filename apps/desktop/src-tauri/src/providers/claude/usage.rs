@@ -9,7 +9,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{
     Deserialize, Deserializer,
-    de::{IgnoredAny, MapAccess, SeqAccess, Visitor},
+    de::{IgnoredAny, SeqAccess, Visitor},
 };
 use time::{Date, Duration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
@@ -17,7 +17,7 @@ use crate::daily_usage_aggregate::{
     DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_daily_usage_aggregates,
     calculate_usage_periods, checked_sum, period_days,
 };
-use crate::providers::ProviderCorrection;
+use crate::providers::{BoundedUnknownFields, ProviderCorrection};
 use crate::sanitized::{
     ApiEquivalentCostQuality, TopModelUsage, UsageCoverage, UsagePeriods, UsageScanStatus,
     UsageTotal,
@@ -30,15 +30,18 @@ const MAX_TRANSCRIPT_SCAN_MILLIS: u128 = 2_000;
 const RESUME_ANCHOR_BYTES: u64 = 64 * 1024;
 const TOKEN_HISTORY_RETENTION_DAYS: i64 = 60;
 const COST_DETAIL_RETENTION_DAYS: i64 = 30;
-const SUPPORTED_CLAUDE_CODE_VERSIONS: [&str; 4] = ["2.1.223", "2.1.224", "2.1.241", "2.1.258"];
+/// Claude Code versions whose transcript shape a maintainer checked against
+/// controlled fixtures. An unreviewed version does not make a record invalid.
+/// The structural checks below decide whether its counters can be counted; the
+/// reviewed set only decides whether the resulting day can claim complete
+/// coverage.
+const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 4] = ["2.1.223", "2.1.224", "2.1.241", "2.1.258"];
 const MAX_SUPERSEDED_FRAMES: usize = 64;
 const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
-const MAX_UNKNOWN_USAGE_FIELDS: usize = 64;
-const MAX_UNKNOWN_USAGE_KEY_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 8;
+const TRANSCRIPT_PARSER_VERSION: i64 = 9;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -134,9 +137,10 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
     let Ok(envelope) = serde_json::from_slice::<RawAssistantEnvelope>(_line) else {
         return TranscriptLineOutcome::Invalid;
     };
-    if !supported_claude_code_version(&envelope.version) {
-        return TranscriptLineOutcome::Invalid;
-    }
+    // An unreviewed Claude Code version is not proof that a record is invalid.
+    // Discarding it would report zero tokens for work that happened, so the
+    // reviewed set only withholds `complete` below.
+    let reviewed_version = reviewed_claude_code_version(&envelope.version);
     if envelope.record_type != "assistant"
         || !valid_provider_identifier(&envelope.uuid)
         || envelope.supersedes.len() > MAX_SUPERSEDED_FRAMES
@@ -178,13 +182,16 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
     }
     let cache_creation_known = line.message.usage.cache_creation_input_tokens.is_some();
     let cache_read_known = line.message.usage.cache_read_input_tokens.is_some();
-    let reviewed_extended_usage = matches!(envelope.version.as_str(), "2.1.241" | "2.1.258")
-        && line
-            .message
-            .usage
-            .iterations
-            .as_ref()
-            .is_none_or(|iterations| iterations.matches(&line.message.usage))
+    // `iterations` and `output_tokens_details` repeat counters that the outer
+    // usage object already reports. The reviewed extended shape is the one
+    // whose repeated counters agree exactly, which is what makes it safe to
+    // read them once instead of adding them again.
+    let extended_usage_matches_reviewed_shape = line
+        .message
+        .usage
+        .iterations
+        .as_ref()
+        .is_none_or(|iterations| iterations.matches(&line.message.usage))
         && line
             .message
             .usage
@@ -193,9 +200,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
             .is_none_or(|details| details.matches(line.message.usage.output_tokens));
     let usage_schema_known = line.message.usage.unknown.is_empty()
         && line.message.usage.fallback_credit.is_none()
-        && (line.message.usage.iterations.is_none()
-            && line.message.usage.output_tokens_details.is_none()
-            || reviewed_extended_usage)
+        && extended_usage_matches_reviewed_shape
         && line
             .message
             .usage
@@ -208,6 +213,13 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
             .server_tool_use
             .as_ref()
             .is_none_or(|tools| tools.unknown.is_empty());
+    // A reviewed version whose shape drifted still reports counters this parser
+    // understands, so its tokens count and the day becomes partial. A version
+    // that is unreviewed *and* carries an unreviewed shape has no checked
+    // meaning for its counters, so only the frame is recorded.
+    if !reviewed_version && !usage_schema_known {
+        return TranscriptLineOutcome::FrameOnly(frame);
+    }
     let mut usage = ClaudeTokenUsage {
         input: line.message.usage.input_tokens,
         cache_creation_input: line.message.usage.cache_creation_input_tokens.unwrap_or(0),
@@ -241,6 +253,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
     let complete = cache_creation_known
         && cache_read_known
         && usage_schema_known
+        && reviewed_version
         && !line.aborted
         && (usage.cache_creation_input == 0 || cache_breakdown_matches);
     let pricing = ClaudePricingMetadata {
@@ -345,7 +358,7 @@ struct RawClaudeTokenUsage {
     #[serde(default)]
     output_tokens_details: Option<RawOutputTokenDetails>,
     #[serde(flatten)]
-    unknown: BoundedUnknownUsageFields,
+    unknown: BoundedUnknownFields,
 }
 
 #[derive(Deserialize)]
@@ -427,57 +440,6 @@ struct ReviewedOutputTokenDetails {
     thinking_tokens: u64,
 }
 
-#[derive(Default)]
-struct BoundedUnknownUsageFields {
-    fields: BTreeMap<String, IgnoredAny>,
-    overflowed: bool,
-}
-
-impl BoundedUnknownUsageFields {
-    fn is_empty(&self) -> bool {
-        self.fields.is_empty() && !self.overflowed
-    }
-}
-
-impl<'de> Deserialize<'de> for BoundedUnknownUsageFields {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_map(BoundedUnknownUsageFieldsVisitor)
-    }
-}
-
-struct BoundedUnknownUsageFieldsVisitor;
-
-impl<'de> Visitor<'de> for BoundedUnknownUsageFieldsVisitor {
-    type Value = BoundedUnknownUsageFields;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a bounded map of unknown usage metadata")
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut unknown = BoundedUnknownUsageFields::default();
-        while let Some(key) = map.next_key::<String>()? {
-            let value = map.next_value::<IgnoredAny>()?;
-            if key.len() > MAX_UNKNOWN_USAGE_KEY_BYTES
-                || unknown.fields.len() >= MAX_UNKNOWN_USAGE_FIELDS
-            {
-                unknown.overflowed = true;
-                continue;
-            }
-            if unknown.fields.insert(key, value).is_some() {
-                unknown.overflowed = true;
-            }
-        }
-        Ok(unknown)
-    }
-}
-
 #[derive(Deserialize)]
 struct RawCacheCreationUsage {
     #[serde(default)]
@@ -485,7 +447,7 @@ struct RawCacheCreationUsage {
     #[serde(default)]
     ephemeral_1h_input_tokens: Option<u64>,
     #[serde(flatten)]
-    unknown: BoundedUnknownUsageFields,
+    unknown: BoundedUnknownFields,
 }
 
 #[derive(Deserialize)]
@@ -495,7 +457,7 @@ struct RawServerToolUsage {
     #[serde(default)]
     web_fetch_requests: Option<u64>,
     #[serde(flatten)]
-    unknown: BoundedUnknownUsageFields,
+    unknown: BoundedUnknownFields,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -574,26 +536,24 @@ struct ReviewedApiErrorEnvelope {
     #[serde(rename = "userType")]
     user_type: DiscardedString,
     uuid: DiscardedString,
-    version: String,
+    version: DiscardedString,
 }
 
 impl ReviewedApiErrorEnvelope {
     fn is_reviewed(&self) -> bool {
-        let version_metadata_is_reviewed = match self.version.as_str() {
-            "2.1.241" => {
-                self.api_error_status.is_none()
-                    && self.error_details.is_none()
-                    && self.request_id.is_none()
-            }
-            "2.1.258" => {
-                matches!(self.api_error_status, Some(400..=599))
-                    && self
-                        .error_details
-                        .is_some_and(DiscardedString::is_non_empty)
-                    && self.request_id.is_some_and(DiscardedString::is_non_empty)
-            }
-            _ => false,
-        };
+        // Two reviewed error-metadata shapes exist: one that predates the HTTP
+        // status fields and one that carries all three together. Any other
+        // combination stays unreviewed. Matching the shape rather than the
+        // Claude Code version keeps the same strictness without withholding
+        // every later release.
+        let error_metadata_is_reviewed =
+            match (self.api_error_status, self.error_details, self.request_id) {
+                (None, None, None) => true,
+                (Some(400..=599), Some(error_details), Some(request_id)) => {
+                    error_details.is_non_empty() && request_id.is_non_empty()
+                }
+                _ => false,
+            };
         [
             self.cwd,
             self.entrypoint,
@@ -605,13 +565,14 @@ impl ReviewedApiErrorEnvelope {
             self.timestamp,
             self.user_type,
             self.uuid,
+            self.version,
         ]
         .into_iter()
         .all(DiscardedString::is_non_empty)
             && self.is_api_error_message
             && !self.is_sidechain
             && self.record_type == "assistant"
-            && version_metadata_is_reviewed
+            && error_metadata_is_reviewed
             && self.message.is_reviewed()
     }
 }
@@ -824,8 +785,8 @@ fn normalized_inference_geo(value: Option<String>) -> Option<String> {
     }
 }
 
-fn supported_claude_code_version(value: &str) -> bool {
-    SUPPORTED_CLAUDE_CODE_VERSIONS.contains(&value)
+fn reviewed_claude_code_version(value: &str) -> bool {
+    REVIEWED_CLAUDE_CODE_VERSIONS.contains(&value)
 }
 
 fn valid_provider_identifier(value: &str) -> bool {
@@ -3997,28 +3958,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_usage_metadata_storage_is_bounded() {
-        let fields = (0..=MAX_UNKNOWN_USAGE_FIELDS)
-            .map(|index| format!(r#""unknown_{index}":{index}"#))
-            .collect::<Vec<_>>()
-            .join(",");
-        let unknown: BoundedUnknownUsageFields =
-            serde_json::from_str(&format!("{{{fields}}}")).unwrap();
-
-        assert_eq!(unknown.fields.len(), MAX_UNKNOWN_USAGE_FIELDS);
-        assert!(unknown.overflowed);
-        assert!(!unknown.is_empty());
-
-        let long_key = "x".repeat(MAX_UNKNOWN_USAGE_KEY_BYTES + 1);
-        let unknown: BoundedUnknownUsageFields =
-            serde_json::from_str(&format!(r#"{{"{long_key}":1}}"#)).unwrap();
-
-        assert!(unknown.fields.is_empty());
-        assert!(unknown.overflowed);
-        assert!(!unknown.is_empty());
-    }
-
-    #[test]
     fn parser_reduces_server_tool_blocks_to_bounded_pricing_signals() {
         for name in [
             "code_execution",
@@ -4116,13 +4055,15 @@ mod tests {
     }
 
     #[test]
-    fn parser_ignores_non_assistant_records_and_rejects_unknown_assistant_schemas() {
+    fn parser_ignores_non_assistant_records_and_keeps_unreadable_schemas_frame_only() {
         let user = br#"{"type":"user","message":{"content":"PRIVATE-CONTENT"}}"#;
         assert_eq!(
             parse_transcript_line(user, &SALT),
             TranscriptLineOutcome::Ignored
         );
 
+        // A message this parser cannot read keeps its frame and contributes no
+        // tokens, whatever version wrote it.
         let future = br#"{
           "type":"assistant",
           "uuid":"PRIVATE-FRAME-ID",
@@ -4141,8 +4082,41 @@ mod tests {
             }
           }
         }"#;
-        assert_eq!(
+        assert!(matches!(
             parse_transcript_line(future, &SALT),
+            TranscriptLineOutcome::FrameOnly(_)
+        ));
+
+        // An unreviewed version that also carries an unreviewed usage shape has
+        // no checked meaning for its counters, so it stays frame-only.
+        let unreviewed_shape = br#"{
+          "type":"assistant",
+          "uuid":"PRIVATE-FRAME-ID",
+          "timestamp":"2026-08-07T10:15:00Z",
+          "version":"2.1.259",
+          "message":{
+            "id":"PRIVATE-MESSAGE-ID",
+            "type":"message",
+            "role":"assistant",
+            "model":"claude-sonnet-4-20250514",
+            "content":[],
+            "usage":{
+              "input_tokens":10,
+              "cache_creation_input_tokens":0,
+              "cache_read_input_tokens":0,
+              "output_tokens":40,
+              "future_paid_tokens":7
+            }
+          }
+        }"#;
+        assert!(matches!(
+            parse_transcript_line(unreviewed_shape, &SALT),
+            TranscriptLineOutcome::FrameOnly(_)
+        ));
+
+        // A record with no readable line at all is still invalid.
+        assert_eq!(
+            parse_transcript_line(b"{not json", &SALT),
             TranscriptLineOutcome::Invalid
         );
     }
@@ -4208,7 +4182,10 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_unverified_versions_and_marks_nullable_cache_counters_partial() {
+    fn parser_counts_unreviewed_versions_partially_and_marks_nullable_cache_counters_partial() {
+        // A later Claude Code release that keeps the reviewed usage shape must
+        // keep contributing its tokens. Withholding them would report zero for
+        // work that happened.
         let future_patch = br#"{
           "type":"assistant",
           "uuid":"PRIVATE-FRAME-ID",
@@ -4228,10 +4205,12 @@ mod tests {
             }
           }
         }"#;
-        assert_eq!(
-            parse_transcript_line(future_patch, &SALT),
-            TranscriptLineOutcome::Invalid
-        );
+        let TranscriptLineOutcome::Usage(message) = parse_transcript_line(future_patch, &SALT)
+        else {
+            panic!("an unreviewed version with a reviewed shape must keep its tokens");
+        };
+        assert_eq!(message.usage.observed_tokens(), Some(50));
+        assert!(!message.complete);
 
         let nullable = br#"{
           "type":"assistant",
@@ -4312,13 +4291,30 @@ mod tests {
                 "\"futureApiField\":true,\"requestId\":\"PRIVATE-REQUEST\",",
                 1,
             ),
-            reviewed.replacen("\"version\":\"2.1.258\"", "\"version\":\"2.1.241\"", 1),
+            reviewed.replacen(
+                "\"apiErrorStatus\":429,",
+                "\"apiErrorStatus\":429,\"futureApiField\":true,",
+                1,
+            ),
         ] {
             assert!(matches!(
                 parse_transcript_line(unreviewed.as_bytes(), &SALT),
                 TranscriptLineOutcome::FrameOnly(_)
             ));
         }
+
+        // The reviewed error shape is recognized by its own fields, so a later
+        // Claude Code release carrying it is still ignored rather than counted
+        // as an unpriced synthetic message.
+        assert_eq!(
+            parse_transcript_line(
+                reviewed
+                    .replacen("\"version\":\"2.1.258\"", "\"version\":\"2.1.259\"", 1)
+                    .as_bytes(),
+                &SALT
+            ),
+            TranscriptLineOutcome::Ignored
+        );
     }
 
     #[test]
@@ -4477,6 +4473,40 @@ mod tests {
     }
 
     #[test]
+    fn scan_counts_an_unreviewed_release_that_keeps_the_reviewed_usage_shape() {
+        // Claude Code ships faster than this parser is reviewed. A release that
+        // keeps the reviewed usage shape must keep contributing Observed
+        // Tokens, marked partial, instead of reporting zero for the day.
+        let unreviewed = claude_code_2_1_258_transcript_line().replacen(
+            r#""version":"2.1.258""#,
+            r#""version":"2.1.259""#,
+            1,
+        );
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[unreviewed],
+        );
+
+        let local = scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("an unreviewed release must still publish its tokens");
+        let UsageTotal::Current {
+            coverage,
+            observed_tokens,
+            ..
+        } = project_usage_periods(Some(&local), now()).today
+        else {
+            panic!("today must be available");
+        };
+
+        assert_eq!(local.scan_status, UsageScanStatus::Complete);
+        assert_eq!(observed_tokens, 100);
+        assert_eq!(coverage, UsageCoverage::Partial);
+        assert!(!local.daily_cost.contains_key(&now().date()));
+    }
+
+    #[test]
     fn scan_keeps_unreviewed_2_1_241_extended_usage_partial_and_unpriced() {
         let reviewed = claude_code_2_1_241_transcript_line();
         let second_iteration = r#",{"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":20},"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"input_tokens":10,"output_tokens":40,"type":"message"}"#;
@@ -4527,7 +4557,7 @@ mod tests {
             ),
             (
                 "unreviewed Claude Code version",
-                reviewed.replacen(r#""version":"2.1.241""#, r#""version":"2.1.224""#, 1),
+                reviewed.replacen(r#""version":"2.1.241""#, r#""version":"2.1.259""#, 1),
             ),
         ] {
             let TranscriptLineOutcome::Usage(parsed) =

@@ -14,7 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration as StdDuration,
 };
 
@@ -27,7 +27,7 @@ use self::usage::{
     merge_cached_account_usage, parse_account_usage, project_usage_periods_with_account_time,
     scan_local_usage, store_cached_account_usage,
 };
-use super::{ProviderObservation, ProviderObservationAdapter};
+use super::{BoundedUnknownFields, ProviderObservation, ProviderObservationAdapter};
 use crate::daily_usage_aggregate::preserve_best_known_costs;
 use crate::providers::process::{
     ProviderCommand, ProviderOutputMode, ProviderProcess, ProviderProcessError,
@@ -109,24 +109,34 @@ struct CodexQuotaObservation {
     ignored_limit_ids: BTreeSet<String>,
 }
 
+// A Quota Lane reports a provider-defined percentage against a provider-defined
+// window. A field this parser has not seen cannot change what `usedPercent`
+// means, so an added sibling must not blank the lane. These payloads therefore
+// record unknown keys instead of rejecting the read. The usage structs that
+// feed Observed Tokens keep `deny_unknown_fields`, where an unknown field may
+// be a subset that would double-count.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 struct FullRateLimitsResponse {
     rate_limits: RawRateLimitSnapshot,
     #[serde(default)]
     rate_limits_by_limit_id: Option<BTreeMap<String, RawRateLimitSnapshot>>,
     #[serde(default)]
     rate_limit_reset_credits: Option<Value>,
+    #[serde(flatten)]
+    unknown: BoundedUnknownFields,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 struct SparseRateLimitsNotification {
     rate_limits: RawRateLimitSnapshot,
+    #[serde(flatten)]
+    unknown: BoundedUnknownFields,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 struct RawRateLimitSnapshot {
     #[serde(default)]
     credits: Option<Value>,
@@ -146,22 +156,39 @@ struct RawRateLimitSnapshot {
     secondary: Option<RawRateLimitWindow>,
     #[serde(default)]
     spend_control_reached: Option<bool>,
+    #[serde(flatten)]
+    unknown: BoundedUnknownFields,
+}
+
+impl RawRateLimitSnapshot {
+    fn schema_drifted(&self) -> bool {
+        !self.unknown.is_empty()
+            || [self.primary.as_ref(), self.secondary.as_ref()]
+                .into_iter()
+                .flatten()
+                .any(|window| !window.unknown.is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 struct RawRateLimitWindow {
     #[serde(default)]
     resets_at: Option<i64>,
     used_percent: i32,
     #[serde(default)]
     window_duration_mins: Option<i64>,
+    #[serde(flatten)]
+    unknown: BoundedUnknownFields,
 }
 
 impl CodexQuotaObservation {
     fn from_full_read(payload: &str) -> Result<Self, ()> {
         let response: FullRateLimitsResponse = serde_json::from_str(payload).map_err(|_| ())?;
         let _ = response.rate_limit_reset_credits;
+        if !response.unknown.is_empty() {
+            report_quota_schema_drift("full_read");
+        }
         let snapshots = match response.rate_limits_by_limit_id {
             Some(snapshots) => snapshots,
             None => BTreeMap::from([(DEFAULT_LIMIT_ID.to_owned(), response.rate_limits)]),
@@ -185,6 +212,9 @@ impl CodexQuotaObservation {
                 ignored_limit_ids.insert(limit_id);
                 continue;
             }
+            if snapshot.schema_drifted() {
+                report_quota_schema_drift("snapshot");
+            }
             if let Some(bucket) = complete_bucket(snapshot)? {
                 buckets.insert(limit_id, bucket);
             }
@@ -202,6 +232,9 @@ impl CodexQuotaObservation {
         let notification: SparseRateLimitsNotification =
             serde_json::from_str(payload).map_err(|_| ())?;
         validate_sparse_snapshot(&notification.rate_limits)?;
+        if !notification.unknown.is_empty() || notification.rate_limits.schema_drifted() {
+            report_quota_schema_drift("notification");
+        }
         let limit_id = notification
             .rate_limits
             .limit_id
@@ -323,6 +356,24 @@ fn nonempty_name(name: String) -> Result<Option<String>, ()> {
 
 fn normalized_limit_name(name: &str) -> String {
     name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Record that a quota payload carried fields this parser does not know.
+///
+/// The lane keeps serving its provider-native values. The signal exists so the
+/// contract audit and a maintainer can see the drift instead of it staying
+/// silent. It reports each payload kind once per process so a repeating refresh
+/// cannot flood the log, and it never records the unknown key names, which are
+/// provider material.
+fn report_quota_schema_drift(source: &'static str) {
+    static REPORTED: OnceLock<Mutex<BTreeSet<&'static str>>> = OnceLock::new();
+    let reported = REPORTED.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let Ok(mut reported) = reported.lock() else {
+        return;
+    };
+    if reported.insert(source) {
+        debug_event(&format!("quota_schema_drift source={source}"));
+    }
 }
 
 fn is_ignored_codex_limit(name: &str) -> bool {
@@ -1521,17 +1572,59 @@ mod tests {
     }
 
     #[test]
-    fn full_read_rejects_absent_windows_unknown_schema_and_sensitive_fields() {
+    fn sparse_update_keeps_applying_when_the_provider_adds_a_field() {
+        let extended = r#"{"rateLimits":{"futureField":{"nested":true},"limitId":"codex","primary":{"futureWindowField":1,"resetsAt":1754000000,"usedPercent":40,"windowDurationMins":300}}}"#;
+        let mut observation =
+            CodexQuotaObservation::from_full_read(&weekly_only_fixture()).unwrap();
+
+        assert!(
+            observation
+                .merge_sparse(extended)
+                .expect("an added provider field must not fail the notification")
+        );
+        assert_eq!(
+            observation.buckets[DEFAULT_LIMIT_ID]
+                .primary
+                .as_ref()
+                .unwrap()
+                .used_percent,
+            UsedPercent(40)
+        );
+    }
+
+    #[test]
+    fn full_read_rejects_absent_windows_and_a_renamed_used_percent() {
         let absent = r#"{ "rateLimits": { "primary": null, "secondary": null } }"#;
+        // Renaming the counter this parser reads changes the meaning of the
+        // payload rather than adding to it, so the read still fails closed.
         let changed = full_fixture().replace("usedPercent", "consumedPercent");
-        let sensitive = full_fixture().replace(
+
+        assert!(CodexQuotaObservation::from_full_read(absent).is_err());
+        assert!(CodexQuotaObservation::from_full_read(&changed).is_err());
+    }
+
+    #[test]
+    fn full_read_keeps_serving_lanes_when_the_provider_adds_a_field() {
+        // An added sibling field cannot change what usedPercent means. Blanking
+        // the Quota Lane over it would turn an ordinary provider release into an
+        // outage, so the read keeps its lanes and discards the unknown value.
+        let extended = full_fixture().replace(
             "\"limitId\": \"codex\"",
             "\"limitId\": \"codex\", \"sessionToken\": \"sentinel-secret\"",
         );
 
-        assert!(CodexQuotaObservation::from_full_read(absent).is_err());
-        assert!(CodexQuotaObservation::from_full_read(&changed).is_err());
-        assert!(CodexQuotaObservation::from_full_read(&sensitive).is_err());
+        let observation = CodexQuotaObservation::from_full_read(&extended)
+            .expect("an added provider field must not blank the Quota Lanes");
+        let expected = CodexQuotaObservation::from_full_read(&full_fixture()).unwrap();
+
+        assert_eq!(observation.buckets, expected.buckets);
+
+        let output =
+            serde_json::to_string(&observation.sanitized_snapshot(observed_at()).unwrap()).unwrap();
+        for prohibited in ["sessionToken", "sentinel-secret"] {
+            assert!(!output.contains(prohibited), "leaked {prohibited}");
+        }
+        assert!(!debug_observation_summary(&observation).contains("sentinel-secret"));
     }
 
     #[test]
