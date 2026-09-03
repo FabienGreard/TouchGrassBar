@@ -150,8 +150,8 @@ as the tagged commit. The generator starts at that equivalent commit. Starting
 at the equivalent commit prevents duplicate old notes and the loss of a later
 repeated patch.
 
-The full-changelog link uses the same equivalent commit as its comparison
-baseline. The immutable release tag stays unchanged.
+The comparison baseline for the full-changelog link is the same equivalent
+commit. The immutable release tag stays unchanged.
 
 The GitHub Release description puts the user-facing changes and DMG download
 first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,
