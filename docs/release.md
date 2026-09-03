@@ -135,7 +135,9 @@ If an uneditable squash commit has incomplete or technical fallback text, add
 one later release commit with `Release-note-mode: replace` and the complete set
 of reviewed `Release-note:` trailers. Only one replacement summary is allowed
 in a tag range. It replaces every fallback and trailer from earlier commits in
-that range.
+that range. Later commits still contribute their explicit trailers or fallback
+subjects. The replacement commit must have at least one explicit user-facing
+`Release-note:` trailer.
 
 The generator compares both sides of the previous-tag boundary by stable patch
 identity. This prevents a metadata-only rewrite of `main` from listing already

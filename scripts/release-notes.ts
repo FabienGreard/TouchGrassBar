@@ -88,16 +88,23 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
   if (replacements.length > 1) {
     throw new Error("Release notes have more than one replacement summary.");
   }
-  const selectedCommits = replacements.length === 1 ? replacements : commits;
+  const replacement = replacements[0];
+  const selectedCommits = replacement
+    ? commits.slice(commits.indexOf(replacement))
+    : commits;
   const changes: string[] = [];
   const seen = new Set<string>();
   for (const commit of selectedCommits) {
     const trailers = [...commit.body.matchAll(/^Release-note:\s*(.+)$/gimu)].map((match) =>
       match[1]!.trim(),
     );
+    const reviewedTrailers = trailers.filter((trailer) => trailer.toLowerCase() !== "none");
+    if (commit === replacement && reviewedTrailers.length === 0) {
+      throw new Error("The replacement release summary has no user-facing note.");
+    }
     const candidates =
       trailers.length > 0
-        ? trailers.filter((trailer) => trailer.toLowerCase() !== "none")
+        ? reviewedTrailers
         : (() => {
             const conventional = /^(feat|fix|perf)(?:\(([^)]+)\))?!?:\s+(.+)$/u.exec(
               commit.subject,
@@ -114,9 +121,6 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
       seen.add(key);
       changes.push(change);
     }
-  }
-  if (replacements.length === 1 && changes.length === 0) {
-    throw new Error("The replacement release summary has no user-facing note.");
   }
   return changes;
 }

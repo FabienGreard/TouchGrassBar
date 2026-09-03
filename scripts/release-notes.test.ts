@@ -69,6 +69,44 @@ describe("release notes", () => {
     ]);
   });
 
+  test("keeps user-facing changes that follow a replacement summary", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: An earlier note.",
+          subject: "fix(desktop): repair earlier behavior",
+        },
+        {
+          body: "Release-note-mode: replace\nRelease-note: The reviewed replacement.",
+          subject: "docs(release): replace earlier notes",
+        },
+        {
+          body: "Release-note: A later reviewed note.",
+          subject: "fix(claude): repair later behavior",
+        },
+        {
+          body: "",
+          subject: "feat(desktop): add a later feature",
+        },
+      ]),
+    ).toEqual([
+      "The reviewed replacement.",
+      "A later reviewed note.",
+      "Add a later feature.",
+    ]);
+  });
+
+  test("requires an explicit user-facing trailer in a replacement summary", () => {
+    expect(() =>
+      releaseChangesFromCommits([
+        {
+          body: "Release-note-mode: replace",
+          subject: "fix(providers): use a technical fallback subject",
+        },
+      ]),
+    ).toThrow("The replacement release summary has no user-facing note.");
+  });
+
   test("rejects more than one replacement summary", () => {
     expect(() =>
       releaseChangesFromCommits([
