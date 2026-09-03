@@ -41,6 +41,8 @@ type StableVersion = {
 const repository = "FabienGreard/TouchGrassBar";
 const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
+const nestedConventionalSubjectPattern =
+  /^(?:[-*+][ \t]+)?(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
 
 function command(executable: string, argumentsList: string[]) {
   const result = spawnSync(executable, argumentsList, {
@@ -108,6 +110,9 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   let start = lines.length;
   while (start > 0 && /^[A-Za-z0-9-]+:[ \t]*.*$/u.test(lines[start - 1]!)) start -= 1;
   if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
+    return { modes: [], notes: [] };
+  }
+  if (lines.slice(0, start).some((line) => nestedConventionalSubjectPattern.test(line))) {
     return { modes: [], notes: [] };
   }
   const modes: string[] = [];

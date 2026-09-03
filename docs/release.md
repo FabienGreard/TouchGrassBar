@@ -130,7 +130,8 @@ When one squash commit contains more than one user-facing change, add one
 `Release-note:` trailer for each change. The fallback uses only the top-level
 Conventional Commit subject. It does not infer release notes from nested commit
 text in the squash commit body. It reads release-note fields only from the final
-top-level trailer block.
+top-level trailer block. If the earlier body contains a nested Conventional
+Commit subject, it ignores that final block because its owner is ambiguous.
 
 If an uneditable squash commit has incomplete or technical fallback text, add
 one later release commit with `Release-note-mode: replace` and the complete set

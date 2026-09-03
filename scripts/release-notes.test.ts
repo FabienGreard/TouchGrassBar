@@ -145,6 +145,27 @@ describe("release notes", () => {
     ).toEqual(["The reviewed top-level note."]);
   });
 
+  test("ignores a nested release trailer block at the end of a squash body", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "Squashed commit contains:",
+            "fix(nested): describe the nested change",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
   test("rejects more than one replacement summary", () => {
     expect(() =>
       releaseChangesFromCommits([
