@@ -83,7 +83,7 @@ function sentence(value: string) {
 
 function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
   const replacements = commits.filter((commit) =>
-    /^Release-note-mode:\s*replace\s*$/imu.test(commit.body),
+    /^Release-note-mode:[ \t]*replace[ \t]*$/imu.test(commit.body),
   );
   if (replacements.length > 1) {
     throw new Error("Release notes have more than one replacement summary.");
@@ -95,9 +95,9 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
   const changes: string[] = [];
   const seen = new Set<string>();
   for (const commit of selectedCommits) {
-    const trailers = [...commit.body.matchAll(/^Release-note:\s*(.+)$/gimu)].map((match) =>
-      match[1]!.trim(),
-    );
+    const trailers = [
+      ...commit.body.matchAll(/^Release-note:[ \t]*(\S(?:.*\S)?)[ \t]*$/gimu),
+    ].map((match) => match[1]!);
     const reviewedTrailers = trailers.filter((trailer) => trailer.toLowerCase() !== "none");
     if (commit === replacement && reviewedTrailers.length === 0) {
       throw new Error("The replacement release summary has no user-facing note.");

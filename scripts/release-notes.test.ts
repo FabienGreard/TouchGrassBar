@@ -107,6 +107,21 @@ describe("release notes", () => {
     ).toThrow("The replacement release summary has no user-facing note.");
   });
 
+  test("does not read the line after an empty replacement note", () => {
+    expect(() =>
+      releaseChangesFromCommits([
+        {
+          body: [
+            "Release-note-mode: replace",
+            "Release-note:",
+            "Co-authored-by: Example <example@example.com>",
+          ].join("\n"),
+          subject: "fix(providers): use a technical fallback subject",
+        },
+      ]),
+    ).toThrow("The replacement release summary has no user-facing note.");
+  });
+
   test("rejects more than one replacement summary", () => {
     expect(() =>
       releaseChangesFromCommits([
