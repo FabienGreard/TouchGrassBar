@@ -146,8 +146,9 @@ user-facing `Release-note:` trailer.
 The generator normally starts at the previous tag. A metadata-only rewrite can
 remove that tag from the `main` history. In that case, the generator requires
 exactly one first-parent commit. That commit must have the same tree and subject
-as the tagged commit. The generator starts at that equivalent commit. This
-prevents duplicate old notes and the loss of a later repeated patch.
+as the tagged commit. The generator starts at that equivalent commit. Starting
+at the equivalent commit prevents duplicate old notes and the loss of a later
+repeated patch.
 
 The full-changelog link uses the same equivalent commit as its comparison
 baseline. The immutable release tag stays unchanged.

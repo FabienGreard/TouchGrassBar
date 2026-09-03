@@ -50,10 +50,10 @@ type StableVersion = {
 const repository = "FabienGreard/TouchGrassBar";
 const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
-const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:[ \t]+\S/u;
+const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
 const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
-const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/u;
-const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/u;
+const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/iu;
+const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/iu;
 const standardGitTrailerTokens = new Set([
   "acked-by",
   "approved-by",
@@ -262,7 +262,7 @@ function hasNestedConventionalSubject(lines: readonly string[]) {
 }
 
 function isCompactNestedConventionalSubject(line: string) {
-  const token = nestedConventionalSubjectPattern.exec(line)?.[1];
+  const token = nestedConventionalSubjectPattern.exec(line)?.[1]?.toLowerCase();
   return token !== undefined && !standardGitTrailerTokens.has(token);
 }
 

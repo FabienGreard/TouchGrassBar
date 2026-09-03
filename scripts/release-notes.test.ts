@@ -248,6 +248,26 @@ describe("release notes", () => {
     ).toEqual(["Keep the earlier reviewed note."]);
   });
 
+  test("ignores an uppercase nested subject in earlier squash text", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "Fix(parser): describe the nested change",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
   test.each([
     "note(parser): describe the nested change",
     "status(parser): describe the nested change",
@@ -275,6 +295,24 @@ describe("release notes", () => {
 
   test.each(["co-authored-by", "reviewed-by", "signed-off-by", "tested-by"])(
     "keeps a lower-case standard Git trailer in the final block: %s",
+    (token) => {
+      expect(
+        releaseTrailersFromBody(
+          [
+            "Release-note-mode: replace",
+            "Release-note: Keep this reviewed note.",
+            `${token}: Example <example@example.com>`,
+          ].join("\n"),
+        ),
+      ).toEqual({
+        modes: ["replace"],
+        notes: ["Keep this reviewed note."],
+      });
+    },
+  );
+
+  test.each(["Co-authored-by", "Reviewed-by", "Signed-off-by", "Tested-by"])(
+    "keeps a capitalized standard Git trailer in the final block: %s",
     (token) => {
       expect(
         releaseTrailersFromBody(
