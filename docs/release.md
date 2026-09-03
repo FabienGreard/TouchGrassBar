@@ -132,8 +132,8 @@ top-level Conventional Commit subject. The release-note generator does not infer
 release notes from nested commit text in the squash commit body. The release-note
 generator reads release-note fields only from the final top-level trailer block.
 If the earlier body contains a nested Conventional Commit subject, the
-release-note generator ignores the final trailer block because the final trailer
-block has an ambiguous owner.
+release-note generator ignores the final trailer block. The final trailer block
+has an ambiguous owner.
 
 If an uneditable squash commit has incomplete or technical fallback text, add
 one later release commit. Put `Release-note-mode: replace` and all reviewed

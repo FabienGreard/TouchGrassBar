@@ -248,6 +248,26 @@ describe("release notes", () => {
     ).toEqual(["Keep the earlier reviewed note."]);
   });
 
+  test("ignores a decorated oneline subject in earlier squash text", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "abc1234 (HEAD -> main, tag: v1.0.0) fix(parser): describe the nested change",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
   test("ignores an uppercase nested subject in earlier squash text", () => {
     expect(
       releaseChangesFromCommits([

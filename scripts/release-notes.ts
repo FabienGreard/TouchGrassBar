@@ -54,6 +54,7 @@ const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?
 const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
 const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/iu;
 const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/iu;
+const gitOnelineDecorationPrefixPattern = /^\([^\r\n]*\)[ \t]+/u;
 const standardGitTrailerTokens = new Set([
   "acked-by",
   "approved-by",
@@ -202,7 +203,9 @@ function candidateIsNestedConventionalSubject(value: string) {
   }
   const withoutHash = candidate.replace(gitOnelineHashPrefixPattern, "");
   const hasHashPrefix = withoutHash !== candidate;
-  candidate = withoutHash;
+  candidate = hasHashPrefix
+    ? withoutHash.replace(gitOnelineDecorationPrefixPattern, "")
+    : withoutHash;
   const match = nestedConventionalSubjectPattern.exec(candidate);
   return (
     !releaseTrailerSubjectPattern.test(candidate) &&
