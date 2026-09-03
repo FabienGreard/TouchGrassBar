@@ -268,6 +268,26 @@ describe("release notes", () => {
     ).toEqual(["Keep the earlier reviewed note."]);
   });
 
+  test("stops a decorated oneline prefix before the nested subject", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "abc1234 (HEAD -> main) fix(parser): handle foo) correctly",
+            "",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
   test("ignores an uppercase nested subject in earlier squash text", () => {
     expect(
       releaseChangesFromCommits([

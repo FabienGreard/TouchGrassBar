@@ -54,7 +54,7 @@ const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?
 const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
 const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/iu;
 const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/iu;
-const gitOnelineDecorationPrefixPattern = /^\([^\r\n]*\)[ \t]+/u;
+const gitOnelineDecorationPrefixPattern = /^\([^\r\n]*?\)[ \t]+/u;
 const standardGitTrailerTokens = new Set([
   "acked-by",
   "approved-by",
