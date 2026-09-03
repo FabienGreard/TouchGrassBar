@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { spawnSync } from "node:child_process";
+import { decodeHTMLStrict } from "entities";
+import { markdownToMdast } from "satteri";
 
 type ArtifactRecord = {
   bytes: number;
@@ -13,8 +15,27 @@ type ReleaseCommit = {
   subject: string;
 };
 
+type ReleaseHistoryCommit = {
+  commit: string;
+  subject: string;
+  tree: string;
+};
+
+type ReleaseTrailers = {
+  modes: string[];
+  notes: string[];
+};
+
+type MarkdownNode = {
+  alt?: string | null;
+  children?: MarkdownNode[];
+  type: string;
+  value?: string;
+};
+
 type ReleaseSummary = {
   changes: string[];
+  comparisonBaseline: string;
   previousTag: string;
   tag: string;
 };
@@ -29,6 +50,42 @@ type StableVersion = {
 const repository = "FabienGreard/TouchGrassBar";
 const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u;
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
+const nestedConventionalSubjectPattern = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
+const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
+const trailerLinePattern = /^((?:BREAKING CHANGE)|[A-Za-z0-9-]+):[ \t]*(.*)$/iu;
+const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/iu;
+const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/iu;
+const gitOnelineDecorationPrefixPattern = /^\([^\r\n]*?\)[ \t]+/u;
+const nestedMessageBoundaryPattern = /^(?:nested commit message|squashed commit contains):$/iu;
+const standardGitTrailerTokens = new Set([
+  "acked-by",
+  "approved-by",
+  "breaking change",
+  "breaking-change",
+  "cc",
+  "closes",
+  "co-authored-by",
+  "co-developed-by",
+  "fixes",
+  "helped-by",
+  "reported-by",
+  "resolves",
+  "reviewed-by",
+  "signed-off-by",
+  "suggested-by",
+  "tested-by",
+]);
+const markdownSubjectPrefixPattern =
+  /^(?:(?:[-*+]|#{1,6}|[0-9]+[.)])[ \t]+|>[ \t]?|\[[ xX]\][ \t]+|`+|\*{1,3}|_{1,3}|~~|!?\[|\|[ \t]*)/u;
+const htmlTagStartPattern = /^<\/?[A-Za-z][A-Za-z0-9-]*(?=[\t\f />])/u;
+const htmlDeclarationStartPattern = /^<![A-Z]/u;
+const markdownSubjectContainerTypes = new Set([
+  "code",
+  "heading",
+  "html",
+  "paragraph",
+  "tableCell",
+]);
 
 function command(executable: string, argumentsList: string[]) {
   const result = spawnSync(executable, argumentsList, {
@@ -39,6 +96,15 @@ function command(executable: string, argumentsList: string[]) {
     throw new Error(result.stderr.trim() || `Release-note command failed: ${executable}.`);
   }
   return result.stdout.trim();
+}
+
+function isAncestor(ancestor: string, target: string) {
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, target], {
+    stdio: "ignore",
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error("Release-note history ancestry cannot be checked.");
 }
 
 function parseStableVersion(tag: string): StableVersion | null {
@@ -81,16 +147,205 @@ function sentence(value: string) {
   return /[.!?]$/u.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
+function leadingHtmlMarkupLength(value: string) {
+  const delimitedPrefixes: ReadonlyArray<readonly [string, string]> = [
+    ["<!--", "-->"],
+    ["<![CDATA[", "]]>"],
+    ["<?", "?>"],
+  ];
+  for (const [opening, closing] of delimitedPrefixes) {
+    if (!value.startsWith(opening)) continue;
+    const end = value.indexOf(closing, opening.length);
+    return end === -1 ? 0 : end + closing.length;
+  }
+  if (!htmlTagStartPattern.test(value) && !htmlDeclarationStartPattern.test(value)) return 0;
+  let quote = "";
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (quote) {
+      if (character === quote) quote = "";
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === ">") return index + 1;
+  }
+  return 0;
+}
+
+function unescapedPipeIndices(value: string) {
+  const indices: number[] = [];
+  let backslashes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (character === "|" && backslashes % 2 === 0) indices.push(index);
+    backslashes = 0;
+  }
+  return indices;
+}
+
+function markdownSubjectCandidates(line: string, everyTableCell = false) {
+  const pipes = unescapedPipeIndices(line);
+  if (pipes.length === 0) return [line];
+  const firstContent = line.length - line.trimStart().length;
+  const lastContent = line.trimEnd().length - 1;
+  if (!everyTableCell && pipes[0] !== firstContent && pipes.at(-1) !== lastContent) {
+    return [line];
+  }
+  return [line, ...pipes.map((index) => line.slice(index + 1))];
+}
+
+function candidateIsNestedConventionalSubject(value: string) {
+  let candidate = value.trimStart();
+  while (true) {
+    const withoutPrefix = candidate.replace(markdownSubjectPrefixPattern, "").trimStart();
+    if (withoutPrefix === candidate) break;
+    candidate = withoutPrefix;
+  }
+  const withoutHash = candidate.replace(gitOnelineHashPrefixPattern, "");
+  const hasHashPrefix = withoutHash !== candidate;
+  candidate = hasHashPrefix
+    ? withoutHash.replace(gitOnelineDecorationPrefixPattern, "")
+    : withoutHash;
+  const match = nestedConventionalSubjectPattern.exec(candidate);
+  return (
+    !releaseTrailerSubjectPattern.test(candidate) &&
+    match !== null &&
+    (hasHashPrefix || !ordinaryBodyFieldPattern.test(candidate))
+  );
+}
+
+function withoutHtmlMarkup(value: string) {
+  let result = "";
+  for (let index = 0; index < value.length;) {
+    const markupLength = value[index] === "<" ? leadingHtmlMarkupLength(value.slice(index)) : 0;
+    if (markupLength > 0) {
+      index += markupLength;
+      continue;
+    }
+    result += value[index];
+    index += 1;
+  }
+  return result;
+}
+
+function renderedMarkdown(node: MarkdownNode): string {
+  if (node.type === "html") return decodeHTMLStrict(withoutHtmlMarkup(node.value ?? ""));
+  if (node.type === "image") return node.alt ?? "";
+  if (node.type === "break") return "\n";
+  if (node.value !== undefined) return node.value;
+  return node.children?.map(renderedMarkdown).join("") ?? "";
+}
+
+function renderedTextHasNestedSubject(value: string) {
+  return value
+    .split(/\r?\n/u)
+    .some((line) => markdownSubjectCandidates(line).some(candidateIsNestedConventionalSubject));
+}
+
+function markdownTreeHasNestedSubject(node: MarkdownNode): boolean {
+  if (
+    markdownSubjectContainerTypes.has(node.type) &&
+    renderedTextHasNestedSubject(renderedMarkdown(node))
+  ) {
+    return true;
+  }
+  if (markdownSubjectContainerTypes.has(node.type)) return false;
+  return node.children?.some(markdownTreeHasNestedSubject) ?? false;
+}
+
+function markdownHasNestedSubject(value: string) {
+  return markdownTreeHasNestedSubject(markdownToMdast(value) as MarkdownNode);
+}
+
+function hasNestedConventionalSubject(lines: readonly string[]) {
+  if (markdownHasNestedSubject(lines.join("\n"))) return true;
+  return lines.some((line) =>
+    markdownSubjectCandidates(line).some((candidate) => markdownHasNestedSubject(candidate)),
+  );
+}
+
+function isCompactNestedConventionalSubject(line: string) {
+  const token = nestedConventionalSubjectPattern.exec(line)?.[1]?.toLowerCase();
+  return token !== undefined && !standardGitTrailerTokens.has(token);
+}
+
+function finalTrailerBlockHasNestedOwner(lines: readonly string[], start: number) {
+  let index = start - 1;
+  while (index >= 0 && lines[index]!.trim() === "") index -= 1;
+  return index >= 0 && nestedMessageBoundaryPattern.test(lines[index]!.trim());
+}
+
+function releaseTrailersFromBody(body: string): ReleaseTrailers {
+  const lines = body.split(/\r?\n/u);
+  while (lines.at(-1)?.trim() === "") lines.pop();
+  let start = lines.length;
+  while (start > 0 && trailerLinePattern.test(lines[start - 1]!)) start -= 1;
+  if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
+    return { modes: [], notes: [] };
+  }
+  const compactNestedSubjects = lines
+    .slice(start)
+    .filter((line) => !releaseTrailerSubjectPattern.test(line));
+  if (
+    hasNestedConventionalSubject(lines.slice(0, start)) ||
+    finalTrailerBlockHasNestedOwner(lines, start) ||
+    compactNestedSubjects.some(isCompactNestedConventionalSubject)
+  ) {
+    return { modes: [], notes: [] };
+  }
+  const modes: string[] = [];
+  const notes: string[] = [];
+  for (const line of lines.slice(start)) {
+    const match = trailerLinePattern.exec(line);
+    if (!match) continue;
+    const token = match[1]!.toLowerCase();
+    const value = match[2]!.trim();
+    if (token === "release-note-mode" && value) modes.push(value);
+    if (token === "release-note" && value) notes.push(value);
+  }
+  return { modes, notes };
+}
+
 function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
+  const analyzedCommits = commits.map((commit) => ({
+    commit,
+    trailers: releaseTrailersFromBody(commit.body),
+  }));
+  const unsupportedMode = analyzedCommits
+    .flatMap(({ trailers }) => trailers.modes)
+    .find((mode) => mode.toLowerCase() !== "replace");
+  if (unsupportedMode) {
+    throw new Error(`Release-note mode is unsupported: ${unsupportedMode}.`);
+  }
+  const replacements = analyzedCommits.filter(({ trailers }) =>
+    trailers.modes.some((mode) => mode.toLowerCase() === "replace"),
+  );
+  if (replacements.length > 1) {
+    throw new Error("Release notes have more than one replacement summary.");
+  }
+  const replacement = replacements[0];
+  const selectedCommits = replacement
+    ? analyzedCommits.slice(analyzedCommits.indexOf(replacement))
+    : analyzedCommits;
   const changes: string[] = [];
   const seen = new Set<string>();
-  for (const commit of commits) {
-    const trailers = [...commit.body.matchAll(/^Release-note:\s*(.+)$/gimu)].map((match) =>
-      match[1]!.trim(),
-    );
+  for (const analyzed of selectedCommits) {
+    const { commit, trailers } = analyzed;
+    const { notes } = trailers;
+    const reviewedTrailers = notes.filter((note) => note.toLowerCase() !== "none");
+    if (analyzed === replacement && reviewedTrailers.length === 0) {
+      throw new Error("The replacement release summary has no user-facing note.");
+    }
     const candidates =
-      trailers.length > 0
-        ? trailers.filter((trailer) => trailer.toLowerCase() !== "none")
+      notes.length > 0
+        ? reviewedTrailers
         : (() => {
             const conventional = /^(feat|fix|perf)(?:\(([^)]+)\))?!?:\s+(.+)$/u.exec(
               commit.subject,
@@ -111,16 +366,46 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
   return changes;
 }
 
-function releaseCommits(previousTag: string, target: string) {
-  command("git", ["rev-parse", "--verify", `${previousTag}^{commit}`]);
-  command("git", ["rev-parse", "--verify", `${target}^{commit}`]);
-  const output = command("git", [
-    "log",
-    "--first-parent",
-    "--reverse",
-    "--format=%s%x00%b%x1e",
-    `${previousTag}..${target}`,
-  ]);
+function releaseHistoryArguments(baseline: string, target: string) {
+  return ["log", "--first-parent", "--reverse", "--format=%s%x00%b%x1e", `${baseline}..${target}`];
+}
+
+function parseReleaseHistoryCommit(record: string): ReleaseHistoryCommit {
+  const [commit, tree, ...subjectParts] = record.split("\x00");
+  const subject = subjectParts.join("\x00");
+  if (!/^[0-9a-f]{40}$/u.test(commit ?? "") || !/^[0-9a-f]{40}$/u.test(tree ?? "") || !subject) {
+    throw new Error("Release commit identity is invalid.");
+  }
+  return { commit: commit!, subject, tree: tree! };
+}
+
+function selectEquivalentReleaseCommit(
+  tagged: ReleaseHistoryCommit,
+  targetHistory: readonly ReleaseHistoryCommit[],
+) {
+  const matches = targetHistory.filter(
+    (candidate) => candidate.tree === tagged.tree && candidate.subject === tagged.subject,
+  );
+  if (matches.length !== 1) {
+    throw new Error("Rewritten release baseline is not unique on the target history.");
+  }
+  return matches[0]!.commit;
+}
+
+function releaseHistoryBaseline(previousTag: string, target: string) {
+  if (isAncestor(previousTag, target)) return previousTag;
+  const tagged = parseReleaseHistoryCommit(
+    command("git", ["show", "-s", "--format=%H%x00%T%x00%s", `${previousTag}^{commit}`]),
+  );
+  const history = command("git", ["log", "--first-parent", "--format=%H%x00%T%x00%s", target])
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .map(parseReleaseHistoryCommit);
+  return selectEquivalentReleaseCommit(tagged, history);
+}
+
+function releaseCommits(baseline: string, target: string) {
+  const output = command("git", releaseHistoryArguments(baseline, target));
   if (output.length === 0) return [];
   return output.split("\x1e").flatMap((rawRecord) => {
     const record = rawRecord.trim();
@@ -140,11 +425,14 @@ function createReleaseSummary(previousTag: string, tag: string, target = tag): R
   if (!stableTagPattern.test(previousTag) || !stableTagPattern.test(tag)) {
     throw new Error("Release-note tag range is invalid.");
   }
-  const changes = releaseChangesFromCommits(releaseCommits(previousTag, target));
+  command("git", ["rev-parse", "--verify", `${previousTag}^{commit}`]);
+  command("git", ["rev-parse", "--verify", `${target}^{commit}`]);
+  const comparisonBaseline = releaseHistoryBaseline(previousTag, target);
+  const changes = releaseChangesFromCommits(releaseCommits(comparisonBaseline, target));
   if (changes.length === 0) {
     throw new Error(`Release ${tag} has no user-facing release note.`);
   }
-  return { changes, previousTag, tag };
+  return { changes, comparisonBaseline, previousTag, tag };
 }
 
 function createReleaseSummaryForTag(tag: string) {
@@ -182,7 +470,7 @@ function createReleaseNotes(summary: ReleaseSummary, records: readonly ArtifactR
     })
     .join("\n");
   const changes = summary.changes.map((change) => `- ${change}`).join("\n");
-  const compareUrl = `https://github.com/${repository}/compare/${summary.previousTag}...${summary.tag}`;
+  const compareUrl = `https://github.com/${repository}/compare/${summary.comparisonBaseline}...${summary.tag}`;
   return `## What changed
 
 ${changes}
@@ -222,6 +510,9 @@ export {
   createReleaseSummaryForTag,
   previousStableTag,
   releaseChangesFromCommits,
+  releaseHistoryArguments,
+  releaseTrailersFromBody,
+  selectEquivalentReleaseCommit,
   updaterReleaseNotes,
 };
-export type { ArtifactRecord, ReleaseCommit, ReleaseSummary };
+export type { ArtifactRecord, ReleaseCommit, ReleaseHistoryCommit, ReleaseSummary };

@@ -123,13 +123,35 @@ Release-note: The Codex usage panel no longer shows the internal reserve limit.
 
 Use `Release-note: none` when a `feat`, `fix`, or `perf` commit has no
 user-facing effect. Without a trailer, the release-note generator uses the
-Conventional Commit subject as a fallback. It excludes release, development,
-test, documentation, build, and CI scopes.
+Conventional Commit subject as a fallback. The release-note generator excludes
+release, development, test, documentation, build, and CI scopes.
 
 When one squash commit contains more than one user-facing change, add one
-`Release-note:` trailer for each change. The fallback uses only the top-level
-Conventional Commit subject. It does not infer release notes from nested commit
-text in the squash commit body.
+`Release-note:` trailer for each change. An inferred fallback uses only the
+top-level Conventional Commit subject. The release-note generator does not infer
+release notes from nested commit text in the squash commit body. The release-note
+generator reads release-note fields only from the final top-level trailer block.
+If the earlier body contains a nested Conventional Commit subject, the
+release-note generator ignores the final trailer block. The final trailer block
+has an ambiguous owner.
+
+If an uneditable squash commit has incomplete or technical fallback text, add
+one later release commit. Put `Release-note-mode: replace` and all reviewed
+`Release-note:` trailers in that commit. Only one replacement summary is
+allowed in a tag range. The replacement summary replaces every fallback and
+trailer from earlier commits in that range. Later commits still contribute their
+explicit trailers or fallback subjects. The replacement commit must have at
+least one explicit user-facing `Release-note:` trailer.
+
+The generator normally starts at the previous tag. A metadata-only rewrite can
+remove that tag from the `main` history. In that case, the generator requires
+exactly one first-parent commit. That commit must have the same tree and subject
+as the tagged commit. The generator starts at that equivalent commit. Starting
+at the equivalent commit prevents duplicate old notes and the loss of a later
+repeated patch.
+
+The comparison baseline for the full-changelog link is the same equivalent
+commit. The immutable release tag stays unchanged.
 
 The GitHub Release description puts the user-facing changes and DMG download
 first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,
