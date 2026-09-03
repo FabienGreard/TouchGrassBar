@@ -52,7 +52,21 @@ const stableTagPattern = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u
 const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release", "test"]);
 const nestedConventionalSubjectPattern =
   /^(?:(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?|[a-z][a-z0-9-]*\([^\r\n)]+\))!?:[ \t]+\S/u;
+const compactNestedConventionalSubjectPattern = /^[a-z][a-z0-9-]*(?:\([^\r\n)]+\))?!?:[ \t]+\S/u;
 const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
+const standardGitTrailerTokens = new Set([
+  "acked-by",
+  "approved-by",
+  "cc",
+  "co-authored-by",
+  "co-developed-by",
+  "helped-by",
+  "reported-by",
+  "reviewed-by",
+  "signed-off-by",
+  "suggested-by",
+  "tested-by",
+]);
 const markdownSubjectPrefixPattern =
   /^(?:(?:[-*+]|#{1,6}|[0-9]+[.)])[ \t]+|>[ \t]?|\[[ xX]\][ \t]+|`+|\*{1,3}|_{1,3}|~~|!?\[|\|[ \t]*)/u;
 const htmlTagStartPattern = /^<\/?[A-Za-z][A-Za-z0-9-]*(?=[\t\f />])/u;
@@ -242,6 +256,15 @@ function hasNestedConventionalSubject(lines: readonly string[]) {
   );
 }
 
+function isCompactNestedConventionalSubject(line: string) {
+  const token = /^([a-z][a-z0-9-]*)(?:\([^\r\n)]+\))?!?:/u.exec(line)?.[1];
+  return (
+    token !== undefined &&
+    !standardGitTrailerTokens.has(token) &&
+    compactNestedConventionalSubjectPattern.test(line)
+  );
+}
+
 function releaseTrailersFromBody(body: string): ReleaseTrailers {
   const lines = body.split(/\r?\n/u);
   while (lines.at(-1)?.trim() === "") lines.pop();
@@ -250,11 +273,13 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
     return { modes: [], notes: [] };
   }
-  const nestedSubjectCandidates = [
-    ...lines.slice(0, start),
-    ...lines.slice(start).filter((line) => !releaseTrailerSubjectPattern.test(line)),
-  ];
-  if (hasNestedConventionalSubject(nestedSubjectCandidates)) {
+  const compactNestedSubjects = lines
+    .slice(start)
+    .filter((line) => !releaseTrailerSubjectPattern.test(line));
+  if (
+    hasNestedConventionalSubject(lines.slice(0, start)) ||
+    compactNestedSubjects.some(isCompactNestedConventionalSubject)
+  ) {
     return { modes: [], notes: [] };
   }
   const modes: string[] = [];

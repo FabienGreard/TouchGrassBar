@@ -187,6 +187,53 @@ describe("release notes", () => {
     ).toEqual(["Keep the earlier reviewed note."]);
   });
 
+  test("ignores an unscoped custom subject in a compact nested trailer block", () => {
+    expect(
+      releaseChangesFromCommits([
+        {
+          body: "Release-note: Keep the earlier reviewed note.",
+          subject: "fix(desktop): keep the reviewed behavior",
+        },
+        {
+          body: [
+            "Squashed commit contains:",
+            "",
+            "security: describe the nested change",
+            "Release-note-mode: replace",
+            "Release-note: Nested note.",
+          ].join("\n"),
+          subject: "chore(release): collect squashed work",
+        },
+      ]),
+    ).toEqual(["Keep the earlier reviewed note."]);
+  });
+
+  test.each(["co-authored-by", "reviewed-by", "signed-off-by", "tested-by"])(
+    "keeps a lower-case standard Git trailer in the final block: %s",
+    (token) => {
+      expect(
+        releaseTrailersFromBody(
+          [
+            "Release-note-mode: replace",
+            "Release-note: Keep this reviewed note.",
+            `${token}: Example <example@example.com>`,
+          ].join("\n"),
+        ),
+      ).toEqual({
+        modes: ["replace"],
+        notes: ["Keep this reviewed note."],
+      });
+    },
+  );
+
+  test("treats an adjacent unknown lower-case field as ambiguous", () => {
+    expect(
+      releaseTrailersFromBody(
+        ["status: active", "Release-note: Keep this reviewed note."].join("\n"),
+      ),
+    ).toEqual({ modes: [], notes: [] });
+  });
+
   test.each([
     "fix: describe the nested change",
     "  * fix(parser): describe the nested change",
