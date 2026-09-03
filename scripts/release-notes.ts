@@ -112,7 +112,7 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
   if (start === lines.length || (start > 0 && lines[start - 1]!.trim() !== "")) {
     return { modes: [], notes: [] };
   }
-  if (lines.slice(0, start).some((line) => nestedConventionalSubjectPattern.test(line))) {
+  if (lines.some((line) => nestedConventionalSubjectPattern.test(line))) {
     return { modes: [], notes: [] };
   }
   const modes: string[] = [];
