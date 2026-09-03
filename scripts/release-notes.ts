@@ -21,6 +21,7 @@ type ReleaseHistoryCommit = {
 
 type ReleaseSummary = {
   changes: string[];
+  comparisonBaseline: string;
   previousTag: string;
   tag: string;
 };
@@ -176,10 +177,7 @@ function releaseHistoryBaseline(previousTag: string, target: string) {
   return selectEquivalentReleaseCommit(tagged, history);
 }
 
-function releaseCommits(previousTag: string, target: string) {
-  command("git", ["rev-parse", "--verify", `${previousTag}^{commit}`]);
-  command("git", ["rev-parse", "--verify", `${target}^{commit}`]);
-  const baseline = releaseHistoryBaseline(previousTag, target);
+function releaseCommits(baseline: string, target: string) {
   const output = command("git", releaseHistoryArguments(baseline, target));
   if (output.length === 0) return [];
   return output.split("\x1e").flatMap((rawRecord) => {
@@ -200,11 +198,14 @@ function createReleaseSummary(previousTag: string, tag: string, target = tag): R
   if (!stableTagPattern.test(previousTag) || !stableTagPattern.test(tag)) {
     throw new Error("Release-note tag range is invalid.");
   }
-  const changes = releaseChangesFromCommits(releaseCommits(previousTag, target));
+  command("git", ["rev-parse", "--verify", `${previousTag}^{commit}`]);
+  command("git", ["rev-parse", "--verify", `${target}^{commit}`]);
+  const comparisonBaseline = releaseHistoryBaseline(previousTag, target);
+  const changes = releaseChangesFromCommits(releaseCommits(comparisonBaseline, target));
   if (changes.length === 0) {
     throw new Error(`Release ${tag} has no user-facing release note.`);
   }
-  return { changes, previousTag, tag };
+  return { changes, comparisonBaseline, previousTag, tag };
 }
 
 function createReleaseSummaryForTag(tag: string) {
@@ -242,7 +243,7 @@ function createReleaseNotes(summary: ReleaseSummary, records: readonly ArtifactR
     })
     .join("\n");
   const changes = summary.changes.map((change) => `- ${change}`).join("\n");
-  const compareUrl = `https://github.com/${repository}/compare/${summary.previousTag}...${summary.tag}`;
+  const compareUrl = `https://github.com/${repository}/compare/${summary.comparisonBaseline}...${summary.tag}`;
   return `## What changed
 
 ${changes}

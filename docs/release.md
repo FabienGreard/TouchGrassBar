@@ -143,8 +143,9 @@ The generator normally starts at the previous tag. If a metadata-only rewrite
 means that the tag is no longer an ancestor of `main`, the generator requires
 exactly one first-parent commit with the same tree and subject as the tagged
 commit. It starts at that equivalent commit. This prevents both duplicate old
-notes and the loss of a later repeated patch. The immutable release tag stays
-unchanged.
+notes and the loss of a later repeated patch. The full-changelog link uses the
+same equivalent commit as its comparison baseline. The immutable release tag
+stays unchanged.
 
 The GitHub Release description puts the user-facing changes and DMG download
 first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,

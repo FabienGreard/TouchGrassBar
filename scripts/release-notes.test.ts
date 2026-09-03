@@ -190,6 +190,7 @@ describe("release notes", () => {
     const notes = createReleaseNotes(
       {
         changes: ["Fixed provider refresh."],
+        comparisonBaseline: "rewritten-release",
         previousTag: "v1.1.0",
         tag: "v1.2.0",
       },
@@ -205,6 +206,12 @@ describe("release notes", () => {
     expect(notes).toMatch(/^## What changed\n\n- Fixed provider refresh\./u);
     expect(notes).toContain("<summary>Technical verification</summary>");
     expect(notes).toContain("[v1.1.0...v1.2.0]");
+    expect(notes).toContain(
+      "https://github.com/FabienGreard/TouchGrassBar/compare/rewritten-release...v1.2.0",
+    );
+    expect(notes).not.toContain(
+      "https://github.com/FabienGreard/TouchGrassBar/compare/v1.1.0...v1.2.0",
+    );
     expect(notes).not.toContain("This Release is a draft");
     expect(updaterReleaseNotes(["Fixed provider refresh."])).toBe("Fixed provider refresh.");
   });
