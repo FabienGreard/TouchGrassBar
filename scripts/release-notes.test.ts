@@ -171,6 +171,8 @@ describe("release notes", () => {
     "  * fix(parser): describe the nested change",
     "1. fix(parser): describe the nested change",
     "> fix(parser): describe the nested change",
+    ">fix(parser): describe the nested change",
+    ">>fix(parser): describe the nested change",
     "### fix(parser): describe the nested change",
   ])("does not parse a prefixed nested subject as a trailer: %s", (nestedSubject) => {
     expect(
