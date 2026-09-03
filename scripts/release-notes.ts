@@ -44,7 +44,7 @@ const excludedFallbackScopes = new Set(["build", "ci", "dev", "docs", "release",
 const nestedConventionalSubjectPattern =
   /^(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^\r\n)]+\))?!?:[ \t]+\S/iu;
 const markdownSubjectPrefixPattern =
-  /^(?:(?:[-*+]|#{1,6}|[0-9]+[.)])[ \t]+|>[ \t]?|\[[ xX]\][ \t]+)/u;
+  /^(?:(?:[-*+]|#{1,6}|[0-9]+[.)])[ \t]+|>[ \t]?|\[[ xX]\][ \t]+|`+|\*{1,3}|_{1,3}|~~|!?\[)/u;
 
 function command(executable: string, argumentsList: string[]) {
   const result = spawnSync(executable, argumentsList, {
