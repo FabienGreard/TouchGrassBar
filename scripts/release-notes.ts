@@ -55,12 +55,14 @@ const releaseTrailerSubjectPattern = /^release-note(?:-mode)?:/iu;
 const ordinaryBodyFieldPattern = /^(?:note|status):[ \t]+\S/iu;
 const gitOnelineHashPrefixPattern = /^[0-9a-f]{4,64}[ \t]+/iu;
 const gitOnelineDecorationPrefixPattern = /^\([^\r\n]*?\)[ \t]+/u;
+const nestedMessageBoundaryPattern = /^(?:nested commit message|squashed commit contains):$/iu;
 const standardGitTrailerTokens = new Set([
   "acked-by",
   "approved-by",
   "cc",
   "co-authored-by",
   "co-developed-by",
+  "fixes",
   "helped-by",
   "reported-by",
   "reviewed-by",
@@ -269,6 +271,12 @@ function isCompactNestedConventionalSubject(line: string) {
   return token !== undefined && !standardGitTrailerTokens.has(token);
 }
 
+function finalTrailerBlockHasNestedOwner(lines: readonly string[], start: number) {
+  let index = start - 1;
+  while (index >= 0 && lines[index]!.trim() === "") index -= 1;
+  return index >= 0 && nestedMessageBoundaryPattern.test(lines[index]!.trim());
+}
+
 function releaseTrailersFromBody(body: string): ReleaseTrailers {
   const lines = body.split(/\r?\n/u);
   while (lines.at(-1)?.trim() === "") lines.pop();
@@ -282,6 +290,7 @@ function releaseTrailersFromBody(body: string): ReleaseTrailers {
     .filter((line) => !releaseTrailerSubjectPattern.test(line));
   if (
     hasNestedConventionalSubject(lines.slice(0, start)) ||
+    finalTrailerBlockHasNestedOwner(lines, start) ||
     compactNestedSubjects.some(isCompactNestedConventionalSubject)
   ) {
     return { modes: [], notes: [] };

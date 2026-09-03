@@ -145,6 +145,29 @@ describe("release notes", () => {
     ).toEqual(["The reviewed top-level note."]);
   });
 
+  test.each(["Nested commit message:", "Squashed commit contains:"])(
+    "ignores a subject-free nested trailer block after a message boundary: %s",
+    (boundary) => {
+      expect(
+        releaseChangesFromCommits([
+          {
+            body: "Release-note: Keep the earlier reviewed note.",
+            subject: "fix(desktop): keep the reviewed behavior",
+          },
+          {
+            body: [
+              boundary,
+              "",
+              "Release-note-mode: replace",
+              "Release-note: Nested note.",
+            ].join("\n"),
+            subject: "chore(release): collect squashed work",
+          },
+        ]),
+      ).toEqual(["Keep the earlier reviewed note."]);
+    },
+  );
+
   test("ignores a nested release trailer block at the end of a squash body", () => {
     expect(
       releaseChangesFromCommits([
@@ -368,6 +391,14 @@ describe("release notes", () => {
       });
     },
   );
+
+  test("keeps a Fixes trailer in the final block", () => {
+    expect(
+      releaseTrailersFromBody(
+        ["Release-note: Keep this reviewed note.", "Fixes: #123"].join("\n"),
+      ),
+    ).toEqual({ modes: [], notes: ["Keep this reviewed note."] });
+  });
 
   test("treats an adjacent unknown lower-case field as ambiguous", () => {
     expect(

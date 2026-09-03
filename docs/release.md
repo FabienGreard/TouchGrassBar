@@ -138,10 +138,10 @@ has an ambiguous owner.
 If an uneditable squash commit has incomplete or technical fallback text, add
 one later release commit. Put `Release-note-mode: replace` and all reviewed
 `Release-note:` trailers in that commit. Only one replacement summary is
-allowed in a tag range. It replaces every fallback and trailer from earlier
-commits in that range. Later commits still contribute their explicit trailers
-or fallback subjects. The replacement commit must have at least one explicit
-user-facing `Release-note:` trailer.
+allowed in a tag range. The replacement summary replaces every fallback and
+trailer from earlier commits in that range. Later commits still contribute their
+explicit trailers or fallback subjects. The replacement commit must have at
+least one explicit user-facing `Release-note:` trailer.
 
 The generator normally starts at the previous tag. A metadata-only rewrite can
 remove that tag from the `main` history. In that case, the generator requires
