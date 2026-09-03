@@ -392,13 +392,16 @@ describe("release notes", () => {
     },
   );
 
-  test("keeps a Fixes trailer in the final block", () => {
-    expect(
-      releaseTrailersFromBody(
-        ["Release-note: Keep this reviewed note.", "Fixes: #123"].join("\n"),
-      ),
-    ).toEqual({ modes: [], notes: ["Keep this reviewed note."] });
-  });
+  test.each(["Fixes", "Closes", "Resolves"])(
+    "keeps an issue trailer in the final block: %s",
+    (token) => {
+      expect(
+        releaseTrailersFromBody(
+          ["Release-note: Keep this reviewed note.", `${token}: #123`].join("\n"),
+        ),
+      ).toEqual({ modes: [], notes: ["Keep this reviewed note."] });
+    },
+  );
 
   test("treats an adjacent unknown lower-case field as ambiguous", () => {
     expect(
