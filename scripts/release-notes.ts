@@ -13,6 +13,12 @@ type ReleaseCommit = {
   subject: string;
 };
 
+type ReleaseHistoryCommit = {
+  commit: string;
+  subject: string;
+  tree: string;
+};
+
 type ReleaseSummary = {
   changes: string[];
   previousTag: string;
@@ -39,6 +45,15 @@ function command(executable: string, argumentsList: string[]) {
     throw new Error(result.stderr.trim() || `Release-note command failed: ${executable}.`);
   }
   return result.stdout.trim();
+}
+
+function isAncestor(ancestor: string, target: string) {
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, target], {
+    stdio: "ignore",
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error("Release-note history ancestry cannot be checked.");
 }
 
 function parseStableVersion(tag: string): StableVersion | null {
@@ -89,15 +104,13 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
     throw new Error("Release notes have more than one replacement summary.");
   }
   const replacement = replacements[0];
-  const selectedCommits = replacement
-    ? commits.slice(commits.indexOf(replacement))
-    : commits;
+  const selectedCommits = replacement ? commits.slice(commits.indexOf(replacement)) : commits;
   const changes: string[] = [];
   const seen = new Set<string>();
   for (const commit of selectedCommits) {
-    const trailers = [
-      ...commit.body.matchAll(/^Release-note:[ \t]*(\S(?:.*\S)?)[ \t]*$/gimu),
-    ].map((match) => match[1]!);
+    const trailers = [...commit.body.matchAll(/^Release-note:[ \t]*(\S(?:.*\S)?)[ \t]*$/gimu)].map(
+      (match) => match[1]!,
+    );
     const reviewedTrailers = trailers.filter((trailer) => trailer.toLowerCase() !== "none");
     if (commit === replacement && reviewedTrailers.length === 0) {
       throw new Error("The replacement release summary has no user-facing note.");
@@ -125,22 +138,49 @@ function releaseChangesFromCommits(commits: readonly ReleaseCommit[]) {
   return changes;
 }
 
-function releaseHistoryArguments(previousTag: string, target: string) {
-  return [
-    "log",
-    "--cherry-pick",
-    "--right-only",
-    "--first-parent",
-    "--reverse",
-    "--format=%s%x00%b%x1e",
-    `${previousTag}...${target}`,
-  ];
+function releaseHistoryArguments(baseline: string, target: string) {
+  return ["log", "--first-parent", "--reverse", "--format=%s%x00%b%x1e", `${baseline}..${target}`];
+}
+
+function parseReleaseHistoryCommit(record: string): ReleaseHistoryCommit {
+  const [commit, tree, ...subjectParts] = record.split("\x00");
+  const subject = subjectParts.join("\x00");
+  if (!/^[0-9a-f]{40}$/u.test(commit ?? "") || !/^[0-9a-f]{40}$/u.test(tree ?? "") || !subject) {
+    throw new Error("Release commit identity is invalid.");
+  }
+  return { commit: commit!, subject, tree: tree! };
+}
+
+function selectEquivalentReleaseCommit(
+  tagged: ReleaseHistoryCommit,
+  targetHistory: readonly ReleaseHistoryCommit[],
+) {
+  const matches = targetHistory.filter(
+    (candidate) => candidate.tree === tagged.tree && candidate.subject === tagged.subject,
+  );
+  if (matches.length !== 1) {
+    throw new Error("Rewritten release baseline is not unique on the target history.");
+  }
+  return matches[0]!.commit;
+}
+
+function releaseHistoryBaseline(previousTag: string, target: string) {
+  if (isAncestor(previousTag, target)) return previousTag;
+  const tagged = parseReleaseHistoryCommit(
+    command("git", ["show", "-s", "--format=%H%x00%T%x00%s", `${previousTag}^{commit}`]),
+  );
+  const history = command("git", ["log", "--first-parent", "--format=%H%x00%T%x00%s", target])
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .map(parseReleaseHistoryCommit);
+  return selectEquivalentReleaseCommit(tagged, history);
 }
 
 function releaseCommits(previousTag: string, target: string) {
   command("git", ["rev-parse", "--verify", `${previousTag}^{commit}`]);
   command("git", ["rev-parse", "--verify", `${target}^{commit}`]);
-  const output = command("git", releaseHistoryArguments(previousTag, target));
+  const baseline = releaseHistoryBaseline(previousTag, target);
+  const output = command("git", releaseHistoryArguments(baseline, target));
   if (output.length === 0) return [];
   return output.split("\x1e").flatMap((rawRecord) => {
     const record = rawRecord.trim();
@@ -243,6 +283,7 @@ export {
   previousStableTag,
   releaseChangesFromCommits,
   releaseHistoryArguments,
+  selectEquivalentReleaseCommit,
   updaterReleaseNotes,
 };
-export type { ArtifactRecord, ReleaseCommit, ReleaseSummary };
+export type { ArtifactRecord, ReleaseCommit, ReleaseHistoryCommit, ReleaseSummary };

@@ -139,9 +139,12 @@ that range. Later commits still contribute their explicit trailers or fallback
 subjects. The replacement commit must have at least one explicit user-facing
 `Release-note:` trailer.
 
-The generator compares both sides of the previous-tag boundary by stable patch
-identity. This prevents a metadata-only rewrite of `main` from listing already
-released changes again. The immutable release tag stays unchanged.
+The generator normally starts at the previous tag. If a metadata-only rewrite
+means that the tag is no longer an ancestor of `main`, the generator requires
+exactly one first-parent commit with the same tree and subject as the tagged
+commit. It starts at that equivalent commit. This prevents both duplicate old
+notes and the loss of a later repeated patch. The immutable release tag stays
+unchanged.
 
 The GitHub Release description puts the user-facing changes and DMG download
 first. It keeps signing, notarization, Gatekeeper, updater-signature, asset-size,

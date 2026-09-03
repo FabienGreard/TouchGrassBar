@@ -5,6 +5,7 @@ import {
   previousStableTag,
   releaseChangesFromCommits,
   releaseHistoryArguments,
+  selectEquivalentReleaseCommit,
   updaterReleaseNotes,
 } from "./release-notes";
 
@@ -89,11 +90,7 @@ describe("release notes", () => {
           subject: "feat(desktop): add a later feature",
         },
       ]),
-    ).toEqual([
-      "The reviewed replacement.",
-      "A later reviewed note.",
-      "Add a later feature.",
-    ]);
+    ).toEqual(["The reviewed replacement.", "A later reviewed note.", "Add a later feature."]);
   });
 
   test("requires an explicit user-facing trailer in a replacement summary", () => {
@@ -137,16 +134,50 @@ describe("release notes", () => {
     ).toThrow("Release notes have more than one replacement summary.");
   });
 
-  test("compares rewritten histories by stable patch identity", () => {
-    expect(releaseHistoryArguments("v1.1.0", "candidate")).toEqual([
+  test("collects the normal range after a resolved release baseline", () => {
+    expect(releaseHistoryArguments("rewritten-release", "candidate")).toEqual([
       "log",
-      "--cherry-pick",
-      "--right-only",
       "--first-parent",
       "--reverse",
       "--format=%s%x00%b%x1e",
-      "v1.1.0...candidate",
+      "rewritten-release..candidate",
     ]);
+  });
+
+  test("finds one tree-and-subject equivalent after a metadata rewrite", () => {
+    const tagged = {
+      commit: "a".repeat(40),
+      subject: "chore(release): prepare fixture",
+      tree: "b".repeat(40),
+    };
+    expect(
+      selectEquivalentReleaseCommit(tagged, [
+        {
+          commit: "c".repeat(40),
+          subject: "fix(desktop): later change",
+          tree: "d".repeat(40),
+        },
+        {
+          commit: "e".repeat(40),
+          subject: tagged.subject,
+          tree: tagged.tree,
+        },
+      ]),
+    ).toBe("e".repeat(40));
+  });
+
+  test("rejects an ambiguous rewritten release baseline", () => {
+    const tagged = {
+      commit: "a".repeat(40),
+      subject: "chore(release): prepare fixture",
+      tree: "b".repeat(40),
+    };
+    expect(() =>
+      selectEquivalentReleaseCommit(tagged, [
+        { ...tagged, commit: "c".repeat(40) },
+        { ...tagged, commit: "d".repeat(40) },
+      ]),
+    ).toThrow("Rewritten release baseline is not unique on the target history.");
   });
 
   test("selects the previous stable tag and ignores prereleases", () => {
