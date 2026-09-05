@@ -2,7 +2,7 @@
 import * as z from "zod";
 
 export const ADD_TOKENMAXXER_CONTRACT_VERSION = 1 as const;
-export const APPROVED_PRICING_BASES_BY_PROVIDER = {"claude":["anthropic-standard-2026-08-07-v1","anthropic-standard-2026-08-26-v1","anthropic-standard-2026-09-02-v1"],"codex":["openai-api-2026-08-09-v3","openai-standard-2026-08-06-v1","openai-standard-2026-08-26-v2"]} as const;
+export const APPROVED_PRICING_BASES_BY_PROVIDER = {"claude":["anthropic-standard-2026-08-07-v1","anthropic-standard-2026-08-26-v1","anthropic-standard-2026-09-02-v1"],"codex":["openai-api-2026-08-09-v3","openai-standard-2026-08-06-v1","openai-standard-2026-08-26-v2","openai-standard-2026-09-05-v1"]} as const;
 export const BOOTSTRAP_CONTRACT_VERSION = 3 as const;
 export const CONTRACT_VERSION = 4 as const;
 export const DOOMERBOARD_CONTRACT_VERSION = 1 as const;

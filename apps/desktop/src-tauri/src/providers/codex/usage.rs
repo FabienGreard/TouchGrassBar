@@ -40,11 +40,11 @@ const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_SUPPORTED_CODEX_CLI_MINOR: u16 = 130;
-const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 151;
+const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 153;
 const MIN_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 148;
-const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 151;
+const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 153;
 const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 18;
-const ROLLOUT_PARSER_VERSION: i64 = 19;
+const ROLLOUT_PARSER_VERSION: i64 = 20;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
@@ -4177,13 +4177,13 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
 }
 
 fn promote_compatible_parser_rows(connection: &Connection) -> Result<usize, ()> {
-    // Parser 19 adds CLI 0.151 support. It does not change rows that parser 18
-    // accepted. Promote only rows with complete, included evidence.
+    // Parsers 19 and 20 add reviewed CLI versions without changing previously
+    // accepted rows. Promote only rows with complete, included evidence.
     connection
         .execute(
             "UPDATE codex_usage_files
              SET parser_version = ?1
-             WHERE parser_version = ?2
+             WHERE parser_version >= ?2 AND parser_version < ?1
                AND completion_state = 'complete'
                AND parsed_offset = size_bytes
                AND accounting_ready = 1
@@ -7804,7 +7804,14 @@ mod tests {
     #[test]
     fn sqlite_index_counts_each_reviewed_provider_ordinal_version() {
         let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
-        for cli_version in ["0.148.0-alpha.21", "0.149.1", "0.150.0-alpha.8"] {
+        for cli_version in [
+            "0.148.0-alpha.21",
+            "0.149.1",
+            "0.150.0-alpha.8",
+            "0.151.0-alpha.7.2",
+            "0.152.0",
+            "0.153.4",
+        ] {
             let fixture = TempUsage::new();
             let observed = token_usage(80, 10, 20, 20);
             let mut token_count =
@@ -7860,24 +7867,25 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_index_counts_owned_usage_from_a_reviewed_codex_0_150_child() {
-        let fixture = TempUsage::new();
-        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
-        let observed = token_usage(70, 20, 0, 30);
-        let mut token_count = token_count_usage_line("2026-08-26T10:00:02Z", observed, observed);
-        token_count["ordinal"] = json!(6);
-        fs::write(
-            &fixture.rollout,
-            jsonl([
+    fn sqlite_index_counts_owned_usage_from_reviewed_codex_children() {
+        for version in ["0.150.0-alpha.8", "0.152.0", "0.153.4"] {
+            let fixture = TempUsage::new();
+            let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+            let observed = token_usage(70, 20, 0, 30);
+            let mut token_count =
+                token_count_usage_line("2026-08-26T10:00:02Z", observed, observed);
+            token_count["ordinal"] = json!(6);
+            let mut records = [
                 json!({
                     "ordinal": 0,
                     "timestamp": "2026-08-26T10:00:00Z",
                     "type": "session_meta",
                     "payload": {
-                        "cli_version": "0.150.0-alpha.8",
+                        "cli_version": version,
                         "history_mode": "paginated",
                         "id": "child-fixture",
                         "forked_from_id": "parent-fixture",
+                        "forked_from_ordinal_exclusive": 3,
                         "thread_source": "subagent",
                         "subagent_history_start_ordinal": 3,
                         "timestamp": "2026-08-26T10:00:00Z"
@@ -7888,7 +7896,7 @@ mod tests {
                     "timestamp": "2026-08-26T09:59:00Z",
                     "type": "session_meta",
                     "payload": {
-                        "cli_version": "0.150.0-alpha.8",
+                        "cli_version": version,
                         "history_mode": "paginated",
                         "id": "parent-fixture",
                         "thread_source": "cli",
@@ -7929,16 +7937,22 @@ mod tests {
                     "payload": { "model": "gpt-5.6-sol" }
                 }),
                 token_count,
-            ]),
-        )
-        .unwrap();
+            ];
+            if version == "0.150.0-alpha.8" {
+                records[0]["payload"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("forked_from_ordinal_exclusive");
+            }
+            fs::write(&fixture.rollout, jsonl(records)).unwrap();
 
-        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
-            .expect("the reviewed Codex 0.150 child usage must index");
+            let indexed = index_local_usage_at(&fixture.database, &fixture.root, now)
+                .expect("reviewed Codex child usage must index");
 
-        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
-        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
-        assert!(!indexed.has_excluded_usage);
+            assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+            assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+            assert!(!indexed.has_excluded_usage);
+        }
     }
 
     #[test]
@@ -7995,6 +8009,39 @@ mod tests {
         assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
         assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
         assert!(!indexed.has_excluded_usage);
+    }
+
+    #[test]
+    fn sqlite_index_counts_codex_0_153_usage_across_auth_recovery() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-09-05T12:00:00Z", &Rfc3339).unwrap();
+        let rollout = reviewed_codex_0_148_root_rollout(100)
+            .replace("0.148.0-alpha.21", "0.153.4")
+            .replace("2026-08-24", "2026-09-05")
+            .replace("gpt-5.6-sol", "gpt-6-astra");
+        let mut records: Vec<serde_json::Value> = rollout
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        for kind in ["auth_recovery_started", "auth_recovery_completed"] {
+            records.insert(
+                2,
+                json!({
+                    "timestamp": "2026-09-05T10:00:00Z", "type": "event_msg",
+                "payload": { "type": kind, "provider": "fixture-provider", "message": "Synthetic recovery." }
+                }),
+            );
+        }
+        for (ordinal, record) in records.iter_mut().enumerate() {
+            record["ordinal"] = json!(ordinal);
+        }
+        fs::write(&fixture.rollout, jsonl(records)).unwrap();
+        let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+        assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+        assert!(indexed.daily[&now.date()].api_equivalent_cost_usd.is_some());
+        let repeated = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(repeated.daily[&now.date()].observed_tokens, 100);
     }
 
     #[test]
@@ -8112,48 +8159,50 @@ mod tests {
 
     #[test]
     fn sqlite_index_reuses_complete_rows_from_the_previous_compatible_parser() {
-        let fixture = TempUsage::new();
-        let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
-        fs::write(
-            &fixture.rollout,
-            reviewed_codex_0_148_root_rollout(100).replace("2026-08-24", "2026-08-26"),
-        )
-        .unwrap();
-        let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
-        assert_eq!(first.daily[&now.date()].observed_tokens, 100);
+        for previous in [18, 19] {
+            let fixture = TempUsage::new();
+            let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
+            fs::write(
+                &fixture.rollout,
+                reviewed_codex_0_148_root_rollout(100).replace("2026-08-24", "2026-08-26"),
+            )
+            .unwrap();
+            let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+            assert_eq!(first.daily[&now.date()].observed_tokens, 100);
 
-        Connection::open(&fixture.database)
-            .unwrap()
-            .execute(
-                "UPDATE codex_usage_files SET parser_version = ?1",
-                [COMPATIBLE_ROLLOUT_PARSER_VERSION],
+            Connection::open(&fixture.database)
+                .unwrap()
+                .execute(
+                    "UPDATE codex_usage_files SET parser_version = ?1",
+                    [previous],
+                )
+                .unwrap();
+
+            let reused = index_local_usage_with_budget(
+                &fixture.database,
+                &fixture.root,
+                now,
+                ScanBudget {
+                    max_bytes: 0,
+                    max_file_bytes: 0,
+                    max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                    max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                },
             )
             .unwrap();
 
-        let reused = index_local_usage_with_budget(
-            &fixture.database,
-            &fixture.root,
-            now,
-            ScanBudget {
-                max_bytes: 0,
-                max_file_bytes: 0,
-                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
-                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(reused.scan_status, UsageScanStatus::Complete);
-        assert_eq!(reused.daily[&now.date()].observed_tokens, 100);
-        assert_eq!(
-            Connection::open(&fixture.database)
-                .unwrap()
-                .query_row("SELECT parser_version FROM codex_usage_files", [], |row| {
-                    row.get::<_, i64>(0)
-                },)
-                .unwrap(),
-            ROLLOUT_PARSER_VERSION
-        );
+            assert_eq!(reused.scan_status, UsageScanStatus::Complete);
+            assert_eq!(reused.daily[&now.date()].observed_tokens, 100);
+            assert_eq!(
+                Connection::open(&fixture.database)
+                    .unwrap()
+                    .query_row("SELECT parser_version FROM codex_usage_files", [], |row| {
+                        row.get::<_, i64>(0)
+                    },)
+                    .unwrap(),
+                ROLLOUT_PARSER_VERSION
+            );
+        }
     }
 
     #[test]
@@ -8971,7 +9020,7 @@ mod tests {
             "timestamp": "2026-08-06T10:00:00Z",
             "type": "session_meta",
             "payload": {
-                "cli_version": "0.152.0-alpha.1",
+                "cli_version": "0.154.0-alpha.1",
                 "source": { "subagent": { "thread_spawn": {} } }
             }
         })
@@ -11224,7 +11273,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v2", 60.0);
+        let changed = changed_pricing_manifest(&pricing_manifest().unwrap().basis, 60.0);
         reprice_index_with_manifest(&connection, &changed, now.date(), now.date()).unwrap();
         let after: (i64, i64, f64) = connection
             .query_row(
@@ -11336,7 +11385,7 @@ mod tests {
             )
             .unwrap();
 
-        let changed = changed_pricing_manifest("openai-standard-2026-08-26-v2", 60.0);
+        let changed = changed_pricing_manifest(&pricing_manifest().unwrap().basis, 60.0);
         reprice_index_with_manifest(&connection, &changed, day, day).unwrap();
 
         let repriced = connection
@@ -11751,7 +11800,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-standard-2026-08-26-v2");
+        assert_eq!(manifest.basis, "openai-standard-2026-09-05-v1");
         assert!(
             catalog_entry(
                 &manifest,
@@ -11852,7 +11901,9 @@ mod tests {
         assert!(is_supported_cli_version("0.150.0-alpha.8"));
         assert!(is_supported_cli_version("0.151.0-alpha.7.2"));
         assert!(!is_supported_cli_version("0.129.9"));
-        assert!(!is_supported_cli_version("0.152.0"));
+        assert!(is_supported_cli_version("0.152.0"));
+        assert!(is_supported_cli_version("0.153.4"));
+        assert!(!is_supported_cli_version("0.154.0"));
         assert!(!is_supported_cli_version("1.0.0"));
         assert!(!is_supported_cli_version("private value"));
     }
@@ -12409,6 +12460,29 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn gpt_6_astra_prices_cache_categories_and_context_at_launch() {
+        let launch = Date::from_calendar_date(2026, Month::September, 3).unwrap();
+        // Input includes cached reads and cache writes; reasoning is within output.
+        let usage = token_usage(400_000, 100_000, 100_000, 100_000);
+        for (context, standard, fast) in [(272_000, 8.35, 16.7), (272_001, 14.2, 28.4)] {
+            for (mode, expected) in [(PricingMode::Standard, standard), (PricingMode::Fast, fast)] {
+                assert!(
+                    price_usage_tier(
+                        "gpt-6-astra",
+                        launch - Duration::days(1),
+                        usage,
+                        context,
+                        mode.clone()
+                    )
+                    .is_none()
+                );
+                let cost = price_usage_tier("gpt-6-astra", launch, usage, context, mode).unwrap();
+                assert!((cost - expected).abs() < 1e-12);
+            }
+        }
     }
 
     #[test]

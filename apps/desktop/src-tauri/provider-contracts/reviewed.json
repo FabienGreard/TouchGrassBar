@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-08-26",
+  "reviewedAt": "2026-09-05",
   "reviewEveryDays": 30,
   "codex": {
-    "reviewedRelease": "0.149.1",
+    "reviewedRelease": "0.153.4",
     "releaseUrl": "https://api.github.com/repos/openai/codex/releases/latest",
     "repositoryRawBaseUrl": "https://raw.githubusercontent.com/openai/codex",
     "modelCatalogPath": "codex-rs/models-manager/models.json",
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/codex/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/openai-standard.json",
-    "pricingManifestSemanticSha256": "a6234771803704284c57f6ea493b265f8ce4abb9d30480582dcfcd7f0e8ccc3a",
+    "pricingManifestSemanticSha256": "aa7410f18427651e6ecf2806557a0a9ea5ab277f1dc1566395afefe0b772669a",
     "pricingRuleWindows": [
       {
         "id": "api-token-and-tool-pricing",
         "startHeading": "# Pricing",
         "endHeading": "### Pricing Table data",
-        "semanticSha256": "10cc2cf0e628a1eecb445fb9a0e315edda95c77ed1873f31ddf58f31541b5ab2"
+        "semanticSha256": "e64965fac50ccd6da37d4bf18b06390e8725211ea6c78afe746ecf2357b75df1"
       }
     ],
     "pricingEvidence": {
@@ -46,8 +46,27 @@
         {
           "id": "api-changelog",
           "url": "https://developers.openai.com/api/docs/changelog.md",
-          "windowSemanticSha256": "1e62f9927af0f50aaaff6daa2f890ab32797e1d9ce8c2aa3090eb00ab1cb7a48",
+          "windowSemanticSha256": "035af557249d5a481f55335d73a82b5221972e2a5c3ceb857503b75c97751bde",
           "sections": [
+            {
+              "id": "gpt-6-astra-launch",
+              "heading": "### Sep 3",
+              "selector": "Released GPT-6 Astra",
+              "date": "2026-09-03",
+              "semanticSha256": "3f7455827ba781007b67098a47a0aa55205c0a2ba46582620472379f422dffaa",
+              "checkpoints": [
+                {
+                  "model": "gpt-6-astra",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6-astra",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "sol-price-change",
               "heading": "### Aug 21",
@@ -164,7 +183,8 @@
     },
     "pricingSemanticMarkers": [
       "Regional processing (data residency) endpoints are charged a 10% uplift for models released on or after March 5, 2026",
-      "Priority processing was renamed Fast mode on July 30, 2026."
+      "Priority processing was renamed Fast mode on July 30, 2026.",
+      "Fast mode is unavailable for GPT-6 Astra with EU data residency."
     ],
     "pricingSourceUrl": "https://developers.openai.com/api/docs/pricing.md",
     "schemas": [
@@ -184,7 +204,7 @@
         "id": "rollout-event-kinds",
         "path": "codex-rs/protocol/src/protocol.rs",
         "kind": "event-msg-variants",
-        "semanticSha256": "3269931134574f4272a24d1763168e8003cdbce22394038746072e81e269445a"
+        "semanticSha256": "1f71b2dbf4619a376908ab27388174884d7ee69576aede1c08871c12cfba79ba"
       },
       {
         "id": "api-token-mapping",
@@ -195,11 +215,11 @@
     ]
   },
   "claude": {
-    "reviewedStableVersion": "2.1.231",
-    "reviewedLatestVersion": "2.1.258",
+    "reviewedStableVersion": "2.1.236",
+    "reviewedLatestVersion": "2.1.261",
     "stablePackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/stable",
     "latestPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/latest",
-    "reviewedAgentSdkVersion": "0.3.258",
+    "reviewedAgentSdkVersion": "0.3.261",
     "agentSdkPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-agent-sdk/latest",
     "usageTypesSourceUrl": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
     "usageInterfaces": {
@@ -289,14 +309,14 @@
         {
           "id": "release-notes",
           "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
-          "windowSemanticSha256": "32b8ad23269812e84f1d8707c34a21807cee168568295fcefebdb2a4863d8c4d",
+          "windowSemanticSha256": "048c3d25362eecb45e38dad5274e4713054ec1c69e1d98c971a50f0c52579616",
           "sections": [
             {
               "id": "fable-mythos-5-1-launch",
               "heading": "### September 1, 2026",
               "selector": "We've launched **Claude Fable 5.1**",
               "date": "2026-09-01",
-              "semanticSha256": "8658cd31f76c435123058b56f083d97f1edc70e5d516a00a0e3d9cf1a4518393",
+              "semanticSha256": "d4d97c601fe7d9aabce4e77dc0e8015b48267a7a48a59b37534888774d3f4c8c",
               "checkpoints": [
                 {
                   "model": "claude-fable-5-1",
