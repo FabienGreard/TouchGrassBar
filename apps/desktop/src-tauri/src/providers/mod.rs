@@ -38,8 +38,11 @@ pub(crate) const CLAUDE_USAGE_SCHEMA_VERSION: i64 = claude::USAGE_INDEX_SCHEMA_V
 
 // These prior bases can still occur in the retained 60-day Usage history.
 // The current bases come from the bundled provider pricing catalogs below.
-const RETAINED_CODEX_PRICING_BASES: &[&str] =
-    &["openai-api-2026-08-09-v3", "openai-standard-2026-08-06-v1"];
+const RETAINED_CODEX_PRICING_BASES: &[&str] = &[
+    "openai-api-2026-08-09-v3",
+    "openai-standard-2026-08-06-v1",
+    "openai-standard-2026-08-26-v2",
+];
 const RETAINED_CLAUDE_PRICING_BASES: &[&str] = &[
     "anthropic-standard-2026-08-07-v1",
     "anthropic-standard-2026-08-26-v1",

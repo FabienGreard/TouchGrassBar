@@ -1,14 +1,14 @@
-# Remove Codex Parser-18 Usage Index Compatibility
+# Remove Codex Parser-18 and Parser-19 Usage Index Compatibility
 
 - **Status:** planned
 - **Owner issue:** [#95](https://github.com/FabienGreard/TouchGrassBar/issues/95)
-- **Implementation:** [commit c1f0061f](https://github.com/FabienGreard/TouchGrassBar/commit/c1f0061fc9a99914a97ff888bb7079a02f1abf68) and the current parser-19 change
+- **Implementation:** [commit c1f0061f](https://github.com/FabienGreard/TouchGrassBar/commit/c1f0061fc9a99914a97ff888bb7079a02f1abf68), parser 19, and [the parser-20 update in PR #106](https://github.com/FabienGreard/TouchGrassBar/pull/106)
 
 ## Scope
 
 The local Codex usage index promotes only complete, included, supported, and
-error-free parser-18 rows to parser 19. Parser 19 adds reviewed Codex 0.151
-support. Rows that do not meet every guard use the normal fail-closed reparse
+error-free parser-18 and parser-19 rows to parser 20. Parser 19 adds reviewed
+Codex 0.151 support; parser 20 adds 0.152 and 0.153. Rows that do not meet every guard use the normal fail-closed reparse
 path.
 
 The stored-cursor recovery, separate discovery and parse budgets, provider
@@ -20,12 +20,12 @@ No schema or cloud deployment is in scope.
 ## Execution plan
 
 1. Keep the compatibility bridge for one full 60-day Codex usage-retention
-   window after the parser-19 release is available.
+   window after the parser-20 release is available.
 2. Copy a production-shaped local database to an isolated test location. Do
    not change the installed application database.
 3. Run one normal indexing pass against the isolated database and rollout
    source.
-4. Record the retained parser-18 row count and the count of rows promoted by
+4. Record the retained parser-18 and parser-19 row counts and the count of rows promoted by
    the pass.
 5. Run a second normal pass and record the same counts.
 6. Remove the compatibility bridge and its promotion-only tests in a later
@@ -37,7 +37,7 @@ No schema or cloud deployment is in scope.
 ## Verification
 
 Use count-only evidence from the isolated database. After the first pass,
-there must be zero retained parser-18 rows. The second pass must promote zero
+there must be zero retained parser-18 and parser-19 rows. The second pass must promote zero
 additional rows. The retained window must also have zero non-current parser
 rows in a pending or error state before the bridge is removed.
 
@@ -68,6 +68,6 @@ promotion query and its strict safety guards.
 ## Exit condition
 
 After one full 60-day retention window, one isolated normal pass leaves zero
-retained parser-18 rows and zero non-current pending or error rows. A repeated
+retained parser-18 or parser-19 rows and zero non-current pending or error rows. A repeated
 pass promotes zero rows, and the cleanup change passes every required local and
 CI check.

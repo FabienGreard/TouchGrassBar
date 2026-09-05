@@ -1,7 +1,35 @@
 {
   "schemaVersion": 1,
-  "basis": "openai-standard-2026-08-26-v2",
+  "basis": "openai-standard-2026-09-05-v1",
   "models": [
+    {
+      "name": "gpt-6-astra",
+      "aliases": [],
+      "periods": [
+        {
+          "effectiveFrom": "2026-09-03",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 10.0,
+          "cachedInputUsdPerMillion": 1.0,
+          "cacheWriteUsdPerMillion": 12.5,
+          "outputUsdPerMillion": 50.0,
+          "fastMultiplier": 2.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          },
+          "fastLongContext": {
+            "effectiveFrom": "2026-09-03",
+            "effectiveUntil": null,
+            "inputUsdPerMillion": 40.0,
+            "cachedInputUsdPerMillion": 4.0,
+            "cacheWriteUsdPerMillion": 50.0,
+            "outputUsdPerMillion": 150.0
+          }
+        }
+      ]
+    },
     {
       "name": "gpt-5.2",
       "aliases": [],

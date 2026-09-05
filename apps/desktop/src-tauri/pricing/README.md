@@ -29,6 +29,35 @@ local usage work.
 
 ## OpenAI rules
 
+The `2026-09-05-v1` review adds `gpt-6-astra` from its
+[September 3 launch](https://developers.openai.com/api/docs/changelog#sep-3).
+The [model page](https://developers.openai.com/api/docs/models/gpt-6-astra)
+and [price table](https://developers.openai.com/api/docs/pricing) define these
+rates per million tokens. The periods start on 2026-09-03 and remain open.
+
+| Usage       | Standard, up to 272K input | Standard, above 272K input | Fast, up to 272K input | Fast, above 272K input |
+| ----------- | -------------------------: | -------------------------: | ---------------------: | ---------------------: |
+| Input       |                     $10.00 |                     $20.00 |                 $20.00 |                 $40.00 |
+| Cache read  |                      $1.00 |                      $2.00 |                  $2.00 |                  $4.00 |
+| Cache write |                     $12.50 |                     $25.00 |                 $25.00 |                 $50.00 |
+| Output      |                     $50.00 |                     $75.00 |                $100.00 |                $150.00 |
+
+The full request uses the long-context rate when input exceeds 272,000 tokens.
+The model has no additional reviewed alias. Fast mode is unavailable with EU
+data residency. The audit checks that restriction. These are public Codex
+usage estimates; this change does not add regional endpoint billing.
+
+The same review checks Codex `0.153.4` against its
+[tagged protocol source](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/protocol/src/protocol.rs).
+The account and thread usage schemas and API token mapping match the earlier
+snapshot. Two new authentication-recovery events have no token counters. The
+new optional `forked_from_ordinal_exclusive` field identifies the logical fork
+boundary; the scanner retains its existing explicit-boundary and parent
+resolution checks. Synthetic root and child fixtures cover CLI minors 152 and
+153, contiguous ordinals, ignored recovery events, and repeated indexing.
+Parser 20 reparses earlier rejected files and promotes only complete, safe
+parser-18 and parser-19 rows.
+
 When the local debug report finds an unknown model, check the official OpenAI
 API pricing page, model catalog, Codex rate card, and official Codex source.
 Add a manifest entry only when those sources define every applicable input,
@@ -154,10 +183,51 @@ Use these primary sources for a Claude update:
 - [Claude release notes](https://platform.claude.com/docs/en/release-notes/overview)
 - [Anthropic TypeScript SDK usage types](https://github.com/anthropics/anthropic-sdk-typescript/blob/3b45cd3b69c956ac63384fdb09ce1d8109f3fa80/src/resources/beta/messages/messages.ts#L4053-L4105)
 
-The reviewed Claude Code version set has four verified pairs. Claude Code
+The earlier Claude Code reviews checked four pairs. Claude Code
 `2.1.223` pairs with `@anthropic-ai/claude-agent-sdk` `0.3.223`. Claude Code
 `2.1.224` pairs with SDK version `0.3.224`. Claude Code `2.1.241` pairs with SDK
 version `0.3.241`. Claude Code `2.1.258` pairs with SDK version `0.3.258`.
+
+The 2026-09-05 review adds Claude Code `2.1.236`, `2.1.259`, `2.1.260`, and
+`2.1.261`. The current channel matrix is:
+
+| Channel | Claude Code | Agent SDK |
+| ------- | ----------- | --------- |
+| Stable  | `2.1.236`   | `0.3.236` |
+| Latest  | `2.1.261`   | `0.3.261` |
+
+Exact npm version records supply these integrity values:
+
+| Package                          | Version   | `dist.integrity`                                                                                  |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------------------------- |
+| `@anthropic-ai/claude-code`      | `2.1.236` | `sha512-sz+7GLMhFcwkN2tZHJIXGgon/g/29WMMV5UNYog9sl4OvdX5q3evM1mcXVQnasP4obP6ueItECMCpSk1MPhTDg==` |
+| `@anthropic-ai/claude-code`      | `2.1.259` | `sha512-kzhz+R36GgL5aouAkeMO9nI1BEIVaRx1NGu0wTTn/H315l61uiLRo13yvva7H10Pfv0PGgzqJ4m+EKv9BzIRXQ==` |
+| `@anthropic-ai/claude-code`      | `2.1.260` | `sha512-Arqg8BvlOehmC3QdACN2WKshqqWQVMo+5NwG22aiJbw7M6S1LM7E2pA2MjD8BS5P5EwZVkh2eKUmC6k7pVUqSQ==` |
+| `@anthropic-ai/claude-code`      | `2.1.261` | `sha512-j6+AkfCl6/UJBcx66nlZUmWc4XGK3TscvW19Tiat+oDwkz3WqQfKzjvHO5FhR+shXTtktqs6vqSBrJmeSWpU3Q==` |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.236` | `sha512-6SX3gLk4z4cOuixRRILC3QPcVxudJJU6oWm142PFnPADpXS0wYAukGcLueox9AoTZryuGw/JDa9h0yXBOcF8iQ==` |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.261` | `sha512-CDG9z14JVKYRHjpp/g6zJ2k8xM5uSoRgjGdpTiK9woLDZxXtXcxV93ipCh55jQ3REj7M7H3GieMsETGZXB/ydw==` |
+
+Each exact Code package ran in `--bare` mode with an isolated
+`CLAUDE_CONFIG_DIR`, no tools or MCP servers, a synthetic API key, and a
+localhost Messages stream. This checks transcript serialization without an
+account request. It does not prove live provider responses. The stable package
+omits `apiBlockIndex`; the three later packages include it. Their usage fields
+match the reviewed shape, including cache buckets, one matching iteration,
+and inclusive thinking-token detail. The Rust fixtures replace all values
+and test duplicate records, repeated scans, aborted records, unknown counters,
+and invalid breakdowns. Parser 10 reparses retained records to restore complete
+coverage and cost for these versions.
+
+The normal usage debug command also read the generated `2.1.261` transcript:
+100 observed tokens, 100 priced tokens, complete daily coverage, and no pending
+or error files. Its second pass read zero bytes and kept the same totals.
+
+The public usage type signatures and token meanings still match. Claude Fable
+5.1 and Mythos 5.1 prices already match the current table. Their September 1
+release section now contains more API guidance; its price and cache rules are
+unchanged. The review refreshes that section and window evidence.
+The full public-source audit checks both providers' parser and pricing areas
+and passes with 15 sources, so `reviewedAt` advances to 2026-09-05.
 
 The reviewed set does not gate parsing. A version outside it is read with the
 same structural checks, contributes its Observed Tokens, and leaves its Ranking
@@ -241,11 +311,12 @@ one million tokens:
 
 ### Claude parser fixture review
 
-The parser treats three nested usage objects as opaque. They are
-`fallback_credit`, `iterations`, and `output_tokens_details`. A non-null value
-keeps known top-level token counts, but it makes the record partial and
-unpriced. Review each full nested type graph and its billing effect before you
-remove this guard.
+The parser keeps non-null `fallback_credit` partial and unpriced. It accepts
+one `iterations` entry only when its counters match the top-level counters.
+It accepts `output_tokens_details.thinking_tokens` only when that value does
+not exceed the inclusive output total. Other nested shapes keep known
+top-level counters partial and unpriced. Review their billing meaning before
+you extend these checks.
 
 Use this process when the audit reports a new Claude Code or Agent SDK version:
 
