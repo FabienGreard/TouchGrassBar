@@ -128,6 +128,8 @@ jobs:
         run: bun desktop:release --prepare
       - name: Build and sign the app, DMG, and updater archive
         env:
+          # Keep the Finder icon layout and Applications drop target in CI builds.
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
           APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ vars.APPLE_API_KEY_ID }}
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}

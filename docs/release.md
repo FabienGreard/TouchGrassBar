@@ -187,7 +187,8 @@ work:
    `0600`.
 4. It sets the app version from the validated tag. Tauri creates the signed,
    hardened, timestamped, notarized, and stapled app plus its updater archive
-   and detached signature.
+   and detached signature. The build sets `TAURI_BUNDLER_DMG_IGNORE_CI=true`
+   so Tauri saves the Finder icon layout for the app and Applications shortcut.
 5. It independently submits the versioned DMG to Apple, requires `Accepted`,
    staples it, and checks Gatekeeper.
 6. It checks the app in the updater archive and DMG against the trusted app.
