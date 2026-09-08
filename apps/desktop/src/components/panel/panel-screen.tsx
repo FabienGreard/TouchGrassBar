@@ -19,6 +19,7 @@ import {
   doomerboardProfileAudienceFilter,
   doomerboardRankingDayKey,
   prefetchDoomerboardSelections,
+  removeTokenmaxxerAndRefresh,
   type DoomerboardPort,
   type DoomerboardPortOutcome,
   type DoomerboardQuery,
@@ -34,6 +35,7 @@ type PanelPresentation = Pick<
   | "doomerboardLoading"
   | "doomerboardRows"
   | "onUpdate"
+  | "onRemoveFriend"
   | "tokenmaxxerRows"
   | "updateState"
   | "usagePresentation"
@@ -464,6 +466,11 @@ function PanelScreen({
       onRefresh={() => {
         void stateDelivery.requestRefresh();
       }}
+      onRemoveFriend={
+        hasNativeRuntime && profileKey !== null
+          ? (id) => removeTokenmaxxerAndRefresh(queryClient, doomerboard, profileKey, id)
+          : presentation.onRemoveFriend
+      }
       onSettings={() => {
         if (hasNativeRuntime) void invoke("open_settings");
       }}

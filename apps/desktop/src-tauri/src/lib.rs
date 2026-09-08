@@ -808,6 +808,20 @@ async fn add_tokenmaxxer(
 }
 
 #[tauri::command]
+async fn remove_tokenmaxxer(
+    window: WebviewWindow,
+    runtime: State<'_, doomerboard::DoomerboardRuntime>,
+    profile_key: String,
+    touch_grass_id: String,
+) -> Result<bool, String> {
+    require_panel(&window)?;
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || runtime.remove(&profile_key, &touch_grass_id))
+        .await
+        .map_err(|_| "Remove friend unavailable".to_owned())
+}
+
+#[tauri::command]
 fn get_sanitized_state(
     window: WebviewWindow,
     core: State<'_, NativeCore>,
@@ -1211,6 +1225,7 @@ pub fn run() {
     let app = builder
         .invoke_handler(tauri::generate_handler![
             add_tokenmaxxer,
+            remove_tokenmaxxer,
             cancel_doomerboard_read,
             check_for_updates,
             complete_bootstrap,

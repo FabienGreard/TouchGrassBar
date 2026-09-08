@@ -64,6 +64,16 @@ function createTauriDoomerboardAdapter(
         return unavailable();
       }
     },
+    remove: async (profileKey, touchGrassId) => {
+      try {
+        return {
+          ok: true,
+          value: await bindings.invoke("remove_tokenmaxxer", { profileKey, touchGrassId }),
+        };
+      } catch {
+        return unavailable();
+      }
+    },
     read: async (profileKey, query, signal) => {
       if (signal?.aborted) return unavailable();
       const requestId = createDoomerboardReadId();

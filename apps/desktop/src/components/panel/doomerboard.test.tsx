@@ -7,6 +7,71 @@ import { Doomerboard } from "./doomerboard";
 
 afterEach(cleanup);
 
+test("friend actions cover podium and ledger rows and exclude the current Profile and Global", () => {
+  const currentProfile = { displayName: "You", touchGrassId: "#TG-7K4P9D" };
+  const rows = [
+    currentProfile,
+    ...["TG-234567", "TG-234568", "TG-234569"].map((touchGrassId, index) => ({
+      displayName: `Friend ${index + 1}`,
+      touchGrassId,
+    })),
+  ].map((profile, index) => Object.assign({}, profile, { rank: index + 1, tokenScore: "100" }));
+  const onRemoveFriend = vi.fn(async () => true);
+  const view = render(
+    <Doomerboard
+      currentProfile={currentProfile}
+      onRemoveFriend={onRemoveFriend}
+      selection={{ audience: "mine", scope: "combined", windowDays: 1 }}
+      tokenmaxxerRows={rows}
+    />,
+  );
+  expect(screen.getAllByRole("button", { name: /Friend actions for/ })).toHaveLength(3);
+  expect(screen.queryByRole("button", { name: "Friend actions for You" })).toBeNull();
+  expect(
+    screen
+      .getByRole("button", { name: "Friend actions for Friend 3" })
+      .closest('[data-slot="doomerboard-ledger"]'),
+  ).toBeTruthy();
+  view.rerender(
+    <Doomerboard currentProfile={currentProfile} onRemoveFriend={onRemoveFriend} rows={rows} />,
+  );
+  expect(screen.queryByRole("button", { name: /Friend actions for/ })).toBeNull();
+});
+
+test("friend removal blocks repeated activation and shows a retry after failure", async () => {
+  let finish!: (removed: boolean) => void;
+  const onRemoveFriend = vi.fn(
+    () =>
+      new Promise<boolean>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  render(
+    <Doomerboard
+      currentProfile={{ displayName: "You", touchGrassId: "#TG-7K4P9D" }}
+      onRemoveFriend={onRemoveFriend}
+      selection={{ audience: "mine", scope: "combined", windowDays: 1 }}
+      tokenmaxxerRows={[
+        { displayName: "Friend", rank: 1, tokenScore: "100", touchGrassId: "#TG-234567" },
+      ]}
+    />,
+  );
+  fireEvent.keyDown(screen.getByRole("button", { name: "Friend actions for Friend" }), {
+    key: "Enter",
+  });
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Remove friend" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Removing…" }));
+  expect(onRemoveFriend).toHaveBeenCalledExactlyOnceWith("TG-234567");
+  finish(false);
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "Could not remove friend. Try again.",
+  );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Remove friend" }));
+  expect(onRemoveFriend).toHaveBeenCalledTimes(2);
+  finish(true);
+  await waitFor(() => expect(screen.queryByRole("menuitem")).toBeNull());
+});
+
 test("copying the current Profile writes only its canonical TouchGrass ID", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", {

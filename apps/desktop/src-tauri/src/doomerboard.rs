@@ -27,8 +27,10 @@ pub const ADD_TOKENMAXXER_CONTRACT_VERSION: u8 = 1;
 const CURRENT_GLOBAL_QUERY: &str = "doomerboards:currentGlobal";
 const CURRENT_MY_TOKENMAXXERS_QUERY: &str = "doomerboards:currentMyTokenmaxxers";
 const ADD_TOKENMAXXER_MUTATION: &str = "tokenmaxxers:addToMyTokenmaxxers";
+const REMOVE_TOKENMAXXER_MUTATION: &str = "tokenmaxxers:removeFromMyTokenmaxxers";
 const CONVEX_TOKEN_PATH: &str = "/api/auth/convex/token";
 const MAX_ROWS: usize = 100;
+const MAX_FRIEND_ROWS: usize = MAX_ROWS + 1;
 const MAX_TOKEN_RESPONSE_BYTES: usize = 16 * 1_024;
 const MAX_JWT_BYTES: usize = 8 * 1_024;
 const MAX_READ_REQUEST_ID_BYTES: usize = 64;
@@ -129,7 +131,7 @@ pub struct DoomerboardRowV1 {
 pub enum DoomerboardViewV1 {
     Ready {
         contract_version: u8,
-        #[schemars(length(max = 100))]
+        #[schemars(length(max = 101))]
         rows: Vec<DoomerboardRowV1>,
     },
     Unavailable {
@@ -269,6 +271,8 @@ enum ConvexCall {
 }
 
 trait DoomerboardTransport: Send + Sync {
+    fn remove(&self, session: &Secret, touch_grass_id: &str) -> Result<(), TransportError>;
+
     fn add(
         &self,
         session: &Secret,
@@ -669,6 +673,21 @@ fn parse_function_result<T>(
 }
 
 impl DoomerboardTransport for HttpDoomerboardTransport {
+    fn remove(&self, session: &Secret, touch_grass_id: &str) -> Result<(), TransportError> {
+        let result = self.authenticated_call(
+            session,
+            ConvexCall::Mutation {
+                arguments: add_tokenmaxxer_arguments(touch_grass_id),
+                function_name: REMOVE_TOKENMAXXER_MUTATION,
+            },
+            None,
+        )?;
+        parse_function_result(result, |value| match value {
+            Value::Null => Ok(()),
+            _ => Err(TransportError::Unavailable),
+        })
+    }
+
     fn add(
         &self,
         session: &Secret,
@@ -716,7 +735,7 @@ fn doomerboard_query_arguments(
     query: DoomerboardQueryV1,
     now: OffsetDateTime,
 ) -> BTreeMap<String, Value> {
-    BTreeMap::from([
+    let mut arguments = BTreeMap::from([
         (
             "rankingDay".to_owned(),
             Value::String(now.date().to_string()),
@@ -729,7 +748,11 @@ fn doomerboard_query_arguments(
             "windowDays".to_owned(),
             Value::Float64(f64::from(query.window_days)),
         ),
-    ])
+    ]);
+    if query.audience == DoomerboardAudienceV1::Mine {
+        arguments.insert("includeSelf".to_owned(), Value::Boolean(true));
+    }
+    arguments
 }
 
 fn add_tokenmaxxer_arguments(touch_grass_id: &str) -> BTreeMap<String, Value> {
@@ -921,6 +944,19 @@ impl DoomerboardRuntime {
         }
     }
 
+    pub(crate) fn remove(&self, expected_touch_grass_id: &str, touch_grass_id: &str) -> bool {
+        if !valid_touch_grass_id(touch_grass_id)
+            || touch_grass_id == expected_touch_grass_id
+            || self.online_gate.is_paused()
+        {
+            return false;
+        }
+        self.with_active_session_for(expected_touch_grass_id, |session| {
+            self.transport.remove(session, touch_grass_id)
+        })
+        .is_ok()
+    }
+
     pub(crate) fn add(
         &self,
         expected_touch_grass_id: &str,
@@ -1106,10 +1142,17 @@ fn valid_order(rows: &[DoomerboardRowV1]) -> bool {
 }
 
 fn parse_rows(value: Value) -> Result<Vec<DoomerboardRowV1>, TransportError> {
+    parse_rows_with_limit(value, MAX_ROWS)
+}
+
+fn parse_rows_with_limit(
+    value: Value,
+    limit: usize,
+) -> Result<Vec<DoomerboardRowV1>, TransportError> {
     let Value::Array(values) = value else {
         return Err(TransportError::Unavailable);
     };
-    if values.len() > MAX_ROWS {
+    if values.len() > limit {
         return Err(TransportError::Unavailable);
     }
     let rows = values
@@ -1141,10 +1184,12 @@ fn parse_selected_rows(
         .and_then(nonnegative_safe_integer)
         .filter(|count| *count <= MAX_ROWS as u64)
         .ok_or(TransportError::Unavailable)?;
-    let rows = parse_rows(object.remove("rows").ok_or(TransportError::Unavailable)?)?;
-    if rows.len() as u64 > saved_tokenmaxxer_count
-        || (saved_tokenmaxxer_count > 0 && rows.is_empty())
-    {
+    let rows = parse_rows_with_limit(
+        object.remove("rows").ok_or(TransportError::Unavailable)?,
+        MAX_FRIEND_ROWS,
+    )?;
+    let max_rows = saved_tokenmaxxer_count + u64::from(saved_tokenmaxxer_count > 0);
+    if rows.len() as u64 > max_rows || (saved_tokenmaxxer_count > 0 && rows.is_empty()) {
         Err(TransportError::Unavailable)
     } else {
         Ok(rows)
@@ -1165,6 +1210,11 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     impl DoomerboardTransport for CountingTransport {
+        fn remove(&self, _session: &Secret, _touch_grass_id: &str) -> Result<(), TransportError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
         fn add(
             &self,
             _session: &Secret,
@@ -1598,6 +1648,7 @@ mod tests {
         assert_eq!(
             doomerboard_query_arguments(selected, now),
             BTreeMap::from([
+                ("includeSelf".to_owned(), Value::Boolean(true)),
                 (
                     "rankingDay".to_owned(),
                     Value::String("2026-04-10".to_owned()),
@@ -1806,6 +1857,74 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn friends_allow_the_current_profile_in_addition_to_one_hundred_saved_profiles() {
+        let selected = query(DoomerboardAudienceV1::Mine, DoomerboardScopeV1::Combined, 1);
+        let alphabet = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+        let rows = (0..MAX_FRIEND_ROWS)
+            .map(|index| {
+                let id = format!(
+                    "TG-2345{}{}",
+                    alphabet[index / alphabet.len()] as char,
+                    alphabet[index % alphabet.len()] as char,
+                );
+                row(&id, index as i64 + 1, 1_000 - index as i64)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parse_selected_rows(selected, saved_rows(100, rows.clone()))
+                .expect("all friends and current Profile")
+                .len(),
+            101,
+        );
+        assert!(parse_rows(Value::Array(rows)).is_err());
+        assert!(
+            parse_selected_rows(selected, saved_rows(0, vec![row("TG-234567", 1, 500)])).is_err()
+        );
+        assert!(
+            parse_selected_rows(
+                selected,
+                saved_rows(
+                    1,
+                    vec![
+                        row("TG-234567", 1, 500),
+                        row("TG-234568", 2, 400),
+                        row("TG-234569", 3, 300),
+                    ]
+                )
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn remove_is_bound_to_the_current_profile_and_online_gate() {
+        let (profile_key, coordinator) = crate::profile::ready_test_coordinator();
+        let friend = if profile_key == "TG-234567" {
+            "TG-234568"
+        } else {
+            "TG-234567"
+        };
+        let transport = Arc::new(CountingTransport::default());
+        let coordinator = Arc::new(Mutex::new(coordinator));
+        let runtime = DoomerboardRuntime::new(
+            coordinator.clone(),
+            transport.clone(),
+            OnlineFeatureGate::default(),
+        );
+        assert!(!runtime.remove(&profile_key, "invalid"));
+        assert!(!runtime.remove(&profile_key, &profile_key));
+        assert!(!runtime.remove(friend, &profile_key));
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+        assert!(runtime.remove(&profile_key, friend));
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
+        let paused =
+            DoomerboardRuntime::new(coordinator, transport.clone(), OnlineFeatureGate::paused());
+        assert!(!paused.remove(&profile_key, friend));
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

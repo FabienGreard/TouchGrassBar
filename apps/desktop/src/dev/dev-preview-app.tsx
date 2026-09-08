@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CodingProvider, UpdateState } from "@touchgrass/contracts";
+import type { DoomerboardRow } from "@touchgrass/ui";
 
 import { App } from "@/App";
 import "@/dev/dev-preview.css";
@@ -95,6 +96,7 @@ function DevPreviewApp() {
     ...(scenario.surface === "settings" ? { claude: scenario.settingsProviderEnabled } : {}),
   }));
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [friendRows, setFriendRows] = useState<readonly DoomerboardRow[]>(myTokenmaxxerRows);
   const [profile, setProfile] = useState({
     displayName: "Fabien",
     recoveryKeySuffix: "K9m",
@@ -131,7 +133,18 @@ function DevPreviewApp() {
       ? {
           currentProfile,
           doomerboardRows: currentDoomerboardRows,
-          tokenmaxxerRows: myTokenmaxxerRows,
+          onRemoveFriend: async (touchGrassId: string) => {
+            setFriendRows((rows) => {
+              const remaining = rows.filter(
+                (row) => row.touchGrassId.replace(/^#/, "") !== touchGrassId,
+              );
+              return remaining.every((row) => row.touchGrassId === currentProfile.touchGrassId)
+                ? []
+                : remaining.map((row, index) => Object.assign({}, row, { rank: index + 1 }));
+            });
+            return true;
+          },
+          tokenmaxxerRows: friendRows,
         }
       : {}),
   };

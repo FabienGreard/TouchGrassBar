@@ -91,6 +91,7 @@ type PanelViewProps = {
   onDoomerboardSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
   onDoomerboardSelectionIntent?: ((selection: DoomerboardQuery) => void) | undefined;
   onRefresh: () => void;
+  onRemoveFriend?: ((touchGrassId: string) => Promise<boolean>) | undefined;
   onSettings: () => void;
   onUpdate?: (() => void) | undefined;
   refreshing: boolean;
@@ -117,6 +118,7 @@ function PanelView({
   onDoomerboardSelectionChange = () => undefined,
   onDoomerboardSelectionIntent = () => undefined,
   onRefresh,
+  onRemoveFriend,
   onSettings,
   onUpdate = () => undefined,
   refreshing,
@@ -167,6 +169,7 @@ function PanelView({
               key="doomerboard"
               loading={doomerboardLoading}
               onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
+              onRemoveFriend={onRemoveFriend}
               onSelectionChange={onDoomerboardSelectionChange}
               onSelectionIntent={onDoomerboardSelectionIntent}
               providers={visibleProviders}

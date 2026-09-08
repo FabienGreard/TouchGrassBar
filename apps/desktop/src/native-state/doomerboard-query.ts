@@ -37,6 +37,7 @@ type DoomerboardQuery = {
 
 type DoomerboardPort = {
   add: (profileKey: string, touchGrassId: string) => Promise<DoomerboardPortOutcome<unknown>>;
+  remove: (profileKey: string, touchGrassId: string) => Promise<DoomerboardPortOutcome<unknown>>;
   read: (
     profileKey: string,
     query: DoomerboardQuery,
@@ -309,6 +310,24 @@ async function addTokenmaxxer(
   }
 }
 
+async function removeTokenmaxxerAndRefresh(
+  client: QueryClient,
+  native: DoomerboardPort,
+  profileKey: string,
+  touchGrassId: string,
+): Promise<boolean> {
+  if (profileKey === touchGrassId) return false;
+  try {
+    const outcome = await native.remove(profileKey, touchGrassId);
+    if (!outcome.ok || outcome.value !== true) return false;
+    await cancelDoomerboardAudience(client, native, profileKey, "mine");
+    await client.resetQueries(doomerboardProfileAudienceFilter(profileKey, "mine"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function prefetchDoomerboardSelections({
   activeSelection,
   client,
@@ -354,5 +373,6 @@ export {
   doomerboardProfileAudienceFilter,
   doomerboardRankingDayKey,
   prefetchDoomerboardSelections,
+  removeTokenmaxxerAndRefresh,
 };
 export type { DoomerboardPort, DoomerboardPortOutcome, DoomerboardQuery, DoomerboardQueryPort };

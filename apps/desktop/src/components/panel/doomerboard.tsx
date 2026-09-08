@@ -1,8 +1,15 @@
+import { useRef, useState } from "react";
+
 import {
   Button,
   DoomerboardRankings,
   DoomerboardToolbar,
   InviteIcon,
+  EllipsisIcon,
+  PanelMenu,
+  PanelMenuContent,
+  PanelMenuItem,
+  PanelMenuTrigger,
   RankingIcon,
 } from "@touchgrass/ui";
 import type {
@@ -16,6 +23,57 @@ import { useCopyText } from "@/components/use-copy-text";
 import { defaultDoomerboardQuery, type DoomerboardQuery } from "@/native-state/doomerboard-query";
 
 const emptyProviders: readonly DoomerboardProvider[] = [];
+
+function FriendActions({
+  onRemove,
+  row,
+}: {
+  onRemove: (touchGrassId: string) => Promise<boolean>;
+  row: DoomerboardRow;
+}) {
+  const inFlight = useRef(false);
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<"idle" | "removing" | "failed">("idle");
+  return (
+    <PanelMenu onOpenChange={setOpen} open={open}>
+      <PanelMenuTrigger asChild>
+        <button
+          aria-label={`Friend actions for ${row.displayName}`}
+          className="grid size-5 cursor-pointer place-items-center rounded text-pearl-muted hover:bg-pearl-ink/5 hover:text-pearl-ink focus-visible:outline-2 focus-visible:outline-pearl-ink"
+          title={`Friend actions for ${row.displayName}`}
+          type="button"
+        >
+          <EllipsisIcon aria-hidden="true" size={14} />
+        </button>
+      </PanelMenuTrigger>
+      <PanelMenuContent align="end" sideOffset={4}>
+        <PanelMenuItem
+          disabled={status === "removing"}
+          onSelect={(event) => {
+            event.preventDefault();
+            if (inFlight.current) return;
+            inFlight.current = true;
+            setStatus("removing");
+            void onRemove(row.touchGrassId.replace(/^#/, ""))
+              .catch(() => false)
+              .then((removed) => {
+                inFlight.current = false;
+                setStatus(removed ? "idle" : "failed");
+                if (removed) setOpen(false);
+              });
+          }}
+        >
+          {status === "removing" ? "Removing…" : "Remove friend"}
+        </PanelMenuItem>
+        {status === "failed" ? (
+          <small className="px-2 pb-1 text-[9px] text-pearl-muted" role="alert">
+            Could not remove friend. Try again.
+          </small>
+        ) : null}
+      </PanelMenuContent>
+    </PanelMenu>
+  );
+}
 
 function LeaderboardId({ touchGrassId }: { touchGrassId: string }) {
   const canonicalId = touchGrassId.replace(/^#/, "");
@@ -153,6 +211,7 @@ function Doomerboard({
   currentProfile = null,
   loading = false,
   onAddTokenmaxxer = () => undefined,
+  onRemoveFriend,
   onSelectionChange = () => undefined,
   onSelectionIntent = () => undefined,
   providers = emptyProviders,
@@ -163,6 +222,7 @@ function Doomerboard({
   currentProfile?: DoomerboardCurrentProfile | null | undefined;
   loading?: boolean | undefined;
   onAddTokenmaxxer?: (() => void) | undefined;
+  onRemoveFriend?: ((touchGrassId: string) => Promise<boolean>) | undefined;
   onSelectionChange?: ((selection: DoomerboardQuery) => void) | undefined;
   onSelectionIntent?: ((selection: DoomerboardQuery) => void) | undefined;
   providers?: readonly DoomerboardProvider[] | undefined;
@@ -247,6 +307,18 @@ function Doomerboard({
           <DoomerboardUnavailable />
         ) : selectedRows !== undefined ? (
           <DoomerboardRankings
+            renderRowAction={
+              selection.audience === "mine" && currentProfile && onRemoveFriend
+                ? (row) =>
+                    row.touchGrassId.replace(/^#/, "") === currentProfileText ? null : (
+                      <FriendActions
+                        key={`${currentProfileText}:${row.touchGrassId}`}
+                        onRemove={onRemoveFriend}
+                        row={row}
+                      />
+                    )
+                : undefined
+            }
             renderTouchGrassId={(row) => <LeaderboardId touchGrassId={row.touchGrassId} />}
             rows={selectedRows}
           />

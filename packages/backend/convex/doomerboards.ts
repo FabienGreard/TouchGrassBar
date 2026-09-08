@@ -132,6 +132,7 @@ async function myTokenmaxxerRows(
   scope: Parameters<typeof boardKey>[0],
   windowDays: Parameters<typeof boardKey>[1],
   requiredComputedRankingDay?: string,
+  includeSelf = false,
 ) {
   const authUser = await requireAuthUser(ctx);
   const owner = await tokenmaxxerForAuthUser(ctx, authUser);
@@ -143,12 +144,14 @@ async function myTokenmaxxerRows(
   if (added.length > MAX_SAVED_TOKENMAXXERS) {
     throw new Error("My Tokenmaxxers limit exceeded");
   }
+  const profileIds = added.map((edge) => edge.addedId);
+  if (includeSelf && added.length > 0) profileIds.push(owner._id);
   const candidates = await Promise.all(
-    added.map((edge) =>
+    [...new Set(profileIds)].map((tokenmaxxerId) =>
       ctx.db
         .query("publicUsages")
         .withIndex("by_tokenmaxxer_id_and_scope_and_window_days", (q) =>
-          q.eq("tokenmaxxerId", edge.addedId).eq("scope", scope).eq("windowDays", windowDays),
+          q.eq("tokenmaxxerId", tokenmaxxerId).eq("scope", scope).eq("windowDays", windowDays),
         )
         .unique(),
     ),
@@ -167,6 +170,7 @@ async function myTokenmaxxerRows(
 
 export const currentMyTokenmaxxers = query({
   args: {
+    includeSelf: v.optional(v.boolean()),
     rankingDay: v.string(),
     scope: scoreScopeValidator,
     windowDays: scoreWindowValidator,
@@ -177,7 +181,7 @@ export const currentMyTokenmaxxers = query({
   }),
   handler: (ctx, args) => {
     assertRankingDay(args.rankingDay);
-    return myTokenmaxxerRows(ctx, args.scope, args.windowDays, args.rankingDay);
+    return myTokenmaxxerRows(ctx, args.scope, args.windowDays, args.rankingDay, args.includeSelf);
   },
 });
 

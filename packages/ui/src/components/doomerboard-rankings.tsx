@@ -14,6 +14,7 @@ type DoomerboardRow = {
 
 type DoomerboardRankingsProps = Omit<ComponentProps<typeof ScrollArea>, "children"> & {
   ledgerLimit?: number | undefined;
+  renderRowAction?: ((row: DoomerboardRow) => ReactNode) | undefined;
   renderTouchGrassId?: ((row: DoomerboardRow) => ReactNode) | undefined;
   rows: readonly DoomerboardRow[];
 };
@@ -36,6 +37,7 @@ const rankStyles = {
 function DoomerboardRankings({
   className,
   ledgerLimit,
+  renderRowAction,
   renderTouchGrassId,
   rows,
   viewportClassName,
@@ -91,6 +93,9 @@ function DoomerboardRankings({
               )}
               key={row.touchGrassId}
             >
+              {renderRowAction ? (
+                <div className="absolute top-1 right-1">{renderRowAction(row)}</div>
+              ) : null}
               <div
                 className={`absolute -top-3.5 grid place-items-center rounded-full font-extrabold shadow-control ${style.medal}`}
               >
@@ -124,7 +129,10 @@ function DoomerboardRankings({
         >
           {ledger.map((row) => (
             <article
-              className="grid grid-cols-[30px_1fr_70px] items-center border-b border-pearl-line px-2.5 py-[8px] text-pearl-ink last:border-b-0"
+              className={cn(
+                "grid items-center border-b border-pearl-line px-2.5 py-[8px] text-pearl-ink last:border-b-0",
+                renderRowAction ? "grid-cols-[30px_1fr_70px_24px]" : "grid-cols-[30px_1fr_70px]",
+              )}
               key={row.touchGrassId}
             >
               <strong className="text-pearl-muted">{row.rank}</strong>
@@ -145,6 +153,9 @@ function DoomerboardRankings({
                   </small>
                 ) : null}
               </span>
+              {renderRowAction ? (
+                <span className="justify-self-end">{renderRowAction(row)}</span>
+              ) : null}
             </article>
           ))}
         </div>

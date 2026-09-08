@@ -81,6 +81,12 @@ describe("public contracts", () => {
         ...view,
         rows: Array.from({ length: 101 }, () => view.rows[0]),
       }).success,
+    ).toBe(true);
+    expect(
+      doomerboardViewSchema.safeParse({
+        ...view,
+        rows: Array.from({ length: 102 }, () => view.rows[0]),
+      }).success,
     ).toBe(false);
     expect(
       doomerboardViewSchema.safeParse({

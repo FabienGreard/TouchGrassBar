@@ -1414,6 +1414,89 @@ test("the current My Tokenmaxxers Doomerboard gives equal scores unique ranks", 
   });
 });
 
+test("Friends includes the current Profile after the first friend and removal affects only its owner", async () => {
+  const t = testBackend();
+  const ownerCredential = installationCredential("A");
+  const friendCredential = installationCredential("B");
+  const owner = await createProfile(t, ownerCredential, "Owner");
+  const friend = await createProfile(t, friendCredential, "Friend");
+  const other = await createProfile(t, installationCredential("C"), "Other");
+  for (const [profile, credential, score] of [
+    [owner, ownerCredential, 500],
+    [friend, friendCredential, 250],
+  ] as const) {
+    await profile.authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots: [
+        usageSnapshot({ observedTokens: score, provider: "codex" }),
+        usageSnapshot({ observedTokens: score, provider: "claude" }),
+      ],
+    });
+  }
+  const selection = {
+    includeSelf: true,
+    rankingDay: TODAY,
+    scope: "combined",
+    windowDays: 1,
+  } as const;
+  const read = () => owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, selection);
+  await expect(read()).resolves.toEqual({ rows: [], savedTokenmaxxerCount: 0 });
+  for (const profile of [owner, other]) {
+    await profile.authenticated.mutation(api.tokenmaxxers.addToMyTokenmaxxers, {
+      touchGrassId: friend.touchGrassId,
+    });
+  }
+  for (const scope of ["combined", "claude", "codex"] as const) {
+    for (const windowDays of [1, 7, 30] as const) {
+      await expect(
+        owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+          ...selection,
+          scope,
+          windowDays,
+        }),
+      ).resolves.toMatchObject({
+        rows: [
+          { rank: 1, touchGrassId: owner.touchGrassId },
+          { rank: 2, touchGrassId: friend.touchGrassId },
+        ],
+        savedTokenmaxxerCount: 1,
+      });
+    }
+  }
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentMyTokenmaxxers, {
+      ...selection,
+      includeSelf: false,
+    }),
+  ).resolves.toMatchObject({
+    rows: [{ touchGrassId: friend.touchGrassId }],
+    savedTokenmaxxerCount: 1,
+  });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await expect(
+      owner.authenticated.mutation(api.tokenmaxxers.removeFromMyTokenmaxxers, {
+        touchGrassId: friend.touchGrassId,
+      }),
+    ).resolves.toBeNull();
+  }
+  await expect(read()).resolves.toEqual({ rows: [], savedTokenmaxxerCount: 0 });
+  await expect(
+    other.authenticated.query(api.doomerboards.currentMyTokenmaxxers, selection),
+  ).resolves.toMatchObject({
+    rows: [{ touchGrassId: friend.touchGrassId }],
+    savedTokenmaxxerCount: 1,
+  });
+  await expect(
+    owner.authenticated.query(api.doomerboards.currentGlobal, {
+      rankingDay: TODAY,
+      scope: "combined",
+      windowDays: 1,
+    }),
+  ).resolves.toHaveLength(2);
+});
+
 test("My Tokenmaxxers rejects a new entry at its 100-entry limit", async () => {
   const t = testBackend();
   const owner = await createProfile(t, installationCredential("A"), "Owner");

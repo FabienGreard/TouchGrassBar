@@ -22,6 +22,28 @@ const readyView = {
 } as const;
 
 describe("Tauri Doomerboard adapter", () => {
+  test("removes through the profile-bound native command and contains transport errors", async () => {
+    const invoke = vi.fn(async () => true);
+    const adapter = createTauriDoomerboardAdapter({
+      invoke,
+      listen: vi.fn(async () => vi.fn()),
+      onFocusChanged: vi.fn(async () => vi.fn()),
+    });
+    await expect(adapter.remove("TG-7K4P9D", "TG-234567")).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(invoke).toHaveBeenCalledWith("remove_tokenmaxxer", {
+      profileKey: "TG-7K4P9D",
+      touchGrassId: "TG-234567",
+    });
+    invoke.mockRejectedValueOnce(new Error("private transport detail"));
+    await expect(adapter.remove("TG-7K4P9D", "TG-234567")).resolves.toEqual({
+      ok: false,
+      fault: { code: "doomerboard-unavailable" },
+    });
+  });
+
   test("reports panel focus without reading a Doomerboard", async () => {
     const stopFocus = vi.fn();
     let focus!: (event: { payload: boolean }) => void;

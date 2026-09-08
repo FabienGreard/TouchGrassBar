@@ -31,6 +31,7 @@ function doomerboardPort(): TestDoomerboardPort {
   let receiveChange: (() => void) | undefined;
   let scoreVersion = 1;
   return {
+    remove: vi.fn(async () => ({ ok: true as const, value: true })),
     add: vi.fn(async () => ({
       ok: true as const,
       value: { contractVersion: 1, status: "added" },
@@ -84,6 +85,66 @@ function mutableStateDelivery(initialSnapshot: SanitizedDesktopState) {
     },
   };
 }
+
+test("removing the last friend refreshes Friends and clears cached selections while Global stays intact", async () => {
+  const native = doomerboardPort();
+  const originalRead = native.read;
+  let removed = false;
+  native.read = vi.fn(async (profileKey, selection) => {
+    if (selection.audience === "global") return originalRead(profileKey, selection);
+    return {
+      ok: true as const,
+      value: {
+        contractVersion: 1,
+        status: "ready",
+        rows: removed
+          ? []
+          : [
+              { displayName: "You", rank: 1, tokenScore: 200, touchGrassId: "TG-7K4P9D" },
+              { displayName: "Friend", rank: 2, tokenScore: 100, touchGrassId: "TG-234567" },
+            ],
+      },
+    };
+  });
+  native.remove = vi.fn(async () => {
+    removed = true;
+    return { ok: true as const, value: true };
+  });
+  const stateDelivery = createSanitizedDesktopStateDelivery(
+    createBrowserSanitizedDesktopStateAdapter(
+      "current",
+      () => new Date("2026-08-31T10:00:00.000Z"),
+      undefined,
+      "synced",
+    ),
+  );
+  const client = new QueryClient();
+  render(
+    <QueryClientProvider client={client}>
+      <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={stateDelivery} />
+    </QueryClientProvider>,
+  );
+  await screen.findByText("global-combined-1-v1");
+  await waitFor(() => expect(native.read).toHaveBeenCalledTimes(18));
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Friends" }), { button: 0, ctrlKey: false });
+  await screen.findByText("Friend");
+  fireEvent.pointerDown(screen.getByRole("button", { name: "Friend actions for Friend" }), {
+    button: 0,
+    ctrlKey: false,
+  });
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Remove friend" }));
+  await screen.findByText("Your Leaderboard is lonely");
+  expect(native.remove).toHaveBeenCalledExactlyOnceWith("TG-7K4P9D", "TG-234567");
+  for (const query of client.getQueryCache().findAll({ queryKey: ["doomerboard", "TG-7K4P9D"] })) {
+    if (query.queryKey[3] === "mine") {
+      expect(
+        query.state.data === undefined || JSON.stringify(query.state.data).includes('"rows":[]'),
+      ).toBe(true);
+    }
+  }
+  fireEvent.mouseDown(screen.getByRole("tab", { name: "Global" }), { button: 0, ctrlKey: false });
+  expect(await screen.findByText("global-combined-1-v1")).toBeTruthy();
+});
 
 test("switching audience uses the prefetched Doomerboard", async () => {
   const native = doomerboardPort();
