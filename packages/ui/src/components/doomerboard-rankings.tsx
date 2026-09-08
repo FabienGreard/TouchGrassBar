@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 import { cn } from "#lib/utils";
 import { ScrollArea } from "./scroll-area";
@@ -14,6 +14,7 @@ type DoomerboardRow = {
 
 type DoomerboardRankingsProps = Omit<ComponentProps<typeof ScrollArea>, "children"> & {
   ledgerLimit?: number | undefined;
+  renderTouchGrassId?: ((row: DoomerboardRow) => ReactNode) | undefined;
   rows: readonly DoomerboardRow[];
 };
 
@@ -35,6 +36,7 @@ const rankStyles = {
 function DoomerboardRankings({
   className,
   ledgerLimit,
+  renderTouchGrassId,
   rows,
   viewportClassName,
   ...props
@@ -98,7 +100,9 @@ function DoomerboardRankings({
                 {row.note}
               </span>
               <b className="mt-auto text-[12px]">{row.displayName}</b>
-              <small className="mt-0.5 text-[7px] text-pearl-muted">{row.touchGrassId}</small>
+              <small className="mt-0.5 text-[7px] text-pearl-muted">
+                {renderTouchGrassId ? renderTouchGrassId(row) : row.touchGrassId}
+              </small>
               <strong className="mt-[7px] text-[16px]">{row.tokenScore}</strong>
               {row.apiEquivalentCost ? (
                 <small
@@ -127,7 +131,7 @@ function DoomerboardRankings({
               <span>
                 <b className="block text-[11px]">{row.displayName}</b>
                 <small className="mt-0.5 block text-[7px] text-pearl-muted">
-                  {row.touchGrassId}
+                  {renderTouchGrassId ? renderTouchGrassId(row) : row.touchGrassId}
                 </small>
               </span>
               <span className="text-right">

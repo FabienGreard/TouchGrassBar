@@ -17,6 +17,33 @@ import { defaultDoomerboardQuery, type DoomerboardQuery } from "@/native-state/d
 
 const emptyProviders: readonly DoomerboardProvider[] = [];
 
+function LeaderboardId({ touchGrassId }: { touchGrassId: string }) {
+  const canonicalId = touchGrassId.replace(/^#/, "");
+  const { copyStatus, copyText } = useCopyText(canonicalId);
+  const feedback =
+    copyStatus === "copied" ? "Copied" : copyStatus === "unavailable" ? "Unavailable" : "";
+
+  return (
+    <button
+      aria-label={`Copy TouchGrass ID ${canonicalId}`}
+      className="relative cursor-pointer rounded-sm hover:text-pearl-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-pearl-ink"
+      data-copy-status={copyStatus}
+      onClick={() => void copyText()}
+      title={copyStatus === "unavailable" ? "Copy unavailable" : feedback || "Copy TouchGrass ID"}
+      type="button"
+    >
+      <span className={copyStatus === "idle" ? undefined : "invisible"}>{touchGrassId}</span>
+      <span
+        aria-live="polite"
+        className="absolute inset-0 text-pearl-ink"
+        data-copy-feedback={copyStatus}
+      >
+        {feedback}
+      </span>
+    </button>
+  );
+}
+
 const doomerboardSkeletonCards = [
   {
     card: "min-h-[112px] border-rank-silver-border bg-rank-silver",
@@ -219,7 +246,10 @@ function Doomerboard({
         ) : selection.audience === "global" && rowsEmpty ? (
           <DoomerboardUnavailable />
         ) : selectedRows !== undefined ? (
-          <DoomerboardRankings rows={selectedRows} />
+          <DoomerboardRankings
+            renderTouchGrassId={(row) => <LeaderboardId touchGrassId={row.touchGrassId} />}
+            rows={selectedRows}
+          />
         ) : (
           <DoomerboardUnavailable
             selectionUnavailable={rows !== undefined || tokenmaxxerRows !== undefined}
