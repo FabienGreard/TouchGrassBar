@@ -17,8 +17,10 @@ function CodingProviderAccessCard({
   busy = false,
   displayName: label,
   enabled,
+  installationGuideFailed = false,
   onCheck,
   onEnabledChange,
+  onOpenInstallationGuide,
   provider,
   savingEnabled = false,
   state,
@@ -26,8 +28,10 @@ function CodingProviderAccessCard({
   busy?: boolean;
   displayName: string;
   enabled?: boolean | undefined;
+  installationGuideFailed?: boolean;
   onCheck?: (() => void) | undefined;
   onEnabledChange?: ((enabled: boolean) => void) | undefined;
+  onOpenInstallationGuide?: (() => void) | undefined;
   provider: CodingProvider;
   savingEnabled?: boolean | undefined;
   state: CodingProviderAccessState;
@@ -124,12 +128,25 @@ function CodingProviderAccessCard({
               <a
                 aria-label={`Open the official ${label} installation guide`}
                 href={providerInstallationGuides[provider]}
+                onClick={
+                  onOpenInstallationGuide === undefined
+                    ? undefined
+                    : (event) => {
+                        event.preventDefault();
+                        onOpenInstallationGuide();
+                      }
+                }
                 rel="noreferrer"
                 target="_blank"
               >
                 Official installation guide
               </a>
             </Button>
+            {installationGuideFailed && (
+              <small className="mt-1 block text-[9px] leading-4 text-sheet-muted" role="alert">
+                Could not open your browser. Try again.
+              </small>
+            )}
           </div>
         ) : undefined
       }

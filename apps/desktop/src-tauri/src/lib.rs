@@ -7,6 +7,7 @@ pub mod lifecycle;
 mod menu_bar;
 mod network;
 pub mod profile;
+mod provider_installation;
 mod providers;
 mod quota_headroom;
 pub mod sanitized;
@@ -884,6 +885,18 @@ fn require_update_surface(window: &WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_provider_installation_guide(
+    window: WebviewWindow,
+    provider: providers::CodingProvider,
+) -> Result<(), String> {
+    require_settings_or_onboarding(&window)?;
+    tauri::async_runtime::spawn_blocking(move || provider_installation::open(provider))
+        .await
+        .map_err(|_| "installation guide unavailable".to_owned())?
+        .map_err(str::to_owned)
+}
+
+#[tauri::command]
 fn get_update_state(
     window: WebviewWindow,
     runtime: State<'_, UpdateRuntime>,
@@ -1238,6 +1251,7 @@ pub fn run() {
             hide_panel,
             install_update,
             open_latest_dmg,
+            open_provider_installation_guide,
             open_source_repository,
             open_settings,
             request_refresh,
