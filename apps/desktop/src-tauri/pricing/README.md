@@ -188,6 +188,53 @@ The earlier Claude Code reviews checked four pairs. Claude Code
 `2.1.224` pairs with SDK version `0.3.224`. Claude Code `2.1.241` pairs with SDK
 version `0.3.241`. Claude Code `2.1.258` pairs with SDK version `0.3.258`.
 
+The 2026-09-08 review adds Claude Code `2.1.263`. The current channel matrix is:
+
+| Channel | Claude Code | Agent SDK |
+| ------- | ----------- | --------- |
+| Stable  | `2.1.236`   | `0.3.236` |
+| Latest  | `2.1.263`   | `0.3.263` |
+
+npm published no `2.1.262`. Thus the reviewed set does not contain it. The
+Rust tests use `2.1.262` as their unreviewed-version fixture. Do not add it.
+
+Exact npm version records supply these integrity values:
+
+| Package                          | Version   | `dist.integrity`                                                                                  |
+| -------------------------------- | --------- | ------------------------------------------------------------------------------------------------- |
+| `@anthropic-ai/claude-code`      | `2.1.263` | `sha512-kvvBK6/69iTRYnq0TKVyxVZs1CxYCJGojshQSP+2qaDb66A2xtI4zbCuqkZUWLkFGmHSRqhFf/ATpzH2UNKcwg==` |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.263` | `sha512-0QWoHgWWlSmgXfEqZRbVYRoXT9p4tx/yKaZ4eLJ8l1MR65SIvMGR+cd5ZXUpGYZpj9RzbYiYU9LoFg90mdIjmw==` |
+
+The exact `2.1.263` package ran in a synthetic project. The run used an
+isolated `CLAUDE_CONFIG_DIR`, a synthetic API key, and a localhost Messages
+stream. It used no provider credential and no private transcript.
+
+The assistant records carry the reviewed usage field set exactly. The fields
+are `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
+`output_tokens`, `cache_creation` with the two ephemeral buckets,
+`server_tool_use` with the two counters, `service_tier`, `inference_geo`,
+`speed`, `iterations`, and `output_tokens_details.thinking_tokens`. The record
+has no new field. Thus `RawClaudeTokenUsage` does not change. The envelope
+keeps `apiBlockIndex`.
+
+The localhost stream sends no request identifier. Thus the run omits
+`requestId` and `session_id`. Real `2.1.259`, `2.1.260`, and `2.1.261`
+transcripts contain the two fields. Thus their absence is a property of the
+stream. It is not a `2.1.263` change. For the same reason, the run wrote an
+empty `iterations` array. An empty array is not the reviewed
+one-matching-iteration shape. It keeps its day partial. Do not change that
+check without a first-party source.
+
+The Agent SDK `0.3.263` public usage type contains the same field set. This
+compares the transcript run against a published type.
+
+The transcript parser goes to version 11. A retained `2.1.263` record that was
+indexed before this review stays partial until the parser reads it again. The
+new parser version starts that reparse.
+
+This review checked the Claude parser only. It did not check Claude pricing or
+a Codex area. Thus the `reviewedAt` checkpoint keeps its previous date.
+
 The 2026-09-05 review adds Claude Code `2.1.236`, `2.1.259`, `2.1.260`, and
 `2.1.261`. The current channel matrix is:
 

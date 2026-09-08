@@ -35,15 +35,16 @@ const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 /// The structural checks below decide whether its counters can be counted; the
 /// reviewed set only decides whether the resulting day can claim complete
 /// coverage.
-const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 8] = [
+const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 9] = [
     "2.1.223", "2.1.224", "2.1.236", "2.1.241", "2.1.258", "2.1.259", "2.1.260", "2.1.261",
+    "2.1.263",
 ];
 const MAX_SUPERSEDED_FRAMES: usize = 64;
 const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 10;
+const TRANSCRIPT_PARSER_VERSION: i64 = 11;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -4496,7 +4497,7 @@ mod tests {
     #[test]
     fn september_claude_versions_count_and_price_each_message_once() {
         let observed_at = OffsetDateTime::parse("2026-09-05T12:00:00Z", &Rfc3339).unwrap();
-        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261"] {
+        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261", "2.1.263"] {
             let fixture = FixtureRoot::new();
             let config = fixture.config();
             let message = september_claude_transcript_line(version);
@@ -4535,7 +4536,7 @@ mod tests {
 
     #[test]
     fn september_claude_versions_keep_unknown_or_aborted_usage_partial() {
-        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261"] {
+        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261", "2.1.263"] {
             let original: serde_json::Value =
                 serde_json::from_str(&september_claude_transcript_line(version)).unwrap();
             for case in 0..5 {
