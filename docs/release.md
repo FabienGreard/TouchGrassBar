@@ -1,8 +1,8 @@
-# Release governance and draft candidates
+# Release governance
 
-This runbook owns issue #33 release controls. It creates a signed, notarized,
-and stapled Apple-silicon draft candidate. It does not publish a Release.
-Issue #39 owns publication and `PUBLIC_GO`.
+This runbook defines release controls for signed, notarized, and stapled
+Apple-silicon releases. For authorization and the complete production workflow,
+use the [release skill](../.agents/skills/release/SKILL.md#authorization).
 
 ## Proof Budget
 
@@ -168,10 +168,10 @@ The unprivileged `validate` job proves these conditions before GitHub creates a
 tag and version. Do not move or delete the tag. Fix the problem and use a
 higher SemVer.
 
-Approval is for one workflow run, tag, and commit. Cancel a pending run if its
+Each environment review is for one workflow run, tag, and commit. Cancel a pending run if its
 commit, tag, workflow, lockfile, Action version, credential, environment policy, or
 public release configuration changes. Start a new run with a higher tag and
-give a fresh approval.
+review the new run under the release skill's authorization contract.
 
 ## Protected build
 
@@ -207,9 +207,10 @@ The draft contains these assets:
 - `database-compatibility-VERSION.json`;
 - `release-trust-VERSION.json`.
 
-The workflow has no publication step. After all candidate, physical QA,
-performance, backend, and evidence gates pass, issue #39 must use the separate
-`public-release` approval for the exact draft.
+The build workflow creates a draft. The release skill verifies its assets and
+evidence, completes the configured publication path, and checks the public
+update feed. It handles any configured `public-release` review for the exact
+draft under the same release authorization.
 
 ## Retention and key response
 

@@ -1,29 +1,16 @@
 ---
 name: convex-deploy-guard
-description: "Classify + announce the target Convex deployment before any deployment-affecting command; fresh explicit consent for prod actions; session read-only mode."
+description: Identify Convex deployment targets and apply the authorized task scope before production actions. Use for deployment, environment changes, and production audits.
 ---
-
-<!-- GENERATED from convex-agents content/capabilities/deploy-guard.json — do not edit by hand. -->
 
 # Deployment target guard
 
-Deployments are not interchangeable, and most incidents start with a command aimed at the wrong one. Every Convex project has several (personal dev, preview, prod — often across multiple projects on one machine). This guard is the standing discipline: identify, announce, then act — and treat prod as consent-gated, per action, per session.
+Identify the target, apply the user's existing authorization, then act.
 
 ## Workflow
 
-1. IDENTIFY before you act: read `CONVEX_DEPLOYMENT` in .env.local, `convex.json`, and whether `CONVEX_DEPLOY_KEY` is set; or call the official Convex MCP `status` tool. Classify the target: local-anonymous | dev | preview | prod. If two sources disagree, resolve before proceeding.
-2. ANNOUNCE in one line before any deployment-affecting command: `target: dev (joyful-capybara-123, personal dev)`. Never run the command in the same breath as discovering the target — announce first.
-3. PROD needs a FRESH explicit yes: before `npx convex deploy` (when it resolves to prod), `npx convex run --prod`, `env set` on prod, snapshot `import`/`export` on prod, or starting the MCP with prod access — state exactly what will change on which deployment and get an explicit yes in THIS session. A yes given earlier, or for a different target, does not carry.
-4. MCP safety defaults: start the official MCP scoped non-prod (`--deployment dev`). The two prod flags are DIFFERENT risk levels — keep them split: a read-only prod audit (advisor/insights reading data/logs/insights) passes ONLY `--cautiously-allow-production-pii` (read tools); `--dangerously-enable-production-deployments` (which enables MUTATING prod tools) stays OFF unless the user explicitly asked to CHANGE prod this session. Never pair them by default — 'look at prod' must not silently grant 'mutate prod'.
-5. READ-ONLY session mode: when the user says 'read-only' / 'don't change anything', honor it absolutely for the rest of the session — no deploy, no env set/remove, no mutations via `run`, no imports; start the MCP with `--disable-tools run,envSet,envRemove`.
-6. Wrong-deployment diagnosis: when a deploy 'didn't change anything', do NOT re-deploy harder. Re-run step 1 — the deploy almost certainly landed on a different deployment than the one being observed.
-7. Ambiguity = stop: if you cannot determine which deployment a command will hit, find out (status tool; compare `npx convex env list` fingerprints) — never guess.
-
-## Rules
-
-- Classify and announce the target BEFORE every deployment-affecting command — identification and action are two separate steps.
-- Prod consent is per-action, per-target, per-session: state what changes where, get a fresh explicit yes.
-- Keep the two prod MCP flags split by risk: --cautiously-allow-production-pii (read-only) for an audit; --dangerously-enable-production-deployments (mutating) only when the user explicitly asks to change prod. Both are user-spoken-only; default every MCP start to a non-prod deployment selector.
-- Read-only mode, once requested, is absolute for the session — including 'harmless' mutations.
-- A deploy that seemed to do nothing means the WRONG deployment changed — diagnose the target, don't re-run.
-- This guard composes: ship, env, migrate, and seed run it as their step 0; it is not itself a deploy tool.
+1. Read the selected deployment from the command's environment, root `.env.local`, and `convex.json`, or use the official MCP `status` tool. Check deploy-key presence without printing its value. Classify the target as local, dev, preview, or production. Resolve conflicting sources before proceeding. Completion: the exact target is known.
+2. Announce the target before an operation that can change it. Use a short statement such as `target: production (next-pig-820)`. Completion: the user can see where the operation will run.
+3. Apply authorization from the conversation. For app releases, follow the [release authorization contract](../release/SKILL.md#authorization); it covers the required production steps. For other tasks, carry prior authorization through the necessary actions and retries for that target. Ask only when the requested production action is outside that scope. Completion: the operation is covered by existing or newly supplied authorization.
+4. Match access to the task. Use local development by default. For a production MCP audit, enable only read access with `--cautiously-allow-production-pii`. Enable `--dangerously-enable-production-deployments` only for an authorized production change. A read-only task stays read-only; disable `run,envSet,envRemove` for that task. Completion: tool access matches the authorized scope.
+5. Verify the result on the selected deployment. If the expected change is absent, check the target and failure evidence before retrying. Completion: report the verified result or the concrete blocker.

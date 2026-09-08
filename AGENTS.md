@@ -8,6 +8,11 @@ Always use ASD-STE100 Simplified Technical English.
 
 Issues and PRDs are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
+### Releases
+
+For app releases and production release authorization, use
+`.agents/skills/release/SKILL.md`.
+
 ### Migrations and cleanup
 
 Record active data migrations, compatibility bridges, and deferred schema or
