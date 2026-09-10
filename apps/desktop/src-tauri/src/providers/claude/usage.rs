@@ -2731,7 +2731,7 @@ fn read_indexed_usage(
             .map_err(|_| ())
     };
     let pricing_basis = composite_pricing_basis(pricing_bases);
-    let top_model_usage = read_top_model_usage(connection, cost_cutoff, today)?;
+    let top_model_usage = read_top_model_usage(connection, today)?;
     Ok(LocalUsageObservation {
         daily_usage,
         daily_cost,
@@ -2748,14 +2748,13 @@ fn read_indexed_usage(
     })
 }
 
-fn read_top_model_usage(
-    connection: &Connection,
-    cutoff: Date,
-    today: Date,
-) -> Result<Option<TopModelUsage>, ()> {
+fn read_top_model_usage(connection: &Connection, today: Date) -> Result<Option<TopModelUsage>, ()> {
     let catalog = super::pricing::catalog();
+    let cutoff = today - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
+    // Resolve copied messages across retained history before selecting today's models.
     let entries = load_active_provider_messages(connection, cutoff, today)?
         .into_iter()
+        .filter(|message| message.day == today)
         .map(|message| {
             let display_name = message
                 .details_retained
@@ -6640,6 +6639,110 @@ mod tests {
         assert_eq!(local.scan_status, UsageScanStatus::Unavailable);
         assert!(local.daily_usage.is_empty());
         assert_eq!(stored_message_count(&fixture.database()), 0);
+    }
+
+    #[test]
+    fn top_model_usage_uses_only_the_current_utc_ranking_day() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[
+                transcript_line(
+                    "today",
+                    now() - Duration::minutes(1),
+                    "claude-sonnet-4-5-20250929",
+                    usage(10, 20, 30, 40),
+                ),
+                transcript_line(
+                    "yesterday",
+                    now() - Duration::days(1),
+                    "claude-sonnet-4-20250514",
+                    usage(5_000, 0, 0, 5_000),
+                ),
+            ],
+        );
+        let now = OffsetDateTime::parse("2026-08-08T01:00:00+02:00", &Rfc3339).unwrap();
+
+        let local =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now).unwrap();
+
+        assert_eq!(
+            local.top_model_usage,
+            Some(TopModelUsage {
+                model: Some("Claude Sonnet 4.5".to_owned()),
+                observed_tokens: 100,
+            })
+        );
+        assert_eq!(
+            local
+                .daily_usage
+                .values()
+                .map(|day| day.observed_tokens)
+                .sum::<u64>(),
+            10_100
+        );
+    }
+
+    #[test]
+    fn top_model_usage_excludes_current_day_copies_rejected_by_retained_history() {
+        for previous_day_age in [1, COST_DETAIL_RETENTION_DAYS + 1] {
+            let fixture = FixtureRoot::new();
+            let config = fixture.config();
+            let previous_day = now() - Duration::days(previous_day_age);
+            write_transcript(
+                &config.join("projects/project-a/session.jsonl"),
+                &[
+                    transcript_line(
+                        "copied-message",
+                        previous_day,
+                        "claude-sonnet-4-5-20250929",
+                        usage(500, 0, 0, 500),
+                    ),
+                    transcript_line(
+                        "copied-message",
+                        now() - Duration::minutes(1),
+                        "claude-sonnet-4-5-20250929",
+                        usage(50, 0, 0, 50),
+                    )
+                    .replace("frame-copied-message", "frame-current-copy"),
+                ],
+            );
+
+            let local = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+                .unwrap();
+
+            assert_eq!(
+                local.daily_usage[&previous_day.date()].observed_tokens,
+                1_000
+            );
+            assert!(!local.daily_usage.contains_key(&now().date()));
+            assert_eq!(local.top_model_usage, None);
+        }
+    }
+
+    #[test]
+    fn top_model_usage_is_absent_when_only_yesterday_has_usage() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[transcript_line(
+                "yesterday",
+                now() - Duration::days(1),
+                "claude-sonnet-4-5-20250929",
+                usage(10, 20, 30, 40),
+            )],
+        );
+
+        let local =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+
+        assert_eq!(local.top_model_usage, None);
+        assert_eq!(
+            local.daily_usage[&(now().date() - Duration::days(1))].observed_tokens,
+            100
+        );
     }
 
     #[test]

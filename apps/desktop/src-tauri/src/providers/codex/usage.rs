@@ -5621,8 +5621,7 @@ fn read_indexed_usage(
         )
         .optional()
         .map_err(|_| ())?;
-    let detail_cutoff = today - Duration::days(COST_DETAIL_RETENTION_DAYS - 1);
-    let top_model_usage = read_top_model_usage(connection, detail_cutoff, today)?;
+    let top_model_usage = read_top_model_usage(connection, today)?;
     Ok(LocalUsageObservation {
         daily: rows,
         top_model_usage,
@@ -5638,11 +5637,7 @@ fn read_indexed_usage(
     })
 }
 
-fn read_top_model_usage(
-    connection: &Connection,
-    cutoff: Date,
-    today: Date,
-) -> Result<Option<TopModelUsage>, ()> {
+fn read_top_model_usage(connection: &Connection, today: Date) -> Result<Option<TopModelUsage>, ()> {
     let manifest = pricing_manifest();
     let mut statement = connection
         .prepare(
@@ -5650,19 +5645,14 @@ fn read_top_model_usage(
              FROM codex_usage_file_model_days d
              JOIN codex_usage_files f ON f.path = d.path
              WHERE f.parser_version = ?1 AND f.accounting_ready = 1
-               AND f.usage_excluded = 0 AND d.day >= ?2 AND d.day <= ?3
+               AND f.usage_excluded = 0 AND d.day = ?2
              GROUP BY d.model",
         )
         .map_err(|_| ())?;
     let entries = statement
-        .query_map(
-            params![
-                ROLLOUT_PARSER_VERSION,
-                cutoff.to_string(),
-                today.to_string()
-            ],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )
+        .query_map(params![ROLLOUT_PARSER_VERSION, today.to_string()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
         .map_err(|_| ())?
         .map(|row| {
             let (model, observed_tokens) = row.map_err(|_| ())?;
@@ -10872,6 +10862,53 @@ mod tests {
 
         let complete = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
         assert_eq!(complete.daily[&now.date()].observed_tokens, 300);
+    }
+
+    #[test]
+    fn top_model_usage_uses_only_the_current_utc_ranking_day() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        fs::write(
+            fixture.root.join("sessions/yesterday.jsonl"),
+            root_rollout(10_000)
+                .replace("2026-08-06", "2026-08-05")
+                .replace("gpt-5.6-sol", "gpt-5.6-terra"),
+        )
+        .unwrap();
+        let now = OffsetDateTime::parse("2026-08-07T01:00:00+02:00", &Rfc3339).unwrap();
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(
+            local.top_model_usage,
+            Some(TopModelUsage {
+                model: Some("GPT 5.6 Sol".to_owned()),
+                observed_tokens: 100,
+            })
+        );
+        assert_eq!(
+            local
+                .daily
+                .values()
+                .map(|day| day.observed_tokens)
+                .sum::<u64>(),
+            10_100
+        );
+    }
+
+    #[test]
+    fn top_model_usage_is_absent_when_only_yesterday_has_usage() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        let now = OffsetDateTime::parse("2026-08-07T12:00:00Z", &Rfc3339).unwrap();
+
+        let local = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+        assert_eq!(local.top_model_usage, None);
+        assert_eq!(
+            local.daily[&(now.date() - Duration::days(1))].observed_tokens,
+            100
+        );
     }
 
     #[test]
