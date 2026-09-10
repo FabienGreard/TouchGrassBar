@@ -16,7 +16,7 @@
     "@tailwindcss/vite": "4.3.3",
     "@touchgrass/contracts": "workspace:*",
     "@touchgrass/ui": "workspace:*",
-    "astro": "7.2.0",
+    "astro": "7.2.8",
     "posthog-js": "^1.414.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",

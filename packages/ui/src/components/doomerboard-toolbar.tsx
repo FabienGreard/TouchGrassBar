@@ -1,5 +1,6 @@
 import type { CodingProvider } from "@touchgrass/contracts";
 
+import { InviteIcon } from "../icons";
 import { Button } from "./button";
 import {
   PanelMenu,
@@ -140,6 +141,7 @@ function DoomerboardToolbar({
   audience,
   copyStatus = "idle",
   currentProfile,
+  onAddFriend,
   onAudienceChange,
   onCopyCurrentProfile,
   onPeriodChange,
@@ -152,6 +154,7 @@ function DoomerboardToolbar({
   audience: DoomerboardAudience;
   copyStatus?: CopyStatus;
   currentProfile: CurrentProfile | null;
+  onAddFriend?: (() => void) | undefined;
   onAudienceChange: (audience: DoomerboardAudience) => void;
   onCopyCurrentProfile?: (() => void) | undefined;
   onPeriodChange: (period: string) => void;
@@ -206,7 +209,7 @@ function DoomerboardToolbar({
           />
         </div>
       </header>
-      <div className="mx-3.5 mt-2">
+      <div className="mx-3.5 mt-2 flex items-center justify-between gap-2">
         <SegmentedControl
           aria-label="Leaderboard audience"
           onValueChange={(value) => onAudienceChange(value as DoomerboardAudience)}
@@ -227,6 +230,18 @@ function DoomerboardToolbar({
             Global
           </SegmentedControlItem>
         </SegmentedControl>
+        {onAddFriend ? (
+          <Button
+            aria-label="Add friend"
+            onClick={onAddFriend}
+            size="icon"
+            title="Add friend"
+            type="button"
+            variant="primary"
+          >
+            <InviteIcon aria-hidden="true" />
+          </Button>
+        ) : null}
       </div>
     </>
   );

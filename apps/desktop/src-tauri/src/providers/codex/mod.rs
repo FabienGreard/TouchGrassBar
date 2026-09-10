@@ -659,6 +659,9 @@ impl CodexProviderObservationAdapter {
             account.map(|cached| &cached.observed_at_by_day),
         );
         let previous = usage.clone();
+        if !previous.today.is_from_utc_day(observed_at) {
+            *top_model_usage = None;
+        }
         *usage = preserve_best_known_costs(projected, &previous);
         if let Some(local_usage) = local_usage {
             *top_model_usage = local_usage.top_model_usage;
@@ -1249,6 +1252,86 @@ mod tests {
         fn now(&self) -> OffsetDateTime {
             self.0
         }
+    }
+
+    #[test]
+    fn account_only_projection_drops_previous_day_top_model() {
+        let previous_time = OffsetDateTime::parse("2026-09-09T23:59:59Z", &Rfc3339).unwrap();
+        let now = previous_time + Duration::seconds(2);
+        let previous_account = parse_account_usage(
+            r#"{"dailyUsageBuckets":[{"startDate":"2026-09-09","tokens":340}],"summary":{}}"#,
+        )
+        .unwrap();
+        let mut usage = project_usage_periods_with_account_time(
+            Some(&previous_account),
+            None,
+            previous_time,
+            previous_time,
+            None,
+        );
+        let mut top_model = Some(TopModelUsage {
+            model: Some("GPT 5.6 Sol".to_owned()),
+            observed_tokens: 340,
+        });
+        let account = merge_cached_account_usage(
+            None,
+            parse_account_usage(
+                r#"{"dailyUsageBuckets":[{"startDate":"2026-09-10","tokens":25}],"summary":{}}"#,
+            )
+            .unwrap(),
+            now,
+        );
+        let adapter = CodexProviderObservationAdapter::production(
+            Arc::new(FixedClock(now)),
+            None,
+            ProviderProcessSupervisor::default(),
+        );
+
+        assert!(adapter.update_usage_projection(&mut usage, &mut top_model, Some(&account), now));
+
+        assert!(matches!(
+            usage.today,
+            crate::sanitized::UsageTotal::Current {
+                observed_tokens: 25,
+                ..
+            }
+        ));
+        assert_eq!(top_model, None);
+    }
+
+    #[test]
+    fn account_only_projection_keeps_same_day_top_model() {
+        let previous_time = OffsetDateTime::parse("2026-09-10T00:30:00+02:00", &Rfc3339).unwrap();
+        let now = OffsetDateTime::parse("2026-09-09T23:00:00Z", &Rfc3339).unwrap();
+        let account = merge_cached_account_usage(
+            None,
+            parse_account_usage(
+                r#"{"dailyUsageBuckets":[{"startDate":"2026-09-09","tokens":340}],"summary":{}}"#,
+            )
+            .unwrap(),
+            previous_time,
+        );
+        let mut usage = project_usage_periods_with_account_time(
+            Some(&account.observation),
+            None,
+            previous_time,
+            previous_time,
+            Some(&account.observed_at_by_day),
+        );
+        let expected_top_model = Some(TopModelUsage {
+            model: Some("GPT 5.6 Sol".to_owned()),
+            observed_tokens: 340,
+        });
+        let mut top_model = expected_top_model.clone();
+        let adapter = CodexProviderObservationAdapter::production(
+            Arc::new(FixedClock(now)),
+            None,
+            ProviderProcessSupervisor::default(),
+        );
+
+        assert!(adapter.update_usage_projection(&mut usage, &mut top_model, Some(&account), now));
+
+        assert_eq!(top_model, expected_top_model);
     }
 
     struct RecordingUsageReader {

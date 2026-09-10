@@ -273,6 +273,11 @@ function Doomerboard({
         audience={selection.audience}
         copyStatus={copyStatus}
         currentProfile={currentProfile}
+        onAddFriend={
+          selection.audience === "mine" && selectedRows !== undefined && !rowsEmpty
+            ? onAddTokenmaxxer
+            : undefined
+        }
         onAudienceChange={updateAudience}
         onCopyCurrentProfile={currentProfile ? () => void copyText() : undefined}
         onPeriodChange={updatePeriod}

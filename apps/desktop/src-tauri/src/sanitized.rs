@@ -16,7 +16,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use schemars::{JsonSchema, Schema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{
+    Duration as TimeDuration, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339,
+};
 
 use crate::daily_usage_aggregate::combine_usage_periods;
 use crate::doomerboard::{
@@ -2045,6 +2047,9 @@ impl CachedProjection {
             }
         }
         refreshed.contract_version = CONTRACT_VERSION;
+        if let Some(transitioned) = transition_snapshot_at(&refreshed, now) {
+            refreshed = transitioned;
+        }
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
         if matches!(&*store, ReadModelStore::Memory) {
@@ -2110,6 +2115,9 @@ impl CachedProjection {
                         if fail_closed_on_persistence_error {
                             *store = ReadModelStore::Memory;
                             refreshed.clone_from(&cached);
+                            if let Some(transitioned) = transition_snapshot_at(&refreshed, now) {
+                                refreshed = transitioned;
+                            }
                             refreshed.generated_at = format_time(now);
                             refreshed.revision = revision.to_string();
                         } else {
@@ -2766,7 +2774,9 @@ impl CoordinatorWorker {
         if let Some(retry_not_before) = self.retry_not_before
             && now < retry_not_before
         {
-            self.next_scheduled_at = retry_not_before;
+            // Provider retry delays must not keep yesterday's Today value visible.
+            let _ = self.transition_cached_snapshot(now);
+            self.next_scheduled_at = retry_not_before.min(next_utc_midnight(now));
             return false;
         }
         if sources.contains_immediate_request() {
@@ -2783,47 +2793,39 @@ impl CoordinatorWorker {
         sources.contains(RefreshSource::Schedule) && now >= self.next_scheduled_at
     }
 
+    fn transition_cached_snapshot(&self, now: OffsetDateTime) -> Result<bool, &'static str> {
+        let mut store = self.store.lock().map_err(|_| "native state unavailable")?;
+        let cached = self.projection.snapshot()?;
+        if let Some(transitioned) = transition_snapshot_at(&cached, now) {
+            let outcome =
+                self.projection
+                    .commit_transitioned_snapshot(&mut store, transitioned, now)?;
+            drop(store);
+            if let Some(notice) = outcome.notice {
+                self.subscribers.publish(notice);
+            }
+            if outcome.pending_usage_changed {
+                self.usage_sync_requests.request();
+            }
+            return Ok(outcome.persistence_failed);
+        }
+        Ok(false)
+    }
+
     fn refresh_once(&mut self, sources: RefreshSources) -> RefreshRunResult {
         let provider_settings_generation = self
             .inbox
             .provider_settings_generation
             .load(Ordering::Acquire);
-        let mut cached = match self.projection.snapshot() {
+        let pre_refresh_failed = self
+            .transition_cached_snapshot(self.clock.now())
+            .unwrap_or(true);
+        let cached = match self.projection.snapshot() {
             Ok(cached) => cached,
             Err(_) => {
                 return RefreshRunResult::Completed { failed: true };
             }
         };
-        let mut pre_refresh_failed = false;
-        if let Some(transitioned) = transition_snapshot_at(&cached, self.clock.now()) {
-            let transition = self
-                .store
-                .lock()
-                .map_err(|_| "native state unavailable")
-                .and_then(|mut store| {
-                    self.projection.commit_transitioned_snapshot(
-                        &mut store,
-                        transitioned,
-                        self.clock.now(),
-                    )
-                });
-            match transition {
-                Ok(outcome) => {
-                    pre_refresh_failed = outcome.persistence_failed;
-                    if let Some(notice) = outcome.notice {
-                        self.subscribers.publish(notice);
-                    }
-                    if outcome.pending_usage_changed {
-                        self.usage_sync_requests.request();
-                    }
-                    match self.projection.snapshot() {
-                        Ok(transitioned) => cached = transitioned,
-                        Err(_) => pre_refresh_failed = true,
-                    }
-                }
-                Err(_) => pre_refresh_failed = true,
-            }
-        }
         let attempt = RefreshAttempt::new(Arc::clone(&self.cancelled), sources);
         let progress = NativeSnapshotRefreshProgress {
             projection: Arc::clone(&self.projection),
@@ -2845,7 +2847,7 @@ impl CoordinatorWorker {
             return RefreshRunResult::Cancelled;
         }
 
-        let mut source_failed = match observation {
+        let source_failed = match observation {
             Ok(Ok(outcome)) if attempt.remaining().is_ok() => match progress.report(outcome) {
                 Ok(()) => false,
                 Err(RefreshFailure::Cancelled) => return RefreshRunResult::Cancelled,
@@ -2857,26 +2859,15 @@ impl CoordinatorWorker {
         if attempt.is_cancelled() {
             return RefreshRunResult::Cancelled;
         }
-        if !source_failed {
-            let transition = self
-                .projection
-                .snapshot()
-                .map_err(|_| RefreshFailure::SourceUnavailable)
-                .and_then(|current| {
-                    let Some(transitioned) = transition_snapshot_at(&current, self.clock.now())
-                    else {
-                        return Ok(());
-                    };
-                    progress.report(SnapshotRefreshOutcome::from(Some(transitioned)))
-                });
-            match transition {
-                Ok(()) => {}
-                Err(RefreshFailure::Cancelled) => return RefreshRunResult::Cancelled,
-                Err(_) => source_failed = true,
-            }
-        }
+        // This local time transition must also run after a provider attempt expires.
+        let post_refresh_failed = self
+            .transition_cached_snapshot(self.clock.now())
+            .unwrap_or(true);
         RefreshRunResult::Completed {
-            failed: pre_refresh_failed || source_failed || progress.persistence_failed(),
+            failed: pre_refresh_failed
+                || source_failed
+                || post_refresh_failed
+                || progress.persistence_failed(),
         }
     }
 
@@ -3973,6 +3964,16 @@ impl UsageTotal {
         }
     }
 
+    pub(crate) fn is_from_utc_day(&self, now: OffsetDateTime) -> bool {
+        let observed_at = match self {
+            Self::Current { observed_at, .. } | Self::Stale { observed_at, .. } => observed_at,
+            Self::Unavailable => return false,
+        };
+        OffsetDateTime::parse(observed_at, &Rfc3339).is_ok_and(|observed_at| {
+            observed_at.to_offset(UtcOffset::UTC).date() == now.to_offset(UtcOffset::UTC).date()
+        })
+    }
+
     fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
         match self {
             Self::Current {
@@ -4035,7 +4036,14 @@ impl ProviderPresentation {
         let mut transitioned = self.clone();
         transitioned.quota = quota;
         transitioned.usage = usage;
-        (transitioned, quota_changed || usage_changed)
+        if !transitioned.usage.today.is_from_utc_day(now) {
+            transitioned.top_model_usage = None;
+        }
+        let top_model_changed = transitioned.top_model_usage != self.top_model_usage;
+        (
+            transitioned,
+            quota_changed || usage_changed || top_model_changed,
+        )
     }
 
     fn next_transition_after(&self, now: OffsetDateTime) -> Option<OffsetDateTime> {
@@ -4063,13 +4071,23 @@ fn snapshot_needs_refresh(snapshot: &SanitizedDesktopStateV3, now: OffsetDateTim
 }
 
 fn transition_periods_at(periods: &UsagePeriods, now: OffsetDateTime) -> (UsagePeriods, bool) {
-    let (today, today_changed) = periods.today.transition_at(now);
+    let today_expired =
+        !matches!(periods.today, UsageTotal::Unavailable) && !periods.today.is_from_utc_day(now);
+    let (today, today_changed) = if today_expired {
+        (UsageTotal::Unavailable, true)
+    } else {
+        periods.today.transition_at(now)
+    };
     let (seven_days, seven_days_changed) = periods.seven_days.transition_at(now);
     let (thirty_days, thirty_days_changed) = periods.thirty_days.transition_at(now);
     (
         UsagePeriods {
             scan_status: periods.scan_status,
-            today_scan_status: periods.today_scan_status,
+            today_scan_status: if today_expired {
+                UsageScanStatus::Unavailable
+            } else {
+                periods.today_scan_status
+            },
             seven_day_scan_status: periods.seven_day_scan_status,
             thirty_day_scan_status: periods.thirty_day_scan_status,
             today,
@@ -4118,7 +4136,9 @@ fn restore_snapshot_at(
             let (mut restored, time_changed) = provider.transition_at(previous_generated_at, now);
             let (quota, restore_changed) = restored.quota.transition_on_restore();
             restored.quota = quota;
-            changed |= time_changed || restore_changed;
+            // Rebuild model context from today's index instead of trusting an undated cache.
+            let model_changed = restored.top_model_usage.take().is_some();
+            changed |= time_changed || restore_changed || model_changed;
             restored
         })
         .collect::<Vec<_>>();
@@ -4139,6 +4159,15 @@ fn next_refresh_at(snapshot: &SanitizedDesktopStateV3, now: OffsetDateTime) -> O
     provider_deadline
         .unwrap_or(now + to_time_duration(REFRESH_INTERVAL))
         .min(now + to_time_duration(REFRESH_INTERVAL))
+        .min(next_utc_midnight(now))
+}
+
+fn next_utc_midnight(now: OffsetDateTime) -> OffsetDateTime {
+    now.to_offset(UtcOffset::UTC)
+        .date()
+        .next_day()
+        .map(|day| day.midnight().assume_utc())
+        .unwrap_or(now + to_time_duration(REFRESH_INTERVAL))
 }
 
 fn validate_snapshot(snapshot: &SanitizedDesktopStateV3) -> Result<(), &'static str> {
@@ -7294,6 +7323,285 @@ mod tests {
     }
 
     #[test]
+    fn today_excludes_previous_day_cache_after_another_provider_refresh() {
+        let database = TestDatabase::new();
+        let now = test_time();
+        let clock = Arc::new(FixtureClock::new(now));
+        let mut snapshot = both_provider_observed_state(now, 77_362_666, 113.876125, 0, 0.0);
+        let codex = snapshot.provider_mut(CodingProvider::Codex).unwrap();
+        codex.top_model_usage = Some(TopModelUsage {
+            model: Some("GPT 5.6 Sol".to_owned()),
+            observed_tokens: 77_362_666,
+        });
+        let old =
+            both_provider_observed_state(now - TimeDuration::days(2), 0, 0.0, 19_923_357, 26.74456);
+        let claude = snapshot.provider_mut(CodingProvider::Claude).unwrap();
+        claude.presence = ProviderPresenceStatus::Detected;
+        claude.usage = old.provider(CodingProvider::Claude).unwrap().usage.clone();
+        claude.usage.today = claude.usage.today.transition_at(now).0;
+        claude.usage.seven_days = claude.usage.today.clone();
+        claude.usage.today_scan_status = UsageScanStatus::Complete;
+        claude.top_model_usage = Some(TopModelUsage {
+            model: Some("Claude Opus 5".to_owned()),
+            observed_tokens: 99_329_855,
+        });
+        snapshot.refresh_combined_usage();
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(snapshot))]));
+        let core = NativeCore::open_without_launch(&database.0, clock, source).unwrap();
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let state = core.panel_state().unwrap();
+        assert!(matches!(
+            state.combined_usage.today,
+            UsageTotal::Current {
+                observed_tokens: 77_362_666,
+                api_equivalent_cost_usd: Some(cost), ..
+            } if (cost - 113.876125).abs() < 0.000001
+        ));
+        let claude = state.provider(CodingProvider::Claude).unwrap();
+        assert_eq!(claude.usage.today, UsageTotal::Unavailable);
+        assert_eq!(claude.usage.today_scan_status, UsageScanStatus::Unavailable);
+        assert!(matches!(
+            claude.usage.seven_days,
+            UsageTotal::Stale {
+                observed_tokens: 19_923_357,
+                ..
+            }
+        ));
+        assert_eq!(claude.top_model_usage, None);
+        assert_eq!(
+            state
+                .top_model_usage
+                .as_ref()
+                .and_then(|top| top.model.as_deref()),
+            Some("GPT 5.6 Sol")
+        );
+    }
+
+    #[test]
+    fn today_cache_expires_when_a_failed_refresh_crosses_utc_midnight() {
+        let database = TestDatabase::new();
+        let now = OffsetDateTime::parse("2026-09-09T23:59:30Z", &Rfc3339).unwrap();
+        let clock = Arc::new(FixtureClock::new(now));
+        let mut snapshot = observed_state(now, 42);
+        snapshot
+            .provider_mut(CodingProvider::Codex)
+            .unwrap()
+            .top_model_usage = Some(TopModelUsage {
+            model: Some("GPT 5.6 Sol".to_owned()),
+            observed_tokens: 42,
+        });
+        snapshot.refresh_combined_usage();
+        let source = Arc::new(
+            ScriptedRefreshSource::new([
+                Ok(Some(snapshot)),
+                Err(RefreshFailure::SourceUnavailable),
+            ])
+            .with_elapsed(clock.clone(), [Duration::ZERO, Duration::from_secs(60)]),
+        );
+        let core = NativeCore::open_without_launch(&database.0, clock, source).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        assert!(core.panel_state().unwrap().top_model_usage.is_some());
+
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+
+        let state = core.panel_state().unwrap();
+        assert_eq!(state.combined_usage.today, UsageTotal::Unavailable);
+        assert_eq!(state.top_model_usage, None);
+    }
+
+    #[test]
+    fn today_cache_expires_at_midnight_during_refresh_backoff() {
+        let database = TestDatabase::new();
+        let now = OffsetDateTime::parse("2026-09-09T23:59:58Z", &Rfc3339).unwrap();
+        let clock = Arc::new(FixtureClock::new(now));
+        let source = Arc::new(ScriptedRefreshSource::new([
+            Ok(Some(observed_state(now, 42))),
+            Err(RefreshFailure::SourceUnavailable),
+        ]));
+        let core =
+            NativeCore::open_without_launch(&database.0, clock.clone(), source.clone()).unwrap();
+        for _ in 0..2 {
+            core.request_refresh(RefreshSource::Manual).unwrap();
+            core.wait_for_refresh_completion().unwrap();
+        }
+        clock.advance(Duration::from_secs(1));
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        let notices = core.revision_notices().unwrap();
+        clock.advance(Duration::from_secs(1));
+        // Wake the timer without adding a refresh request. Midnight must remain due.
+        core.inner.coordinator.inbox.wake.try_send(()).unwrap();
+        notices.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        assert_eq!(
+            core.panel_state().unwrap().combined_usage.today,
+            UsageTotal::Unavailable
+        );
+        assert_eq!(
+            source.runs.load(Ordering::SeqCst),
+            2,
+            "provider retry must still wait"
+        );
+    }
+
+    #[test]
+    fn today_model_cache_is_rebuilt_on_restore() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let mut snapshot = observed_state(test_time(), 42);
+        snapshot
+            .provider_mut(CodingProvider::Codex)
+            .unwrap()
+            .top_model_usage = Some(TopModelUsage {
+            model: Some("GPT 5.6 Sol".to_owned()),
+            observed_tokens: 100_000,
+        });
+        snapshot.refresh_combined_usage();
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            clock.clone(),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(snapshot))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        assert!(core.panel_state().unwrap().top_model_usage.is_some());
+        drop(core);
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            clock,
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        let state = restored.panel_state().unwrap();
+        assert_eq!(state.top_model_usage, None);
+        assert_eq!(
+            state
+                .provider(CodingProvider::Codex)
+                .unwrap()
+                .top_model_usage,
+            None
+        );
+        assert!(matches!(
+            state.combined_usage.today,
+            UsageTotal::Current {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn today_cache_expires_on_restore_without_deleting_daily_history() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            clock.clone(),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        drop(core);
+        clock.advance(Duration::from_secs(2 * 24 * 60 * 60));
+
+        let restored = NativeCore::open_without_launch(
+            &database.0,
+            clock,
+            Arc::new(ScriptedRefreshSource::new([])),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.panel_state().unwrap().combined_usage.today,
+            UsageTotal::Unavailable
+        );
+        let stored_tokens: u64 = Connection::open(&database.0)
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(aggregate_json, '$.observedTokens')
+             FROM usage_sync_daily_aggregates WHERE provider = 'codex' AND ranking_day = ?1",
+                [test_time().date().to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_tokens, 42);
+    }
+
+    #[test]
+    fn today_cache_stays_expired_when_authority_persistence_fails() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let core = NativeCore::open_without_launch(
+            &database.0,
+            clock.clone(),
+            Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+                test_time(),
+                42,
+            )))])),
+        )
+        .unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        install_sanitized_snapshot_failure(&database.0);
+        clock.advance(Duration::from_secs(24 * 60 * 60));
+
+        assert!(core.activate_usage_sync_generation(1).is_err());
+        assert!(matches!(
+            &*core.inner.store.lock().unwrap(),
+            ReadModelStore::Memory
+        ));
+        assert_eq!(
+            core.panel_state().unwrap().combined_usage.today,
+            UsageTotal::Unavailable
+        );
+    }
+
+    #[test]
+    fn today_cache_stays_available_within_the_same_utc_day() {
+        let observed_at = OffsetDateTime::parse("2026-09-10T00:30:00+02:00", &Rfc3339).unwrap();
+        let now = OffsetDateTime::parse("2026-09-09T23:00:00Z", &Rfc3339).unwrap();
+        let mut snapshot = observed_state(observed_at, 42);
+        snapshot
+            .provider_mut(CodingProvider::Codex)
+            .unwrap()
+            .top_model_usage = Some(TopModelUsage {
+            model: Some("GPT 5.6 Sol".to_owned()),
+            observed_tokens: 42,
+        });
+        snapshot.refresh_combined_usage();
+        let transitioned = transition_snapshot_at(&snapshot, now).unwrap();
+        assert!(matches!(
+            transitioned.combined_usage.today,
+            UsageTotal::Stale {
+                observed_tokens: 42,
+                ..
+            }
+        ));
+        assert_eq!(transitioned.top_model_usage, snapshot.top_model_usage);
+    }
+
+    #[test]
+    fn today_cache_refresh_is_scheduled_at_utc_midnight() {
+        let now = OffsetDateTime::parse("2026-09-09T23:59:30Z", &Rfc3339).unwrap();
+        let snapshot = observed_state(now, 42);
+        assert_eq!(
+            next_refresh_at(&snapshot, now),
+            OffsetDateTime::parse("2026-09-10T00:00:00Z", &Rfc3339).unwrap()
+        );
+    }
+
+    #[test]
     fn utc_rollover_keeps_persistence_when_today_cache_is_from_yesterday() {
         use crate::usage_sync::{AcknowledgementOutcome, UsageSyncAcknowledgement};
 
@@ -7487,6 +7795,7 @@ mod tests {
         let panel = core.panel_state().unwrap();
         assert_eq!(panel.sync.status, SyncStatus::Unavailable);
         assert_eq!(panel.sync.last_successful_at, None);
+        assert_eq!(panel.combined_usage.today, UsageTotal::Unavailable);
         assert!(core.pending_usage_sync_batch(1).unwrap().is_none());
         assert!(matches!(
             &*core.inner.store.lock().unwrap(),
