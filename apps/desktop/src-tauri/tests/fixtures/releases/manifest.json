@@ -2360,8 +2360,8 @@
       "tag": "v0.0.33",
       "database": "v0.0.33/touchgrassbar.sqlite3",
       "sha256": "5d5e98cada3ea234b4e0c2ae266213229a771632142c131971c3227f1af21201",
-      "sourceCommit": "candidate",
-      "releaseStatus": "candidate",
+      "sourceCommit": "0c4253b4b6195ec1cf3df101209a50857b176efc",
+      "releaseStatus": "official",
       "sourceSchema": {
         "databaseFormat": 7,
         "lifecycle": 5,
@@ -2433,6 +2433,87 @@
         },
         "automaticChecksEnabledAfterUpgrade": false,
         "lastAutomaticCheckAt": 1700000333,
+        "offeredVersion": "0.0.9",
+        "minimumRequiredVersion": "0.0.3"
+      }
+    },
+    {
+      "tag": "v0.0.34",
+      "database": "v0.0.34/touchgrassbar.sqlite3",
+      "sha256": "0a87f6b1097bcfcac54b77510e13f0075c354e767ff4c2a22abafc231eba57ad",
+      "sourceCommit": "candidate",
+      "releaseStatus": "candidate",
+      "sourceSchema": {
+        "databaseFormat": 7,
+        "lifecycle": 5,
+        "sanitizedDesktopState": 7,
+        "codexUsageIndex": 9,
+        "claudeUsageIndex": 7,
+        "updateState": 3,
+        "databaseCoordinator": 1
+      },
+      "sourceFeatures": {
+        "providerSettings": true,
+        "automaticUpdateChecks": true,
+        "claudeUsageIndex": true,
+        "retainedUsage": true,
+        "topModelUsage": true
+      },
+      "expectedState": {
+        "revision": "334",
+        "profile": {
+          "status": "ready",
+          "displayName": "Fixture Tokenmaxxer",
+          "touchGrassId": "fixture-public-0-0-34"
+        },
+        "providerSettingsAfterUpgrade": {
+          "codex": false,
+          "claude": true
+        },
+        "usage": {
+          "codex": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 1034,
+              "pricedTokens": 834,
+              "costUsd": 1.25,
+              "complete": true,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 1234,
+              "pricedTokens": 934,
+              "costUsd": 1.5,
+              "complete": false,
+              "pricingBasis": "synthetic-codex-catalog-v1",
+              "pricingFingerprint": "synthetic-codex-price-v1"
+            }
+          ],
+          "claude": [
+            {
+              "day": "2026-01-01",
+              "observedTokens": 734,
+              "pricedTokens": 634,
+              "costUsd": 0.75,
+              "complete": true,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            },
+            {
+              "day": "2026-01-02",
+              "observedTokens": 934,
+              "pricedTokens": 734,
+              "costUsd": 1,
+              "complete": false,
+              "pricingBasis": "synthetic-claude-catalog-v1",
+              "pricingFingerprint": "synthetic-claude-price-v1"
+            }
+          ]
+        },
+        "automaticChecksEnabledAfterUpgrade": false,
+        "lastAutomaticCheckAt": 1700000334,
         "offeredVersion": "0.0.9",
         "minimumRequiredVersion": "0.0.3"
       }
