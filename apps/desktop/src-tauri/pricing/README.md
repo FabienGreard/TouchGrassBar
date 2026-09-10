@@ -188,7 +188,7 @@ The earlier Claude Code reviews checked four pairs. Claude Code
 `2.1.224` pairs with SDK version `0.3.224`. Claude Code `2.1.241` pairs with SDK
 version `0.3.241`. Claude Code `2.1.258` pairs with SDK version `0.3.258`.
 
-The 2026-09-08 review adds Claude Code `2.1.263`. The current channel matrix is:
+The 2026-09-08 review adds Claude Code `2.1.263`. Its channel matrix was:
 
 | Channel | Claude Code | Agent SDK |
 | ------- | ----------- | --------- |
@@ -200,10 +200,11 @@ Rust tests use `2.1.262` as their unreviewed-version fixture. Do not add it.
 
 Exact npm version records supply these integrity values:
 
-| Package                          | Version   | `dist.integrity`                                                                                  |
-| -------------------------------- | --------- | ------------------------------------------------------------------------------------------------- |
-| `@anthropic-ai/claude-code`      | `2.1.263` | `sha512-kvvBK6/69iTRYnq0TKVyxVZs1CxYCJGojshQSP+2qaDb66A2xtI4zbCuqkZUWLkFGmHSRqhFf/ATpzH2UNKcwg==` |
-| `@anthropic-ai/claude-agent-sdk` | `0.3.263` | `sha512-0QWoHgWWlSmgXfEqZRbVYRoXT9p4tx/yKaZ4eLJ8l1MR65SIvMGR+cd5ZXUpGYZpj9RzbYiYU9LoFg90mdIjmw==` |
+| Package                                  | Version   | `dist.integrity`                                                                                  |
+| ---------------------------------------- | --------- | ------------------------------------------------------------------------------------------------- |
+| `@anthropic-ai/claude-code`              | `2.1.263` | `sha512-kvvBK6/69iTRYnq0TKVyxVZs1CxYCJGojshQSP+2qaDb66A2xtI4zbCuqkZUWLkFGmHSRqhFf/ATpzH2UNKcwg==` |
+| `@anthropic-ai/claude-code-darwin-arm64` | `2.1.263` | `sha512-yLv8MtgulGMGCWTwDUSmlEL0+94sxKP3vJm0SAXZX+0qVQ09PrjVSRC0ibtVeW7xymyhvP1JaUimOyp+t2wO5g==` |
+| `@anthropic-ai/claude-agent-sdk`         | `0.3.263` | `sha512-0QWoHgWWlSmgXfEqZRbVYRoXT9p4tx/yKaZ4eLJ8l1MR65SIvMGR+cd5ZXUpGYZpj9RzbYiYU9LoFg90mdIjmw==` |
 
 The exact `2.1.263` package ran in a synthetic project. The run used an
 isolated `CLAUDE_CONFIG_DIR`, a synthetic API key, and a localhost Messages
@@ -217,13 +218,26 @@ are `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
 has no new field. Thus `RawClaudeTokenUsage` does not change. The envelope
 keeps `apiBlockIndex`.
 
-The localhost stream sends no request identifier. Thus the run omits
-`requestId` and `session_id`. Real `2.1.259`, `2.1.260`, and `2.1.261`
-transcripts contain the two fields. Thus their absence is a property of the
-stream. It is not a `2.1.263` change. For the same reason, the run wrote an
-empty `iterations` array. An empty array is not the reviewed
-one-matching-iteration shape. It keeps its day partial. Do not change that
-check without a first-party source.
+The first localhost run omits `requestId` and `session_id` and writes an empty
+`iterations` array. An empty array is not the reviewed one-matching-iteration
+shape. It keeps its day partial. Do not change that check without a first-party
+source.
+
+The 2026-09-10 fixture check repeats the exact native `2.1.263` package with
+two controlled localhost streams. Its archive integrity matches the npm
+package record. The empty-iteration stream has no request header. Its
+transcript omits `requestId`. The other stream supplies a request header and
+one matching iteration. Its transcript includes `requestId` and the matching
+iteration. Both transcripts omit `session_id`, so the request header does not
+explain that field's absence. Both keep `apiBlockIndex` and the reviewed usage
+field set.
+
+The Rust fixtures replace the raw values and preserve both observed shapes.
+They check that the empty-iteration record keeps known tokens partial and
+unpriced, while the matching-iteration record receives complete coverage and
+a cost estimate. A direct parser 10 to 11 checkpoint test checks that retained
+`2.1.263` records gain coverage and cost without changing their token count.
+The daily revision advances once, and a repeated scan keeps that revision.
 
 The Agent SDK `0.3.263` public usage type contains the same field set. This
 compares the transcript run against a published type.
