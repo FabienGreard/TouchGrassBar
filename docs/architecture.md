@@ -181,8 +181,8 @@ Claude quota and Claude Observed Usage are independent observations. A quota
 failure does not block a new local usage aggregate. The usage scanner reads
 main and subagent JSONL files with byte, file, traversal, and time limits.
 
-The scanner records eight reviewed Claude Code versions: `2.1.223`, `2.1.224`,
-`2.1.236`, `2.1.241`, `2.1.258`, `2.1.259`, `2.1.260`, and `2.1.261`.
+The scanner records nine reviewed Claude Code versions: `2.1.223`, `2.1.224`,
+`2.1.236`, `2.1.241`, `2.1.258`, `2.1.259`, `2.1.260`, `2.1.261`, and `2.1.263`.
 The [pricing runbook](../apps/desktop/src-tauri/pricing/README.md) records the
 package and fixture evidence. The reviewed set does not gate parsing.
 A record from another version with a reviewed shape keeps its known Observed

@@ -35,15 +35,16 @@ const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 /// The structural checks below decide whether its counters can be counted; the
 /// reviewed set only decides whether the resulting day can claim complete
 /// coverage.
-const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 8] = [
+const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 9] = [
     "2.1.223", "2.1.224", "2.1.236", "2.1.241", "2.1.258", "2.1.259", "2.1.260", "2.1.261",
+    "2.1.263",
 ];
 const MAX_SUPERSEDED_FRAMES: usize = 64;
 const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 10;
+const TRANSCRIPT_PARSER_VERSION: i64 = 11;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -3515,6 +3516,9 @@ mod tests {
     // Exact CLI packages serialized these fields from a synthetic localhost
     // Messages stream. No provider credentials or private transcripts were used.
     fn september_claude_transcript_line(version: &str) -> String {
+        if version == "2.1.263" {
+            return claude_code_2_1_263_transcript_line(true);
+        }
         let mut record: serde_json::Value =
             serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
         record["version"] = serde_json::json!(version);
@@ -3527,6 +3531,71 @@ mod tests {
             .remove("diagnostics");
         if version == "2.1.236" {
             record.as_object_mut().unwrap().remove("apiBlockIndex");
+        }
+        record.to_string()
+    }
+
+    // Sanitized records from the exact 2.1.263 native package in --bare mode,
+    // with an isolated config and synthetic localhost Messages stream. Only
+    // identifiers, the path, text, and timestamp were replaced. The stream
+    // without iteration data or a request-id header produced the base record.
+    // The second stream supplied both and produced the two additions below.
+    // Neither run emitted session_id.
+    fn claude_code_2_1_263_transcript_line(matching_iteration: bool) -> String {
+        let mut record = serde_json::json!({
+            "parentUuid": "PRIVATE-PARENT",
+            "isSidechain": false,
+            "message": {
+                "id": "PRIVATE-VALID-MESSAGE-ID",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-fable-5-1",
+                "content": [{"type": "text", "text": "PRIVATE-CONTENT"}],
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {
+                    "input_tokens": 11,
+                    "cache_creation_input_tokens": 21,
+                    "cache_read_input_tokens": 31,
+                    "output_tokens": 41,
+                    "output_tokens_details": {"thinking_tokens": 7},
+                    "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+                    "service_tier": "standard",
+                    "cache_creation": {
+                        "ephemeral_1h_input_tokens": 0,
+                        "ephemeral_5m_input_tokens": 21
+                    },
+                    "inference_geo": "not_available",
+                    "iterations": [],
+                    "speed": "standard"
+                },
+                "stop_details": null
+            },
+            "apiBlockIndex": 0,
+            "type": "assistant",
+            "uuid": "PRIVATE-VALID-FRAME-ID",
+            "timestamp": "2026-09-05T11:55:00Z",
+            "effort": "high",
+            "userType": "external",
+            "entrypoint": "sdk-cli",
+            "cwd": "/PRIVATE/PATH",
+            "sessionId": "PRIVATE-SESSION",
+            "version": "2.1.263",
+            "gitBranch": "HEAD"
+        });
+        if matching_iteration {
+            record["requestId"] = serde_json::json!("PRIVATE-REQUEST");
+            record["message"]["usage"]["iterations"] = serde_json::json!([{
+                "input_tokens": 11,
+                "cache_creation_input_tokens": 21,
+                "cache_read_input_tokens": 31,
+                "output_tokens": 41,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 21,
+                    "ephemeral_1h_input_tokens": 0
+                },
+                "type": "message"
+            }]);
         }
         record.to_string()
     }
@@ -4495,7 +4564,12 @@ mod tests {
     #[test]
     fn september_claude_versions_count_and_price_each_message_once() {
         let observed_at = OffsetDateTime::parse("2026-09-05T12:00:00Z", &Rfc3339).unwrap();
-        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261"] {
+        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261", "2.1.263"] {
+            let (expected_tokens, expected_cost) = if version == "2.1.263" {
+                (104, 0.002_430_25)
+            } else {
+                (100, 0.002_357_5)
+            };
             let fixture = FixtureRoot::new();
             let config = fixture.config();
             let message = september_claude_transcript_line(version);
@@ -4521,10 +4595,10 @@ mod tests {
                     panic!("usage must be available")
                 };
                 assert_eq!(local.scan_status, UsageScanStatus::Complete, "{version}");
-                assert_eq!(observed_tokens, 100, "{version}");
+                assert_eq!(observed_tokens, expected_tokens, "{version}");
                 assert_eq!(coverage, UsageCoverage::Complete, "{version}");
                 assert!(
-                    (api_equivalent_cost_usd.unwrap() - 0.002_357_5).abs() < 1e-12,
+                    (api_equivalent_cost_usd.unwrap() - expected_cost).abs() < 1e-12,
                     "{version}"
                 );
                 assert_eq!(stored_message_count(&fixture.database()), 1);
@@ -4533,8 +4607,56 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_2_1_263_empty_iterations_keep_tokens_partial_and_unpriced() {
+        let observed_at = OffsetDateTime::parse("2026-09-05T12:00:00Z", &Rfc3339).unwrap();
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let message = claude_code_2_1_263_transcript_line(false);
+        let record: serde_json::Value = serde_json::from_str(&message).unwrap();
+        assert!(record.get("requestId").is_none());
+        assert!(record.get("session_id").is_none());
+        assert_eq!(
+            record["message"]["usage"]["iterations"],
+            serde_json::json!([])
+        );
+        let TranscriptLineOutcome::Usage(parsed) = parse_transcript_line(message.as_bytes(), &SALT)
+        else {
+            panic!("the runtime record must retain its known tokens")
+        };
+        assert_eq!(parsed.usage, usage(11, 21, 31, 41));
+        assert!(!parsed.complete);
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[message.clone(), message],
+        );
+
+        for _ in 0..2 {
+            let local =
+                scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at)
+                    .unwrap();
+            let UsageTotal::Current {
+                observed_tokens,
+                coverage,
+                api_equivalent_cost_usd,
+                ..
+            } = project_usage_periods(Some(&local), observed_at).today
+            else {
+                panic!("partial usage must be available")
+            };
+            assert_eq!(local.scan_status, UsageScanStatus::Complete);
+            assert_eq!(observed_tokens, 104);
+            assert_eq!(coverage, UsageCoverage::Partial);
+            assert_eq!(api_equivalent_cost_usd, None);
+            assert!(!local.daily_cost.contains_key(&observed_at.date()));
+            assert_eq!(stored_message_count(&fixture.database()), 1);
+        }
+    }
+
+    #[test]
     fn september_claude_versions_keep_unknown_or_aborted_usage_partial() {
-        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261"] {
+        for version in ["2.1.236", "2.1.259", "2.1.260", "2.1.261", "2.1.263"] {
+            let expected_tokens = if version == "2.1.263" { 104 } else { 100 };
+            let invalid_output_tokens = if version == "2.1.263" { 42 } else { 41 };
             let original: serde_json::Value =
                 serde_json::from_str(&september_claude_transcript_line(version)).unwrap();
             for case in 0..5 {
@@ -4544,11 +4666,11 @@ mod tests {
                     1 => record["message"]["usage"]["future_paid_tokens"] = serde_json::json!(999),
                     2 => {
                         record["message"]["usage"]["output_tokens_details"]["thinking_tokens"] =
-                            serde_json::json!(41)
+                            serde_json::json!(invalid_output_tokens)
                     }
                     3 => {
                         record["message"]["usage"]["iterations"][0]["output_tokens"] =
-                            serde_json::json!(41)
+                            serde_json::json!(invalid_output_tokens)
                     }
                     _ => {
                         record["message"]["usage"]["fallback_credit"] =
@@ -4560,7 +4682,7 @@ mod tests {
                 else {
                     panic!("known counters must remain available for {version}")
                 };
-                assert_eq!(parsed.usage.observed_tokens(), Some(100));
+                assert_eq!(parsed.usage.observed_tokens(), Some(expected_tokens));
                 assert!(!parsed.complete, "{version}, case {case}");
             }
         }
@@ -4610,6 +4732,74 @@ mod tests {
         assert_eq!(
             stored_daily_revision(&fixture.database(), observed_at.date()),
             revision
+        );
+        assert_eq!(stored_message_count(&fixture.database()), 1);
+    }
+
+    #[test]
+    fn parser_11_reprices_a_parser_10_claude_code_2_1_263_checkpoint_once() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let observed_at = OffsetDateTime::parse("2026-09-05T12:00:00Z", &Rfc3339).unwrap();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[claude_code_2_1_263_transcript_line(true)],
+        );
+        scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection.execute_batch(
+            "UPDATE claude_usage_files SET parser_version = 10;
+             UPDATE claude_usage_frames SET parser_version = 10;
+             UPDATE claude_usage_messages SET parser_version = 10, complete = 0;
+             UPDATE claude_usage_daily SET coverage = 'partial', priced_tokens = 0,
+               cost_usd = NULL, pricing_basis = NULL, pricing_fingerprint = NULL;
+             UPDATE claude_usage_index_meta SET value = '10' WHERE key = 'usage_aggregate_parser_version';"
+        ).unwrap();
+        let previous: (u64, String, Option<f64>, u64) = connection
+            .query_row(
+                "SELECT observed_tokens, coverage, cost_usd, revision FROM claude_usage_daily",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(previous.0, 104);
+        assert_eq!(previous.1, "partial");
+        assert_eq!(previous.2, None);
+        drop(connection);
+
+        let recovered =
+            scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at)
+                .unwrap();
+        let recovered_today = project_usage_periods(Some(&recovered), observed_at).today;
+        let UsageTotal::Current {
+            observed_tokens,
+            coverage,
+            api_equivalent_cost_usd,
+            ..
+        } = &recovered_today
+        else {
+            panic!("recovered usage must be available")
+        };
+        assert_eq!(*observed_tokens, previous.0);
+        assert_eq!(*coverage, UsageCoverage::Complete);
+        assert!((api_equivalent_cost_usd.unwrap() - 0.002_430_25).abs() < 1e-12);
+        assert!(recovered.aggregate_changed);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), observed_at.date()),
+            previous.3 + 1
+        );
+
+        let repeated =
+            scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at)
+                .unwrap();
+        assert!(!repeated.aggregate_changed);
+        assert_eq!(
+            project_usage_periods(Some(&repeated), observed_at).today,
+            recovered_today
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), observed_at.date()),
+            previous.3 + 1
         );
         assert_eq!(stored_message_count(&fixture.database()), 1);
     }
