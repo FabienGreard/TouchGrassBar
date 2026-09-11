@@ -391,6 +391,15 @@ function FixtureOptions({
         Current
       </FixtureSwitcherOption>
       <FixtureSwitcherOption
+        active={activeFixture === "single-bar"}
+        doomerboardStatus={activeDoomerboardStatus}
+        fixture="single-bar"
+        syncStatus={activeSyncStatus}
+        updateStatus={activeUpdateStatus}
+      >
+        Single bar
+      </FixtureSwitcherOption>
+      <FixtureSwitcherOption
         active={activeFixture === "update"}
         doomerboardStatus={activeDoomerboardStatus}
         fixture="update"

@@ -133,7 +133,9 @@ function DevPreviewApp({ nativeSurface }: { nativeSurface?: DesktopSurface } = {
     }
   }, [devInstance, scenario.surface]);
   const hasCurrentPanelPresentation =
-    scenario.fixture === "current" || scenario.fixture === "update";
+    scenario.fixture === "current" ||
+    scenario.fixture === "single-bar" ||
+    scenario.fixture === "update";
   const updateState = previewUpdateState(updateStatus, autoUpdates);
   const panelPresentation = {
     nativeGlass: nativeSurface === "panel",

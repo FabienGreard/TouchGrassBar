@@ -10,7 +10,7 @@ import {
   type OnboardingStep,
 } from "@/components/screens/onboarding/onboarding-flow";
 
-type BrowserFixtureName = "current" | "loading" | "stale" | "update" | "unavailable";
+type BrowserFixtureName = "current" | "single-bar" | "loading" | "stale" | "update" | "unavailable";
 type DoomerboardPreviewStatus = "loading" | "ready";
 type UpdatePreviewStatus = Extract<
   UpdateState["update"]["status"],
@@ -60,6 +60,7 @@ type DevPreviewScenario = {
 function resolveFixture(params: URLSearchParams): BrowserFixtureName {
   const candidate = params.get("fixture");
   return candidate === "current" ||
+    candidate === "single-bar" ||
     candidate === "loading" ||
     candidate === "stale" ||
     candidate === "update"

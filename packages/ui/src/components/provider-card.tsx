@@ -177,7 +177,7 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
           value={percentage}
         />
       </div>
-      <div className="flow-root min-h-[31.5px]">
+      <div className="flow-root">
         {secondaryLanes.map((lane) => (
           <ProviderQuotaLane
             key={lane.label}

@@ -362,6 +362,17 @@ function fixture(
   now: Date,
   syncStatus: SyncStatus,
 ): SanitizedDesktopState {
+  if (name === "single-bar") {
+    const state = populatedFixture("current", now, syncStatus);
+    const codex = state.providers.find((provider) => provider.provider === "codex");
+    if (codex) {
+      codex.quota.quotaLanes = codex.quota.quotaLanes.slice(0, 1).map((lane) => ({
+        ...lane,
+        remaining: 69,
+      }));
+    }
+    return state;
+  }
   if (name === "current" || name === "update") return populatedFixture("current", now, syncStatus);
   if (name === "stale") return populatedFixture("stale", now, syncStatus);
   return unavailableFixture(now, syncStatus);
