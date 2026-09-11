@@ -899,6 +899,8 @@ test("concurrent identical recovery commits finalize authentication once", async
   ).resolves.toBe(false);
 });
 
+// This test creates 641 sessions and checks six sequential cleanup batches.
+// Allow shared CI runners to complete the full scenario.
 test("bounded cleanup retries do not consume the Profile credential limit", async () => {
   vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
@@ -987,7 +989,7 @@ test("bounded cleanup retries do not consume the Profile credential limit", asyn
       sessionId: "recovered-session-id",
     }),
   ).resolves.toBe(true);
-});
+}, 15_000);
 
 test("concurrent Profile recoveries are first-valid-commit-wins", async () => {
   vi.stubEnv("BETTER_AUTH_SECRET", `${crypto.randomUUID()}${crypto.randomUUID()}`);

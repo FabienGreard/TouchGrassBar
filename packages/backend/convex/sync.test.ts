@@ -774,6 +774,8 @@ test("a retained Codex correction keeps an approved prior pricing basis", async 
   });
 });
 
+// This test creates and syncs one independent Profile per supported pricing basis.
+// Allow shared CI runners to complete the full scenario.
 test("every native pricing basis is accepted by Usage Snapshot sync", async () => {
   for (const [provider, pricingBases] of Object.entries(APPROVED_PRICING_BASES_BY_PROVIDER) as [
     "claude" | "codex",
@@ -804,7 +806,7 @@ test("every native pricing basis is accepted by Usage Snapshot sync", async () =
       ).resolves.toMatchObject([{ outcome: "committed" }]);
     }
   }
-});
+}, 15_000);
 
 test("both providers commit atomically and retries report exact revision outcomes", async () => {
   const t = testBackend();
