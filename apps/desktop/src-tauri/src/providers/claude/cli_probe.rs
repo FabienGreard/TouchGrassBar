@@ -153,7 +153,16 @@ pub(super) fn probe_usage(
             },
             None,
         )
-        .map_err(|_| {
+        .map_err(|error| {
+            if cancelled()
+                || matches!(
+                    error,
+                    ProviderProcessError::Cancelled | ProviderProcessError::SupervisorStopping
+                )
+            {
+                probe_event("cli_probe_failed stage=cancelled");
+                return ProbeFailure::Cancelled;
+            }
             probe_event("cli_probe_failed stage=process_start");
             failure_capture::access(
                 Provider::Claude,
@@ -913,6 +922,59 @@ mod tests {
 
     fn test_time() -> OffsetDateTime {
         OffsetDateTime::parse("2026-08-07T14:30:00Z", &Rfc3339).unwrap()
+    }
+
+    #[test]
+    fn cancelled_provider_start_does_not_report_failure() {
+        let root = FixtureRoot::new();
+        let processes = ProviderProcessSupervisor::default();
+        processes.shutdown_all();
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(matches!(
+                probe_usage(
+                    &processes,
+                    &root.0.join("absent-claude"),
+                    &root.0.join("probe"),
+                    test_time(),
+                    StdDuration::from_secs(1),
+                    &|| false,
+                ),
+                Err(ProbeFailure::Cancelled)
+            ));
+        });
+        assert!(failures.is_empty());
+    }
+
+    #[test]
+    fn failed_provider_start_reports_only_for_an_active_attempt() {
+        for cancelled in [false, true] {
+            let root = FixtureRoot::new();
+            let failures = crate::diagnostics::collect_failures_for_test(|| {
+                let result = probe_usage(
+                    &ProviderProcessSupervisor::default(),
+                    &root.0.join("absent-claude"),
+                    &root.0.join("probe"),
+                    test_time(),
+                    StdDuration::from_secs(1),
+                    &|| cancelled,
+                );
+                assert!(matches!(result, Err(failure) if failure == if cancelled {
+                    ProbeFailure::Cancelled
+                } else {
+                    ProbeFailure::Unavailable
+                }));
+            });
+            if cancelled {
+                assert!(failures.is_empty());
+            } else {
+                let [crate::diagnostics::Failure::ProviderAccess { context, .. }] =
+                    failures.as_slice()
+                else {
+                    panic!("one provider start failure");
+                };
+                assert_eq!(context.reason, AccessReason::RequestFailed);
+            }
+        }
     }
 
     #[test]
