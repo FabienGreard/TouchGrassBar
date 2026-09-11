@@ -37,6 +37,14 @@ function createTauriSettingsAdapter(
   bindings: TauriSettingsBindings = defaultBindings,
 ): SettingsPort {
   return {
+    openLoginItemsSettings: async () => {
+      const outcome = await closedInvoke(
+        bindings,
+        "open_login_items_settings",
+        "login-items-settings-unavailable",
+      );
+      return outcome.ok ? { ok: true, value: undefined } : outcome;
+    },
     hide: async () => {
       const outcome = await closedInvoke(bindings, "hide_surface", "surface-unavailable");
       return outcome.ok ? { ok: true, value: undefined } : outcome;

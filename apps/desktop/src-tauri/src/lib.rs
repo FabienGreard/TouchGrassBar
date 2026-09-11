@@ -4,6 +4,7 @@ mod database;
 mod dev_instance;
 mod doomerboard;
 pub mod lifecycle;
+mod login_startup;
 mod menu_bar;
 mod network;
 pub mod profile;
@@ -30,7 +31,7 @@ use std::time::Duration;
 use lifecycle::{
     BootstrapStateV3, DesktopLifecycle, LaunchAtLoginState, SETTINGS_NAVIGATION_EVENT,
     SETTINGS_RECOVERY_CLEAR_EVENT, SettingsNavigationRequest, SettingsProfileAuthorization,
-    SettingsSection, SettingsStateV4,
+    SettingsSection, SettingsStateV5,
 };
 use menu_bar::{MenuBarDelivery, MenuBarPresentation, apply_to_tray};
 use sanitized::{
@@ -1029,17 +1030,49 @@ fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
     if dev_instance::DevelopmentInstance::from_environment().is_some() {
         return LaunchAtLoginState::Unavailable;
     }
-    app.autolaunch()
-        .is_enabled()
-        .map(|enabled| LaunchAtLoginState::Available { enabled })
-        .unwrap_or(LaunchAtLoginState::Unavailable)
+    match app.autolaunch().is_enabled() {
+        Ok(false) => LaunchAtLoginState::Available { enabled: false },
+        Ok(true) => {
+            #[cfg(target_os = "macos")]
+            {
+                let Ok(home) = app.path().home_dir() else {
+                    return LaunchAtLoginState::Unavailable;
+                };
+                login_startup::legacy_state(
+                    &home
+                        .join("Library/LaunchAgents")
+                        .join(format!("{}.plist", app.package_info().name)),
+                )
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                LaunchAtLoginState::Available { enabled: true }
+            }
+        }
+        Err(_) => LaunchAtLoginState::Unavailable,
+    }
+}
+
+#[tauri::command]
+fn open_login_items_settings(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    require_settings(&window)?;
+    #[cfg(target_os = "macos")]
+    {
+        app.run_on_main_thread(login_startup::open_system_settings)
+            .map_err(|_| "Login settings unavailable".to_owned())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("Login settings unavailable".to_owned())
+    }
 }
 
 fn settings_state_with_recovery_key_suffix(
     lifecycle: &DesktopLifecycle,
     launch_at_login: LaunchAtLoginState,
     profile_runtime: &ProfileRuntime,
-) -> SettingsStateV4 {
+) -> SettingsStateV5 {
     let mut state = lifecycle.settings_state(launch_at_login);
     if state.profile_provisioning == lifecycle::ProfileProvisioningStatus::Ready {
         state.recovery_key_suffix = profile_runtime.recovery_key_suffix();
@@ -1053,7 +1086,7 @@ fn get_settings_state(
     app: AppHandle,
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
-) -> Result<SettingsStateV4, String> {
+) -> Result<SettingsStateV5, String> {
     require_settings(&window)?;
     Ok(settings_state_with_recovery_key_suffix(
         &lifecycle,
@@ -1069,7 +1102,7 @@ fn set_launch_at_login(
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
     enabled: bool,
-) -> Result<SettingsStateV4, String> {
+) -> Result<SettingsStateV5, String> {
     require_settings(&window)?;
     #[cfg(debug_assertions)]
     if dev_instance::DevelopmentInstance::from_environment().is_some() {
@@ -1105,7 +1138,7 @@ fn set_provider_enabled(
     core: State<'_, NativeCore>,
     provider: providers::CodingProvider,
     enabled: bool,
-) -> Result<SettingsStateV4, String> {
+) -> Result<SettingsStateV5, String> {
     require_settings(&window)?;
     lifecycle
         .set_provider_enabled(provider, enabled)
@@ -1151,7 +1184,7 @@ async fn update_profile_display_name(
     lifecycle: State<'_, DesktopLifecycle>,
     profile_runtime: State<'_, ProfileRuntime>,
     display_name: String,
-) -> Result<SettingsStateV4, String> {
+) -> Result<SettingsStateV5, String> {
     let authorization = require_profile_settings(&window, &lifecycle)?;
     let runtime = profile_runtime.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1262,6 +1295,7 @@ pub fn run() {
             select_settings_section,
             set_automatic_update_checks,
             set_launch_at_login,
+            open_login_items_settings,
             set_provider_enabled,
             update_profile_display_name,
             take_panel_add_tokenmaxxer_request

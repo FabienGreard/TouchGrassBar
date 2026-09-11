@@ -11,6 +11,7 @@ import type { ProfileRecoveryCredentials } from "@/components/dialogs/recovery-d
 type SettingsPortFaultCode =
   | "display-name-update-unavailable"
   | "launch-at-login-unavailable"
+  | "login-items-settings-unavailable"
   | "navigation-stream-unavailable"
   | "profile-recovery-unavailable"
   | "provider-setting-unavailable"
@@ -26,6 +27,7 @@ type SettingsPortOutcome<Value> =
 
 type SettingsPort = {
   hide: () => Promise<SettingsPortOutcome<void>>;
+  openLoginItemsSettings: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
   recoverProfile: (credentials: ProfileRecoveryCredentials) => Promise<SettingsPortOutcome<void>>;
   revealRecoveryKey: () => Promise<SettingsPortOutcome<string>>;
@@ -311,6 +313,15 @@ function createSettingsDelivery(port: SettingsPort) {
         saveInFlight = null;
       });
       return saveInFlight;
+    },
+    async openLoginItemsSettings() {
+      const outcome = await port.openLoginItemsSettings();
+      return outcome.ok;
+    },
+    async refreshOnFocus() {
+      // Finish older reads and writes before checking the macOS setting again.
+      await Promise.all([readInFlight, saveInFlight]);
+      await read();
     },
     updateDisplayName(displayName: string) {
       if (displayNameSaveInFlight !== null) return displayNameSaveInFlight;

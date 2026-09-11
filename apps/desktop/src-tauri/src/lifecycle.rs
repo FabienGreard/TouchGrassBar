@@ -16,7 +16,7 @@ use crate::sanitized::SanitizedProfileOutcome;
 pub use crate::providers::ProviderPresenceStatus;
 
 pub const LIFECYCLE_CONTRACT_VERSION: u8 = 3;
-pub const SETTINGS_CONTRACT_VERSION: u8 = 4;
+pub const SETTINGS_CONTRACT_VERSION: u8 = 5;
 pub const SETTINGS_NAVIGATION_EVENT: &str = "settings-navigation-requested";
 pub const SETTINGS_RECOVERY_CLEAR_EVENT: &str = "settings-recovery-clear-requested";
 pub(crate) const DATABASE_SCHEMA_VERSION: i64 = 5;
@@ -80,6 +80,7 @@ impl SettingsProfileAuthorization {
 )]
 pub enum LaunchAtLoginState {
     Available { enabled: bool },
+    RequiresApproval,
     Unavailable,
 }
 
@@ -117,7 +118,7 @@ pub struct BootstrapStateV3 {
 
 #[derive(Clone, Debug, JsonSchema, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SettingsStateV4 {
+pub struct SettingsStateV5 {
     pub contract_version: u8,
     pub section: SettingsSection,
     pub launch_at_login: LaunchAtLoginState,
@@ -894,11 +895,11 @@ impl DesktopLifecycle {
         }
     }
 
-    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV4 {
+    pub fn settings_state(&self, launch_at_login: LaunchAtLoginState) -> SettingsStateV5 {
         let record = self
             .record()
             .unwrap_or_else(|_| LifecycleRecord::required());
-        SettingsStateV4 {
+        SettingsStateV5 {
             contract_version: SETTINGS_CONTRACT_VERSION,
             section: self.current_settings_section(),
             launch_at_login,
@@ -975,7 +976,7 @@ pub fn bootstrap_state_schema() -> Schema {
 }
 
 pub fn settings_state_schema() -> Schema {
-    schema_for!(SettingsStateV4)
+    schema_for!(SettingsStateV5)
 }
 
 pub fn settings_navigation_schema() -> Schema {

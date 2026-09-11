@@ -7,7 +7,7 @@ import {
 } from "@/native-state/settings-delivery";
 
 const settingsState = {
-  contractVersion: 4,
+  contractVersion: 5,
   displayName: "Fabien",
   launchAtLogin: { availability: "available", enabled: false },
   profileProvisioning: "profile-pending",
@@ -46,6 +46,7 @@ function port(): SettingsPort & {
   return {
     clearRecovery: () => clearRecovery(),
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
+    openLoginItemsSettings: vi.fn(async () => ({ ok: true as const, value: undefined })),
     navigate: (payload) => navigate(payload),
     read: vi.fn(async () => ({ ok: true as const, value: settingsState })),
     recoverProfile: vi.fn(async () => ({
@@ -97,6 +98,52 @@ function port(): SettingsPort & {
 }
 
 describe("Settings delivery", () => {
+  test("waits for a login write before reading Apple state on focus", async () => {
+    const native = port();
+    let finishSave!: (value: SettingsPortOutcome<unknown>) => void;
+    native.setLaunchAtLogin = vi.fn(
+      () =>
+        new Promise<SettingsPortOutcome<unknown>>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+    const write = delivery.setLaunchAtLogin(true);
+    const refresh = delivery.refreshOnFocus();
+    await Promise.resolve();
+    expect(native.read).toHaveBeenCalledTimes(1);
+    native.read = vi.fn(async () => ({
+      ok: true as const,
+      value: { ...settingsState, launchAtLogin: { availability: "available", enabled: true } },
+    }));
+    finishSave({
+      ok: true,
+      value: { ...settingsState, launchAtLogin: { availability: "requiresApproval" } },
+    });
+    await Promise.all([write, refresh]);
+    expect(native.read).toHaveBeenCalledOnce();
+    expect(delivery.getSnapshot().snapshot?.launchAtLogin).toEqual({
+      availability: "available",
+      enabled: true,
+    });
+  });
+
+  test("keeps a macOS approval block after enabling login startup", async () => {
+    const native = port();
+    native.setLaunchAtLogin = vi.fn(async () => ({
+      ok: true as const,
+      value: { ...settingsState, launchAtLogin: { availability: "requiresApproval" } },
+    }));
+    const delivery = createSettingsDelivery(native);
+    await delivery.activate();
+
+    expect(await delivery.setLaunchAtLogin(true)).toBe(true);
+    expect(delivery.getSnapshot().snapshot?.launchAtLogin).toEqual({
+      availability: "requiresApproval",
+    });
+  });
+
   test("recovers through native custody and refreshes the Profile", async () => {
     const native = port();
     native.read = vi.fn(async () => ({

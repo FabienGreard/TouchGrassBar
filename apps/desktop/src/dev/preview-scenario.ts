@@ -49,6 +49,7 @@ type DevPreviewScenario = {
     setupState: OnboardingSetupPreviewState;
   };
   settingsProfileState: SettingsProfilePreviewState;
+  settingsLoginApprovalRequired: boolean;
   settingsProviderEnabled: boolean;
   settingsProviderState: CodingProviderAccessState;
   surface: DesktopSurface;
@@ -143,6 +144,7 @@ function resolveDevPreviewScenario(search: string): DevPreviewScenario {
       setupState: resolveOnboardingSetupState(params),
     },
     settingsProfileState: resolveSettingsProfileState(params),
+    settingsLoginApprovalRequired: params.get("loginApproval") === "required",
     settingsProviderEnabled: !settingsProviderExcluded,
     settingsProviderState: providerState,
     surface: resolveSurface(params),

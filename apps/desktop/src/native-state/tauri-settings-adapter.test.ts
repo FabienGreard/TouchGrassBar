@@ -6,6 +6,18 @@ import {
 } from "@/native-state/tauri-settings-adapter";
 
 describe("Tauri Settings adapter", () => {
+  test("opens only the fixed native Login Items action and contains its failures", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const adapter = createTauriSettingsAdapter({ invoke, listen: vi.fn() });
+    expect(await adapter.openLoginItemsSettings()).toEqual({ ok: true, value: undefined });
+    expect(invoke).toHaveBeenCalledWith("open_login_items_settings", undefined);
+    invoke.mockRejectedValueOnce(new Error("private native detail"));
+    expect(await adapter.openLoginItemsSettings()).toEqual({
+      ok: false,
+      fault: { code: "login-items-settings-unavailable" },
+    });
+  });
+
   const recoveryCredentials = {
     recoveryKey: "2".repeat(48),
     touchGrassId: "TG-234567",

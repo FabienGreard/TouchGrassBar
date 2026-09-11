@@ -1,10 +1,12 @@
 import {
   Brand,
+  Button,
   NativeWindow,
   NativeWindowContent,
   NativeWindowNav,
   NativeWindowNavItem,
   NativeWindowSidebar,
+  RefreshIcon,
 } from "@touchgrass/ui";
 import type { CodingProvider, ProfileProvisioningStatus, UpdateState } from "@touchgrass/contracts";
 import { useState } from "react";
@@ -39,12 +41,14 @@ type SettingsScreenProps = {
   autoUpdates?: boolean | null | undefined;
   busyProviders?: boolean | undefined;
   launchAtLogin?: boolean | null | undefined;
+  launchAtLoginRequiresApproval?: boolean | undefined;
   launchAtLoginSaving?: boolean | undefined;
   onAutoUpdatesChange?: ((value: boolean) => void) | undefined;
   onCheckProviders?: (() => void) | undefined;
   onCheckForUpdates?: (() => void) | undefined;
   onInstallUpdate?: (() => void) | undefined;
   onLaunchAtLoginChange?: ((value: boolean) => void) | undefined;
+  onOpenLoginItemsSettings?: (() => boolean | Promise<boolean> | void) | undefined;
   onOpenLatestDmg?: (() => void) | undefined;
   onOpenSource?: (() => void) | undefined;
   onProfileDisplayNameChange?:
@@ -73,12 +77,14 @@ function SettingsScreen({
   autoUpdates = null,
   busyProviders = false,
   launchAtLogin = null,
+  launchAtLoginRequiresApproval = false,
   launchAtLoginSaving = false,
   onAutoUpdatesChange,
   onCheckProviders,
   onCheckForUpdates,
   onInstallUpdate,
   onLaunchAtLoginChange,
+  onOpenLoginItemsSettings,
   onOpenLatestDmg,
   onOpenSource,
   onProfileDisplayNameChange,
@@ -100,6 +106,8 @@ function SettingsScreen({
   updateActionPending = false,
   updateState = null,
 }: SettingsScreenProps) {
+  const [openingLoginSettings, setOpeningLoginSettings] = useState(false);
+  const [loginSettingsFailed, setLoginSettingsFailed] = useState(false);
   const [localSection, setLocalSection] = useState<SettingsSection>(() =>
     typeof window === "undefined" ? "general" : resolveSettingsSectionHash(window.location.hash),
   );
@@ -144,21 +152,65 @@ function SettingsScreen({
           <p className="mt-2 mb-9 text-[12px] text-sheet-muted">{detail.description}</p>
           {section === "general" ? (
             <div className="grid gap-6">
-              <SettingsToggleRow
-                checked={launchAtLogin ?? false}
-                description={
-                  launchAtLogin === null
-                    ? "Not connected in this build."
-                    : "Start quietly in the menu bar."
-                }
-                disabled={
-                  launchAtLogin === null ||
-                  launchAtLoginSaving ||
-                  onLaunchAtLoginChange === undefined
-                }
-                label="Open at login"
-                onCheckedChange={onLaunchAtLoginChange}
-              />
+              <div className="grid rounded-[12px] border border-sheet-row-border bg-sheet-row">
+                <SettingsToggleRow
+                  checked={!launchAtLoginRequiresApproval && (launchAtLogin ?? false)}
+                  className="border-0 bg-transparent"
+                  description={
+                    launchAtLoginRequiresApproval
+                      ? "macOS approval required."
+                      : launchAtLogin === null
+                        ? "Login startup status unavailable."
+                        : "Start quietly in the menu bar."
+                  }
+                  disabled={
+                    launchAtLogin === null ||
+                    launchAtLoginRequiresApproval ||
+                    launchAtLoginSaving ||
+                    onLaunchAtLoginChange === undefined
+                  }
+                  label="Open at login"
+                  onCheckedChange={onLaunchAtLoginChange}
+                />
+                {onOpenLoginItemsSettings ? (
+                  <div className="grid px-4 pb-3">
+                    <Button
+                      aria-busy={openingLoginSettings || undefined}
+                      className="h-7 justify-self-start py-0"
+                      disabled={openingLoginSettings}
+                      onClick={async () => {
+                        setOpeningLoginSettings(true);
+                        setLoginSettingsFailed(false);
+                        try {
+                          setLoginSettingsFailed((await onOpenLoginItemsSettings()) === false);
+                        } catch {
+                          setLoginSettingsFailed(true);
+                        } finally {
+                          setOpeningLoginSettings(false);
+                        }
+                      }}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <span aria-live="polite" className="inline-grid">
+                        <span
+                          aria-hidden={loginSettingsFailed ? true : undefined}
+                          className={`${loginSettingsFailed ? "invisible " : ""}col-start-1 row-start-1 flex items-center justify-center`}
+                        >
+                          Open System Settings ↗
+                        </span>
+                        <span
+                          aria-hidden={loginSettingsFailed ? undefined : true}
+                          className={`${loginSettingsFailed ? "" : "invisible "}col-start-1 row-start-1 flex items-center justify-center gap-1`}
+                        >
+                          Could not open. Try again
+                          <RefreshIcon aria-hidden="true" className="size-3" />
+                        </span>
+                      </span>
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
               <section className="border-t border-sheet-line pt-5">
                 <h2 className="m-0 text-[14px]">Updates</h2>
                 <p className="mt-1 mb-4 text-[10px] leading-4 text-sheet-muted">

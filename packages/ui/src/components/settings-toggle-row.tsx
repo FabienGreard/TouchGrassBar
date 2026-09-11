@@ -1,7 +1,10 @@
+import { cn } from "#lib/utils";
+
 import { Switch } from "./switch";
 
 function SettingsToggleRow({
   checked,
+  className,
   description,
   disabled = false,
   grouped = false,
@@ -9,6 +12,7 @@ function SettingsToggleRow({
   onCheckedChange,
 }: {
   checked: boolean;
+  className?: string;
   description?: string;
   disabled?: boolean;
   grouped?: boolean;
@@ -17,7 +21,10 @@ function SettingsToggleRow({
 }) {
   return (
     <label
-      className={`grid cursor-pointer grid-cols-[1fr_auto] items-center gap-8 px-4 py-3.5 ${grouped ? "border-t border-sheet-row-border" : "rounded-[12px] border border-sheet-row-border bg-sheet-row"}`}
+      className={cn(
+        `grid cursor-pointer grid-cols-[1fr_auto] items-center gap-8 px-4 py-3.5 ${grouped ? "border-t border-sheet-row-border" : "rounded-[12px] border border-sheet-row-border bg-sheet-row"}`,
+        className,
+      )}
       data-grouped={grouped || undefined}
       data-slot="settings-toggle-row"
     >

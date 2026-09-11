@@ -66,6 +66,12 @@ function SettingsCoordinator({
   );
 
   useEffect(() => {
+    const refresh = () => void delivery.refreshOnFocus();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [delivery]);
+
+  useEffect(() => {
     const handler = createNativeWindowKeyboardHandler({
       enabled: !recoveryOpen,
       hide: () => void delivery.hide(),
@@ -76,7 +82,11 @@ function SettingsCoordinator({
 
   const state = view.snapshot;
   const launchAtLogin =
-    state?.launchAtLogin.availability === "available" ? state.launchAtLogin.enabled : null;
+    state?.launchAtLogin.availability === "available"
+      ? state.launchAtLogin.enabled
+      : state?.launchAtLogin.availability === "requiresApproval"
+        ? false
+        : null;
   const providers = state?.providers;
   const profile =
     state?.profileProvisioning === "ready" &&
@@ -99,7 +109,9 @@ function SettingsCoordinator({
         }
         busyProviders={checkingProviders}
         launchAtLogin={launchAtLogin}
+        launchAtLoginRequiresApproval={state?.launchAtLogin.availability === "requiresApproval"}
         launchAtLoginSaving={view.savingLaunchAtLogin}
+        onOpenLoginItemsSettings={() => delivery.openLoginItemsSettings()}
         onCheckProviders={() => {
           setCheckingProviders(true);
           void delivery.read().finally(() => setCheckingProviders(false));

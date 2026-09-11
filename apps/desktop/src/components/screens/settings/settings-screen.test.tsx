@@ -20,6 +20,23 @@ const providers = [
 ] as const;
 
 describe("settings screen", () => {
+  test("shows the macOS approval block with an unchecked switch and a Settings action", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsScreen
+        launchAtLogin={false}
+        launchAtLoginRequiresApproval
+        onOpenLoginItemsSettings={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("macOS approval required.");
+    expect(markup).not.toContain("Allow TouchGrassBar in System Settings");
+    expect(markup).toContain("Open System Settings");
+    expect(markup).toMatch(
+      /<button(?=[^>]*aria-label="Open at login")(?=[^>]*aria-checked="false")[^>]*>/,
+    );
+  });
+
   test("uses the approved native-sheet composition", () => {
     const markup = renderToStaticMarkup(<SettingsScreen />);
 
@@ -131,7 +148,7 @@ describe("settings screen", () => {
   test("keeps disconnected production settings honest and inert", () => {
     const generalMarkup = renderToStaticMarkup(<SettingsScreen />);
 
-    expect(generalMarkup).toContain("Not connected in this build.");
+    expect(generalMarkup).toContain("Login startup status unavailable.");
     expect(generalMarkup).toContain("Update state unavailable.");
     expect(generalMarkup.match(/role="switch"[^>]*disabled=""/g)).toHaveLength(2);
     expect(generalMarkup).toMatch(

@@ -200,7 +200,7 @@ describe("public contracts", () => {
       providers,
     } as const;
     const settings = {
-      contractVersion: 4,
+      contractVersion: 5,
       displayName: "Fabien",
       launchAtLogin: { availability: "available", enabled: true },
       recoveryKeySuffix: "K9m",

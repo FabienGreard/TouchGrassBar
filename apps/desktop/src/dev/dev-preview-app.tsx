@@ -187,6 +187,8 @@ function DevPreviewApp() {
           settings={{
             autoUpdates,
             launchAtLogin,
+            launchAtLoginRequiresApproval: scenario.settingsLoginApprovalRequired,
+            onOpenLoginItemsSettings: () => false,
             onAutoUpdatesChange: setAutoUpdates,
             onCheckProviders: () => undefined,
             onCheckForUpdates: () => setUpdateStatus("checking"),
