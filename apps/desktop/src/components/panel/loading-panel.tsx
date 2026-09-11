@@ -45,21 +45,13 @@ function LoadingPanel({ loading = true }: LoadingPanelProps) {
       role={loading ? "status" : undefined}
     >
       {loading ? <span className="sr-only">Reading the local snapshot…</span> : null}
-      <div
-        aria-hidden="true"
-        className={
-          loading
-            ? "pointer-events-none animate-pulse motion-reduce:animate-none"
-            : "pointer-events-none"
-        }
-        inert
-      >
+      <div aria-hidden="true" className="pointer-events-none" inert>
         <div>
           {loadingProviders.map((provider) => (
             <ProviderCard key={provider.provider} presentation={provider} />
           ))}
         </div>
-        <UsageOverview usage={loadingUsage} />
+        <UsageOverview usage={loadingUsage} providers={loadingProviders} />
         <Doomerboard />
       </div>
     </div>

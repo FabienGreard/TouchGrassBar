@@ -13,20 +13,24 @@ const unavailable: UsagePeriods = {
   sevenDays: { availability: "unavailable" },
   thirtyDays: { availability: "unavailable" },
 };
-async function populated() {
+
+test("keeps the chart frame and footer mounted without data", () => {
+  const view = render(<UsageOverview usage={unavailable} />);
+  expect(view.container.querySelector(".usage-plot")).not.toBeNull();
+  expect(view.container.querySelector(".usage-dates")).not.toBeNull();
+  expect(view.container.querySelector(".usage-footer")).not.toBeNull();
+});
+async function usageProps(referenceAt = "2026-09-11T16:25:00Z") {
   const result = await createBrowserSanitizedDesktopStateAdapter(
     "current",
-    () => new Date("2026-09-11T16:25:00Z"),
+    () => new Date(referenceAt),
   ).readSnapshot();
   if (!result.ok) throw new Error("fixture unavailable");
   const state = sanitizedDesktopStateSchema.parse(result.value);
-  return render(
-    <UsageOverview
-      usage={state.combinedUsage}
-      providers={state.providers}
-      history={state.usageHistory}
-    />,
-  );
+  return { usage: state.combinedUsage, providers: state.providers, history: state.usageHistory };
+}
+async function populated() {
+  return render(<UsageOverview {...await usageProps()} />);
 }
 async function select(label: string, value: string) {
   fireEvent.pointerDown(screen.getByRole("button", { name: `Select Usage ${label}` }), {
@@ -81,4 +85,37 @@ test("missing history stays unavailable and indexing does not become a zero", ()
   expect(screen.getByText("Indexing…")).toBeTruthy();
   expect(screen.getByLabelText("Usage unavailable")).toBeTruthy();
   expect(screen.queryByRole("button", { name: /0 tokens/ })).toBeNull();
+});
+
+test("state changes retain the chart frame, controls, and footer", async () => {
+  const current = await usageProps();
+  const view = render(<UsageOverview {...current} />);
+  const plot = view.container.querySelector(".usage-plot");
+  const footer = view.container.querySelector(".usage-footer");
+  const periodControl = screen.getByRole("button", { name: "Select Usage period" });
+  for (const props of [
+    { ...current, usage: unavailable, history: null },
+    { ...current, usage: { ...unavailable, scanStatus: "indexing" as const }, history: null },
+    { ...current, history: null },
+    current,
+  ]) {
+    view.rerender(<UsageOverview {...props} />);
+    expect(view.container.querySelector(".usage-plot")).toBe(plot);
+    expect(view.container.querySelector(".usage-footer")).toBe(footer);
+    expect(screen.getByRole("button", { name: "Select Usage period" })).toBe(periodControl);
+  }
+});
+
+test("refresh keeps focused detail and day rollover removes the old detail", async () => {
+  const current = await usageProps();
+  const view = render(<UsageOverview {...current} />);
+  const column = view.container.querySelector(".usage-column:last-of-type")!;
+  fireEvent.focus(column);
+  const tooltip = screen.getByRole("tooltip");
+  view.rerender(<UsageOverview {...structuredClone(current)} />);
+  expect(screen.getByRole("tooltip")).toBe(tooltip);
+  expect(view.container.querySelector(".usage-column:last-of-type")).toBe(column);
+  view.rerender(<UsageOverview {...await usageProps("2026-09-12T00:15:00Z")} />);
+  expect(screen.queryByRole("tooltip")).toBeNull();
+  expect(view.container.querySelectorAll(".usage-column")).toHaveLength(1);
 });

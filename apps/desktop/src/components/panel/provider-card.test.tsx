@@ -81,13 +81,13 @@ function cachedUsageProvider() {
 }
 
 describe("provider card", () => {
-  test("pulses only the provider row while usage is indexing", () => {
+  test("announces indexing without a loading pulse", () => {
     const markup = renderToStaticMarkup(
       <ProviderCard presentation={unavailableProvider("indexing")} />,
     );
 
     expect(markup).toContain('aria-busy="true"');
-    expect(markup).toContain("animate-pulse motion-reduce:animate-none");
+    expect(markup).not.toContain("animate-pulse");
     expect(markup).toContain("Refreshing Claude…");
   });
 

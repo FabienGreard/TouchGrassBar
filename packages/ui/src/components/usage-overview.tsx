@@ -37,32 +37,12 @@ const dayLabel = (day: string) =>
     timeZone: "UTC",
   });
 
+const pointKey = (point: ChartPoint) => `${point.day}-${point.hour ?? "day"}`;
+
 const pointLabel = (point: ChartPoint) =>
   point.hour === undefined
     ? `${dayLabel(point.day)} · UTC`
     : `${dayLabel(point.day)} · ${String(point.hour).padStart(2, "0")}:00–${String(point.hour + 1).padStart(2, "0")}:00 UTC`;
-
-// Pricing and coverage remain part of the accessible description and point detail.
-function evidence(total: UsageTotal) {
-  if (total.availability === "unavailable") return "Usage not observed";
-  return [
-    total.availability === "stale" ? "Last recorded usage" : "Recorded usage",
-    total.coverage === "partial" ? "Some usage may be missing" : null,
-    total.apiEquivalentCostQuality === "modeled"
-      ? `Cost modeled from ${Math.round(total.apiEquivalentCostCoveragePercent ?? 0)}% priced evidence`
-      : total.apiEquivalentCostQuality === "local-only"
-        ? "Cost from local pricing evidence"
-        : null,
-    total.trendPercent == null
-      ? null
-      : `${total.trendPercent > 0 ? "+" : ""}${Math.round(total.trendPercent * 10) / 10}% from the previous period`,
-    total.apiEquivalentCostUsd == null
-      ? "API equivalent unavailable"
-      : "Estimated value at API rates",
-  ]
-    .filter(Boolean)
-    .join(". ");
-}
 
 function UsageOverview({
   usage,
@@ -117,7 +97,7 @@ function UsageOverview({
           >
             {knownTokens === null ? "—" : tokenFormatter.format(knownTokens)} <small>tokens</small>
           </strong>
-          <span title={evidence(total)}>
+          <span>
             {cost(total) === "—" && scanStatus === "indexing" ? "Indexing…" : cost(total)} API
             equivalent
           </span>
@@ -144,24 +124,20 @@ function UsageOverview({
         </div>
       </div>
       <UsageChart
-        key={`${scope}-${period}-${history?.today ?? "unavailable"}`}
+        key={`${scope}-${period}`}
         points={points}
         hourly={period === "today"}
         history={history}
         providers={included}
         scope={scope}
+        partialHours={period === "today" && selectedHistory?.hourlyMatchesTotal === false}
         emptyLabel={scanStatus === "indexing" ? "Indexing…" : "Usage history is unavailable."}
       />
-      {period === "today" &&
-        selectedHistory &&
-        !selectedHistory.hourlyMatchesTotal &&
-        points.some((p) => tokens(p.total) !== null) && (
-          <p className="usage-history-note">
-            Hourly detail uses local records. Some usage may have no time data.
-          </p>
-        )}
       <div className="usage-footer">
-        <span title="Most used model in the local records for this provider and period">
+        <span
+          className="usage-model"
+          title={`Most used model in the local records for this provider and period: ${knownTokens === null ? "—" : modelName(topModel)}`}
+        >
           Most used model <strong>{knownTokens === null ? "—" : modelName(topModel)}</strong>
         </span>
         {scope === "all" && included.length > 1 && (
@@ -186,6 +162,7 @@ function UsageChart({
   scope,
   emptyLabel,
   hourly,
+  partialHours,
 }: {
   points: ChartPoint[];
   hourly: boolean;
@@ -193,93 +170,99 @@ function UsageChart({
   providers: readonly ProviderPresentation[];
   scope: string;
   emptyLabel: string;
+  partialHours: boolean;
 }) {
-  const [hovered, setHovered] = useState<number | null>(null);
-  const [focused, setFocused] = useState<number | null>(null);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const tooltipId = useId();
-  const active = dismissed ? null : (hovered ?? focused);
-  const point = active === null ? undefined : points[active];
+  const active = dismissed ? -1 : points.findIndex((p) => pointKey(p) === (hovered ?? focused));
+  const point = points[active];
+  const hasData = points.some((p) => tokens(p.total) !== null);
   const peak = Math.max(1, ...points.map((p) => tokens(p.total) ?? 0));
   const step = 10 ** Math.floor(Math.log10(peak));
   const maximum = Math.ceil(peak / step) * step;
-  const providerDay = (provider: ProviderPresentation, point: ChartPoint) => {
+  const providerDay = (provider: ProviderPresentation, record: ChartPoint) => {
     const data = history?.scopes.find((h) => h.provider === provider.provider);
     return (
-      (point.hour === undefined
-        ? data?.days.find((d) => d.day === point.day)
-        : data?.hours.find((h) => h.hour === point.hour)
+      (record.hour === undefined
+        ? data?.days.find((d) => d.day === record.day)
+        : data?.hours.find((h) => h.hour === record.hour)
       )?.total ?? unavailable
     );
   };
-  if (!points.some((p) => tokens(p.total) !== null))
-    return <p className="usage-empty">{emptyLabel}</p>;
   return (
     <div className="usage-chart">
       <div className="usage-plot">
         <div className="usage-axis" aria-hidden="true">
-          <span>{tokenFormatter.format(maximum)}</span>
-          <span>{tokenFormatter.format(maximum / 2)}</span>
-          <span>0</span>
+          <span>{hasData ? tokenFormatter.format(maximum) : "—"}</span>
+          <span>{hasData ? tokenFormatter.format(maximum / 2) : "—"}</span>
+          <span>{hasData ? "0" : "—"}</span>
         </div>
         <div
           className="usage-columns"
-          style={{ gridTemplateColumns: `repeat(${points.length}, 1fr)` }}
+          style={{ gridTemplateColumns: `repeat(${Math.max(1, points.length)}, 1fr)` }}
           onPointerLeave={() => setHovered(null)}
         >
-          {points.map((p, i) => {
-            const value = tokens(p.total);
-            return (
-              <button
-                key={`${p.day}-${p.hour ?? "day"}`}
-                type="button"
-                className="usage-column"
-                aria-label={`${pointLabel(p)}: ${value === null ? "not observed" : `${value.toLocaleString("en")} tokens`}`}
-                aria-describedby={active === i ? tooltipId : undefined}
-                data-active={active === i}
-                onPointerEnter={() => {
-                  setHovered(i);
-                  setDismissed(false);
-                }}
-                onFocus={() => {
-                  setFocused(i);
-                  setDismissed(false);
-                }}
-                onBlur={() => setFocused(null)}
-                onClick={() => {
-                  setFocused(i);
-                  setDismissed(false);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setDismissed(true);
-                    event.stopPropagation();
-                  }
-                }}
-              >
-                {value === null ? (
-                  <span className="usage-missing">—</span>
-                ) : (
-                  <span className="usage-stack" style={{ height: `${(value / maximum) * 100}%` }}>
-                    {scope !== "all" || providers.length === 0 ? (
-                      <span data-provider={scope} style={{ height: "100%" }} />
-                    ) : (
-                      providers.map((provider) => (
-                        <span
-                          key={provider.provider}
-                          data-provider={provider.provider}
-                          style={{
-                            height: `${value === 0 ? 0 : ((tokens(providerDay(provider, p)) ?? 0) / value) * 100}%`,
-                          }}
-                        />
-                      ))
-                    )}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          {point && active !== null && (
+          {!hasData && (
+            <p className="usage-empty" role="status">
+              {emptyLabel}
+            </p>
+          )}
+          {hasData &&
+            points.map((p, i) => {
+              const value = tokens(p.total);
+              return (
+                <button
+                  key={`${p.day}-${p.hour ?? "day"}`}
+                  type="button"
+                  className="usage-column"
+                  aria-label={`${pointLabel(p)}: ${value === null ? "not observed" : `${value.toLocaleString("en")} tokens`}`}
+                  aria-describedby={active === i ? tooltipId : undefined}
+                  data-active={active === i}
+                  onPointerEnter={() => {
+                    setHovered(pointKey(p));
+                    setDismissed(false);
+                  }}
+                  onFocus={() => {
+                    setFocused(pointKey(p));
+                    setDismissed(false);
+                  }}
+                  onBlur={() => setFocused(null)}
+                  onClick={() => {
+                    setFocused(pointKey(p));
+                    setDismissed(false);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setDismissed(true);
+                      event.stopPropagation();
+                    }
+                  }}
+                >
+                  {value === null ? (
+                    <span className="usage-missing">—</span>
+                  ) : (
+                    <span className="usage-stack" style={{ height: `${(value / maximum) * 100}%` }}>
+                      {scope !== "all" || providers.length === 0 ? (
+                        <span data-provider={scope} style={{ height: "100%" }} />
+                      ) : (
+                        providers.map((provider) => (
+                          <span
+                            key={provider.provider}
+                            data-provider={provider.provider}
+                            style={{
+                              height: `${value === 0 ? 0 : ((tokens(providerDay(provider, p)) ?? 0) / value) * 100}%`,
+                            }}
+                          />
+                        ))
+                      )}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          {hasData && point && (
             <div
               id={tooltipId}
               role="tooltip"
@@ -316,14 +299,18 @@ function UsageChart({
                     </div>
                   );
                 })}
-              <small className="usage-evidence">{evidence(point.total)}</small>
             </div>
           )}
         </div>
       </div>
       <div className="usage-dates">
-        <span>{hourly ? "00:00 UTC" : `${dayLabel(points[0]!.day)} · UTC`}</span>
-        <span>{hourly ? "Now" : dayLabel(points[points.length - 1]!.day)}</span>
+        <span>{hourly ? "00:00 UTC" : points[0] ? `${dayLabel(points[0].day)} · UTC` : "—"}</span>
+        {partialHours && hasData && (
+          <span title="Hourly detail uses local records. Some usage may have no time data.">
+            Some hours unavailable
+          </span>
+        )}
+        <span>{hourly ? "Now" : points.at(-1) ? dayLabel(points.at(-1)!.day) : "—"}</span>
       </div>
     </div>
   );

@@ -144,7 +144,7 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
       aria-busy={loading || undefined}
       aria-labelledby={`${provider.provider}-heading`}
       className={`border-b border-pearl-line bg-provider-row px-4 py-[15px] contrast-more:border-pearl-ink contrast-more:bg-pearl-highlight ${
-        loading ? "pointer-events-none animate-pulse motion-reduce:animate-none" : ""
+        loading ? "pointer-events-none" : ""
       }`}
       data-provider-availability={provider.availability}
       data-provider-presence={presentation.presence}
@@ -177,15 +177,17 @@ function ProviderCard({ presentation, referenceTime, timeZone }: ProviderCardPro
           value={percentage}
         />
       </div>
-      {secondaryLanes.map((lane) => (
-        <ProviderQuotaLane
-          key={lane.label}
-          lane={lane}
-          provider={provider.provider}
-          referenceTime={referenceTime}
-          timeZone={timeZone}
-        />
-      ))}
+      <div className="flow-root min-h-[31.5px]">
+        {secondaryLanes.map((lane) => (
+          <ProviderQuotaLane
+            key={lane.label}
+            lane={lane}
+            provider={provider.provider}
+            referenceTime={referenceTime}
+            timeZone={timeZone}
+          />
+        ))}
+      </div>
     </section>
   );
 }

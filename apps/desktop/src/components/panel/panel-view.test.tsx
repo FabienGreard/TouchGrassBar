@@ -128,7 +128,7 @@ describe("panel states", () => {
     expect(markup).toContain("w-[402px]");
   });
 
-  test("ships contrast and motion adaptations", () => {
+  test("keeps contrast adaptations and a static loading layout", () => {
     const markup = renderToStaticMarkup(
       <PanelView
         error={false}
@@ -152,7 +152,7 @@ describe("panel states", () => {
     expect(markup.match(/data-slot="quota-progress"/g)).toHaveLength(2);
     expect(markup).not.toContain('data-slot="skeleton"');
     expect(markup).toContain("contrast-more:border-pearl-ink");
-    expect(markup).toContain("animate-pulse motion-reduce:animate-none");
+    expect(markup).not.toContain("animate-pulse");
   });
 
   test("does not expose internal snapshot diagnostics", () => {
@@ -562,8 +562,8 @@ describe("panel states", () => {
 
     expect(markup).toContain('aria-label="2,000,000 tokens"');
     expect(markup).toContain("≈ $6.25");
-    expect(markup).toContain("Some usage may be missing");
-    expect(markup).toContain("Cost from local pricing evidence");
+    expect(markup).not.toContain("Some usage may be missing");
+    expect(markup).not.toContain("Cost from local pricing evidence");
     expect(markup).not.toContain("≈ $38.61");
   });
 
@@ -647,7 +647,7 @@ describe("panel states", () => {
     );
 
     expect(markup).not.toContain("Indexing…");
-    expect(markup).toContain("API equivalent unavailable");
+    expect(markup).toContain("— API equivalent");
     expect(markup).toContain("14.8M");
   });
 

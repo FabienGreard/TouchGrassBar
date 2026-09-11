@@ -34,6 +34,7 @@
   margin-top: 3px;
   font-size: 9px;
   color: var(--color-pearl-muted);
+  white-space: nowrap;
 }
 .usage-plot {
   height: 80px;
@@ -42,6 +43,7 @@
 }
 .usage-axis {
   width: 24px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -114,10 +116,6 @@
   font-size: 8px;
   color: var(--color-pearl-muted);
 }
-.usage-single-date {
-  width: 100%;
-  text-align: center;
-}
 .usage-footer {
   display: flex;
   justify-content: space-between;
@@ -132,10 +130,17 @@
   font-weight: 500;
   margin-left: 5px;
 }
+.usage-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .usage-legend {
   display: flex;
   gap: 8px;
   font-size: 8px;
+  flex-shrink: 0;
 }
 .usage-legend > span {
   display: flex;
@@ -150,7 +155,11 @@
   margin-right: 3px;
 }
 .usage-empty {
-  padding: 28px 0;
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: grid;
+  place-items: center;
   text-align: center;
   color: var(--color-pearl-muted);
 }
@@ -209,12 +218,7 @@
 .usage-tooltip-row b {
   font-weight: 500;
 }
-.usage-evidence {
-  display: block;
-  margin-top: 7px;
-  font-size: 8px;
-  color: var(--color-pearl-muted);
-}
+
 @media (forced-colors: active) {
   .usage-stack {
     border: 1px solid CanvasText;
@@ -222,10 +226,4 @@
   .usage-tooltip {
     border: 1px solid CanvasText;
   }
-}
-
-.usage-history-note {
-  margin-top: 7px;
-  font-size: 8px;
-  color: var(--color-pearl-muted);
 }
