@@ -1,3 +1,4 @@
+import { usePanelWindowSize } from "@/components/panel/use-panel-window-size";
 import { invoke } from "@tauri-apps/api/core";
 import { focusManager, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -31,6 +32,7 @@ import { createUpdateDelivery } from "@/native-state/update-delivery";
 
 type PanelPresentation = Pick<
   PanelViewProps,
+  | "nativeGlass"
   | "currentProfile"
   | "doomerboardLoading"
   | "doomerboardRows"
@@ -319,23 +321,7 @@ function PanelScreen({
     };
   }, [hasNativeRuntime]);
 
-  useEffect(() => {
-    if (!hasNativeRuntime || typeof ResizeObserver === "undefined") return;
-
-    const panel = document.querySelector<HTMLElement>('[data-slot="panel-shell"]');
-    if (!panel) return;
-
-    let lastHeight = 0;
-    const observer = new ResizeObserver(() => {
-      const height = Math.ceil(panel.getBoundingClientRect().height);
-      if (height === lastHeight) return;
-      lastHeight = height;
-      void invoke("resize_panel", { height });
-    });
-    observer.observe(panel);
-
-    return () => observer.disconnect();
-  }, [hasNativeRuntime]);
+  usePanelWindowSize(hasNativeRuntime);
 
   const nativeProfile =
     deliveryView.snapshot?.profile?.status === "ready"

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { CodingProvider, UpdateState } from "@touchgrass/contracts";
 import type { DoomerboardRow } from "@touchgrass/ui";
 
-import { App } from "@/App";
+import { usePanelWindowSize } from "@/components/panel/use-panel-window-size";
+import { App, type DesktopSurface } from "@/App";
 import "@/dev/dev-preview.css";
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
 import { DevPreviewSwitcher } from "@/dev/dev-preview-switcher";
@@ -13,7 +14,9 @@ import { currentProfile, currentDoomerboardRows, myTokenmaxxerRows } from "@/dev
 import { resolveDevPreviewScenario, type UpdatePreviewStatus } from "@/dev/preview-scenario";
 import { createSanitizedDesktopStateDelivery } from "@/native-state/sanitized-desktop-state-delivery";
 
-document.documentElement.dataset.desktopPreview = "true";
+if (!("__TAURI_INTERNALS__" in window)) {
+  document.documentElement.dataset.desktopPreview = "true";
+}
 
 const previewCurrentVersion = "1.3.2";
 const previewUpdateVersion = "1.4.0";
@@ -84,9 +87,16 @@ function persistProviderEnablement(providerEnablement: ProviderEnablement) {
   }
 }
 
-function DevPreviewApp() {
+function DevPreviewApp({ nativeSurface }: { nativeSurface?: DesktopSurface } = {}) {
+  usePanelWindowSize(nativeSurface === "panel");
   const surfaceContainerRef = useRef<HTMLDivElement>(null);
-  const [scenario] = useState(() => resolveDevPreviewScenario(window.location.search));
+  const [scenario] = useState(() =>
+    resolveDevPreviewScenario(
+      nativeSurface
+        ? `?fixture=current&syncStatus=synced&window=${nativeSurface}`
+        : window.location.search,
+    ),
+  );
   const [devInstance] = useState(currentDevInstance);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
@@ -126,6 +136,7 @@ function DevPreviewApp() {
     scenario.fixture === "current" || scenario.fixture === "update";
   const updateState = previewUpdateState(updateStatus, autoUpdates);
   const panelPresentation = {
+    nativeGlass: nativeSurface === "panel",
     doomerboardLoading: scenario.doomerboardStatus === "loading",
     onUpdate: () => setUpdateStatus("downloading"),
     updateState,
@@ -255,29 +266,31 @@ function DevPreviewApp() {
         open={recoveryOpen}
         portalContainer={recoveryPortalContainer}
       />
-      <DevPreviewSwitcher
-        activeDoomerboardStatus={scenario.doomerboardStatus}
-        activeFixture={scenario.fixture}
-        activeSurface={scenario.surface}
-        activeSyncStatus={scenario.syncStatus}
-        activeUpdateStatus={updateStatus}
-        devInstance={devInstance}
-        onboardingCodexPreviewState={
-          scenario.surface === "onboarding" ? scenario.onboarding.codexState : undefined
-        }
-        onboardingProviderPreviewState={
-          scenario.surface === "onboarding" ? scenario.onboarding.providerState : undefined
-        }
-        onboardingStep={
-          scenario.surface === "onboarding" ? scenario.onboarding.initialStep : undefined
-        }
-        settingsProviderPreviewState={
-          scenario.surface === "settings" ? scenario.settingsProviderState : undefined
-        }
-        settingsProviderEnabled={
-          scenario.surface === "settings" ? providerEnabled.claude : undefined
-        }
-      />
+      {!nativeSurface && (
+        <DevPreviewSwitcher
+          activeDoomerboardStatus={scenario.doomerboardStatus}
+          activeFixture={scenario.fixture}
+          activeSurface={scenario.surface}
+          activeSyncStatus={scenario.syncStatus}
+          activeUpdateStatus={updateStatus}
+          devInstance={devInstance}
+          onboardingCodexPreviewState={
+            scenario.surface === "onboarding" ? scenario.onboarding.codexState : undefined
+          }
+          onboardingProviderPreviewState={
+            scenario.surface === "onboarding" ? scenario.onboarding.providerState : undefined
+          }
+          onboardingStep={
+            scenario.surface === "onboarding" ? scenario.onboarding.initialStep : undefined
+          }
+          settingsProviderPreviewState={
+            scenario.surface === "settings" ? scenario.settingsProviderState : undefined
+          }
+          settingsProviderEnabled={
+            scenario.surface === "settings" ? providerEnabled.claude : undefined
+          }
+        />
+      )}
     </>
   );
 }

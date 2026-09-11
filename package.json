@@ -16,6 +16,7 @@
     "dev": "bun --env-file=.env.local scripts/run-dev.ts all",
     "dev:backend": "bun --env-file=.env.local scripts/run-dev.ts backend",
     "dev:desktop": "bun --env-file=.env.local scripts/run-dev.ts desktop",
+    "dev:desktop:fixture": "bun --env-file=.env.local scripts/run-desktop-dev.ts --fixture",
     "dev:landing": "bun --env-file=.env.local scripts/run-dev.ts landing",
     "dev:ui": "bun --env-file=.env.local scripts/run-dev.ts ui",
     "debug:claude-quota": "bun scripts/debug-claude-quota.ts",

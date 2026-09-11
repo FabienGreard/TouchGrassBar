@@ -58,7 +58,7 @@ const SETTINGS_LABEL: &str = "settings";
 const ONBOARDING_LABEL: &str = "onboarding";
 const PANEL_WIDTH: f64 = 402.0;
 const MIN_PANEL_HEIGHT: f64 = 320.0;
-const MAX_PANEL_HEIGHT: f64 = 720.0;
+const MAX_PANEL_HEIGHT: f64 = 800.0;
 
 fn production_native_core(
     database: Option<&database::PreparedDatabase>,
@@ -611,12 +611,29 @@ fn tray_foreground_destination(bootstrap_required: bool) -> TrayForegroundDestin
     }
 }
 
+#[cfg(debug_assertions)]
+struct DevelopmentPanelFixture;
+
+fn panel_fixture_active(app: &AppHandle) -> bool {
+    #[cfg(debug_assertions)]
+    {
+        app.try_state::<DevelopmentPanelFixture>().is_some()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
+        false
+    }
+}
+
 fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
-    let destination = app
-        .try_state::<DesktopLifecycle>()
-        .map_or(TrayForegroundDestination::Panel, |lifecycle| {
-            tray_foreground_destination(lifecycle.should_show_bootstrap())
-        });
+    let destination =
+        app.try_state::<DesktopLifecycle>()
+            .map_or(TrayForegroundDestination::Panel, |lifecycle| {
+                tray_foreground_destination(
+                    lifecycle.should_show_bootstrap() && !panel_fixture_active(app),
+                )
+            });
     match destination {
         TrayForegroundDestination::Onboarding => {
             show_onboarding(app)?;
@@ -646,11 +663,13 @@ fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
 }
 
 fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
-    let destination = app
-        .try_state::<DesktopLifecycle>()
-        .map_or(TrayForegroundDestination::Panel, |lifecycle| {
-            tray_foreground_destination(lifecycle.should_show_bootstrap())
-        });
+    let destination =
+        app.try_state::<DesktopLifecycle>()
+            .map_or(TrayForegroundDestination::Panel, |lifecycle| {
+                tray_foreground_destination(
+                    lifecycle.should_show_bootstrap() && !panel_fixture_active(app),
+                )
+            });
     if destination == TrayForegroundDestination::Panel
         && let Some(panel) = app.get_webview_window(PANEL_LABEL)
         && panel.is_visible()?
@@ -753,8 +772,17 @@ fn should_show_bootstrap_on_start(bootstrap_required: bool, launched_in_backgrou
 fn resize_panel(window: WebviewWindow, height: f64) -> Result<(), String> {
     require_panel(&window)?;
     let bounded_height = bounded_panel_height(height).map_err(str::to_owned)?;
+    let available_height = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| f64::from(monitor.work_area().size.height) / monitor.scale_factor() - 16.0)
+        .unwrap_or(MAX_PANEL_HEIGHT);
     window
-        .set_size(LogicalSize::new(PANEL_WIDTH, bounded_height))
+        .set_size(LogicalSize::new(
+            PANEL_WIDTH,
+            bounded_height.min(available_height),
+        ))
         .map_err(|_| "panel unavailable".to_owned())
 }
 
@@ -1254,6 +1282,19 @@ pub fn run() {
                 return;
             }
         };
+    #[cfg(debug_assertions)]
+    let panel_fixture = env::var("TOUCHGRASS_PANEL_FIXTURE").unwrap_or_default();
+    #[cfg(debug_assertions)]
+    if !panel_fixture.is_empty()
+        && (panel_fixture != "current"
+            || development_instance.is_none()
+            || physical_menu_bar_fixture.is_none())
+    {
+        eprintln!(
+            "Panel fixtures require an isolated development instance and a no-I/O menu fixture."
+        );
+        return;
+    }
     let builder = tauri::Builder::default();
     #[cfg(debug_assertions)]
     let builder = if development_instance.is_none() {
@@ -1409,6 +1450,10 @@ pub fn run() {
                 lifecycle.should_show_bootstrap(),
                 launched_in_background,
             );
+            #[cfg(debug_assertions)]
+            if panel_fixture == "current" {
+                app.manage(DevelopmentPanelFixture);
+            }
             app.manage(lifecycle.clone());
             app.manage(core.clone());
             app.manage(PanelActionState::default());
@@ -1588,14 +1633,15 @@ pub fn run() {
                     }
                 });
             #[cfg(debug_assertions)]
-            let tray_builder = if physical_menu_bar_fixture_active {
-                tray_builder
-            } else {
-                match development_instance.as_ref() {
-                    Some(instance) => tray_builder.title(instance.tag()),
-                    None => tray_builder,
-                }
-            };
+            let tray_builder =
+                if physical_menu_bar_fixture_active && !panel_fixture_active(app.handle()) {
+                    tray_builder
+                } else {
+                    match development_instance.as_ref() {
+                        Some(instance) => tray_builder.title(instance.tag()),
+                        None => tray_builder,
+                    }
+                };
             let tray = tray_builder.build(app)?;
             let mut menu_bar_delivery =
                 MenuBarDelivery::install(initial_menu_bar, |visible| apply_to_tray(&tray, visible))
@@ -1619,7 +1665,13 @@ pub fn run() {
                     }
                 })?;
 
-            if show_bootstrap {
+            if panel_fixture_active(app.handle()) {
+                if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
+                    panel.center()?;
+                    panel.show()?;
+                    panel.set_focus()?;
+                }
+            } else if show_bootstrap {
                 show_onboarding(app.handle())?;
             }
 
@@ -1642,7 +1694,9 @@ pub fn run() {
                     usage_sync.request();
                 }
             }
-            tauri::WindowEvent::Focused(false) if window.label() == PANEL_LABEL => {
+            tauri::WindowEvent::Focused(false)
+                if window.label() == PANEL_LABEL && !panel_fixture_active(window.app_handle()) =>
+            {
                 let _ = window.hide();
             }
             tauri::WindowEvent::Focused(false) if window.label() == SETTINGS_LABEL => {
@@ -1967,6 +2021,7 @@ mod tests {
     #[test]
     fn clamps_rendered_panel_height_to_safe_native_bounds() {
         assert_eq!(bounded_panel_height(689.2), Ok(690.0));
+        assert_eq!(bounded_panel_height(764.75), Ok(765.0));
         assert_eq!(bounded_panel_height(200.0), Ok(MIN_PANEL_HEIGHT));
         assert_eq!(bounded_panel_height(900.0), Ok(MAX_PANEL_HEIGHT));
         assert_eq!(bounded_panel_height(f64::NAN), Err("invalid panel height"));

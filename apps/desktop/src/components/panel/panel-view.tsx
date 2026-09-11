@@ -132,53 +132,55 @@ function PanelView({
 
   return (
     <>
-      <PanelShell
-        data-glass={nativeGlass ? "true" : "false"}
-        glass={nativeGlass}
-        ref={panelContainerRef}
-      >
-        <PanelHeader
-          error={error}
-          onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
-          onRefresh={onRefresh}
-          onSettings={onSettings}
-          onUpdate={onUpdate}
-          refreshing={refreshing}
-          state={state}
-          updateAction={updateAction}
-        />
+      <div data-slot="panel-viewport">
+        <PanelShell
+          data-glass={nativeGlass ? "true" : "false"}
+          glass={nativeGlass}
+          ref={panelContainerRef}
+        >
+          <PanelHeader
+            error={error}
+            onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
+            onRefresh={onRefresh}
+            onSettings={onSettings}
+            onUpdate={onUpdate}
+            refreshing={refreshing}
+            state={state}
+            updateAction={updateAction}
+          />
 
-        {!state ? (
-          <LoadingPanel loading={!error} />
-        ) : (
-          <>
-            <div>
-              {visibleProviders.map((provider) => (
-                <ProviderCard key={provider.provider} presentation={provider} />
-              ))}
-            </div>
-            <UsageOverview
-              history={state.usageHistory}
-              providers={state.providers}
-              topModelUsage={state.topModelUsage}
-              usage={state.combinedUsage}
-            />
-            <Doomerboard
-              currentProfile={currentProfile}
-              key="doomerboard"
-              loading={doomerboardLoading}
-              onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
-              onRemoveFriend={onRemoveFriend}
-              onSelectionChange={onDoomerboardSelectionChange}
-              onSelectionIntent={onDoomerboardSelectionIntent}
-              providers={visibleProviders}
-              rows={doomerboardRows}
-              selection={doomerboardSelection}
-              tokenmaxxerRows={tokenmaxxerRows}
-            />
-          </>
-        )}
-      </PanelShell>
+          {!state ? (
+            <LoadingPanel loading={!error} />
+          ) : (
+            <>
+              <div>
+                {visibleProviders.map((provider) => (
+                  <ProviderCard key={provider.provider} presentation={provider} />
+                ))}
+              </div>
+              <UsageOverview
+                history={state.usageHistory}
+                providers={state.providers}
+                topModelUsage={state.topModelUsage}
+                usage={state.combinedUsage}
+              />
+              <Doomerboard
+                currentProfile={currentProfile}
+                key="doomerboard"
+                loading={doomerboardLoading}
+                onAddTokenmaxxer={() => onAddTokenmaxxerOpenChange(true)}
+                onRemoveFriend={onRemoveFriend}
+                onSelectionChange={onDoomerboardSelectionChange}
+                onSelectionIntent={onDoomerboardSelectionIntent}
+                providers={visibleProviders}
+                rows={doomerboardRows}
+                selection={doomerboardSelection}
+                tokenmaxxerRows={tokenmaxxerRows}
+              />
+            </>
+          )}
+        </PanelShell>
+      </div>
       <AddTokenmaxxerDialog
         failure={addTokenmaxxerFailure}
         key={addTokenmaxxerOpen ? "open" : "closed"}

@@ -25,3 +25,15 @@ html[data-native-panel="true"] #root {
   overflow: hidden;
   border-radius: var(--radius-panel);
 }
+
+/* Keep the intrinsic panel height available to the native resize observer. */
+[data-slot="panel-viewport"] {
+  max-height: min(800px, 100dvh);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  border-radius: var(--radius-panel);
+  scrollbar-width: none;
+}
+[data-slot="panel-viewport"]::-webkit-scrollbar {
+  display: none;
+}

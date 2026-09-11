@@ -48,7 +48,18 @@ function renderNativeSurface(application: ReactNode, surface: DesktopSurface) {
   );
 }
 
-if (hasNativeRuntime) {
+if (
+  hasNativeRuntime &&
+  import.meta.env.DEV &&
+  import.meta.env.VITE_TOUCHGRASS_PANEL_FIXTURE === "current"
+) {
+  const label = getCurrentWindow().label;
+  const surface: DesktopSurface = label === "settings" || label === "onboarding" ? label : "panel";
+  if (surface === "panel") document.documentElement.dataset.nativePanel = "true";
+  void import("@/dev/dev-preview-app").then(({ DevPreviewApp }) => {
+    render(<DevPreviewApp nativeSurface={surface} />);
+  });
+} else if (hasNativeRuntime) {
   const label = getCurrentWindow().label;
   const surface: DesktopSurface = label === "settings" || label === "onboarding" ? label : "panel";
 

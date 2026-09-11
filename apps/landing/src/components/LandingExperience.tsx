@@ -48,7 +48,7 @@ const GLOBAL_ROWS: DoomerboardRow[] = [
   {
     apiEquivalentCost: "≈ $151.84",
     displayName: "nora",
-    note: "PROMPT ENJOYER",
+    note: "YOU",
     rank: 2,
     tokenScore: "12.8M",
     touchGrassId: "#TG-NULL77",

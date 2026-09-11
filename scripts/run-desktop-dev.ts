@@ -333,9 +333,11 @@ async function main() {
   const argumentsList = process.argv.slice(2);
   const argumentsSet = new Set(argumentsList);
   const bundle = argumentsSet.has("--bundle");
+  const fixture = argumentsSet.has("--fixture");
+  if (bundle && fixture) throw new Error("Panel fixtures are available only in development.");
   if (
     argumentsSet.size !== argumentsList.length ||
-    [...argumentsSet].some((argument) => argument !== "--bundle")
+    [...argumentsSet].some((argument) => argument !== "--bundle" && argument !== "--fixture")
   ) {
     throw new Error(`Unknown argument(s): ${argumentsList.join(", ")}`);
   }
@@ -361,6 +363,9 @@ async function main() {
   const appBundlePath = join(generatedConfigDirectory, "TouchGrassBar Dev.app");
   const environment = {
     ...Bun.env,
+    TOUCHGRASS_PANEL_FIXTURE: fixture ? "current" : "",
+    VITE_TOUCHGRASS_PANEL_FIXTURE: fixture ? "current" : "",
+    ...(fixture ? { TOUCHGRASS_MENU_BAR_FIXTURE: "current-34" } : {}),
     CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: signedRunnerPath,
     TOUCHGRASS_DEV_APP_BUNDLE_PATH: appBundlePath,
     TOUCHGRASS_DEV_BUNDLE_IDENTIFIER: instance.bundleIdentifier,

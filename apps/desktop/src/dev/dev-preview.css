@@ -13,3 +13,8 @@ html[data-desktop-preview="true"] [data-slot="native-window"] {
   height: 580px;
   min-height: 580px;
 }
+
+html[data-desktop-preview="true"] [data-slot="panel-viewport"] {
+  max-height: min(800px, calc(100dvh - 48px));
+  box-shadow: var(--shadow-panel-glass);
+}
