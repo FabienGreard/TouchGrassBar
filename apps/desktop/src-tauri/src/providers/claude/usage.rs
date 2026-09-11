@@ -17,7 +17,8 @@ use crate::daily_usage_aggregate::{
     DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_daily_usage_aggregates,
     calculate_usage_periods, checked_sum, period_days,
 };
-use crate::providers::{BoundedUnknownFields, ProviderCorrection};
+use crate::diagnostics::{ParserReason, Provider};
+use crate::providers::{BoundedUnknownFields, ProviderCorrection, failure_capture};
 use crate::sanitized::{
     ApiEquivalentCostQuality, TopModelUsage, UsageCoverage, UsagePeriods, UsageScanStatus,
     UsageTotal,
@@ -130,20 +131,46 @@ enum TranscriptLineOutcome {
     Usage(Box<NormalizedMessage>),
 }
 
-fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLineOutcome {
-    let Ok(header) = serde_json::from_slice::<RawTranscriptHeader>(_line) else {
-        return TranscriptLineOutcome::Invalid;
+fn parser_failure(reason: ParserReason) {
+    failure_capture::parser(Provider::Claude, TRANSCRIPT_PARSER_VERSION, reason);
+}
+
+fn parse_transcript_line(line: &[u8], dedupe_salt: &[u8; 32]) -> TranscriptLineOutcome {
+    let outcome = parse_transcript_line_inner(line, dedupe_salt);
+    match &outcome {
+        TranscriptLineOutcome::Usage(_) => failure_capture::record_accepted(),
+        TranscriptLineOutcome::Invalid | TranscriptLineOutcome::FrameOnly(_) => {
+            failure_capture::record_rejected()
+        }
+        TranscriptLineOutcome::Ignored => {}
+    }
+    outcome
+}
+
+fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLineOutcome {
+    let header = match serde_json::from_slice::<RawTranscriptHeader>(_line) {
+        Ok(header) => header,
+        Err(error) => {
+            parser_failure(if error.is_syntax() || error.is_eof() {
+                ParserReason::InvalidJson
+            } else {
+                ParserReason::InvalidUsageShape
+            });
+            return TranscriptLineOutcome::Invalid;
+        }
     };
     if header.record_type != "assistant" {
         return TranscriptLineOutcome::Ignored;
     }
     let Ok(envelope) = serde_json::from_slice::<RawAssistantEnvelope>(_line) else {
+        parser_failure(ParserReason::InvalidUsageShape);
         return TranscriptLineOutcome::Invalid;
     };
     // An unreviewed Claude Code version is not proof that a record is invalid.
     // Discarding it would report zero tokens for work that happened, so the
     // reviewed set only withholds `complete` below.
     let reviewed_version = reviewed_claude_code_version(&envelope.version);
+    failure_capture::source_version(&envelope.version, reviewed_version);
     if envelope.record_type != "assistant"
         || !valid_provider_identifier(&envelope.uuid)
         || envelope.supersedes.len() > MAX_SUPERSEDED_FRAMES
@@ -152,9 +179,11 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
             .iter()
             .any(|value| !valid_provider_identifier(value))
     {
+        parser_failure(ParserReason::InvalidUsageShape);
         return TranscriptLineOutcome::Invalid;
     }
     let Ok(observed_at) = OffsetDateTime::parse(&envelope.timestamp, &Rfc3339) else {
+        parser_failure(ParserReason::InvalidUsageShape);
         return TranscriptLineOutcome::Invalid;
     };
     let frame = NormalizedFrame {
@@ -168,6 +197,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
         observed_at,
     };
     let Ok(line) = serde_json::from_slice::<RawAssistantLine>(_line) else {
+        parser_failure(ParserReason::InvalidUsageShape);
         return TranscriptLineOutcome::FrameOnly(frame);
     };
     if line.record_type != "assistant"
@@ -175,12 +205,14 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
         || line.message.role != "assistant"
         || !valid_provider_identifier(&line.message.id)
     {
+        parser_failure(ParserReason::InvalidUsageShape);
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     if line.message.model == "<synthetic>" && is_reviewed_zero_usage_api_error(_line) {
         return TranscriptLineOutcome::Ignored;
     }
     if !valid_model_name(&line.message.model) {
+        parser_failure(ParserReason::InvalidUsageShape);
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     let cache_creation_known = line.message.usage.cache_creation_input_tokens.is_some();
@@ -216,6 +248,48 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
             .server_tool_use
             .as_ref()
             .is_none_or(|tools| tools.unknown.is_empty());
+    let shape_failure = if !line.message.usage.unknown.is_empty()
+        || line
+            .message
+            .usage
+            .cache_creation
+            .as_ref()
+            .is_some_and(|cache| !cache.unknown.is_empty())
+        || line
+            .message
+            .usage
+            .server_tool_use
+            .as_ref()
+            .is_some_and(|tools| !tools.unknown.is_empty())
+    {
+        Some(ParserReason::UnknownUsageFields)
+    } else if line.message.usage.fallback_credit.is_some() {
+        Some(ParserReason::FallbackCreditUnsupported)
+    } else if !line.aborted
+        && line
+            .message
+            .usage
+            .iterations
+            .as_ref()
+            .is_some_and(|iterations| !iterations.matches(&line.message.usage))
+    {
+        Some(ParserReason::IterationShapeMismatch)
+    } else if line
+        .message
+        .usage
+        .output_tokens_details
+        .as_ref()
+        .is_some_and(|details| !details.matches(line.message.usage.output_tokens))
+    {
+        Some(ParserReason::ThinkingCounterInvalid)
+    } else if !cache_creation_known || !cache_read_known {
+        Some(ParserReason::MissingCacheCounters)
+    } else {
+        None
+    };
+    if let Some(reason) = shape_failure {
+        parser_failure(reason);
+    }
     // A reviewed version whose shape drifted still reports counters this parser
     // understands, so its tokens count and the day becomes partial. A version
     // that is unreviewed *and* carries an unreviewed shape has no checked
@@ -242,6 +316,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
             .and_then(|cache| cache.ephemeral_1h_input_tokens),
     };
     if usage.observed_tokens().is_none() {
+        parser_failure(ParserReason::InvalidCounter);
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     let cache_breakdown = usage
@@ -250,6 +325,7 @@ fn parse_transcript_line(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLin
         .and_then(|(five_minutes, one_hour)| five_minutes.checked_add(one_hour));
     let cache_breakdown_matches = cache_breakdown == Some(usage.cache_creation_input);
     if cache_breakdown.is_some() && !cache_breakdown_matches {
+        parser_failure(ParserReason::CacheSplitMismatch);
         usage.cache_creation_5m_input = None;
         usage.cache_creation_1h_input = None;
     }
@@ -1525,13 +1601,16 @@ fn collect_transcript_files(
         if depth > 32 || files.len() >= 100_000 || started.elapsed().as_millis() >= max_millis {
             return Err(());
         }
-        let entries = fs::read_dir(directory).map_err(|_| ())?;
+        let entries =
+            fs::read_dir(directory).map_err(|_| parser_failure(ParserReason::ReadFailed))?;
         for entry in entries {
             if started.elapsed().as_millis() >= max_millis {
                 return Err(());
             }
-            let entry = entry.map_err(|_| ())?;
-            let file_type = entry.file_type().map_err(|_| ())?;
+            let entry = entry.map_err(|_| parser_failure(ParserReason::ReadFailed))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
             if file_type.is_symlink() {
                 continue;
             }
@@ -1609,14 +1688,20 @@ fn store_frame(transaction: &rusqlite::Transaction<'_>, frame: &NormalizedFrame)
 }
 
 fn store_frame_only(connection: &Connection, frame: NormalizedFrame) -> Result<(), ()> {
-    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let transaction = connection.unchecked_transaction().map_err(|_| {
+        failure_capture::database_connection_failure(connection, "claude-usage-index")
+    })?;
     store_frame(&transaction, &frame)?;
-    transaction.commit().map_err(|_| ())
+    transaction
+        .commit()
+        .map_err(|_| failure_capture::database_connection_failure(connection, "claude-usage-index"))
 }
 
 fn store_message(connection: &Connection, message: NormalizedMessage) -> Result<(), ()> {
     let observed_tokens = message.usage.observed_tokens().ok_or(())?;
-    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let transaction = connection.unchecked_transaction().map_err(|_| {
+        failure_capture::database_connection_failure(connection, "claude-usage-index")
+    })?;
     store_frame(
         &transaction,
         &NormalizedFrame {
@@ -1667,7 +1752,9 @@ fn store_message(connection: &Connection, message: NormalizedMessage) -> Result<
                 Option::<String>::None,
                 message.message_key,
                 message.day.to_string(),
-                message.observed_at.format(&Rfc3339).map_err(|_| ())?,
+                message.observed_at.format(&Rfc3339).map_err(|_| {
+                    failure_capture::database_connection_failure(connection, "claude-usage-index")
+                })?,
                 message.model,
                 to_i64(message.usage.input)?,
                 to_i64(message.usage.cache_creation_input)?,
@@ -1703,8 +1790,12 @@ fn store_message(connection: &Connection, message: NormalizedMessage) -> Result<
                 TRANSCRIPT_PARSER_VERSION,
             ],
         )
-        .map_err(|_| ())?;
-    transaction.commit().map_err(|_| ())
+        .map_err(|_| {
+            failure_capture::database_connection_failure(connection, "claude-usage-index")
+        })?;
+    transaction
+        .commit()
+        .map_err(|_| failure_capture::database_connection_failure(connection, "claude-usage-index"))
 }
 
 struct FileScanContext<'a> {
@@ -1722,8 +1813,10 @@ fn index_file(
     stored: Option<&StoredFileSummary>,
     remaining_bytes: &mut u64,
 ) -> Result<bool, ()> {
-    let metadata = fs::metadata(path).map_err(|_| ())?;
+    failure_capture::file_seen();
+    let metadata = fs::metadata(path).map_err(|_| parser_failure(ParserReason::ReadFailed))?;
     if !metadata.is_file() {
+        parser_failure(ParserReason::ReadFailed);
         return Err(());
     }
     let identity = file_identity(&metadata);
@@ -1749,8 +1842,9 @@ fn index_file(
     let mut parser_complete = stored
         .filter(|_| can_resume)
         .is_none_or(|stored| stored.completion_state != "error");
-    let mut file = fs::File::open(path).map_err(|_| ())?;
-    file.seek(SeekFrom::Start(parsed_offset)).map_err(|_| ())?;
+    let mut file = fs::File::open(path).map_err(|_| parser_failure(ParserReason::ReadFailed))?;
+    file.seek(SeekFrom::Start(parsed_offset))
+        .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
     let mut reader = BufReader::new(file);
     while parsed_offset < size
         && *remaining_bytes > 0
@@ -1762,7 +1856,7 @@ fn index_file(
             .by_ref()
             .take(read_limit)
             .read_until(b'\n', &mut line)
-            .map_err(|_| ())?;
+            .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
         if bytes == 0 {
             break;
         }
@@ -1772,6 +1866,8 @@ fn index_file(
             if line.len() <= MAX_TRANSCRIPT_LINE_BYTES {
                 break;
             }
+            parser_failure(ParserReason::RecordTooLarge);
+            failure_capture::record_rejected();
             parser_complete = false;
             parsed_offset = parsed_offset.checked_add(bytes).ok_or(())?;
             *remaining_bytes = remaining_bytes.saturating_sub(bytes);
@@ -1788,7 +1884,7 @@ fn index_file(
                     .by_ref()
                     .take(allowance)
                     .read_until(b'\n', &mut discarded)
-                    .map_err(|_| ())?;
+                    .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
                 if read == 0 {
                     break;
                 }
@@ -1863,7 +1959,9 @@ fn index_file(
                 completion_state,
             ],
         )
-        .map_err(|_| ())?;
+        .map_err(|_| {
+            failure_capture::database_connection_failure(context.connection, "claude-usage-index")
+        })?;
     Ok(completed)
 }
 
@@ -3036,19 +3134,30 @@ fn index_local_usage_with_budget(
     now: OffsetDateTime,
     budget: ScanBudget,
 ) -> Option<LocalUsageObservation> {
+    let _failures = failure_capture::ScanFailures::begin();
     let started = Instant::now();
     let max_bytes = budget.max_bytes.min(MAX_TRANSCRIPT_SCAN_BYTES);
     let max_file_bytes = budget.max_file_bytes.min(MAX_TRANSCRIPT_FILE_SCAN_BYTES);
     let max_millis = budget.max_millis.min(MAX_TRANSCRIPT_SCAN_MILLIS);
-    let mut connection = Connection::open(database_path).ok()?;
-    ensure_index_schema(&mut connection, database_path).ok()?;
-    let dedupe_salt = load_or_create_dedupe_salt(&connection).ok()?;
+    let mut connection = Connection::open(database_path)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .ok()?;
+    ensure_index_schema(&mut connection, database_path)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .ok()?;
+    let dedupe_salt = load_or_create_dedupe_salt(&connection)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .ok()?;
     let today = utc_ranking_day(now);
     let cutoff = today - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
-    prune_expired_index(&connection, cutoff, today).ok()?;
+    prune_expired_index(&connection, cutoff, today)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .ok()?;
 
     let transcripts_root = config_root.join("projects");
-    let stored_files = load_file_summaries(&connection).ok()?;
+    let stored_files = load_file_summaries(&connection)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .ok()?;
     let transcript_source_missing = match fs::metadata(&transcripts_root) {
         Ok(metadata) => !metadata.is_dir(),
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,
@@ -3059,9 +3168,14 @@ fn index_local_usage_with_budget(
                 "UPDATE claude_usage_files SET completion_state = 'missing'",
                 [],
             )
+            .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
             .ok()?;
-        let aggregate_changed = refresh_daily_aggregates(&connection, cutoff, today, false).ok()?;
-        prune_private_message_details(&connection, today).ok()?;
+        let aggregate_changed = refresh_daily_aggregates(&connection, cutoff, today, false)
+            .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+            .ok()?;
+        prune_private_message_details(&connection, today)
+            .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+            .ok()?;
         return read_indexed_usage(
             &connection,
             cutoff,
@@ -3071,6 +3185,7 @@ fn index_local_usage_with_budget(
             false,
             aggregate_changed,
         )
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
         .ok();
     }
     let probe_exclusion =
@@ -3093,7 +3208,15 @@ fn index_local_usage_with_budget(
         i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).ok()?;
     let mut ordered_files = Vec::with_capacity(files.len());
     for path in files {
-        let metadata = fs::metadata(&path).ok()?;
+        let metadata = fs::metadata(&path)
+            .inspect_err(|_| {
+                failure_capture::parser(
+                    Provider::Claude,
+                    TRANSCRIPT_PARSER_VERSION,
+                    ParserReason::ReadFailed,
+                )
+            })
+            .ok()?;
         let identity = file_identity(&metadata);
         let modified_ns = file_modified_ns(&metadata).ok()?;
         let path_value = path.to_string_lossy();
@@ -3115,6 +3238,9 @@ fn index_local_usage_with_budget(
                     "UPDATE claude_usage_files SET completion_state = 'missing' WHERE path = ?1",
                     [missing],
                 )
+                .inspect_err(|_| {
+                    failure_capture::database_failure(database_path, "claude-usage-index")
+                })
                 .ok()?;
         }
     }
@@ -3161,7 +3287,7 @@ fn index_local_usage_with_budget(
             [],
             |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
         )
-        .unwrap_or((1, 1));
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index")).unwrap_or((1, 1));
     let scan_status = if failed || error_files > 0 {
         UsageScanStatus::Unavailable
     } else if !all_complete || pending_files > 0 {
@@ -3175,8 +3301,11 @@ fn index_local_usage_with_budget(
         today,
         scan_status == UsageScanStatus::Complete,
     )
+    .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
     .ok()?;
-    prune_private_message_details(&connection, today).ok()?;
+    prune_private_message_details(&connection, today)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .ok()?;
     debug_usage_event(&format!(
         "scan_completed status={scan_status:?} files={} bytes_read={} elapsed_ms={}",
         ordered_files.len(),
@@ -3192,6 +3321,7 @@ fn index_local_usage_with_budget(
         true,
         aggregate_changed,
     )
+    .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
     .ok()
 }
 
@@ -4604,6 +4734,58 @@ mod tests {
                 assert_eq!(stored_message_count(&fixture.database()), 1);
             }
         }
+    }
+
+    #[test]
+    fn failure_diagnostics_count_partial_records_once_and_remove_private_content() {
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let _scan = failure_capture::ScanFailures::begin();
+            let partial = claude_code_2_1_263_transcript_line(false);
+            assert!(matches!(
+                parse_transcript_line(partial.as_bytes(), &SALT),
+                TranscriptLineOutcome::Usage(_)
+            ));
+            assert!(matches!(
+                parse_transcript_line(b"invalid PRIVATE-CONTENT", &SALT),
+                TranscriptLineOutcome::Invalid
+            ));
+        });
+        assert_eq!(failures.len(), 2);
+        for failure in &failures {
+            let crate::diagnostics::Failure::Parser { context, .. } = failure else {
+                panic!("parser failure");
+            };
+            assert_eq!(context.parser_version, Some(11));
+            assert_eq!(context.source_versions, ["2.1.263"]);
+            assert_eq!(context.records_accepted, Some(1));
+            assert_eq!(context.records_rejected, Some(1));
+        }
+        let encoded = serde_json::to_string(&failures).unwrap();
+        assert!(encoded.contains("iteration_shape_mismatch"));
+        assert!(encoded.contains("invalid_json"));
+        assert!(!encoded.contains("PRIVATE"));
+        assert!(!encoded.contains("claude-fable"));
+    }
+
+    #[test]
+    fn unreviewed_or_aborted_usage_alone_has_no_failure_diagnostic() {
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let _scan = failure_capture::ScanFailures::begin();
+            let unreviewed =
+                claude_code_2_1_263_transcript_line(true).replace("2.1.263", "2.1.999");
+            assert!(matches!(
+                parse_transcript_line(unreviewed.as_bytes(), &SALT),
+                TranscriptLineOutcome::Usage(_)
+            ));
+            let mut aborted: serde_json::Value =
+                serde_json::from_str(&claude_code_2_1_263_transcript_line(false)).unwrap();
+            aborted["aborted"] = serde_json::json!(true);
+            assert!(matches!(
+                parse_transcript_line(aborted.to_string().as_bytes(), &SALT),
+                TranscriptLineOutcome::Usage(_)
+            ));
+        });
+        assert!(failures.is_empty());
     }
 
     #[test]

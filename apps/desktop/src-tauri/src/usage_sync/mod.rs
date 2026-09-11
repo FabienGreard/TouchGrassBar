@@ -2945,6 +2945,19 @@ pub(crate) fn apply_usage_acknowledgements(
         let revision = to_database_integer(snapshot.revision)?;
         match acknowledgement.outcome {
             AcknowledgementOutcome::Conflict => {
+                crate::providers::failure_capture::capture(crate::diagnostics::Failure::Sync {
+                    code: crate::diagnostics::SyncCode::SyncRevisionConflict,
+                    provider: Some(snapshot.provider),
+                    context: crate::diagnostics::SyncContext {
+                        stage: crate::diagnostics::SyncStage::DailyUsage,
+                        reason: crate::diagnostics::SyncReason::RevisionConflict,
+                        status_code: None,
+                        ranking_day: Some(snapshot.ranking_day.clone()),
+                        attempted_revision: Some(snapshot.revision),
+                        last_acknowledged_revision: None,
+                        pending_count: Some(batch.snapshots.len() as u64),
+                    },
+                });
                 applied += transaction.execute(
                     "INSERT INTO usage_sync_terminal_conflicts(
                          active_generation, provider, ranking_day, revision
@@ -3477,6 +3490,8 @@ fn aggregate_from_total_with_day_policy(
     validate_safe_integer(observed_tokens)?;
     let api_equivalent_cost = convert_cost(
         provider,
+        &ranking_day,
+        observed_tokens,
         api_equivalent_cost_usd,
         api_equivalent_cost_basis,
         api_equivalent_cost_quality,
@@ -3498,24 +3513,48 @@ fn aggregate_from_total_with_day_policy(
 
 fn convert_cost(
     provider: CodingProvider,
+    ranking_day: &str,
+    observed_tokens: u64,
     cost_usd: Option<f64>,
     pricing_basis: &Option<String>,
     quality: Option<ApiEquivalentCostQuality>,
     coverage_percent: Option<f64>,
 ) -> Result<Option<SyncApiEquivalentCost>, UsageSyncError> {
+    let invalid_cost = |reason| {
+        crate::providers::failure_capture::capture(crate::diagnostics::Failure::Pricing {
+            code: crate::diagnostics::PricingCode::PricingCalculationFailed,
+            provider,
+            context: crate::diagnostics::PricingContext {
+                ranking_day: Some(ranking_day.to_owned()),
+                revision: None,
+                parser_version: None,
+                catalog_version: None,
+                reason,
+                observed_tokens: Some(observed_tokens),
+                priced_tokens: None,
+                local_cost_micros: None,
+                outgoing_cost_micros: None,
+            },
+        });
+        UsageSyncError::INVALID_VALUE
+    };
     let (cost_usd, pricing_basis, quality) = match (cost_usd, pricing_basis, quality) {
         (None, None, None) if coverage_percent.is_none() => return Ok(None),
         (Some(cost_usd), Some(pricing_basis), Some(quality)) => {
             (cost_usd, pricing_basis.clone(), quality)
         }
-        _ => return Err(UsageSyncError::INVALID_VALUE),
+        _ => {
+            return Err(invalid_cost(
+                crate::diagnostics::PricingReason::MissingUsageMetadata,
+            ));
+        }
     };
     if !cost_usd.is_finite() || cost_usd < 0.0 {
-        return Err(UsageSyncError::INVALID_VALUE);
+        return Err(invalid_cost(crate::diagnostics::PricingReason::InvalidCost));
     }
     let micros = (cost_usd * 1_000_000.0).round();
     if !micros.is_finite() || micros < 0.0 || micros > MAX_SAFE_INTEGER as f64 {
-        return Err(UsageSyncError::INVALID_VALUE);
+        return Err(invalid_cost(crate::diagnostics::PricingReason::InvalidCost));
     }
     let (quality, coverage_percent) = match quality {
         ApiEquivalentCostQuality::Reconciled => (SyncCostQuality::Reconciled, coverage_percent),
@@ -3528,8 +3567,27 @@ fn convert_cost(
         quality,
         coverage_percent,
     };
-    cost.validate()?;
+    cost.validate().inspect_err(|_| {
+        invalid_cost(crate::diagnostics::PricingReason::InvalidCost);
+    })?;
     if !approved_pricing_basis(provider, &cost.pricing_basis) {
+        crate::providers::failure_capture::capture(crate::diagnostics::Failure::Pricing {
+            code: crate::diagnostics::PricingCode::PricingCatalogNotApproved,
+            provider,
+            context: crate::diagnostics::PricingContext {
+                ranking_day: Some(ranking_day.to_owned()),
+                revision: None,
+                parser_version: None,
+                catalog_version: Some(crate::diagnostics::safe_catalog_reference(
+                    &cost.pricing_basis,
+                )),
+                reason: crate::diagnostics::PricingReason::CatalogNotApproved,
+                observed_tokens: Some(observed_tokens),
+                priced_tokens: None,
+                local_cost_micros: Some(cost.micros),
+                outgoing_cost_micros: None,
+            },
+        });
         return Ok(None);
     }
     Ok(Some(cost))
@@ -4478,7 +4536,7 @@ mod tests {
                 NOW,
                 Some((
                     1.25,
-                    "openai-standard-future-v1",
+                    "openai-standard-2026-09-06-v9",
                     ApiEquivalentCostQuality::Reconciled,
                     None,
                 )),
@@ -4486,11 +4544,60 @@ mod tests {
             UsageTotal::Unavailable,
         );
 
-        let aggregates = current_utc_daily_aggregates(&state, now()).unwrap();
-
-        assert_eq!(aggregates.len(), 1);
-        assert_eq!(aggregates[0].observed_tokens, 120);
-        assert_eq!(aggregates[0].api_equivalent_cost, None);
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let aggregates = current_utc_daily_aggregates(&state, now()).unwrap();
+            assert_eq!(aggregates.len(), 1);
+            assert_eq!(aggregates[0].observed_tokens, 120);
+            assert_eq!(aggregates[0].api_equivalent_cost, None);
+        });
+        let [
+            crate::diagnostics::Failure::Pricing {
+                provider, context, ..
+            },
+        ] = failures.as_slice()
+        else {
+            panic!("one cost discard report");
+        };
+        assert_eq!(*provider, CodingProvider::Codex);
+        assert_eq!(context.ranking_day.as_deref(), Some("2026-08-08"));
+        assert_eq!(context.local_cost_micros, Some(1_250_000));
+        assert_eq!(context.outgoing_cost_micros, None);
+        assert_eq!(context.observed_tokens, Some(120));
+        assert_eq!(context.parser_version, None);
+        assert_eq!(
+            context.reason,
+            crate::diagnostics::PricingReason::CatalogNotApproved
+        );
+        assert_eq!(
+            context.catalog_version.as_deref(),
+            Some("openai-standard-2026-09-06-v9")
+        );
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert_eq!(
+                convert_cost(
+                    CodingProvider::Codex,
+                    "2026-08-08",
+                    120,
+                    Some(1.25),
+                    &Some("PRIVATE-BASIS".to_owned()),
+                    Some(ApiEquivalentCostQuality::Reconciled),
+                    None,
+                )
+                .unwrap(),
+                None
+            );
+        });
+        let [crate::diagnostics::Failure::Pricing { context, .. }] = failures.as_slice() else {
+            panic!("one cost discard report");
+        };
+        let reference = context.catalog_version.as_deref().unwrap();
+        assert!(reference.starts_with("sha256:"));
+        assert_eq!(reference.len(), 71);
+        assert!(
+            !serde_json::to_string(&failures)
+                .unwrap()
+                .contains("PRIVATE")
+        );
     }
 
     #[test]

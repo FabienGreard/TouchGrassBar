@@ -19,6 +19,18 @@ export const touchGrassAuthPolicy = {
 } as const;
 
 export const rateLimiter = new RateLimiter(components.rateLimiter, {
+  diagnosticRegistration: {
+    capacity: 3,
+    kind: "token bucket",
+    period: 60 * MINUTE,
+    rate: 3,
+  },
+  diagnosticSubmission: {
+    capacity: 10,
+    kind: "token bucket",
+    period: 60 * MINUTE,
+    rate: 20,
+  },
   failedRecoveryKeyByIp: {
     kind: "fixed window",
     period: touchGrassAuthPolicy.failedRecoveryKey.windowMs,

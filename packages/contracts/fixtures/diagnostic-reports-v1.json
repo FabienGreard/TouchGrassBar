@@ -1,0 +1,227 @@
+[
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000001",
+    "failure": {
+      "area": "database",
+      "provider": null,
+      "code": "database_migration_failed",
+      "context": {
+        "stage": "validate-backup",
+        "observedFormat": 6,
+        "expectedFormat": 7,
+        "modules": [
+          {
+            "module": "database-coordinator",
+            "observedVersion": 0,
+            "expectedVersion": 1
+          }
+        ],
+        "backupState": "invalid"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000002",
+    "failure": {
+      "area": "parser",
+      "provider": "claude",
+      "code": "parser_record_invalid",
+      "context": {
+        "parserVersion": 11,
+        "sourceVersions": ["2.1.263"],
+        "reviewStatus": "reviewed",
+        "filesSeen": 4,
+        "recordsAccepted": 120,
+        "recordsRejected": 2,
+        "reason": "invalid_usage_shape"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000003",
+    "failure": {
+      "area": "pricing",
+      "provider": "codex",
+      "code": "pricing_catalog_not_approved",
+      "context": {
+        "rankingDay": "2026-09-11",
+        "revision": 42,
+        "parserVersion": 4,
+        "catalogVersion": "openai-standard-2026-09-05-v9",
+        "reason": "catalog_not_approved",
+        "observedTokens": 1000,
+        "pricedTokens": 1000,
+        "localCostMicros": 125000,
+        "outgoingCostMicros": null
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000004",
+    "failure": {
+      "area": "sync",
+      "provider": "codex",
+      "code": "sync_request_failed",
+      "context": {
+        "stage": "daily_usage",
+        "reason": "transport_failed",
+        "statusCode": null,
+        "rankingDay": "2026-09-11",
+        "attemptedRevision": 42,
+        "lastAcknowledgedRevision": 41,
+        "pendingCount": 3
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000005",
+    "failure": {
+      "area": "provider_access",
+      "provider": "claude",
+      "code": "provider_access_failed",
+      "context": {
+        "operation": "read_quota",
+        "reason": "request_failed",
+        "statusCode": 503,
+        "retryCount": 2
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000006",
+    "failure": {
+      "area": "parser",
+      "provider": "codex",
+      "code": "parser_record_invalid",
+      "context": {
+        "parserVersion": 20,
+        "sourceVersions": ["0.148.0-alpha.21", "0.146.0-alpha.3.1", "0.151.0-alpha.7.2"],
+        "reviewStatus": "reviewed",
+        "filesSeen": 4,
+        "recordsAccepted": 120,
+        "recordsRejected": 2,
+        "reason": "invalid_usage_shape"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000007",
+    "failure": {
+      "area": "database",
+      "provider": null,
+      "code": "database_operation_failed",
+      "context": {
+        "stage": "codex-usage-index",
+        "observedFormat": null,
+        "expectedFormat": 7,
+        "modules": [],
+        "backupState": "unknown"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000008",
+    "failure": {
+      "area": "sync",
+      "provider": null,
+      "code": "sync_request_failed",
+      "context": {
+        "stage": "daily_usage",
+        "reason": "transport_failed",
+        "statusCode": null,
+        "rankingDay": null,
+        "attemptedRevision": null,
+        "lastAcknowledgedRevision": null,
+        "pendingCount": 0
+      }
+    }
+  }
+]

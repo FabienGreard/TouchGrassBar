@@ -288,6 +288,20 @@ struct RuntimeInner {
 }
 
 impl RuntimeInner {
+    fn capture_terminal_session_failure(
+        &self,
+        authority: &ActiveMacAuthority,
+        batch: &PendingUsageBatch,
+    ) {
+        if self
+            .environment
+            .authority
+            .is_current_session(&authority.session)
+        {
+            super::transport::capture_terminal_session_failure(batch);
+        }
+    }
+
     fn request(&self) {
         if self.admission.request() == RequestAdmission::Wake {
             self.wake();
@@ -299,6 +313,7 @@ impl RuntimeInner {
     }
 
     fn run_attempt(self: &Arc<Self>) {
+        let _failures = crate::providers::failure_capture::ScanFailures::begin();
         if self.environment.online_gate.is_paused() {
             return;
         }
@@ -357,6 +372,7 @@ impl RuntimeInner {
                     );
                 }
                 ActiveMacSessionRefreshOutcome::Rejected => {
+                    self.capture_terminal_session_failure(&authority, &batch);
                     let _ = self
                         .environment
                         .state
@@ -364,6 +380,7 @@ impl RuntimeInner {
                     return;
                 }
                 ActiveMacSessionRefreshOutcome::Unavailable => {
+                    self.capture_terminal_session_failure(&authority, &batch);
                     outcome = PendingUsageSnapshotDeliveryOutcome::Deferred;
                 }
             }
@@ -382,6 +399,7 @@ impl RuntimeInner {
                     .finish(&batch, UsageSyncAttemptResult::Offline);
             }
             PendingUsageSnapshotDeliveryOutcome::SessionRejected => {
+                self.capture_terminal_session_failure(&authority, &batch);
                 let _ = self
                     .environment
                     .state
@@ -1588,6 +1606,71 @@ mod tests {
 
         runtime.shutdown();
         core.shutdown();
+    }
+
+    #[test]
+    fn session_failure_reports_only_after_terminal_rejection_of_current_session() {
+        for scenario in 0..3 {
+            let now = OffsetDateTime::from_unix_timestamp(1_775_908_800).unwrap();
+            let database = TestDatabase::new();
+            let clock = Arc::new(FixedSynchronizationClock(now));
+            let core = NativeCore::open_with(
+                &database.0,
+                clock.clone(),
+                Arc::new(OneObservation(Mutex::new(Some(observed_state(now))))),
+            )
+            .unwrap();
+            core.wait_for_refresh_completion().unwrap();
+            let (delivered, _delivery_events) = mpsc::sync_channel(3);
+            let (calls, _call_events) = mpsc::sync_channel(3);
+            let delivery: Arc<dyn PendingUsageSnapshotDelivery> = if scenario == 0 {
+                Arc::new(ExpiredOnceDelivery {
+                    first: AtomicBool::new(true),
+                    committing: CommittingDelivery(delivered),
+                })
+            } else {
+                Arc::new(RejectingSessionDelivery {
+                    calls,
+                    count: AtomicUsize::new(0),
+                })
+            };
+            let authority: Arc<dyn ActiveMacAuthoritySource> = if scenario == 2 {
+                Arc::new(ReplacedSessionAuthority)
+            } else {
+                Arc::new(ReadyAuthority)
+            };
+            let (wake, _requests) = mpsc::sync_channel(1);
+            let inner = Arc::new(RuntimeInner {
+                environment: SynchronizationEnvironment {
+                    state: Arc::new(NativePendingUsageSnapshotState { core: core.clone() }),
+                    online_gate: OnlineFeatureGate::default(),
+                    authority,
+                    delivery,
+                    clock,
+                    retry_interval: Duration::from_secs(60),
+                },
+                admission: SynchronizationAdmission::default(),
+                wake,
+                worker: Mutex::new(None),
+            });
+            let failures = crate::diagnostics::collect_failures_for_test(|| inner.run_attempt());
+            if scenario == 1 {
+                let [crate::diagnostics::Failure::Sync { context, .. }] = failures.as_slice()
+                else {
+                    panic!("one terminal session failure: {failures:?}");
+                };
+                assert_eq!(
+                    context.reason,
+                    crate::diagnostics::SyncReason::ServerRejected
+                );
+            } else {
+                assert!(
+                    failures.is_empty(),
+                    "recovered or replaced session: {failures:?}"
+                );
+            }
+            core.shutdown();
+        }
     }
 
     #[test]

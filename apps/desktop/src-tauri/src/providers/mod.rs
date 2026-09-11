@@ -1,5 +1,6 @@
 mod claude;
 mod codex;
+pub(crate) mod failure_capture;
 mod process;
 mod registry;
 

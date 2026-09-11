@@ -12,6 +12,11 @@ Every persisted module has an explicit current schema version. A current release
 
 ## Implementation map
 
+[ADR-0021](0021-send-bounded-failure-diagnostics.md) permits an independent
+diagnostic queue and submission worker before readiness. This worker can
+send only bounded failure reports with a separate diagnostic credential.
+It cannot grant the Ready token or perform normal profile or usage work.
+
 The coordinator has one interface: `prepare(path) -> PreparedDatabase`.
 Callers open the database only after they receive the token.
 

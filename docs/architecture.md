@@ -17,6 +17,7 @@ Rust owns:
 - Keychain credentials and session material
 - Local caching and offline reconciliation
 - Background refresh
+- Bounded Failure Report capture and delivery
 - Profile creation and restoration
 - Convex reads and synchronization
 - Launch at login and update orchestration
@@ -64,7 +65,16 @@ An Astro and Tailwind CSS static marketing and distribution site. It has no auth
 
 Convex owns public Tokenmaxxer Profiles, Active Mac authority, revisioned Usage Buckets, server-derived daily usage, materialized scores, My Tokenmaxxers, and Doomerboard projections. Better Auth owns generated-credential hashing and sessions.
 
-The backend rejects raw provider material and accepts only validated cumulative daily snapshots from the current Active Mac. Convex calculates all daily totals, combined scores, ranks, and public projections. The Doomerboard uses one namespaced Aggregate component; My Tokenmaxxers uses bounded indexed reads and in-memory sorting. A rate limiter protects synchronization, migrations own repairs, and a daily UTC cron expires rolling windows.
+The backend rejects raw provider material. Usage synchronization accepts
+validated cumulative daily snapshots from the current Active Mac. A separate
+submission endpoint accepts bounded Failure Reports under an enrolled
+device's report credential. Only internal support queries can read these
+reports. Convex calculates all daily totals, combined scores, ranks, and
+public projections. The Doomerboard uses one namespaced Aggregate component;
+My Tokenmaxxers uses bounded indexed reads and in-memory sorting. Rate limits
+protect synchronization and diagnostic submission. Migrations own repairs,
+a daily UTC cron expires rolling windows, and an hourly cron removes expired
+Failure Reports.
 
 #### Development deployment isolation
 
@@ -83,7 +93,12 @@ Readiness Evidence. This decision is recorded in [ADR 0014](adr/0014-isolate-age
 
 ### `packages/contracts`
 
-Generated TypeScript types and strict runtime validators only for sanitized Rust-to-React Tauri IPC. Sanitized Rust DTOs are canonical; generation is deterministic and CI fails when checked-in bindings drift. Convex owns and generates its separate API and data-model types.
+Generated TypeScript types and strict runtime validators for sanitized
+Rust-to-React Tauri IPC. Sanitized Rust DTOs are canonical; generation is
+deterministic and CI fails when checked-in bindings drift. A separate,
+manually defined Failure Report validator and shared sanitized fixtures
+check the native-to-backend diagnostic wire format. This report does not
+cross Tauri IPC. Convex owns and generates its API and data-model types.
 
 ### `packages/ui`
 
@@ -102,7 +117,7 @@ Shared strict TypeScript and Oxlint configuration.
 1. Rust reads local provider sources and immediately reduces them into private parser metadata, sanitized Quota Snapshots, and Daily Usage Aggregates.
 2. DTOs in the sanitized contract, the deliberate Profile Settings Recovery Key reveal, and the entered Profile recovery credentials may serialize across narrow Tauri commands. Privileged provider credentials and session types are separate and non-serializable through commands.
 3. React sends narrow typed intents and receives Sanitized Desktop State, bounded sanitized views, or the stored Recovery Key after the explicit **View** action. The recovery dialog holds its entered credentials only in volatile component state. React has no generic transport command or direct provider, filesystem, Keychain, or network access.
-4. Rust synchronizes only validated cumulative Usage Snapshots through the official Convex Rust client.
+4. Rust synchronizes validated cumulative Usage Snapshots through the official Convex Rust client. It submits bounded Failure Reports separately through the Convex HTTP API with a credential that grants report submission only.
 5. Convex validates the live Profile and Active Mac generation, synchronizes the monotonic enabled-provider setting, then updates Daily Usage, filtered scores, and Aggregate projections transactionally.
 6. Rust sanitizes Convex results before React receives them.
 
@@ -129,6 +144,15 @@ The native core retains 60 UTC Ranking Days of sanitized Daily Usage Aggregates 
 Each aggregate update and Pending Usage Snapshot upsert commits in one SQLite transaction. The outbox contains one latest cumulative revision per Active Mac generation, provider, and Ranking Day; uploads are bounded and idempotent, and acknowledged revisions alone leave the queue. Active Mac transfer permanently abandons the previous generation's pending rows without deleting local history.
 
 SQLite and IPC schemas use explicit forward-only versions. One database coordinator inspects the complete SQLite format without a write, rejects an unknown or newer format, creates and verifies one durable backup, runs registered module migrations in a deterministic order, and checks structural and domain invariants. It issues an opaque Ready token only after every check succeeds. Native persistence, provider work, synchronization, and update checks require that token. An open or migration failure stops those operations and never deletes, resets, or partly accepts the database. Every official release keeps one sanitized database fixture. The release gate upgrades and reopens every fixture with the exact candidate code and records the result in release evidence. [ADR 0017](adr/0017-coordinate-forward-sqlite-compatibility.md) records this contract.
+
+Failure Reports use a separate bounded file queue and Keychain credential.
+This narrow delivery path can run when SQLite is unavailable. Capture pauses
+during Profile recovery, and work started under an earlier authority cannot
+attach a delayed failure to the new Profile. The queue retains reports for
+seven days within a 2 MiB disk budget, including atomic replacement. Reports
+contain fixed reason codes and approved context; successful operations send
+nothing. [ADR 0021](adr/0021-send-bounded-failure-diagnostics.md) records the
+boundary and delivery limits.
 
 ## Pending Usage Snapshot synchronization
 

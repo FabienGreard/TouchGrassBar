@@ -78,7 +78,18 @@ Local Codex accounting uses cumulative deltas. It does not add cached-input or r
 
 A Usage Snapshot may replace an earlier provider/day value only with a higher revision. Provider-reported usage that arrives after a locally derived value replaces that value, including when the provider total is lower. Other decreases require explicit stronger evidence from a parser correction; disappearing local logs never reduce a synchronized total. An accepted correction updates the daily total and its derived ranking state together. The revision and reason remain auditable, but “corrected” is not a lasting status or permanent public badge.
 
-Only the provider/day aggregate, evidence basis, coverage, observation time, revision, and best defensible API-equivalent cost with its pricing basis may synchronize. Raw logs, provider message or session identifiers, credentials, and file paths remain on the Mac.
+Usage synchronization contains only the provider/day aggregate, evidence basis, coverage, observation time, revision, and best defensible API-equivalent cost with its pricing basis. Raw logs, provider message or session identifiers, credentials, and file paths remain on the Mac.
+
+When a supported native operation fails, TouchGrassBar sends a bounded
+Failure Report for private support access. It contains defined error codes,
+app and relevant parser or catalog versions, and approved technical context.
+Database reports can include known schema versions, the failed migration
+stage, and backup presence. Reports contain no raw logs, source records,
+credentials, or paths. Successful operations and low pricing coverage alone
+send nothing. Reports can arrive after reconnection, so a past failure does
+not establish current health. Local reports expire after seven days; server
+reports expire after 14 days. See
+[ADR-0021](adr/0021-send-bounded-failure-diagnostics.md).
 
 ## Offline behavior
 

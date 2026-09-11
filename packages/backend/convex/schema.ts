@@ -1,6 +1,8 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+import { diagnosticReportValidator } from "./model/diagnosticValues";
+
 import {
   apiEquivalentCostValidator as apiEquivalentCost,
   correctionReasonValidator as correctionReason,
@@ -50,6 +52,37 @@ export default defineSchema({
     revokedAt: v.optional(v.number()),
     usageBackfillCompletedAt: v.optional(v.union(v.number(), v.null())),
   }).index("by_tokenmaxxer_id", ["tokenmaxxerId"]),
+
+  diagnosticReporters: defineTable({
+    tokenmaxxerId: v.id("tokenmaxxers"),
+    deviceId: v.id("devices"),
+    generation: v.number(),
+    credentialDigest: v.string(),
+    createdAt: v.number(),
+    revokedAt: v.union(v.number(), v.null()),
+  })
+    .index("by_deviceId", ["deviceId"])
+    .index("by_tokenmaxxerId", ["tokenmaxxerId"]),
+
+  diagnosticReports: defineTable({
+    reporterId: v.id("diagnosticReporters"),
+    tokenmaxxerId: v.id("tokenmaxxers"),
+    deviceId: v.id("devices"),
+    generation: v.number(),
+    reportId: v.string(),
+    payloadDigest: v.string(),
+    groupKey: v.string(),
+    provider: v.union(provider, v.null()),
+    receivedAt: v.number(),
+    expiresAt: v.number(),
+    report: diagnosticReportValidator,
+  })
+    .index("by_reporterId_and_reportId", ["reporterId", "reportId"])
+    .index("by_tokenmaxxerId_and_receivedAt", ["tokenmaxxerId", "receivedAt"])
+    .index("by_deviceId_and_receivedAt", ["deviceId", "receivedAt"])
+    .index("by_provider_and_receivedAt", ["provider", "receivedAt"])
+    .index("by_groupKey_and_receivedAt", ["groupKey", "receivedAt"])
+    .index("by_expiresAt", ["expiresAt"]),
 
   profileRecoveryAttempts: defineTable({
     activatedAt: v.optional(v.number()),

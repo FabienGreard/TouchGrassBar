@@ -63,6 +63,7 @@ pub(crate) enum SecretKind {
     RecoveryPreparation,
     ReplacementRecoveryKey,
     ReplacementInstallationCredential,
+    DiagnosticReporter,
     ConvexJwt,
 }
 
@@ -118,6 +119,11 @@ pub(crate) const fn keychain_policy(kind: SecretKind) -> KeychainPolicy {
         },
         SecretKind::ReplacementInstallationCredential => KeychainPolicy {
             account: "replacement-installation-credential",
+            synchronized: false,
+            accessibility: Accessibility::AfterFirstUnlockThisDeviceOnly,
+        },
+        SecretKind::DiagnosticReporter => KeychainPolicy {
+            account: "diagnostic-reporter-v1",
             synchronized: false,
             accessibility: Accessibility::AfterFirstUnlockThisDeviceOnly,
         },
@@ -694,6 +700,8 @@ impl ProfileCoordinator {
             );
             return Err(ProfileError::message("Profile recovery unavailable"));
         }
+        crate::diagnostics::suspend_for_profile_transition();
+        let _ = self.custody.delete(SecretKind::DiagnosticReporter);
         let staged = match self.custody.read(SecretKind::RecoveryPreparation)? {
             Some(value) => {
                 let prepared = PreparedRecovery::decode(&value)?;
@@ -853,6 +861,9 @@ impl ProfileCoordinator {
     }
 
     fn clear_recovery_staging(&self) -> Result<(), ProfileError> {
+        // Diagnostic custody cannot retain the former authority across a restart.
+        // A diagnostics failure must not prevent Profile recovery.
+        let _ = self.custody.delete(SecretKind::DiagnosticReporter);
         for kind in [
             SecretKind::RecoveryAttemptId,
             SecretKind::ReplacementRecoveryKey,
@@ -986,6 +997,33 @@ impl ProfileCoordinator {
             return Ok(None);
         }
         self.active_sync_credentials()
+    }
+
+    /// Read only already verified authority. Diagnostic registration must not start
+    /// profile recovery, open SQLite, or hold the profile lock during a request.
+    pub(crate) fn cached_diagnostic_registration(&self) -> Option<(String, ActiveSyncCredentials)> {
+        let touch_grass_id = self.lifecycle.ready_touch_grass_id()?;
+        if self
+            .custody
+            .read(SecretKind::RecoveryPreparation)
+            .ok()?
+            .is_some()
+        {
+            return None;
+        }
+        let authority = (*self.active_mac_authority.try_lock().ok()?)?;
+        Some((
+            touch_grass_id,
+            ActiveSyncCredentials {
+                active_mac_activated_at: authority.activated_at,
+                active_mac_generation: authority.generation,
+                installation_credential: self
+                    .custody
+                    .read(SecretKind::InstallationCredential)
+                    .ok()??,
+                session: self.custody.read(SecretKind::BetterAuthSession).ok()??,
+            },
+        ))
     }
 
     /// Reuse a newer session or replace the rejected session with one Recovery Key sign-in.
@@ -1211,7 +1249,7 @@ impl HttpProfileTransport {
         Ok(Zeroizing::new(response.token))
     }
 
-    fn mutate_profile(
+    pub(crate) fn mutate_profile(
         &self,
         session: &Secret,
         mutation: &'static str,
@@ -2187,6 +2225,44 @@ mod tests {
         assert!(!first.session.expose().is_empty());
         assert_eq!(fixture.transport.exchange_count(), 1);
         assert!(!fixture.custody.contains(SecretKind::ConvexJwt));
+    }
+
+    #[test]
+    fn diagnostic_registration_reads_verified_authority_without_network_and_pauses_for_recovery() {
+        let fixture = ProfileFixture::new();
+        assert!(
+            fixture
+                .coordinator
+                .cached_diagnostic_registration()
+                .is_none()
+        );
+        fixture.complete_bootstrap();
+        fixture.coordinator.retry_pending().unwrap();
+        let exchanges = fixture.transport.exchange_count();
+        let sign_ins = fixture.transport.sign_in_count();
+        let (profile, credentials) = fixture
+            .coordinator
+            .cached_diagnostic_registration()
+            .unwrap();
+        assert_eq!(profile, fixture.transport.touch_grass_id());
+        assert_eq!(credentials.active_mac_generation, 1);
+        assert_eq!(fixture.transport.exchange_count(), exchanges);
+        assert_eq!(fixture.transport.sign_in_count(), sign_ins);
+        fixture
+            .custody
+            .write(
+                SecretKind::RecoveryPreparation,
+                &Secret::new("pending-recovery".into()),
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .coordinator
+                .cached_diagnostic_registration()
+                .is_none()
+        );
+        assert_eq!(fixture.transport.exchange_count(), exchanges);
+        assert_eq!(fixture.transport.sign_in_count(), sign_ins);
     }
 
     #[test]

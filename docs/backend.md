@@ -17,9 +17,29 @@ canonical private history for one Tokenmaxxer, provider, and UTC day.
 `doomerboard` wraps `@convex-dev/aggregate` only for ordered
 pagination. It does not calculate daily usage or rolling scores.
 
-`packages/contracts` is not the sync contract. It is reserved for the sanitized Rust-to-React Tauri IPC boundary. Convex generates its own TypeScript API and data-model types in `convex/_generated`.
+`packages/contracts` contains the generated sanitized Rust-to-React Tauri IPC
+contract and the separate Failure Report validator. It is not the usage sync
+contract. Convex generates its own TypeScript API and data-model types in
+`convex/_generated`. Shared sanitized fixtures check the Failure Report wire
+format against both TypeScript validation and Rust serialization.
 
 Rust is the only desktop Convex client. It exchanges its Keychain-held Better Auth session for a short-lived memory-only Convex JWT, then uses the official Convex Rust client through typed native operations. React receives sanitized results and has no Convex client, JWT, session material, or generic backend forwarding command.
+
+## Failure Reports
+
+`diagnosticReporters` binds a separate report credential to the authenticated
+Active Mac. `diagnosticReports` stores immutable, bounded failure evidence
+under that server-owned identity. Submission uses the Convex HTTP API and
+the report credential, so an enrolled installation can report a SQLite open
+failure without a product session. This credential cannot read reports or
+change product state. Device revocation and generation replacement remove
+its authority.
+
+Only failed operations produce reports. Healthy operations send nothing.
+Reports expire 14 days after receipt and are deleted in bounded batches by
+an hourly cron. Internal support queries can find reports by TouchGrass ID,
+device, provider, or failure group. See the
+[support guide](failure-diagnostics.md) for commands and evidence limits.
 
 ## Snapshot invariant
 
