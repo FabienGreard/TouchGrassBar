@@ -1,3 +1,5 @@
+use crate::diagnostics::{ParserReason, PricingReason, Provider};
+use crate::providers::failure_capture;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
@@ -73,8 +75,25 @@ fn debug_usage_event(event: &str) {
 #[cfg(not(debug_assertions))]
 fn debug_usage_event(_event: &str) {}
 
-#[cfg(debug_assertions)]
 fn debug_parser_failure(reason: &str, day: Option<Date>) {
+    let reason_code = match reason {
+        "schema_not_initialized" | "baseline" => None,
+        "line_too_large" => Some(ParserReason::RecordTooLarge),
+        "invalid_json" => Some(ParserReason::InvalidJson),
+        "invalid_total_token_arithmetic"
+        | "invalid_last_token_arithmetic"
+        | "cumulative_token_arithmetic"
+        | "model_day_token_arithmetic" => Some(ParserReason::InvalidCounter),
+        _ => Some(ParserReason::InvalidUsageShape),
+    };
+    if let Some(reason) = reason_code {
+        failure_capture::parser(Provider::Codex, ROLLOUT_PARSER_VERSION, reason);
+    }
+    log_parser_failure(reason, day);
+}
+
+#[cfg(debug_assertions)]
+fn log_parser_failure(reason: &str, day: Option<Date>) {
     static REPORTED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
     let day = day.map_or_else(|| "unknown".to_owned(), |day| day.to_string());
     let key = format!("{reason}:{day}");
@@ -88,7 +107,7 @@ fn debug_parser_failure(reason: &str, day: Option<Date>) {
 }
 
 #[cfg(not(debug_assertions))]
-fn debug_parser_failure(_reason: &str, _day: Option<Date>) {}
+fn log_parser_failure(_reason: &str, _day: Option<Date>) {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AccountUsageObservation {
@@ -178,8 +197,13 @@ pub(crate) fn load_cached_account_usage(
     database_path: Option<&Path>,
 ) -> Option<CachedAccountUsageObservation> {
     let database_path = database_path?;
-    let mut connection = Connection::open(database_path).ok()?;
-    ensure_index_schema(&mut connection, Some(database_path)).ok()?;
+    let _failures = failure_capture::ScanFailures::begin();
+    let mut connection = Connection::open(database_path)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
+    ensure_index_schema(&mut connection, Some(database_path))
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
     load_cached_account_usage_from_connection(&connection)
 }
 
@@ -193,13 +217,23 @@ fn load_cached_account_usage_from_connection(
             |row| row.get::<_, String>(0),
         )
         .optional()
+        .inspect_err(|_| {
+            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        })
         .ok()??;
-    let observed_at = OffsetDateTime::parse(&observed_at, &Rfc3339).ok()?;
+    let observed_at = OffsetDateTime::parse(&observed_at, &Rfc3339)
+        .inspect_err(|_| {
+            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        })
+        .ok()?;
     let daily_rows = connection
         .prepare(
             "SELECT day, tokens, observed_at
              FROM codex_account_usage_days ORDER BY day",
         )
+        .inspect_err(|_| {
+            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        })
         .ok()?
         .query_map([], |row| {
             let day = parse_ranking_day(&row.get::<_, String>(0)?)
@@ -209,8 +243,14 @@ fn load_cached_account_usage_from_connection(
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
             Ok((day, tokens, observed_at))
         })
+        .inspect_err(|_| {
+            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        })
         .ok()?
         .collect::<Result<Vec<_>, _>>()
+        .inspect_err(|_| {
+            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        })
         .ok()?;
     let daily_tokens = daily_rows
         .iter()
@@ -237,15 +277,20 @@ pub(crate) fn store_cached_account_usage(
         .checked_sub(Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1))
         .ok_or(())?;
     let database_path = database_path.ok_or(())?;
-    let mut connection = Connection::open(database_path).map_err(|_| ())?;
-    ensure_index_schema(&mut connection, Some(database_path))?;
-    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let _failures = failure_capture::ScanFailures::begin();
+    let mut connection = Connection::open(database_path)
+        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
+    ensure_index_schema(&mut connection, Some(database_path))
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
     transaction
         .execute(
             "DELETE FROM codex_account_usage_days WHERE day < ?1 OR day > ?2",
             params![cutoff.to_string(), today.to_string()],
         )
-        .map_err(|_| ())?;
+        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
     let observed_at = observed_at.format(&Rfc3339).map_err(|_| ())?;
     for (day, tokens) in observation.daily_tokens.range(cutoff..=today) {
         transaction
@@ -257,7 +302,7 @@ pub(crate) fn store_cached_account_usage(
                    observed_at = excluded.observed_at",
                 params![day.to_string(), to_i64(*tokens)?, &observed_at],
             )
-            .map_err(|_| ())?;
+            .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
     }
     transaction
         .execute(
@@ -265,8 +310,10 @@ pub(crate) fn store_cached_account_usage(
              ON CONFLICT(singleton) DO UPDATE SET refreshed_at=excluded.refreshed_at",
             [&observed_at],
         )
-        .map_err(|_| ())?;
-    transaction.commit().map_err(|_| ())
+        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
+    transaction
+        .commit()
+        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
 }
 
 fn parse_ranking_day(value: &str) -> Result<Date, ()> {
@@ -645,10 +692,19 @@ fn stable_pricing_fingerprint(canonical: &str) -> String {
 
 fn pricing_manifest() -> Option<&'static PricingManifest> {
     static MANIFEST: OnceLock<Result<PricingManifest, ()>> = OnceLock::new();
-    MANIFEST
+    let manifest = MANIFEST
         .get_or_init(|| parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON))
         .as_ref()
-        .ok()
+        .ok();
+    if manifest.is_none() {
+        failure_capture::pricing(
+            Provider::Codex,
+            None,
+            PricingReason::CatalogUnavailable,
+            None,
+        );
+    }
+    manifest
 }
 
 pub(super) fn current_pricing_basis() -> Option<&'static str> {
@@ -703,8 +759,24 @@ fn model_has_fast_multiplier(model: &str, day: Date) -> bool {
         .is_some_and(|entry| entry.fast_multiplier.is_some())
 }
 
-#[cfg(debug_assertions)]
 fn debug_pricing_lookup_failure(model: &str, day: Date, failure: PricingLookupFailure) {
+    let reason = if model == UNKNOWN_MODEL {
+        PricingReason::MissingUsageMetadata
+    } else {
+        match failure {
+            PricingLookupFailure::MissingApplicablePrice => PricingReason::MissingEffectivePrice,
+            PricingLookupFailure::MissingCacheWritePrice => PricingReason::MissingCacheWritePrice,
+            PricingLookupFailure::MissingFastLongContextPrice
+            | PricingLookupFailure::MissingFastPrice => PricingReason::MissingFastPrice,
+            PricingLookupFailure::UnknownModel => PricingReason::UnknownModel,
+        }
+    };
+    failure_capture::pricing(Provider::Codex, Some(day), reason, current_pricing_basis());
+    log_pricing_lookup_failure(model, day, failure);
+}
+
+#[cfg(debug_assertions)]
+fn log_pricing_lookup_failure(model: &str, day: Date, failure: PricingLookupFailure) {
     static REPORTED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
     let reason = if model == UNKNOWN_MODEL {
         "model_not_observed"
@@ -724,7 +796,7 @@ fn debug_pricing_lookup_failure(model: &str, day: Date, failure: PricingLookupFa
 }
 
 #[cfg(not(debug_assertions))]
-fn debug_pricing_lookup_failure(_model: &str, _day: Date, _failure: PricingLookupFailure) {}
+fn log_pricing_lookup_failure(_model: &str, _day: Date, _failure: PricingLookupFailure) {}
 
 #[cfg(test)]
 fn price_usage(model: &str, day: Date, usage: TokenUsage) -> Option<f64> {
@@ -764,7 +836,17 @@ fn price_usage_tier_with_manifest(
             return None;
         }
     };
-    let billable = usage.billable().ok()?;
+    let billable = usage
+        .billable()
+        .map_err(|_| {
+            failure_capture::pricing(
+                Provider::Codex,
+                Some(day),
+                PricingReason::InvalidCounter,
+                Some(&manifest.basis),
+            );
+        })
+        .ok()?;
     let long_context = pricing_input_tokens > entry.long_context_input_tokens_above;
     let rates = match pricing_rates(entry, day, long_context, &pricing_mode) {
         Ok(rates) => rates,
@@ -787,6 +869,14 @@ fn price_usage_tier_with_manifest(
         + per_million(billable.cached_input, rates.cached_input_usd_per_million)
         + cache_write
         + per_million(billable.output, rates.output_usd_per_million);
+    if !cost.is_finite() {
+        failure_capture::pricing(
+            Provider::Codex,
+            Some(day),
+            PricingReason::InvalidCost,
+            Some(&manifest.basis),
+        );
+    }
     cost.is_finite().then_some(cost)
 }
 
@@ -1308,6 +1398,7 @@ fn apply_session_metadata(
     line_timestamp: &str,
 ) -> Result<(), ()> {
     let supported = is_supported_cli_version(&metadata.cli_version);
+    failure_capture::source_version(&metadata.cli_version, supported);
     let observed_id = normalized_session_id(metadata.id.clone());
     let observed_parent_id = normalized_session_id(metadata.forked_from_id.clone());
     let malformed_parent_id = metadata.forked_from_id.is_some() && observed_parent_id.is_none();
@@ -2065,12 +2156,30 @@ fn collect_rollout_files(
     started: Instant,
     max_millis: u128,
 ) -> Result<(), ()> {
-    for entry in fs::read_dir(root).map_err(|_| ())? {
+    for entry in fs::read_dir(root).map_err(|_| {
+        failure_capture::parser(
+            Provider::Codex,
+            ROLLOUT_PARSER_VERSION,
+            ParserReason::ReadFailed,
+        )
+    })? {
         if started.elapsed().as_millis() >= max_millis {
             return Err(());
         }
-        let entry = entry.map_err(|_| ())?;
-        let file_type = entry.file_type().map_err(|_| ())?;
+        let entry = entry.map_err(|_| {
+            failure_capture::parser(
+                Provider::Codex,
+                ROLLOUT_PARSER_VERSION,
+                ParserReason::ReadFailed,
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|_| {
+            failure_capture::parser(
+                Provider::Codex,
+                ROLLOUT_PARSER_VERSION,
+                ParserReason::ReadFailed,
+            )
+        })?;
         if file_type.is_dir() {
             collect_rollout_files(&entry.path(), files, started, max_millis)?;
         } else if file_type.is_file()
@@ -2136,9 +2245,30 @@ fn rollout_leaf_session_id(
             complete: start_offset >= MAX_ROLLOUT_METADATA_PROBE_BYTES,
         });
     }
-    let mut file = fs::File::open(path).map_err(|_| ())?;
-    let file_size = file.metadata().map_err(|_| ())?.len();
-    file.seek(SeekFrom::Start(start_offset)).map_err(|_| ())?;
+    let mut file = fs::File::open(path).map_err(|_| {
+        failure_capture::parser(
+            Provider::Codex,
+            ROLLOUT_PARSER_VERSION,
+            ParserReason::ReadFailed,
+        )
+    })?;
+    let file_size = file
+        .metadata()
+        .map_err(|_| {
+            failure_capture::parser(
+                Provider::Codex,
+                ROLLOUT_PARSER_VERSION,
+                ParserReason::ReadFailed,
+            )
+        })?
+        .len();
+    file.seek(SeekFrom::Start(start_offset)).map_err(|_| {
+        failure_capture::parser(
+            Provider::Codex,
+            ROLLOUT_PARSER_VERSION,
+            ParserReason::ReadFailed,
+        )
+    })?;
     let allowed_bytes = max_bytes.min(
         MAX_ROLLOUT_METADATA_PROBE_BYTES
             .checked_sub(start_offset)
@@ -2162,7 +2292,13 @@ fn rollout_leaf_session_id(
         let bytes = Read::by_ref(&mut reader)
             .take(read_limit)
             .read_until(b'\n', &mut line)
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::parser(
+                    Provider::Codex,
+                    ROLLOUT_PARSER_VERSION,
+                    ParserReason::ReadFailed,
+                )
+            })?;
         if bytes == 0 {
             return Ok(LeafSessionProbe {
                 session_id: None,
@@ -2635,6 +2771,22 @@ fn process_index_line(
     output: &mut IndexedLineOutput<'_>,
     fast_turn_index: &mut FastTurnIndex<'_>,
 ) -> IndexLineOutcome {
+    let outcome = process_index_line_inner(line, context, state, output, fast_turn_index);
+    match outcome {
+        IndexLineOutcome::Processed(true) => failure_capture::record_accepted(),
+        IndexLineOutcome::Processed(false) => failure_capture::record_rejected(),
+        IndexLineOutcome::DeferredUntil(_) => {}
+    }
+    outcome
+}
+
+fn process_index_line_inner(
+    line: &[u8],
+    context: IndexLineContext,
+    state: &mut RolloutScanState,
+    output: &mut IndexedLineOutput<'_>,
+    fast_turn_index: &mut FastTurnIndex<'_>,
+) -> IndexLineOutcome {
     let IndexLineContext {
         cutoff,
         today,
@@ -2647,8 +2799,15 @@ fn process_index_line(
     }
     let header: RawRolloutHeader = match serde_json::from_slice(line) {
         Ok(header) => header,
-        Err(_) => {
-            debug_parser_failure("header_schema", None);
+        Err(error) => {
+            debug_parser_failure(
+                if error.is_syntax() || error.is_eof() {
+                    "invalid_json"
+                } else {
+                    "header_schema"
+                },
+                None,
+            );
             return IndexLineOutcome::Processed(false);
         }
     };
@@ -2825,7 +2984,14 @@ fn process_index_line(
                         state.active_model.as_deref(),
                     );
                 }
-                debug_parser_failure("schema_not_initialized", in_retention.then_some(day));
+                debug_parser_failure(
+                    if state.baseline_is_inherited.is_none() {
+                        "missing_session_metadata"
+                    } else {
+                        "schema_not_initialized"
+                    },
+                    in_retention.then_some(day),
+                );
                 return IndexLineOutcome::Processed(false);
             }
             let Ok(snapshot_timestamp_ns) = i64::try_from(timestamp.unix_timestamp_nanos()) else {
@@ -4121,13 +4287,31 @@ fn parsed_prefix_anchor(path: &Path, parsed_offset: u64) -> Result<Option<String
         .into_iter()
         .map(|start| start.min(parsed_offset.saturating_sub(sample_length)))
         .collect();
-    let mut file = fs::File::open(path).map_err(|_| ())?;
+    let mut file = fs::File::open(path).map_err(|_| {
+        failure_capture::parser(
+            Provider::Codex,
+            ROLLOUT_PARSER_VERSION,
+            ParserReason::ReadFailed,
+        )
+    })?;
     let mut hash = 0xcbf29ce484222325_u64;
     for start in starts {
-        file.seek(SeekFrom::Start(start)).map_err(|_| ())?;
+        file.seek(SeekFrom::Start(start)).map_err(|_| {
+            failure_capture::parser(
+                Provider::Codex,
+                ROLLOUT_PARSER_VERSION,
+                ParserReason::ReadFailed,
+            )
+        })?;
         let length = sample_length.min(parsed_offset.saturating_sub(start));
         let mut sample = vec![0; usize::try_from(length).map_err(|_| ())?];
-        file.read_exact(&mut sample).map_err(|_| ())?;
+        file.read_exact(&mut sample).map_err(|_| {
+            failure_capture::parser(
+                Provider::Codex,
+                ROLLOUT_PARSER_VERSION,
+                ParserReason::ReadFailed,
+            )
+        })?;
         for byte in start
             .to_le_bytes()
             .into_iter()
@@ -4360,7 +4544,9 @@ fn commit_file_progress(
         detail_cutoff,
     } = commit;
     let manifest = pricing_manifest();
-    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let transaction = connection.unchecked_transaction().map_err(|_| {
+        failure_capture::database_connection_failure(connection, "codex-usage-index")
+    })?;
     transaction
         .execute(
             "INSERT INTO codex_usage_files(
@@ -4443,7 +4629,7 @@ fn commit_file_progress(
                 cursor.parser_state.active_turn_id,
             ],
         )
-        .map_err(|_| ())?;
+        .map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))?;
     transaction
         .execute(
             "UPDATE codex_usage_files SET
@@ -4519,20 +4705,28 @@ fn commit_file_progress(
                 cursor.parser_state.provider_ordinal_mode.as_stored(),
             ],
         )
-        .map_err(|_| ())?;
+        .map_err(|_| {
+            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        })?;
     if replace_existing_usage {
         transaction
             .execute(
                 "DELETE FROM codex_usage_file_model_days WHERE path = ?1",
                 [path],
             )
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            })?;
         transaction
             .execute("DELETE FROM codex_usage_file_days WHERE path = ?1", [path])
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            })?;
         transaction
             .execute("DELETE FROM codex_usage_file_turns WHERE path = ?1", [path])
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            })?;
     }
     for snapshot in snapshots {
         transaction
@@ -4560,7 +4754,9 @@ fn commit_file_progress(
                     to_i64(snapshot.usage.total)?,
                 ],
             )
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            })?;
     }
     for (turn_id, day) in turn_days {
         transaction
@@ -4569,7 +4765,9 @@ fn commit_file_progress(
                  VALUES(?1, ?2, ?3)",
                 params![path, turn_id, day.to_string()],
             )
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            })?;
     }
     let mut file_days = BTreeMap::<Date, FileDayDelta>::new();
     for (key, delta) in rows {
@@ -4671,10 +4869,10 @@ fn commit_file_progress(
                         manifest.map(|manifest| manifest.basis.as_str()),
                         pricing_fingerprint,
                         delta.complete,
-                        delta.observed_through.format(&Rfc3339).map_err(|_| ())?,
+                        delta.observed_through.format(&Rfc3339).map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))?,
                     ],
                 )
-                .map_err(|_| ())?;
+                .map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))?;
         }
     }
     for (day, delta) in file_days {
@@ -4703,18 +4901,30 @@ fn commit_file_progress(
                     to_i64(delta.priced_tokens)?,
                     delta.cost_usd,
                     delta.complete,
-                    delta.observed_through.format(&Rfc3339).map_err(|_| ())?,
+                    delta.observed_through.format(&Rfc3339).map_err(|_| {
+                        failure_capture::database_connection_failure(
+                            connection,
+                            "codex-usage-index",
+                        )
+                    })?,
                     delta
                         .priced_observed_through
                         .map(|value| value.format(&Rfc3339))
                         .transpose()
-                        .map_err(|_| ())?,
+                        .map_err(|_| failure_capture::database_connection_failure(
+                            connection,
+                            "codex-usage-index"
+                        ))?,
                     Option::<&str>::None,
                 ],
             )
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            })?;
     }
-    transaction.commit().map_err(|_| ())
+    transaction
+        .commit()
+        .map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))
 }
 
 #[derive(Clone, Debug)]
@@ -5021,7 +5231,14 @@ fn index_file(
     max_millis: u128,
     remaining_bytes: &mut u64,
 ) -> Result<bool, ()> {
-    let metadata = fs::metadata(path).map_err(|_| ())?;
+    failure_capture::file_seen();
+    let metadata = fs::metadata(path).map_err(|_| {
+        failure_capture::parser(
+            Provider::Codex,
+            ROLLOUT_PARSER_VERSION,
+            ParserReason::ReadFailed,
+        )
+    })?;
     let path_value = path.to_string_lossy().into_owned();
     let identity = file_identity(&metadata);
     let size = metadata.len();
@@ -5038,7 +5255,9 @@ fn index_file(
         reset_file(connection, &path_value)?;
         return Ok(true);
     }
-    let stored = load_file_cursor(connection, &path_value)?;
+    let stored = load_file_cursor(connection, &path_value).inspect_err(|_| {
+        failure_capture::database_connection_failure(connection, "codex-usage-index")
+    })?;
     let metadata_requires_rebuild = stored.as_ref().is_some_and(|cursor| {
         cursor.parser_version != ROLLOUT_PARSER_VERSION
             || cursor.identity != identity
@@ -5077,7 +5296,14 @@ fn index_file(
                 .as_deref()
                 .zip(cursor.parser_state.fork_timestamp_ns)
                 .map(|(parent, fork)| {
-                    resolve_parent_snapshot(connection, &path_value, parent, fork)
+                    resolve_parent_snapshot(connection, &path_value, parent, fork).inspect_err(
+                        |_| {
+                            failure_capture::database_connection_failure(
+                                connection,
+                                "codex-usage-index",
+                            )
+                        },
+                    )
                 })
                 .transpose()?
                 .flatten()
@@ -5095,7 +5321,9 @@ fn index_file(
                 stored = None;
             } else {
                 reset_dependent_accounting(connection, &path_value, resolved.as_ref())?;
-                stored = load_file_cursor(connection, &path_value)?;
+                stored = load_file_cursor(connection, &path_value).inspect_err(|_| {
+                    failure_capture::database_connection_failure(connection, "codex-usage-index")
+                })?;
             }
         }
     }
@@ -5134,9 +5362,21 @@ fn index_file(
     {
         cursor.accounting_ready = false;
     }
-    let mut file = fs::File::open(path).map_err(|_| ())?;
+    let mut file = fs::File::open(path).map_err(|_| {
+        failure_capture::parser(
+            Provider::Codex,
+            ROLLOUT_PARSER_VERSION,
+            ParserReason::ReadFailed,
+        )
+    })?;
     file.seek(SeekFrom::Start(cursor.parsed_offset))
-        .map_err(|_| ())?;
+        .map_err(|_| {
+            failure_capture::parser(
+                Provider::Codex,
+                ROLLOUT_PARSER_VERSION,
+                ParserReason::ReadFailed,
+            )
+        })?;
     let mut reader = BufReader::new(file);
     let mut rows = BTreeMap::new();
     let mut turn_ids = BTreeSet::new();
@@ -5160,7 +5400,13 @@ fn index_file(
         let bytes = Read::by_ref(&mut reader)
             .take(read_limit)
             .read_until(b'\n', &mut line)
-            .map_err(|_| ())?;
+            .map_err(|_| {
+                failure_capture::parser(
+                    Provider::Codex,
+                    ROLLOUT_PARSER_VERSION,
+                    ParserReason::ReadFailed,
+                )
+            })?;
         if bytes == 0 {
             break;
         }
@@ -5187,6 +5433,7 @@ fn index_file(
                     parser_complete = false;
                     cursor.parser_state.parser_error_seen = true;
                     debug_parser_failure("line_too_large", None);
+                    failure_capture::record_rejected();
                 }
                 discarding_overlong_line = true;
                 *remaining_bytes -= bytes;
@@ -5279,9 +5526,16 @@ fn index_file(
                 .zip(cursor.parser_state.fork_timestamp_ns)
                 .zip(cursor.parser_state.parent_baseline)
                 .map(|((parent, fork), marker_baseline)| {
-                    resolve_parent_snapshot(connection, &path_value, parent, fork).map(|resolved| {
-                        resolved.filter(|resolved| resolved.baseline == marker_baseline)
-                    })
+                    resolve_parent_snapshot(connection, &path_value, parent, fork)
+                        .inspect_err(|_| {
+                            failure_capture::database_connection_failure(
+                                connection,
+                                "codex-usage-index",
+                            )
+                        })
+                        .map(|resolved| {
+                            resolved.filter(|resolved| resolved.baseline == marker_baseline)
+                        })
                 })
                 .transpose()?
                 .flatten()
@@ -5385,7 +5639,14 @@ fn index_file(
                     .as_deref()
                     .zip(cursor.parser_state.fork_timestamp_ns)
                     .map(|(parent, fork)| {
-                        resolve_parent_snapshot(connection, &path_value, parent, fork)
+                        resolve_parent_snapshot(connection, &path_value, parent, fork).inspect_err(
+                            |_| {
+                                failure_capture::database_connection_failure(
+                                    connection,
+                                    "codex-usage-index",
+                                )
+                            },
+                        )
                     })
                     .transpose()?
                     .flatten();
@@ -5420,7 +5681,11 @@ fn index_file(
             .parent_session_id
             .as_deref()
             .zip(cursor.parser_state.fork_timestamp_ns)
-            .map(|(parent, fork)| resolve_parent_snapshot(connection, &path_value, parent, fork))
+            .map(|(parent, fork)| {
+                resolve_parent_snapshot(connection, &path_value, parent, fork).inspect_err(|_| {
+                    failure_capture::database_connection_failure(connection, "codex-usage-index")
+                })
+            })
             .transpose()?
             .flatten();
         let dependency_is_current = current_dependency.as_ref().is_some_and(|resolved| {
@@ -5790,6 +6055,7 @@ fn index_local_usage_with_budget(
     now: OffsetDateTime,
     budget: ScanBudget,
 ) -> Option<LocalUsageObservation> {
+    let _failures = failure_capture::ScanFailures::begin();
     static INDEX_PASS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let _index_pass = INDEX_PASS_LOCK
         .get_or_init(|| Mutex::new(()))
@@ -5802,20 +6068,34 @@ fn index_local_usage_with_budget(
     debug_usage_event(&format!(
         "scan_pass_started max_bytes={max_bytes} max_file_bytes={max_file_bytes} max_discovery_millis={max_discovery_millis} max_parse_millis={max_parse_millis}"
     ));
-    let mut connection = Connection::open(database_path).ok()?;
-    ensure_index_schema(&mut connection, Some(database_path)).ok()?;
+    let mut connection = Connection::open(database_path)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
+    ensure_index_schema(&mut connection, Some(database_path))
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
     let today = utc_ranking_day(now);
     let cutoff = today - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
     let detail_cutoff = today - Duration::days(COST_DETAIL_RETENTION_DAYS - 1);
-    prune_stored_fast_turns_outside_detail_window(&connection, detail_cutoff, today).ok()?;
+    prune_stored_fast_turns_outside_detail_window(&connection, detail_cutoff, today)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
     let fast_turns = match load_fast_turn_evidence(home, detail_cutoff, today) {
         Ok(fresh) => {
-            reconcile_fast_turn_evidence(&connection, &fresh).ok()?;
+            reconcile_fast_turn_evidence(&connection, &fresh)
+                .inspect_err(|_| {
+                    failure_capture::database_failure(database_path, "codex-usage-index")
+                })
+                .ok()?;
             fresh.turns
         }
-        Err(()) => load_stored_fast_turns(&connection).ok()?,
+        Err(()) => load_stored_fast_turns(&connection)
+            .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+            .ok()?,
     };
-    let promoted_rows = promote_compatible_parser_rows(&connection).ok()?;
+    let promoted_rows = promote_compatible_parser_rows(&connection)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
     if promoted_rows > 0 {
         debug_usage_event(&format!(
             "compatible_parser_rows_promoted source_version={} target_version={} rows={promoted_rows}",
@@ -5834,10 +6114,16 @@ fn index_local_usage_with_budget(
         today,
         cutoff_modified_ns,
     )
+    .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
     .ok()?;
-    let pricing_complete =
-        retention_complete && reprice_index(&connection, detail_cutoff, today).ok()?;
-    let summaries_complete = pricing_complete && ensure_file_day_summaries(&connection).is_ok();
+    let pricing_complete = retention_complete
+        && reprice_index(&connection, detail_cutoff, today)
+            .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+            .ok()?;
+    let summaries_complete = pricing_complete
+        && ensure_file_day_summaries(&connection)
+            .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+            .is_ok();
     if !retention_complete || !pricing_complete || !summaries_complete {
         debug_usage_event(&format!(
             "scan_pass_completed stop=maintenance elapsed_ms={} retention_complete={retention_complete} pricing_complete={pricing_complete} summaries_complete={summaries_complete}",
@@ -5851,6 +6137,7 @@ fn index_local_usage_with_budget(
             false,
             None,
         )
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
         .ok()?;
         if !pricing_complete {
             local.suppress_cost_evidence();
@@ -5865,7 +6152,14 @@ fn index_local_usage_with_budget(
     let mut found_root = false;
     let mut traversal_complete = true;
     for root in &rollout_roots {
-        if fs::symlink_metadata(root).is_err() {
+        if let Err(error) = fs::symlink_metadata(root) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                failure_capture::parser(
+                    Provider::Codex,
+                    ROLLOUT_PARSER_VERSION,
+                    ParserReason::ReadFailed,
+                );
+            }
             continue;
         }
         found_root = true;
@@ -5893,8 +6187,12 @@ fn index_local_usage_with_budget(
         return None;
     }
     files.sort();
-    let stored_files = load_file_summaries(&connection).ok()?;
-    let required_parent_ids = required_parent_session_ids(&connection, cutoff_modified_ns).ok()?;
+    let stored_files = load_file_summaries(&connection)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
+    let required_parent_ids = required_parent_session_ids(&connection, cutoff_modified_ns)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
     let mut discovered_files = Vec::with_capacity(files.len());
     let mut accepted_canonical_rollout_paths = BTreeSet::new();
     let mut duplicate_rollout_paths = BTreeSet::new();
@@ -6071,9 +6369,12 @@ fn index_local_usage_with_budget(
                 .as_ref()
                 .map(|(path, offset)| (path.as_str(), *offset)),
         )
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
         .ok()?;
     } else {
-        store_required_parent_probe_cursor(&connection, None).ok()?;
+        store_required_parent_probe_cursor(&connection, None)
+            .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+            .ok()?;
     }
 
     let mut ordered_files = Vec::with_capacity(discovered_files.len());
@@ -6100,11 +6401,17 @@ fn index_local_usage_with_budget(
         .map(|(_, _, _, _, _, _, path)| path.to_string_lossy().into_owned())
         .collect::<BTreeSet<_>>();
     for duplicate in &duplicate_rollout_paths {
-        reset_file(&connection, duplicate).ok()?;
+        reset_file(&connection, duplicate)
+            .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+            .ok()?;
     }
     if traversal_complete {
         for missing in stored_files.keys().filter(|path| !present.contains(*path)) {
-            reset_file(&connection, missing).ok()?;
+            reset_file(&connection, missing)
+                .inspect_err(|_| {
+                    failure_capture::database_failure(database_path, "codex-usage-index")
+                })
+                .ok()?;
         }
     }
     for (path_value, stored) in &stored_files {
@@ -6141,7 +6448,11 @@ fn index_local_usage_with_budget(
             continue;
         }
         if !accepted_canonical_rollout_paths.insert(canonical_path) {
-            reset_file(&connection, path_value).ok()?;
+            reset_file(&connection, path_value)
+                .inspect_err(|_| {
+                    failure_capture::database_failure(database_path, "codex-usage-index")
+                })
+                .ok()?;
             continue;
         }
         let is_required_parent = dependency_parent_paths.contains(path_value)
@@ -6241,6 +6552,7 @@ fn index_local_usage_with_budget(
                 ))
             },
         )
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
         .unwrap_or((1, 1, 0));
     let scan_status = if failed {
         UsageScanStatus::Unavailable
@@ -6274,7 +6586,9 @@ fn index_local_usage_with_budget(
         parse_started.elapsed().as_millis()
     ));
     debug_unpriced_model_days(&connection, detail_cutoff, today);
-    let indexed_files = load_file_summaries(&connection).ok()?;
+    let indexed_files = load_file_summaries(&connection)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .ok()?;
     let latest_pending_modified_at = files
         .iter()
         .filter(|(_, _, _, identity, modified_ns, size, path)| {
@@ -6295,6 +6609,7 @@ fn index_local_usage_with_budget(
         traversal_complete && !failed,
         latest_pending_modified_at,
     )
+    .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
     .ok()
 }
 
@@ -6862,6 +7177,50 @@ mod tests {
         .collect::<Vec<_>>()
         .join("\n")
             + "\n"
+    }
+
+    #[test]
+    fn codex_failure_diagnostics_keep_version_counts_and_no_source_text() {
+        let fixture = TempUsage::new();
+        let source = reviewed_codex_0_148_root_rollout(110) + "PRIVATE-BAD-JSON\n";
+        fs::write(&fixture.rollout, source).unwrap();
+        let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(index_local_usage_at(&fixture.database, &fixture.root, now).is_some());
+        });
+        let parser = failures
+            .iter()
+            .find_map(|failure| match failure {
+                crate::diagnostics::Failure::Parser { context, .. } => Some(context),
+                _ => None,
+            })
+            .expect("parser failure captured");
+        assert_eq!(parser.source_versions, ["0.148.0-alpha.21"]);
+        assert_eq!(parser.records_rejected, Some(1));
+        assert_eq!(parser.records_accepted, Some(4));
+        assert_eq!(parser.files_seen, Some(1));
+        assert_eq!(parser.reason, ParserReason::InvalidJson);
+        assert!(
+            !serde_json::to_string(&failures)
+                .unwrap()
+                .contains("PRIVATE")
+        );
+    }
+
+    #[test]
+    fn absent_codex_cache_is_silent_but_failed_database_open_is_reported() {
+        let fixture = TempUsage::new();
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(load_cached_account_usage(Some(&fixture.database)).is_none());
+        });
+        assert!(failures.is_empty());
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(load_cached_account_usage(Some(&fixture.root)).is_none());
+        });
+        let [crate::diagnostics::Failure::Database { context, .. }] = failures.as_slice() else {
+            panic!("one database failure");
+        };
+        assert_eq!(context.stage.as_deref(), Some("codex-usage-index"));
     }
 
     fn turn_rollout(turn_id: &str, model: &str, total: u64) -> String {

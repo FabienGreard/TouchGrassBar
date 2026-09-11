@@ -2,6 +2,7 @@ mod daily_usage_aggregate;
 mod database;
 #[cfg(debug_assertions)]
 mod dev_instance;
+mod diagnostics;
 mod doomerboard;
 pub mod lifecycle;
 mod login_startup;
@@ -67,6 +68,7 @@ fn production_native_core(
         |database| {
             NativeCore::open_with_provider_enablement(database.path(), Arc::clone(&enablement))
                 .unwrap_or_else(|_| {
+                    database::report_open_failure(Some(database.path()), "open-native-core");
                     NativeCore::unavailable_with_provider_enablement(Arc::clone(&enablement))
                 })
         },
@@ -1345,11 +1347,30 @@ pub fn run() {
             );
             #[cfg(not(debug_assertions))]
             let database_directory = app.path().app_data_dir();
-            let database_path = database_directory.ok().and_then(|directory| {
-                std::fs::create_dir_all(&directory)
-                    .ok()
-                    .map(|()| directory.join("touchgrassbar.sqlite3"))
-            });
+            #[cfg(debug_assertions)]
+            let diagnostics_enabled = physical_menu_bar_fixture.is_none();
+            #[cfg(not(debug_assertions))]
+            let diagnostics_enabled = true;
+            if diagnostics_enabled {
+                let version = app.package_info().version.to_string();
+                match database_directory.as_ref() {
+                    Ok(directory) => {
+                        let _ = diagnostics::initialize(directory, &version);
+                    }
+                    Err(_) => {
+                        let _ = diagnostics::initialize_memory(&version);
+                    }
+                }
+            }
+            let database_path = match database_directory {
+                Ok(directory) if std::fs::create_dir_all(&directory).is_ok() => {
+                    Some(directory.join("touchgrassbar.sqlite3"))
+                }
+                _ => {
+                    database::report_open_failure(None, "open-database");
+                    None
+                }
+            };
             let prepared_database =
                 database_path
                     .as_deref()
@@ -1362,7 +1383,13 @@ pub fn run() {
                     });
             let lifecycle = prepared_database
                 .as_ref()
-                .and_then(|database| DesktopLifecycle::open(database.path()).ok())
+                .and_then(|database| match DesktopLifecycle::open(database.path()) {
+                    Ok(lifecycle) => Some(lifecycle),
+                    Err(_) => {
+                        database::report_open_failure(Some(database.path()), "open-lifecycle");
+                        None
+                    }
+                })
                 .unwrap_or_else(DesktopLifecycle::unavailable);
             let provider_enablement: Arc<dyn providers::ProviderEnablementPolicy> =
                 Arc::new(lifecycle.clone());
@@ -1428,6 +1455,11 @@ pub fn run() {
             let profile_coordinator = Arc::new(Mutex::new(profile::production_coordinator(
                 lifecycle.clone(),
             )));
+            if diagnostics_enabled {
+                app.manage(diagnostics::DiagnosticRuntime::start(Arc::clone(
+                    &profile_coordinator,
+                )));
+            }
             #[cfg(target_os = "macos")]
             app.manage(doomerboard::production_runtime(
                 Arc::clone(&profile_coordinator),
@@ -1647,6 +1679,9 @@ pub fn run() {
             }
         }
         RunEvent::Exit => {
+            if let Some(diagnostics) = app.try_state::<diagnostics::DiagnosticRuntime>() {
+                diagnostics.shutdown();
+            }
             if let Some(usage_sync) = app.try_state::<PendingUsageSynchronization>() {
                 usage_sync.shutdown();
             }

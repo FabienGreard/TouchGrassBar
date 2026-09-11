@@ -96,6 +96,14 @@ _Avoid_: Readiness score, QA opinion, local green build
 
 ## Native Boundary
 
+**Failure Report**:
+A bounded, structured record of a failed native operation and its technical
+context at capture time. The report uses the same format for every Coding
+Provider and application-wide failures. Only administrators can read it.
+Successful operations send no report. A failure time is separate from the
+server receipt time; silence does not prove recovery or current health.
+_Avoid_: Usage log, health snapshot, public activity
+
 **Sanitized Desktop State**:
 The versioned, revisioned, bounded projection of native-owned product state that may enter the React interface. It contains display-safe provider, Profile, synchronization, and social data but no credentials or provider source material. React replaces it from a complete cached snapshot; revision notices never carry partial state.
 _Avoid_: App state, native state, raw snapshot

@@ -707,7 +707,7 @@ impl ProviderPresenceDetector for SystemProviderPresenceDetector {
 }
 
 enum LifecycleStore {
-    Persistent(SqliteLifecycleStore),
+    Persistent(Box<SqliteLifecycleStore>),
     Unavailable,
 }
 
@@ -733,7 +733,7 @@ impl DesktopLifecycle {
     ) -> Result<Self, &'static str> {
         Ok(Self {
             inner: Arc::new(DesktopLifecycleInner {
-                store: LifecycleStore::Persistent(SqliteLifecycleStore::open(path)?),
+                store: LifecycleStore::Persistent(Box::new(SqliteLifecycleStore::open(path)?)),
                 detector,
                 settings_selection: Mutex::new(SettingsSelection {
                     section: SettingsSection::General,

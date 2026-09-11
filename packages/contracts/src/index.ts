@@ -1,4 +1,5 @@
 export * from "./native.generated";
+export * from "./diagnostics";
 
 import * as z from "zod";
 

@@ -1,6 +1,8 @@
 mod fast_pricing;
 mod usage;
 
+use crate::diagnostics::{AccessOperation, AccessReason, Provider};
+use crate::providers::failure_capture;
 pub(crate) use usage::{
     USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION, load_daily_usage_history,
     prepare_database as prepare_usage_database, usage_index_schema_version,
@@ -756,6 +758,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
             attempt.remaining()?;
             return Ok(Some(provider_observation));
         }
+        let _failures = failure_capture::ScanFailures::begin();
         debug_event("refresh_started");
         let mut session_guard = self
             .session
@@ -773,7 +776,8 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
                 .clone();
             let session =
                 CodexAppServerSession::start(&self.processes, &executable, attempt, trigger)
-                    .inspect_err(|_| {
+                    .inspect_err(|failure| {
+                        capture_access_request_failure(AccessOperation::ReadQuota, failure);
                         debug_event("refresh_failed stage=session_start");
                     })?;
             *session_guard = Some(session);
@@ -813,7 +817,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
             .sanitized_snapshot(self.clock.now())
             .map_err(|_| {
                 debug_event("refresh_failed stage=sanitized_projection");
-                RefreshFailure::SourceUnavailable
+                access_response_failure(AccessOperation::ReadQuota)
             })?;
         provider_observation.quota = quota;
         let account_usage = self.refresh_account_usage(
@@ -920,7 +924,10 @@ impl CodexAppServerSession {
         &mut self,
         attempt: &RefreshAttempt,
     ) -> Result<CodexQuotaObservation, RefreshFailure> {
-        let _ = self.drain_sparse_notifications()?;
+        let _failures = failure_capture::ScanFailures::begin();
+        let _ = self.drain_sparse_notifications().inspect_err(|failure| {
+            capture_access_request_failure(AccessOperation::ReadQuota, failure)
+        })?;
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
         self.send(
@@ -930,9 +937,14 @@ impl CodexAppServerSession {
                 "params": null
             }),
             attempt,
-        )?;
+        )
+        .inspect_err(|failure| {
+            capture_access_request_failure(AccessOperation::ReadQuota, failure)
+        })?;
         loop {
-            let message = self.receive(attempt)?;
+            let message = self.receive(attempt).inspect_err(|failure| {
+                capture_access_request_failure(AccessOperation::ReadQuota, failure)
+            })?;
             if is_sparse_notification(&message) {
                 self.merge_notification(&message)?;
                 continue;
@@ -941,15 +953,19 @@ impl CodexAppServerSession {
                 continue;
             }
             if message.get("error").is_some() {
+                capture_access_request_failure(
+                    AccessOperation::ReadQuota,
+                    &RefreshFailure::SourceUnavailable,
+                );
                 return Err(RefreshFailure::SourceUnavailable);
             }
             let payload = message
                 .get("result")
-                .ok_or(RefreshFailure::SourceUnavailable)?;
-            let payload =
-                serde_json::to_string(payload).map_err(|_| RefreshFailure::SourceUnavailable)?;
+                .ok_or_else(|| access_response_failure(AccessOperation::ReadQuota))?;
+            let payload = serde_json::to_string(payload)
+                .map_err(|_| access_response_failure(AccessOperation::ReadQuota))?;
             let observation = CodexQuotaObservation::from_full_read(&payload)
-                .map_err(|_| RefreshFailure::SourceUnavailable)?;
+                .map_err(|_| access_response_failure(AccessOperation::ReadQuota))?;
             debug_observation(&observation);
             self.observation = Some(observation.clone());
             return Ok(observation);
@@ -977,6 +993,7 @@ impl CodexAppServerSession {
         &mut self,
         attempt: &RefreshAttempt,
     ) -> Result<AccountUsageObservation, RefreshFailure> {
+        let _failures = failure_capture::ScanFailures::begin();
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
         self.send(
@@ -986,9 +1003,14 @@ impl CodexAppServerSession {
                 "params": null
             }),
             attempt,
-        )?;
+        )
+        .inspect_err(|failure| {
+            capture_access_request_failure(AccessOperation::ReadUsage, failure)
+        })?;
         loop {
-            let message = self.receive(attempt)?;
+            let message = self.receive(attempt).inspect_err(|failure| {
+                capture_access_request_failure(AccessOperation::ReadUsage, failure)
+            })?;
             if is_sparse_notification(&message) {
                 self.merge_notification(&message)?;
                 continue;
@@ -997,14 +1019,19 @@ impl CodexAppServerSession {
                 continue;
             }
             if message.get("error").is_some() {
+                capture_access_request_failure(
+                    AccessOperation::ReadUsage,
+                    &RefreshFailure::SourceUnavailable,
+                );
                 return Err(RefreshFailure::SourceUnavailable);
             }
             let payload = message
                 .get("result")
-                .ok_or(RefreshFailure::SourceUnavailable)?;
-            let payload =
-                serde_json::to_string(payload).map_err(|_| RefreshFailure::SourceUnavailable)?;
-            return parse_account_usage(&payload).map_err(|_| RefreshFailure::SourceUnavailable);
+                .ok_or_else(|| access_response_failure(AccessOperation::ReadUsage))?;
+            let payload = serde_json::to_string(payload)
+                .map_err(|_| access_response_failure(AccessOperation::ReadUsage))?;
+            return parse_account_usage(&payload)
+                .map_err(|_| access_response_failure(AccessOperation::ReadUsage));
         }
     }
 
@@ -1078,12 +1105,26 @@ impl AccountUsageReader for CodexAppServerSession {
     }
 }
 
+fn capture_access_request_failure(operation: AccessOperation, failure: &RefreshFailure) {
+    if !matches!(failure, RefreshFailure::Cancelled) {
+        failure_capture::access(Provider::Codex, operation, AccessReason::RequestFailed);
+    }
+}
+
+fn access_response_failure(operation: AccessOperation) -> RefreshFailure {
+    failure_capture::access(Provider::Codex, operation, AccessReason::InvalidResponse);
+    RefreshFailure::SourceUnavailable
+}
+
 fn map_process_error(error: ProviderProcessError) -> RefreshFailure {
     match error {
         ProviderProcessError::TimedOut => RefreshFailure::DeadlineExceeded,
         ProviderProcessError::Cancelled => RefreshFailure::Cancelled,
-        ProviderProcessError::SupervisorStopping
-        | ProviderProcessError::StartFailed
+        ProviderProcessError::SupervisorStopping => {
+            failure_capture::provider_stopping();
+            RefreshFailure::SourceUnavailable
+        }
+        ProviderProcessError::StartFailed
         | ProviderProcessError::InputUnavailable
         | ProviderProcessError::OutputClosed
         | ProviderProcessError::OutputLimit => RefreshFailure::SourceUnavailable,
@@ -1212,6 +1253,27 @@ mod tests {
 
     fn observed_at() -> OffsetDateTime {
         OffsetDateTime::parse(OBSERVED_AT, &Rfc3339).expect("valid observation time")
+    }
+
+    #[test]
+    fn expected_supervisor_stop_and_cancellation_do_not_report_request_failures() {
+        for source in [
+            ProviderProcessError::SupervisorStopping,
+            ProviderProcessError::Cancelled,
+        ] {
+            let failures = crate::diagnostics::collect_failures_for_test(|| {
+                let _attempt = failure_capture::ScanFailures::begin();
+                let failure = map_process_error(source);
+                capture_access_request_failure(AccessOperation::ReadQuota, &failure);
+            });
+            assert!(failures.is_empty());
+        }
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let _attempt = failure_capture::ScanFailures::begin();
+            let failure = map_process_error(ProviderProcessError::OutputClosed);
+            capture_access_request_failure(AccessOperation::ReadQuota, &failure);
+        });
+        assert_eq!(failures.len(), 1);
     }
 
     #[test]

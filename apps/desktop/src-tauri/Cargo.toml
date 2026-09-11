@@ -30,11 +30,12 @@ reqwest = { version = "0.13", default-features = false, features = [
   "rustls-no-provider",
 ] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rusqlite = { version = "0.37", features = ["backup", "bundled"] }
+rusqlite = { version = "0.37", features = ["backup", "bundled", "hooks"] }
 schemars = "=1.2.2"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "=0.10.9"
 strip-ansi-escapes = "=0.2.1"
 tauri = { version = "=2.11.5", features = ["image-png", "macos-private-api", "tray-icon"] }
 tauri-plugin-autostart = "2"

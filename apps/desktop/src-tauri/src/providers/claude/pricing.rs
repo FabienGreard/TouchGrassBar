@@ -1,3 +1,5 @@
+use crate::diagnostics::{PricingReason, Provider};
+use crate::providers::failure_capture;
 use std::{collections::BTreeSet, sync::OnceLock};
 
 use serde::Deserialize;
@@ -176,7 +178,31 @@ impl PricingCatalog {
         usage: BillableUsage<'_>,
     ) -> PriceDecision {
         self.price_message_inner(model_name, day, usage)
-            .unwrap_or_else(PriceDecision::unavailable)
+            .unwrap_or_else(|reason| {
+                let reason_code = match reason {
+                    "token-overflow" => PricingReason::CounterOverflow,
+                    "missing-cache-write-split" => PricingReason::MissingCacheWriteSplit,
+                    "missing-web-search-usage" => PricingReason::MissingWebSearchUsage,
+                    "unpriced-code-execution" => PricingReason::UnpricedCodeExecution,
+                    "unknown-paid-server-tool" => PricingReason::UnknownPaidServerTool,
+                    "unknown-model" => PricingReason::UnknownModel,
+                    "missing-effective-price" => PricingReason::MissingEffectivePrice,
+                    "unknown-service-tier" => PricingReason::UnknownServiceTier,
+                    "unknown-inference-geo" => PricingReason::UnknownInferenceGeo,
+                    "fast-batch-combination" => PricingReason::FastBatchCombination,
+                    "missing-fast-price" => PricingReason::MissingFastPrice,
+                    "missing-speed" => PricingReason::MissingSpeed,
+                    "unknown-speed" => PricingReason::UnknownSpeed,
+                    _ => PricingReason::InvalidCost,
+                };
+                failure_capture::pricing(
+                    Provider::Claude,
+                    Some(day),
+                    reason_code,
+                    Some(self.basis()),
+                );
+                PriceDecision::unavailable(reason)
+            })
     }
 
     fn price_message_inner(
@@ -299,10 +325,19 @@ impl PricingCatalog {
 
 pub(super) fn catalog() -> Option<&'static PricingCatalog> {
     static CATALOG: OnceLock<Result<PricingCatalog, ()>> = OnceLock::new();
-    CATALOG
+    let catalog = CATALOG
         .get_or_init(|| parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON))
         .as_ref()
-        .ok()
+        .ok();
+    if catalog.is_none() {
+        failure_capture::pricing(
+            Provider::Claude,
+            None,
+            PricingReason::CatalogUnavailable,
+            None,
+        );
+    }
+    catalog
 }
 
 #[cfg(test)]
@@ -961,6 +996,35 @@ mod tests {
                 )
                 .cost_usd,
             None
+        );
+    }
+    #[test]
+    fn pricing_failure_keeps_reason_without_assigning_current_parser_to_retained_usage() {
+        let catalog = catalog().unwrap();
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let decision = catalog.price_message(
+                "PRIVATE-MODEL",
+                Date::from_calendar_date(2026, time::Month::September, 5).unwrap(),
+                BillableUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    web_search_requests: Some(0),
+                    ..BillableUsage::default()
+                },
+            );
+            assert_eq!(decision.cost_usd, None);
+        });
+        let [crate::diagnostics::Failure::Pricing { context, .. }] = failures.as_slice() else {
+            panic!("one pricing failure");
+        };
+        assert_eq!(context.reason, PricingReason::UnknownModel);
+        assert_eq!(context.parser_version, None);
+        assert_eq!(context.observed_tokens, None);
+        assert_eq!(context.catalog_version.as_deref(), Some(catalog.basis()));
+        assert!(
+            !serde_json::to_string(&failures)
+                .unwrap()
+                .contains("PRIVATE")
         );
     }
 }

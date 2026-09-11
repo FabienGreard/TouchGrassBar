@@ -23,6 +23,91 @@ use crate::{providers, sanitized, updater};
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
 
+#[test]
+fn ready_database_and_successful_migration_emit_no_failure_report() {
+    let database = TestDatabase::new();
+    let reports = crate::diagnostics::collect_failures_for_test(|| {
+        prepare(&database.0).expect("create database");
+        prepare(&database.0).expect("reopen database");
+    });
+    assert!(reports.is_empty());
+}
+
+#[test]
+fn future_database_reports_known_versions_without_changing_the_database() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("create database");
+    let connection = Connection::open(&database.0).expect("open database");
+    connection
+        .pragma_update(None, "user_version", DATABASE_FORMAT_VERSION + 1)
+        .expect("set future version");
+    drop(connection);
+    let before = fs::read(&database.0).expect("read database bytes");
+    let reports = crate::diagnostics::collect_failures_for_test(|| {
+        assert!(matches!(
+            prepare(&database.0),
+            Err(DatabaseOpenError::UnsupportedFuture { .. })
+        ));
+    });
+    assert_eq!(reports.len(), 1);
+    let report = serde_json::to_value(&reports[0]).expect("serialize report");
+    assert_eq!(report["code"], "database_version_unsupported");
+    assert_eq!(report["provider"], serde_json::Value::Null);
+    assert_eq!(
+        report["context"]["observedFormat"],
+        DATABASE_FORMAT_VERSION + 1
+    );
+    assert_eq!(report["context"]["expectedFormat"], DATABASE_FORMAT_VERSION);
+    assert_eq!(
+        report["context"]["modules"].as_array().unwrap().len(),
+        MODULES.len()
+    );
+    assert_eq!(
+        fs::read(&database.0).expect("read unchanged database"),
+        before
+    );
+}
+
+#[test]
+fn corrupt_database_reports_unknown_state_without_exporting_source_bytes() {
+    let database = TestDatabase::new();
+    fs::write(&database.0, "private conversation and /private/user/path")
+        .expect("write corrupt database");
+    let reports = crate::diagnostics::collect_failures_for_test(|| {
+        assert!(prepare(&database.0).is_err());
+    });
+    assert_eq!(reports.len(), 1);
+    let report = serde_json::to_value(&reports[0]).expect("serialize report");
+    assert!(report["context"]["observedFormat"].is_null());
+    assert!(
+        report["context"]["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|module| module["observedVersion"].is_null())
+    );
+    let encoded = serde_json::to_string(&report).unwrap();
+    assert!(!encoded.contains("private conversation"));
+    assert!(!encoded.contains("/private/user/path"));
+    assert!(!encoded.contains(&database.0.to_string_lossy().to_string()));
+}
+
+#[test]
+fn failed_backup_check_records_the_stage_and_preserves_backup_bytes() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("create database");
+    let backup = coordinator_backup_path(&database.0);
+    fs::write(&backup, b"invalid retained backup").expect("write damaged backup");
+    let reports = crate::diagnostics::collect_failures_for_test(|| {
+        assert!(prepare(&database.0).is_err());
+    });
+    let report = serde_json::to_value(&reports[0]).unwrap();
+    assert_eq!(report["code"], "database_migration_failed");
+    assert_eq!(report["context"]["stage"], "validate-backup");
+    assert_eq!(report["context"]["backupState"], "present");
+    assert_eq!(fs::read(backup).unwrap(), b"invalid retained backup");
+}
+
 struct TestDatabase(PathBuf);
 
 impl TestDatabase {

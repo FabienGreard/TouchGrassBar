@@ -8,7 +8,9 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
+use crate::diagnostics::{self, Failure, Provider, SyncCode, SyncContext, SyncReason, SyncStage};
 use crate::profile::{Secret, is_exact_authority_rejection};
+use crate::providers::failure_capture;
 
 use super::{
     AcknowledgementOutcome, PendingUsageBatch, ProviderSettingsAcknowledgement,
@@ -62,7 +64,7 @@ impl HttpUsageSyncTransport {
             Ok(args) => args,
             Err(()) => return UsageSyncTransportOutcome::Deferred,
         };
-        let jwt = match self.fetch_convex_jwt(session) {
+        let jwt = match self.fetch_convex_jwt(session, &args.diagnostics) {
             TokenFetchOutcome::Jwt(jwt) => jwt,
             TokenFetchOutcome::Offline => return UsageSyncTransportOutcome::Offline,
             TokenFetchOutcome::SessionRejected => {
@@ -76,7 +78,11 @@ impl HttpUsageSyncTransport {
         send_with_runtime(convex_url, jwt, args)
     }
 
-    fn fetch_convex_jwt(&self, session: &Secret) -> TokenFetchOutcome {
+    fn fetch_convex_jwt(
+        &self,
+        session: &Secret,
+        diagnostics: &SyncDiagnostics,
+    ) -> TokenFetchOutcome {
         let Some(auth_site_url) = self.auth_site_url else {
             return TokenFetchOutcome::Deferred;
         };
@@ -88,14 +94,22 @@ impl HttpUsageSyncTransport {
             .send()
         {
             Ok(response) => response,
-            Err(_) => return TokenFetchOutcome::Offline,
+            Err(_) => {
+                diagnostics.before_mutation(SyncReason::TransportFailed, None);
+                return TokenFetchOutcome::Offline;
+            }
         };
-        match classify_token_http_status(response.status().as_u16()) {
+        let status = response.status().as_u16();
+        match classify_token_http_status(status) {
             TokenHttpOutcome::Success => {}
             TokenHttpOutcome::SessionRejected => {
+                // The runtime first tries the normal expired-session refresh.
                 return TokenFetchOutcome::SessionRejected;
             }
-            TokenHttpOutcome::Deferred => return TokenFetchOutcome::Deferred,
+            TokenHttpOutcome::Deferred => {
+                diagnostics.before_mutation(SyncReason::ServerRejected, Some(u64::from(status)));
+                return TokenFetchOutcome::Deferred;
+            }
         }
 
         let mut body = Zeroizing::new(Vec::with_capacity(MAX_TOKEN_RESPONSE_BYTES));
@@ -104,20 +118,31 @@ impl HttpUsageSyncTransport {
             .read_to_end(&mut body)
             .is_err()
         {
+            diagnostics.before_mutation(SyncReason::TransportFailed, Some(u64::from(status)));
             return TokenFetchOutcome::Offline;
         }
         if body.len() > MAX_TOKEN_RESPONSE_BYTES {
+            diagnostics.before_mutation(SyncReason::InvalidResponse, Some(u64::from(status)));
             return TokenFetchOutcome::Deferred;
         }
         let response: ConvexTokenResponse = match serde_json::from_slice(body.as_slice()) {
             Ok(response) => response,
-            Err(_) => return TokenFetchOutcome::Deferred,
+            Err(_) => {
+                diagnostics.before_mutation(SyncReason::InvalidResponse, Some(u64::from(status)));
+                return TokenFetchOutcome::Deferred;
+            }
         };
         if response.token.is_empty() || response.token.len() > MAX_CONVEX_JWT_BYTES {
+            diagnostics.before_mutation(SyncReason::InvalidResponse, Some(u64::from(status)));
             return TokenFetchOutcome::Deferred;
         }
         TokenFetchOutcome::Jwt(response.token)
     }
+}
+
+/// Report only after the runtime cannot recover a rejected current session.
+pub(super) fn capture_terminal_session_failure(batch: &PendingUsageBatch) {
+    SyncDiagnostics::from_batch(batch).before_mutation(SyncReason::ServerRejected, None);
 }
 
 fn send_with_runtime(
@@ -125,16 +150,23 @@ fn send_with_runtime(
     jwt: Zeroizing<String>,
     args: BatchMutationArguments,
 ) -> UsageSyncTransportOutcome {
+    let diagnostics = args.diagnostics.clone();
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
-        Err(_) => return UsageSyncTransportOutcome::Deferred,
+        Err(_) => {
+            diagnostics.before_mutation(SyncReason::TransportFailed, None);
+            return UsageSyncTransportOutcome::Deferred;
+        }
     };
     runtime.block_on(async move {
         match tokio::time::timeout(SYNC_MUTATION_TIMEOUT, send_mutation(convex_url, jwt, args))
             .await
         {
             Ok(outcome) => outcome,
-            Err(_) => UsageSyncTransportOutcome::Offline,
+            Err(_) => {
+                diagnostics.before_mutation(SyncReason::TransportFailed, None);
+                UsageSyncTransportOutcome::Offline
+            }
         }
     })
 }
@@ -181,7 +213,11 @@ async fn send_mutation(
 ) -> UsageSyncTransportOutcome {
     let mut client = match ConvexClient::new(convex_url).await {
         Ok(client) => client,
-        Err(_) => return UsageSyncTransportOutcome::Offline,
+        Err(_) => {
+            args.diagnostics
+                .before_mutation(SyncReason::TransportFailed, None);
+            return UsageSyncTransportOutcome::Offline;
+        }
     };
     client.set_auth(Some(jwt.as_str().to_owned())).await;
     let outcome = send_authenticated_mutations(&mut client, args).await;
@@ -190,8 +226,121 @@ async fn send_mutation(
 }
 
 struct BatchMutationArguments {
+    diagnostics: SyncDiagnostics,
     provider_settings: Option<BTreeMap<String, Value>>,
     usage: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Clone, Default)]
+struct SyncDiagnostics {
+    settings: Option<SyncContext>,
+    usage: Vec<(Option<Provider>, SyncContext)>,
+    active_stage: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    capture_epoch: u64,
+}
+
+impl SyncDiagnostics {
+    fn from_batch(batch: &PendingUsageBatch) -> Self {
+        let context = |stage, pending_count| SyncContext {
+            stage,
+            reason: SyncReason::TransportFailed,
+            status_code: None,
+            ranking_day: None,
+            attempted_revision: None,
+            last_acknowledged_revision: None,
+            pending_count: Some(pending_count),
+        };
+        let settings = batch
+            .provider_settings
+            .as_ref()
+            .map(|settings| SyncContext {
+                attempted_revision: Some(settings.revision),
+                ..context(SyncStage::ProviderSettings, 1)
+            });
+        let mut usage: Vec<_> = batch
+            .snapshots
+            .iter()
+            .map(|snapshot| snapshot.provider)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .filter_map(|provider| {
+                let mut snapshots = batch
+                    .snapshots
+                    .iter()
+                    .filter(|snapshot| snapshot.provider == provider);
+                let first = snapshots.next()?;
+                let count = 1 + snapshots.count() as u64;
+                let mut context = context(SyncStage::DailyUsage, count);
+                if count == 1 {
+                    context.ranking_day = Some(first.ranking_day.clone());
+                    context.attempted_revision = Some(first.revision);
+                }
+                Some((Some(provider), context))
+            })
+            .collect();
+        if usage.is_empty() && batch.requires_usage_mutation() {
+            usage.push((None, context(SyncStage::DailyUsage, 0)));
+        }
+        let active_stage = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(u8::from(
+            settings.is_none(),
+        )));
+        Self {
+            settings,
+            usage,
+            active_stage,
+            capture_epoch: failure_capture::capture_epoch(),
+        }
+    }
+
+    fn before_mutation(&self, reason: SyncReason, status: Option<u64>) {
+        self.capture(
+            if self.active_stage.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                SyncStage::ProviderSettings
+            } else {
+                SyncStage::DailyUsage
+            },
+            reason,
+            status,
+        );
+    }
+
+    fn capture(&self, stage: SyncStage, reason: SyncReason, status: Option<u64>) {
+        let emit = |provider, context: &SyncContext| {
+            diagnostics::capture_at_epoch(
+                Failure::Sync {
+                    code: SyncCode::SyncRequestFailed,
+                    provider,
+                    context: SyncContext {
+                        reason,
+                        status_code: status,
+                        ..context.clone()
+                    },
+                },
+                self.capture_epoch,
+            )
+        };
+        match stage {
+            SyncStage::ProviderSettings => {
+                if let Some(context) = &self.settings {
+                    emit(None, context);
+                }
+            }
+            SyncStage::DailyUsage => {
+                for (provider, context) in &self.usage {
+                    emit(*provider, context);
+                }
+            }
+        }
+    }
+}
+
+fn mutation_failure_reason(result: &FunctionResult) -> SyncReason {
+    match result {
+        FunctionResult::Value(_) => SyncReason::InvalidResponse,
+        FunctionResult::ErrorMessage(_) | FunctionResult::ConvexError(_) => {
+            SyncReason::ServerRejected
+        }
+    }
 }
 
 async fn send_authenticated_mutations(
@@ -204,14 +353,26 @@ async fn send_authenticated_mutations(
             .await
         {
             Ok(result) => result,
-            Err(_) => return UsageSyncTransportOutcome::Offline,
+            Err(_) => {
+                args.diagnostics.capture(
+                    SyncStage::ProviderSettings,
+                    SyncReason::TransportFailed,
+                    None,
+                );
+                return UsageSyncTransportOutcome::Offline;
+            }
         };
+        let failure_reason = mutation_failure_reason(&result);
         match classify_provider_settings_result(result) {
             ParsedMutation::Value(acknowledgement) => Some(acknowledgement),
             ParsedMutation::AuthorityRejected => {
                 return UsageSyncTransportOutcome::AuthorityRejected;
             }
-            ParsedMutation::Deferred => return UsageSyncTransportOutcome::Deferred,
+            ParsedMutation::Deferred => {
+                args.diagnostics
+                    .capture(SyncStage::ProviderSettings, failure_reason, None);
+                return UsageSyncTransportOutcome::Deferred;
+            }
         }
     } else {
         None
@@ -229,16 +390,28 @@ async fn send_authenticated_mutations(
     }
 
     let (usage, usage_mutation_completed) = if let Some(usage_args) = args.usage {
+        args.diagnostics
+            .active_stage
+            .store(1, std::sync::atomic::Ordering::Relaxed);
         let result = match client.mutation(DAILY_USAGE_MUTATION, usage_args).await {
             Ok(result) => result,
-            Err(_) => return UsageSyncTransportOutcome::Offline,
+            Err(_) => {
+                args.diagnostics
+                    .capture(SyncStage::DailyUsage, SyncReason::TransportFailed, None);
+                return UsageSyncTransportOutcome::Offline;
+            }
         };
+        let failure_reason = mutation_failure_reason(&result);
         match classify_usage_result(result) {
             ParsedMutation::Value(acknowledgements) => (acknowledgements, true),
             ParsedMutation::AuthorityRejected => {
                 return UsageSyncTransportOutcome::AuthorityRejected;
             }
-            ParsedMutation::Deferred => return UsageSyncTransportOutcome::Deferred,
+            ParsedMutation::Deferred => {
+                args.diagnostics
+                    .capture(SyncStage::DailyUsage, failure_reason, None);
+                return UsageSyncTransportOutcome::Deferred;
+            }
         }
     } else {
         (Vec::new(), false)
@@ -283,6 +456,7 @@ fn mutation_arguments(
         return Err(());
     }
     Ok(BatchMutationArguments {
+        diagnostics: SyncDiagnostics::from_batch(batch),
         provider_settings,
         usage,
     })
@@ -434,11 +608,129 @@ mod tests {
     }
 
     #[test]
+    fn token_response_failure_captures_http_status_without_body_or_credentials() {
+        crate::install_tls_crypto_provider();
+        use std::{io::Write, net::TcpListener};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nPRIVATE-BODY").unwrap();
+        });
+        let transport = HttpUsageSyncTransport {
+            auth_site_url: Some(Box::leak(format!("http://{address}").into_boxed_str())),
+            convex_url: None,
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+        };
+        let diagnostics = SyncDiagnostics::from_batch(&batch());
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(matches!(
+                transport
+                    .fetch_convex_jwt(&Secret::new("PRIVATE-SESSION".to_owned()), &diagnostics),
+                TokenFetchOutcome::Deferred
+            ));
+        });
+        server.join().unwrap();
+        assert_eq!(failures.len(), 2);
+        for failure in &failures {
+            let Failure::Sync {
+                context, provider, ..
+            } = failure
+            else {
+                panic!("sync failure");
+            };
+            assert!(provider.is_some());
+            assert_eq!(context.stage, SyncStage::DailyUsage);
+            assert_eq!(context.reason, SyncReason::InvalidResponse);
+            assert_eq!(context.status_code, Some(200));
+        }
+        assert!(
+            !serde_json::to_string(&failures)
+                .unwrap()
+                .contains("PRIVATE")
+        );
+    }
+
+    #[test]
+    fn expired_session_http_status_is_quiet_before_runtime_refresh() {
+        crate::install_tls_crypto_provider();
+        use std::{io::Write, net::TcpListener};
+        for status in [401, 403] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let _ = stream.read(&mut request).unwrap();
+                write!(stream, "HTTP/1.1 {status} Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            let transport = HttpUsageSyncTransport {
+                auth_site_url: Some(Box::leak(format!("http://{address}").into_boxed_str())),
+                convex_url: None,
+                client: reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(2))
+                    .build()
+                    .unwrap(),
+            };
+            let failures = crate::diagnostics::collect_failures_for_test(|| {
+                assert!(matches!(
+                    transport.fetch_convex_jwt(
+                        &Secret::test_only(),
+                        &SyncDiagnostics::from_batch(&batch())
+                    ),
+                    TokenFetchOutcome::SessionRejected
+                ));
+            });
+            server.join().unwrap();
+            assert!(failures.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_backfill_failure_has_no_invented_provider_or_revision() {
+        let mut pending = batch();
+        pending.snapshots.clear();
+        pending.provider_settings = None;
+        pending.profile_backfill_anchor = Some("2026-08-08".to_owned());
+        assert!(pending.requires_usage_mutation());
+        let context = SyncDiagnostics::from_batch(&pending);
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            context.before_mutation(SyncReason::TransportFailed, None);
+        });
+        let [
+            Failure::Sync {
+                provider, context, ..
+            },
+        ] = failures.as_slice()
+        else {
+            panic!("one batch failure");
+        };
+        assert_eq!(*provider, None);
+        assert_eq!(context.stage, SyncStage::DailyUsage);
+        assert_eq!(context.pending_count, Some(0));
+        assert_eq!(context.ranking_day, None);
+        assert_eq!(context.attempted_revision, None);
+        assert_eq!(context.last_acknowledged_revision, None);
+    }
+
+    #[test]
     fn mutation_timeout_is_created_inside_the_owned_runtime() {
         let outcome = send_with_runtime(
             "not-a-convex-url",
             Zeroizing::new("test-jwt".to_owned()),
             BatchMutationArguments {
+                diagnostics: SyncDiagnostics::default(),
                 provider_settings: None,
                 usage: Some(BTreeMap::new()),
             },

@@ -3,6 +3,8 @@
 //! Terminal output is bounded, reduced in native memory, and discarded. Only
 //! the two provider quota windows leave this module.
 
+use crate::diagnostics::{AccessOperation, AccessReason, Provider};
+use crate::providers::failure_capture;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -65,6 +67,15 @@ fn finish_capture(
         return Ok(observation);
     }
     super::debug_event(&format!("cli_probe_failed stage={}", stage.name()));
+    failure_capture::access(
+        Provider::Claude,
+        AccessOperation::ReadQuota,
+        match stage {
+            ProbeCompletionStage::OutputLimit => AccessReason::InvalidResponse,
+            ProbeCompletionStage::OutputClosed => AccessReason::ReadFailed,
+            ProbeCompletionStage::Timeout => AccessReason::RequestFailed,
+        },
+    );
     Err(ProbeFailure::Unavailable)
 }
 
@@ -84,12 +95,20 @@ pub(super) fn probe_usage(
     timeout: StdDuration,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<ClaudeQuotaObservation, ProbeFailure> {
+    let _failures = failure_capture::ScanFailures::begin();
     let session_id = probe_session_id().map_err(|()| ProbeFailure::Unavailable)?;
     if !cleanup_probe_session_artifacts(probe_directory) {
         probe_event("cli_probe_failed stage=cleanup_pending");
         return Err(ProbeFailure::Unavailable);
     }
-    prepare_probe_directory(probe_directory, session_id).map_err(|()| ProbeFailure::Unavailable)?;
+    prepare_probe_directory(probe_directory, session_id).map_err(|()| {
+        failure_capture::access(
+            Provider::Claude,
+            AccessOperation::ReadQuota,
+            AccessReason::ReadFailed,
+        );
+        ProbeFailure::Unavailable
+    })?;
     let _cleanup = ProbeCleanup(probe_directory.to_path_buf());
 
     let mut command = ProviderCommand::new(executable);
@@ -136,6 +155,11 @@ pub(super) fn probe_usage(
         )
         .map_err(|_| {
             probe_event("cli_probe_failed stage=process_start");
+            failure_capture::access(
+                Provider::Claude,
+                AccessOperation::ReadQuota,
+                AccessReason::RequestFailed,
+            );
             ProbeFailure::Unavailable
         })?;
 
@@ -204,7 +228,14 @@ fn capture_usage_output(
                 &mut accepted_prompts,
                 deadline.saturating_duration_since(now),
             )
-            .map_err(|()| ProbeFailure::Unavailable)?
+            .map_err(|()| {
+                failure_capture::access(
+                    Provider::Claude,
+                    AccessOperation::ReadQuota,
+                    AccessReason::RequestFailed,
+                );
+                ProbeFailure::Unavailable
+            })?
         {
             usage_sent = false;
             usage_input_at = now + STARTUP_DELAY;
@@ -212,7 +243,14 @@ fn capture_usage_output(
         if !usage_sent && now >= usage_input_at {
             process
                 .write_all(b"/usage\r", deadline.saturating_duration_since(now))
-                .map_err(|_| ProbeFailure::Unavailable)?;
+                .map_err(|_| {
+                    failure_capture::access(
+                        Provider::Claude,
+                        AccessOperation::ReadQuota,
+                        AccessReason::RequestFailed,
+                    );
+                    ProbeFailure::Unavailable
+                })?;
             usage_sent = true;
         }
         if usage_sent && let Ok(observation) = parse_usage_output(&output, observed_at) {
@@ -875,6 +913,31 @@ mod tests {
 
     fn test_time() -> OffsetDateTime {
         OffsetDateTime::parse("2026-08-07T14:30:00Z", &Rfc3339).unwrap()
+    }
+
+    #[test]
+    fn failed_quota_capture_reports_once_but_partial_quota_is_silent() {
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(matches!(
+                finish_capture(None, ProbeCompletionStage::Timeout),
+                Err(ProbeFailure::Unavailable)
+            ));
+        });
+        let [crate::diagnostics::Failure::ProviderAccess { context, .. }] = failures.as_slice()
+        else {
+            panic!("one quota failure");
+        };
+        assert_eq!(context.operation, AccessOperation::ReadQuota);
+        assert_eq!(context.reason, AccessReason::RequestFailed);
+        let partial = parse_usage_output(
+            b"Current session\n42% used\nResets 6:50pm (Europe/Paris)",
+            test_time(),
+        )
+        .unwrap();
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(finish_capture(Some(partial), ProbeCompletionStage::Timeout).is_ok());
+        });
+        assert!(failures.is_empty());
     }
 
     #[test]

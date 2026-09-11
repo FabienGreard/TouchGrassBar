@@ -1105,10 +1105,11 @@ impl SqliteReadModelStore {
         previous_enabled_providers: &BTreeSet<CodingProvider>,
         enabled_providers: &BTreeSet<CodingProvider>,
     ) -> Result<bool, &'static str> {
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| "native state persistence unavailable")?;
+        let database_path = self.connection.path().map(str::to_owned);
+        let transaction = self.connection.transaction().map_err(|_| {
+            report_read_model_database_failure(database_path.as_deref());
+            "native state persistence unavailable"
+        })?;
         let mut active_mac_generation = self.active_mac_generation;
         let pending_before = active_mac_generation
             .map(|generation| {
@@ -1388,9 +1389,10 @@ impl SqliteReadModelStore {
             .flatten();
         pending_usage_changed |= pending_after.is_some() && pending_after != pending_before;
         persist_snapshot(&transaction, state)?;
-        transaction
-            .commit()
-            .map_err(|_| "native state persistence unavailable")?;
+        transaction.commit().map_err(|_| {
+            report_read_model_database_failure(self.connection.path());
+            "native state persistence unavailable"
+        })?;
         self.active_mac_generation = active_mac_generation;
         Ok(pending_usage_changed)
     }
@@ -1441,7 +1443,10 @@ impl SqliteReadModelStore {
             now,
             enabled_providers,
         )
-        .map_err(|_| "native state persistence unavailable")
+        .map_err(|_| {
+            report_read_model_database_failure(self.connection.path());
+            "native state persistence unavailable"
+        })
     }
 
     fn confirm_active_mac_activation(
@@ -1454,10 +1459,11 @@ impl SqliteReadModelStore {
         if self.active_mac_generation != Some(active_mac_generation) {
             return Err("native state persistence unavailable");
         }
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| "native state persistence unavailable")?;
+        let database_path = self.connection.path().map(str::to_owned);
+        let transaction = self.connection.transaction().map_err(|_| {
+            report_read_model_database_failure(database_path.as_deref());
+            "native state persistence unavailable"
+        })?;
         capture_generation_baselines(
             &transaction,
             active_mac_generation,
@@ -1466,15 +1472,19 @@ impl SqliteReadModelStore {
             now,
         )
         .map_err(|_| "native state persistence unavailable")?;
-        transaction
-            .commit()
-            .map_err(|_| "native state persistence unavailable")
+        transaction.commit().map_err(|_| {
+            report_read_model_database_failure(self.connection.path());
+            "native state persistence unavailable"
+        })
     }
 
     fn flush(&self) -> Result<(), &'static str> {
         self.connection
             .execute_batch("PRAGMA wal_checkpoint(FULL);")
-            .map_err(|_| "native state persistence unavailable")
+            .map_err(|_| {
+                report_read_model_database_failure(self.connection.path());
+                "native state persistence unavailable"
+            })
     }
 }
 
@@ -1579,6 +1589,15 @@ fn apply_queue_status(
     Ok(())
 }
 
+fn report_read_model_database_failure(path: Option<&str>) {
+    if let Some(path) = path.filter(|path| !path.is_empty()) {
+        crate::diagnostics::capture(crate::database::operation_failure(
+            Path::new(path),
+            READ_MODEL_SCHEMA_MODULE,
+        ));
+    }
+}
+
 fn persist_snapshot(
     transaction: &Transaction<'_>,
     state: &SanitizedDesktopStateV3,
@@ -1598,14 +1617,19 @@ fn persist_snapshot(
                 READ_MODEL_SCHEMA_VERSION
             ],
         )
-        .map_err(|_| "native state persistence unavailable")?;
-    (updated == 1)
-        .then_some(())
-        .ok_or("native state persistence unavailable")
+        .map_err(|_| {
+            report_read_model_database_failure(transaction.path());
+            "native state persistence unavailable"
+        })?;
+    if updated != 1 {
+        report_read_model_database_failure(transaction.path());
+        return Err("native state persistence unavailable");
+    }
+    Ok(())
 }
 
 enum ReadModelStore {
-    Persistent(SqliteReadModelStore),
+    Persistent(Box<SqliteReadModelStore>),
     Memory,
 }
 
@@ -2985,7 +3009,7 @@ impl NativeCore {
         let mut initial = unavailable_state_at(1, now);
         drop(initial.apply_provider_enablement(enablement.as_ref()));
         let (store, state) = SqliteReadModelStore::open(path, &initial)?;
-        let mut store = ReadModelStore::Persistent(store);
+        let mut store = ReadModelStore::Persistent(Box::new(store));
         let projection = Arc::new(CachedProjection::new(
             state,
             enabled_provider_set(enablement.as_ref()),
@@ -9458,6 +9482,86 @@ mod tests {
             Duration::from_millis(250)
         );
         assert_eq!(local_usage_catch_up_delay(true), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn failed_snapshot_write_reports_storage_failure_without_exporting_profile_data() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+            test_time(),
+            42,
+        )))]));
+        let core = NativeCore::open_without_launch(&database.0, clock, source).unwrap();
+        Connection::open(&database.0)
+            .unwrap()
+            .execute_batch("DROP TABLE sanitized_desktop_state;")
+            .unwrap();
+        let reports = crate::diagnostics::collect_failures_for_test(|| {
+            core.set_profile_outcome(SanitizedProfileOutcome::Ready {
+                touch_grass_id: "TG-AAAAAA".to_owned(),
+                display_name: "Private display name sentinel".to_owned(),
+            })
+            .unwrap();
+        });
+        assert_eq!(reports.len(), 1);
+        let report = serde_json::to_value(&reports[0]).unwrap();
+        assert_eq!(report["code"], "database_operation_failed");
+        assert_eq!(report["context"]["stage"], READ_MODEL_SCHEMA_MODULE);
+        let encoded = serde_json::to_string(&report).unwrap();
+        assert!(!encoded.contains("Private display name sentinel"));
+        assert!(!encoded.contains("TG-AAAAAA"));
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
+        core.shutdown();
+    }
+
+    #[test]
+    fn rejected_sqlite_commit_reports_failure_and_preserves_the_previous_snapshot() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+            test_time(),
+            42,
+        )))]));
+        let core = NativeCore::open_without_launch(&database.0, clock, source).unwrap();
+        let persisted = || {
+            Connection::open(&database.0)
+                .unwrap()
+                .query_row(
+                    "SELECT snapshot_json FROM sanitized_desktop_state WHERE singleton = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        let before = persisted();
+        {
+            let store = core.inner.store.lock().unwrap();
+            let ReadModelStore::Persistent(store) = &*store else {
+                panic!("SQLite fixture");
+            };
+            store.connection.commit_hook(Some(|| true));
+        }
+        let reports = crate::diagnostics::collect_failures_for_test(|| {
+            core.set_profile_outcome(SanitizedProfileOutcome::Ready {
+                touch_grass_id: "TG-AAAAAA".to_owned(),
+                display_name: "Private display name sentinel".to_owned(),
+            })
+            .unwrap();
+        });
+        assert_eq!(reports.len(), 1);
+        let report = serde_json::to_value(&reports[0]).unwrap();
+        assert_eq!(report["code"], "database_operation_failed");
+        assert_eq!(report["context"]["stage"], READ_MODEL_SCHEMA_MODULE);
+        assert_eq!(persisted(), before);
+        assert_eq!(
+            core.panel_state().unwrap().sync.status,
+            SyncStatus::Unavailable
+        );
+        core.shutdown();
     }
 
     #[test]

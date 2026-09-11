@@ -6,6 +6,7 @@
 //! checklist are in `docs/adr/0017-coordinate-forward-sqlite-compatibility.md`.
 
 mod catalog;
+mod failure_context;
 mod inspection;
 mod invariants;
 mod migration;
@@ -56,7 +57,27 @@ impl DatabaseOpenError {
 }
 
 pub(crate) fn prepare(path: &Path) -> Result<PreparedDatabase, DatabaseOpenError> {
-    prepare_with_fault(path, PrepareFault::None)
+    let result = prepare_with_fault(path, PrepareFault::None);
+    if let Err(error) = &result {
+        crate::diagnostics::capture(failure_context::failure(path, *error));
+    }
+    result
+}
+
+pub(crate) fn report_open_failure(path: Option<&Path>, stage: &'static str) {
+    crate::diagnostics::capture(failure_context::open_failure(
+        path,
+        crate::diagnostics::DatabaseCode::DatabaseOpenFailed,
+        stage,
+    ));
+}
+
+pub(crate) fn operation_failure(path: &Path, stage: &'static str) -> crate::diagnostics::Failure {
+    failure_context::open_failure(
+        Some(path),
+        crate::diagnostics::DatabaseCode::DatabaseOperationFailed,
+        stage,
+    )
 }
 
 fn prepare_with_fault(
