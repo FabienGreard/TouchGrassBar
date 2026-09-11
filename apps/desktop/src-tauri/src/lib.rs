@@ -1025,6 +1025,35 @@ async fn recover_profile(
     .map_err(|_| "Profile recovery unavailable".to_owned())?
 }
 
+fn associate_login_startup(app: &AppHandle) -> Result<(), ()> {
+    #[cfg(debug_assertions)]
+    if dev_instance::DevelopmentInstance::from_environment().is_some() {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = app.path().home_dir().map_err(|_| ())?;
+        let executable = std::env::current_exe().map_err(|_| ())?;
+        // An unpackaged development binary must not repair the installed app's entry.
+        if executable.parent().and_then(|path| path.file_name())
+            != Some(std::ffi::OsStr::new("MacOS"))
+        {
+            return Ok(());
+        }
+        login_startup::associate_legacy_entry(
+            &home
+                .join("Library/LaunchAgents")
+                .join(format!("{}.plist", app.package_info().name)),
+            &app.package_info().name,
+            &executable,
+            &app.config().identifier,
+        )?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    Ok(())
+}
+
 fn launch_at_login_state(app: &AppHandle) -> LaunchAtLoginState {
     #[cfg(debug_assertions)]
     if dev_instance::DevelopmentInstance::from_environment().is_some() {
@@ -1117,7 +1146,8 @@ fn set_launch_at_login(
     } else {
         app.autolaunch().disable()
     };
-    let launch_at_login = if result.is_ok() {
+    let association_ok = !enabled || result.is_err() || associate_login_startup(&app).is_ok();
+    let launch_at_login = if result.is_ok() && association_ok {
         launch_at_login_state(&app)
     } else {
         LaunchAtLoginState::Unavailable
@@ -1301,6 +1331,9 @@ pub fn run() {
             take_panel_add_tokenmaxxer_request
         ])
         .setup(move |app| {
+            if associate_login_startup(app.handle()).is_err() {
+                eprintln!("login-startup:app-association-unavailable");
+            }
             #[cfg(debug_assertions)]
             let database_directory = development_instance.as_ref().map_or_else(
                 || app.path().app_data_dir(),

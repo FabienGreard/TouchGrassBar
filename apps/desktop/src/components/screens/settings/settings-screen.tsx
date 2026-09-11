@@ -172,7 +172,7 @@ function SettingsScreen({
                   label="Open at login"
                   onCheckedChange={onLaunchAtLoginChange}
                 />
-                {onOpenLoginItemsSettings ? (
+                {launchAtLoginRequiresApproval && onOpenLoginItemsSettings ? (
                   <div className="grid px-4 pb-3">
                     <Button
                       aria-busy={openingLoginSettings || undefined}

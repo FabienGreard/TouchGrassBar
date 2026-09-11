@@ -20,6 +20,18 @@ const providers = [
 ] as const;
 
 describe("settings screen", () => {
+  test.each([true, false, null])(
+    "hides the Settings action when approval is not required and login startup is %s",
+    (launchAtLogin) => {
+      const markup = renderToStaticMarkup(
+        <SettingsScreen launchAtLogin={launchAtLogin} onOpenLoginItemsSettings={() => undefined} />,
+      );
+
+      expect(markup).not.toContain("Open System Settings");
+      expect(markup).not.toContain("Could not open. Try again");
+    },
+  );
+
   test("shows the macOS approval block with an unchecked switch and a Settings action", () => {
     const markup = renderToStaticMarkup(
       <SettingsScreen

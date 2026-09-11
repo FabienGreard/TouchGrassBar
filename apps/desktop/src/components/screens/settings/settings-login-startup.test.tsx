@@ -52,6 +52,7 @@ test("opens Apple settings only on request, then refreshes the switch on return"
     ),
   );
   expect(screen.queryByText("macOS approval required.")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Open System Settings ↗" })).toBeNull();
   expect(native.invoke).not.toHaveBeenCalledWith("set_launch_at_login", expect.anything());
 
   unmount();
@@ -61,9 +62,20 @@ test("opens Apple settings only on request, then refreshes the switch on return"
 });
 
 test("uses the button label for failure feedback and permits a retry", async () => {
-  native.invoke.mockRejectedValue(new Error("private native path"));
+  native.invoke.mockImplementation(async (command: string) => {
+    if (command === "get_settings_state") {
+      return {
+        contractVersion: 5,
+        launchAtLogin: { availability: "requiresApproval" },
+        profileProvisioning: "not-authorized",
+        providers: [],
+        section: "general",
+      };
+    }
+    throw new Error("private native path");
+  });
   render(<SettingsCoordinator />);
-  fireEvent.click(screen.getByRole("button", { name: "Open System Settings ↗" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open System Settings ↗" }));
   const retry = await screen.findByRole("button", { name: "Could not open. Try again" });
   expect(
     screen.queryByText("Could not open System Settings. Open General → Login Items manually."),
