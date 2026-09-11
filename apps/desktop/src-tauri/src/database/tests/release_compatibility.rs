@@ -19,10 +19,10 @@ use crate::{
     updater,
 };
 
-const CURRENT_DATABASE_FORMAT: i64 = 7;
+const CURRENT_DATABASE_FORMAT: i64 = 8;
 const CURRENT_MODULE_VERSIONS: &[(&str, i64)] = &[
     ("claude-usage-index", 7),
-    ("codex-usage-index", 9),
+    ("codex-usage-index", 10),
     ("database-coordinator", 1),
     ("desktop-lifecycle", 5),
     ("sanitized-desktop-state", 7),
@@ -40,6 +40,7 @@ const CURRENT_TABLES: &[&str] = &[
     "codex_usage_fast_turns",
     "codex_usage_file_days",
     "codex_usage_file_model_days",
+    "codex_usage_file_model_hours",
     "codex_usage_file_turns",
     "codex_usage_files",
     "codex_usage_index_meta",
@@ -335,7 +336,7 @@ fn source_requires_upgrade(source: &SourceSchema) -> bool {
     source.database_format != CURRENT_DATABASE_FORMAT
         || source.lifecycle != 5
         || source.sanitized_desktop_state != 7
-        || source.codex_usage_index != 9
+        || source.codex_usage_index != 10
         || source.claude_usage_index != Some(7)
         || source.update_state != 3
         || source.database_coordinator != Some(1)

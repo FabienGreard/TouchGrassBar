@@ -329,6 +329,27 @@ pub(crate) fn select_top_model_usage(
         .reduce(crate::sanitized::preferred_top_model)
 }
 
+pub(crate) fn load_usage_history_detail(
+    connection: &rusqlite::Connection,
+    today: Date,
+) -> Result<crate::usage_history::ProviderHistoryDetail, ()> {
+    let mut detail = crate::usage_history::ProviderHistoryDetail::default();
+    if codex::usage_index_schema_version(connection)? == CODEX_USAGE_SCHEMA_VERSION {
+        detail
+            .models
+            .extend(codex::load_model_usage_history(connection, today)?);
+        detail
+            .hours
+            .extend(codex::load_hourly_usage(connection, today)?);
+    }
+    if claude::usage_index_schema_version(connection)? == CLAUDE_USAGE_SCHEMA_VERSION {
+        let claude = claude::load_usage_history_detail(connection, today)?;
+        detail.models.extend(claude.models);
+        detail.hours.extend(claude.hours);
+    }
+    Ok(detail)
+}
+
 /// A deep adapter for one coding provider.
 ///
 /// An adapter can read private provider data. It can return only the sanitized

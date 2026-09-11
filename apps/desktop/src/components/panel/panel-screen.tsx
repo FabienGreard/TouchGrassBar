@@ -38,7 +38,6 @@ type PanelPresentation = Pick<
   | "onRemoveFriend"
   | "tokenmaxxerRows"
   | "updateState"
-  | "usagePresentation"
 >;
 
 type PanelScreenProps = {
@@ -495,7 +494,6 @@ function PanelScreen({
       }
       updateActionPending={updateView.pendingAction !== null}
       updateState={updateState}
-      usagePresentation={presentation.usagePresentation}
     />
   );
 }

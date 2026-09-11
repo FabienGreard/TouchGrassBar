@@ -172,7 +172,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         "codex_usage_file_days",
     ];
     let codex_table_count = count_tables(connection, &codex_tables)?;
-    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7 | 8 | 9)
+    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7 | 8 | 9 | 10)
         || (codex_version == 0 && codex_table_count != 0)
         || (codex_version >= 2 && codex_table_count != codex_tables.len())
     {
@@ -543,6 +543,9 @@ fn inspect_known_object_definitions(
             ("index", "codex_usage_unpriced_model_days"),
         ]);
     }
+    if versions.codex >= 10 {
+        expected_objects.push(("table", "codex_usage_file_model_hours"));
+    }
     if versions.codex >= 6 {
         expected_objects.extend([
             ("table", "codex_usage_fast_turns"),
@@ -633,12 +636,12 @@ fn inspect_known_object_definitions(
             },
             ("table", "codex_account_usage_days") => match versions.codex {
                 2 | 3 | 6 | 7 => !definition.contains("observed_attextnotnull"),
-                8 | 9 => definition.contains("observed_attextnotnull"),
+                8..=10 => definition.contains("observed_attextnotnull"),
                 _ => false,
             },
             ("table", "codex_account_usage_meta") => match versions.codex {
                 2 | 3 | 6 | 7 => definition.contains("observed_attextnotnull"),
-                8 | 9 => definition.contains("refreshed_attextnotnull"),
+                8..=10 => definition.contains("refreshed_attextnotnull"),
                 _ => false,
             },
             ("table", "touchgrassbar_update_state") => match versions.update {

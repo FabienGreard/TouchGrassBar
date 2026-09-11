@@ -1,6 +1,6 @@
 use crate::{lifecycle, providers, sanitized, updater};
 
-pub(super) const DATABASE_FORMAT_VERSION: i64 = 7;
+pub(super) const DATABASE_FORMAT_VERSION: i64 = 8;
 pub(super) const COORDINATOR_SCHEMA_MODULE: &str = "database-coordinator";
 pub(super) const COORDINATOR_SCHEMA_VERSION: i64 = 1;
 
@@ -40,6 +40,7 @@ pub(super) const TABLES: &[&str] = &[
     "codex_usage_fast_turns",
     "codex_usage_file_days",
     "codex_usage_file_model_days",
+    "codex_usage_file_model_hours",
     "codex_usage_file_turns",
     "codex_usage_files",
     "codex_usage_index_meta",
@@ -92,6 +93,7 @@ pub(super) const STRICT_TABLES: &[&str] = &[
 // v0.0.3 through v0.0.9. Case and whitespace do not affect a definition. Any
 // other SQL is a new database shape and needs an explicit migration contract.
 pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
+    "createtablecodex_usage_file_model_hours(pathtextnotnull,daytextnotnull,hourintegernotnullcheck(hourbetween0and23),modeltextnotnull,pricing_input_tokensintegernotnull,pricing_modetextnotnullcheck(pricing_modein('standard','fast')),input_tokensintegernotnull,cached_input_tokensintegernotnull,cache_write_input_tokensintegernotnull,output_tokensintegernotnull,reasoning_output_tokensintegernotnull,observed_tokensintegernotnull,completeintegernotnull,observed_throughtextnotnull,primarykey(path,day,hour,model,pricing_input_tokens,pricing_mode),foreignkey(path)referencescodex_usage_files(path)ondeletecascade)",
     "createindexclaude_usage_frames_by_dayonclaude_usage_frames(day)",
     "createindexclaude_usage_messages_by_dayonclaude_usage_messages(day)",
     "createindexclaude_usage_messages_by_messageonclaude_usage_messages(message_key)",
@@ -620,6 +622,17 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
 ];
 
 pub(super) const PRIMARY_KEYS: &[(&str, &[&str])] = &[
+    (
+        "codex_usage_file_model_hours",
+        &[
+            "path",
+            "day",
+            "hour",
+            "model",
+            "pricing_input_tokens",
+            "pricing_mode",
+        ],
+    ),
     ("claude_usage_daily", &["day"]),
     ("claude_usage_files", &["path"]),
     ("claude_usage_frames", &["frame_key"]),
@@ -801,6 +814,13 @@ pub(super) const COLUMN_DEFAULTS: &[(&str, &str, &str)] = &[
 
 pub(super) const FOREIGN_KEYS: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "codex_usage_file_model_hours",
+        "path",
+        "codex_usage_files",
+        "path",
+        "CASCADE",
+    ),
+    (
         "claude_usage_message_supersedes",
         "replacement_frame_key",
         "claude_usage_frames",
@@ -976,6 +996,13 @@ pub(super) const INDEX_DEFINITIONS: &[(&str, &str, &[&str], Option<&str>)] = &[
 
 pub(super) const TABLE_CHECKS: &[(&str, &[&str])] = &[
     (
+        "codex_usage_file_model_hours",
+        &[
+            "check(hourbetween0and23)",
+            "check(pricing_modein('standard','fast'))",
+        ],
+    ),
+    (
         "claude_usage_daily",
         &[
             "check(coveragein('complete','partial'))",
@@ -1138,6 +1165,25 @@ pub(super) const TABLE_CHECKS: &[(&str, &[&str])] = &[
 ];
 
 pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
+    (
+        "codex_usage_file_model_hours",
+        &[
+            "path",
+            "day",
+            "hour",
+            "model",
+            "pricing_input_tokens",
+            "pricing_mode",
+            "input_tokens",
+            "cached_input_tokens",
+            "cache_write_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "observed_tokens",
+            "complete",
+            "observed_through",
+        ],
+    ),
     (
         "claude_usage_daily",
         &[

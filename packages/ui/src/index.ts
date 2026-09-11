@@ -80,7 +80,6 @@ export { SettingsToggleRow } from "./components/settings-toggle-row";
 export { UpdatesSettings } from "./components/updates-settings";
 export type { UpdatesSettingsProps } from "./components/updates-settings";
 export { UsageOverview } from "./components/usage-overview";
-export type { UsageMetricPresentation, UsagePresentation } from "./components/usage-overview";
 export { getMetricTrendTone } from "./lib/metric";
 export type { MetricCardTrendTone } from "./lib/metric";
 export {

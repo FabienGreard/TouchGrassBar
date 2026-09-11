@@ -1,3 +1,4 @@
+import { createUsageDemoHistory } from "@touchgrass/ui/lib/usage-demo";
 import {
   Brand,
   BrandMark,
@@ -150,13 +151,6 @@ const PANEL_USAGE: UsagePeriods = {
   today: observedUsage(12_800_000, 38.61, -8),
 };
 
-const unavailableUsage: UsagePeriods = {
-  scanStatus: "unavailable",
-  sevenDays: { availability: "unavailable" },
-  thirtyDays: { availability: "unavailable" },
-  today: { availability: "unavailable" },
-};
-
 const PANEL_PROVIDERS: ProviderPresentation[] = [
   {
     displayName: "Codex",
@@ -183,7 +177,12 @@ const PANEL_PROVIDERS: ProviderPresentation[] = [
         },
       ],
     },
-    usage: PANEL_USAGE,
+    usage: {
+      ...PANEL_USAGE,
+      today: observedUsage(10_800_000, 32.36, -8),
+      sevenDays: observedUsage(63_400_000, 190.46, 14),
+      thirtyDays: observedUsage(264_600_000, 794.98, 22),
+    },
   },
   {
     displayName: "Claude",
@@ -210,23 +209,14 @@ const PANEL_PROVIDERS: ProviderPresentation[] = [
         },
       ],
     },
-    usage: unavailableUsage,
+    usage: {
+      ...PANEL_USAGE,
+      today: observedUsage(2_000_000, 6.25, -8),
+      sevenDays: observedUsage(8_000_000, 24.5, 14),
+      thirtyDays: observedUsage(20_000_000, 61.75, 22),
+    },
   },
 ];
-
-const PANEL_USAGE_PRESENTATION = {
-  sevenDays: {
-    gaugeFill: 64,
-    trend: "+14%",
-    trendDescription: "Up 14 percent from the previous 7 days",
-  },
-  thirtyDays: {
-    gaugeFill: 100,
-    trend: "+22%",
-    trendDescription: "Up 22 percent from the previous 30 days",
-  },
-  today: { gaugeFill: 34, trend: "-8%", trendDescription: "Down 8 percent from the previous day" },
-};
 
 const noOp = () => undefined;
 
@@ -357,8 +347,8 @@ function ProductPanel({ className = "product-panel-preview" }: { className?: str
           />
         ))}
         <UsageOverview
-          presentation={PANEL_USAGE_PRESENTATION}
-          topModelUsage={{ model: "GPT 5.6 Sol", observedTokens: 12_800_000 }}
+          providers={PANEL_PROVIDERS}
+          history={createUsageDemoHistory(PANEL_PROVIDERS, observedAt)}
           usage={PANEL_USAGE}
         />
         <DoomerboardSurface />

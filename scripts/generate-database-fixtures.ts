@@ -23,7 +23,7 @@ type FixtureDefinition = {
   revision: string;
   lifecycleVersion: 4 | 5;
   updateStateVersion: 1 | 2 | 3;
-  codexUsageIndexVersion: 2 | 6 | 7 | 8 | 9;
+  codexUsageIndexVersion: 2 | 6 | 7 | 8 | 9 | 10;
   hasClaudeUsageIndex: boolean;
   hasTopModelUsage: boolean;
   hasExplicitVersions: boolean;
@@ -39,7 +39,7 @@ type FixtureManifestEntry = {
     databaseFormat: number;
     lifecycle: number;
     sanitizedDesktopState: 4 | 5 | 6 | 7;
-    codexUsageIndex: 2 | 3 | 6 | 7 | 8 | 9;
+    codexUsageIndex: 2 | 3 | 6 | 7 | 8 | 9 | 10;
     claudeUsageIndex: 3 | 4 | 7 | null;
     updateState: 1 | 2 | 3;
     databaseCoordinator: 1 | null;
@@ -505,12 +505,24 @@ const definitions: FixtureDefinition[] = [
   },
   {
     tag: "v0.0.37",
-    sourceCommit: "candidate",
-    releaseStatus: "candidate",
+    sourceCommit: "65cd0529cbd23e8f1e2d000752f36be91ff0d372",
+    releaseStatus: "official",
     revision: "337",
     lifecycleVersion: 5,
     updateStateVersion: 3,
     codexUsageIndexVersion: 9,
+    hasClaudeUsageIndex: true,
+    hasTopModelUsage: true,
+    hasExplicitVersions: true,
+  },
+  {
+    tag: "v0.0.38",
+    sourceCommit: "candidate",
+    releaseStatus: "candidate",
+    revision: "338",
+    lifecycleVersion: 5,
+    updateStateVersion: 3,
+    codexUsageIndexVersion: 10,
     hasClaudeUsageIndex: true,
     hasTopModelUsage: true,
     hasExplicitVersions: true,
@@ -528,7 +540,7 @@ function readModelContractVersion(definition: FixtureDefinition): 3 | 4 {
   return definition.hasExplicitVersions ? 4 : 3;
 }
 
-function codexUsageVersion(definition: FixtureDefinition): 2 | 6 | 7 | 8 | 9 {
+function codexUsageVersion(definition: FixtureDefinition): 2 | 6 | 7 | 8 | 9 | 10 {
   return definition.codexUsageIndexVersion;
 }
 
@@ -1495,7 +1507,11 @@ function validateFixtureContents(
   const database = new Database(databasePath, { readonly: true, strict: true });
   try {
     const databaseFormat = Number(scalarValue(database.query("PRAGMA user_version").get()));
-    const expectedDatabaseFormat = definition.hasExplicitVersions ? 7 : definition.lifecycleVersion;
+    const expectedDatabaseFormat = definition.hasExplicitVersions
+      ? definition.codexUsageIndexVersion >= 10
+        ? 8
+        : 7
+      : definition.lifecycleVersion;
     if (databaseFormat !== expectedDatabaseFormat) {
       throw new Error(`The database format is wrong for ${definition.tag}.`);
     }
@@ -1516,6 +1532,8 @@ function validateFixtureContents(
       "sanitized_desktop_state",
       "touchgrassbar_schema_versions",
     ];
+    if (definition.codexUsageIndexVersion >= 10)
+      expectedTables.push("codex_usage_file_model_hours");
     expectedTables.push(
       definition.updateStateVersion === 3
         ? "touchgrassbar_update_state_v3"
@@ -1837,6 +1855,30 @@ async function writeFixture(definition: FixtureDefinition): Promise<FixtureManif
       createUsageSyncSchema(database, definition);
     }
     createCodexUsageSchema(database, definition);
+    if (definition.codexUsageIndexVersion >= 10) {
+      database.exec(`CREATE TABLE codex_usage_file_model_hours (
+               path TEXT NOT NULL,
+               day TEXT NOT NULL,
+               hour INTEGER NOT NULL CHECK(hour BETWEEN 0 AND 23),
+               model TEXT NOT NULL,
+               pricing_input_tokens INTEGER NOT NULL,
+               pricing_mode TEXT NOT NULL CHECK(pricing_mode IN ('standard', 'fast')),
+               input_tokens INTEGER NOT NULL,
+               cached_input_tokens INTEGER NOT NULL,
+               cache_write_input_tokens INTEGER NOT NULL,
+               output_tokens INTEGER NOT NULL,
+               reasoning_output_tokens INTEGER NOT NULL,
+               observed_tokens INTEGER NOT NULL,
+               complete INTEGER NOT NULL,
+               observed_through TEXT NOT NULL,
+               PRIMARY KEY (path, day, hour, model, pricing_input_tokens, pricing_mode),
+               FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+             );
+        INSERT INTO codex_usage_file_model_hours
+        SELECT path,day,23,model,pricing_input_tokens,pricing_mode,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,observed_tokens,complete,observed_through
+        FROM codex_usage_file_model_days WHERE day=(SELECT MAX(day) FROM codex_usage_file_model_days);
+      `);
+    }
     if (definition.hasClaudeUsageIndex) {
       createClaudeUsageSchema(database, definition);
     }
@@ -1845,7 +1887,7 @@ async function writeFixture(definition: FixtureDefinition): Promise<FixtureManif
       setModuleVersion(database, "desktop-lifecycle", 5);
       setModuleVersion(database, "update-state", 3);
       setModuleVersion(database, "database-coordinator", 1);
-      database.exec("PRAGMA user_version = 7");
+      database.exec(`PRAGMA user_version = ${definition.codexUsageIndexVersion >= 10 ? 8 : 7}`);
     }
     database.exec("COMMIT");
     database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -1869,7 +1911,11 @@ async function writeFixture(definition: FixtureDefinition): Promise<FixtureManif
     sourceCommit: definition.sourceCommit,
     releaseStatus: definition.releaseStatus,
     sourceSchema: {
-      databaseFormat: definition.hasExplicitVersions ? 7 : definition.lifecycleVersion,
+      databaseFormat: definition.hasExplicitVersions
+        ? definition.codexUsageIndexVersion >= 10
+          ? 8
+          : 7
+        : definition.lifecycleVersion,
       lifecycle: definition.lifecycleVersion,
       sanitizedDesktopState: readModelVersion(definition),
       codexUsageIndex: codexUsageVersion(definition),

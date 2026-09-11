@@ -1,3 +1,4 @@
+import { createUsageDemoHistory } from "@touchgrass/ui/lib/usage-demo";
 import {
   CONTRACT_VERSION,
   type CodingProvider,
@@ -208,6 +209,12 @@ function projectProviderEnablement(
   return {
     ...state,
     combinedUsage: combinedUsage(includedUsage),
+    usageHistory: includedUsage.length
+      ? createUsageDemoHistory(
+          state.providers.filter((p) => providerEnablement[p.provider]),
+          state.generatedAt,
+        )
+      : null,
     providers: state.providers.map((presentation) =>
       providerEnablement[presentation.provider]
         ? presentation

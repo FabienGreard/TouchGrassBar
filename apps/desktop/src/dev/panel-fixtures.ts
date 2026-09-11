@@ -1,5 +1,4 @@
 import type { CurrentProfile, DoomerboardRow } from "@/components/panel/doomerboard";
-import type { UsagePresentation } from "@/components/panel/usage-overview";
 
 export const currentDoomerboardRows = [
   {
@@ -108,22 +107,3 @@ export const currentProfile = {
   displayName: "Fabien",
   touchGrassId: "#TG-7K4P9D",
 } as const satisfies CurrentProfile;
-
-// Development-only values reproduce the approved prototype and never enter a native snapshot.
-export const currentUsagePresentation = {
-  sevenDays: {
-    gaugeFill: 64,
-    trend: "+14%",
-    trendDescription: "Up 14 percent from the previous 7 days",
-  },
-  thirtyDays: {
-    gaugeFill: 100,
-    trend: "+22%",
-    trendDescription: "Up 22 percent from the previous 30 days",
-  },
-  today: {
-    gaugeFill: 34,
-    trend: "-8%",
-    trendDescription: "Down 8 percent from the previous day",
-  },
-} as const satisfies UsagePresentation;

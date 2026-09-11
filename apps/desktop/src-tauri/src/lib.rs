@@ -14,6 +14,7 @@ mod providers;
 mod quota_headroom;
 pub mod sanitized;
 pub mod updater;
+mod usage_history;
 mod usage_sync;
 
 use std::{

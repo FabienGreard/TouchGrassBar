@@ -1,0 +1,231 @@
+.usage-overview {
+  padding: 13px 16px 10px;
+  border-bottom: 1px solid var(--color-pearl-line);
+  background: var(--color-usage-surface);
+  color: var(--color-pearl-ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.usage-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.usage-total {
+  min-width: 0;
+}
+.usage-total > strong {
+  display: block;
+  font-size: 23px;
+  letter-spacing: -0.9px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.usage-total small {
+  font-size: 10px;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--color-pearl-muted);
+}
+.usage-total > span {
+  display: block;
+  margin-top: 3px;
+  font-size: 9px;
+  color: var(--color-pearl-muted);
+}
+.usage-plot {
+  height: 80px;
+  display: flex;
+  gap: 7px;
+}
+.usage-axis {
+  width: 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 8px;
+  color: var(--color-pearl-muted);
+}
+.usage-columns {
+  position: relative;
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  background: repeating-linear-gradient(
+    to top,
+    var(--color-pearl-line) 0,
+    var(--color-pearl-line) 1px,
+    transparent 1px,
+    transparent 50%
+  );
+}
+.usage-column {
+  display: flex;
+  align-items: flex-end;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  min-width: 0;
+}
+.usage-stack {
+  display: flex;
+  flex-direction: column-reverse;
+  width: 100%;
+  max-width: 30px;
+  margin: 0 auto;
+  border-radius: 3px 3px 0 0;
+  overflow: hidden;
+  min-height: 1px;
+  background: var(--color-pearl-muted);
+}
+.usage-stack > span {
+  display: block;
+  width: 100%;
+  flex-shrink: 0;
+}
+.usage-column[data-active="true"] .usage-stack {
+  outline: 1px solid var(--color-pearl-ink);
+  outline-offset: 2px;
+}
+.usage-column:focus-visible {
+  outline: 2px solid var(--color-pearl-ink);
+  outline-offset: 2px;
+}
+.usage-missing {
+  margin: 0 auto;
+  color: var(--color-pearl-muted);
+  font-size: 8px;
+}
+.usage-overview [data-provider="codex"] {
+  background: #6685df;
+}
+.usage-overview [data-provider="claude"] {
+  background: #c18b65;
+}
+.usage-dates {
+  display: flex;
+  justify-content: space-between;
+  padding-left: 31px;
+  margin-top: 4px;
+  font-size: 8px;
+  color: var(--color-pearl-muted);
+}
+.usage-single-date {
+  width: 100%;
+  text-align: center;
+}
+.usage-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--color-pearl-muted);
+  font-size: 9px;
+}
+.usage-footer strong {
+  color: var(--color-pearl-ink);
+  font-weight: 500;
+  margin-left: 5px;
+}
+.usage-legend {
+  display: flex;
+  gap: 8px;
+  font-size: 8px;
+}
+.usage-legend > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.usage-overview i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  margin-right: 3px;
+}
+.usage-empty {
+  padding: 28px 0;
+  text-align: center;
+  color: var(--color-pearl-muted);
+}
+.usage-tooltip {
+  position: absolute;
+  z-index: 20;
+  width: 204px;
+  max-width: 100%;
+  margin-bottom: 8px;
+  padding: 9px 10px;
+  pointer-events: none;
+  color: var(--color-pearl-ink);
+  border: 1px solid var(--color-pearl-line);
+  background: var(--color-pearl-highlight);
+  box-shadow: 0 3px 12px #25243b22;
+  border-radius: 8px;
+  font-size: 9px;
+}
+.usage-tooltip-date,
+.usage-tooltip > span {
+  display: block;
+  color: var(--color-pearl-muted);
+}
+.usage-tooltip > strong {
+  display: block;
+  font-size: 15px;
+  margin: 3px 0;
+}
+.usage-tooltip strong small {
+  font-size: 9px;
+  font-weight: 400;
+}
+.usage-tooltip-model {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px solid var(--color-pearl-line);
+}
+.usage-tooltip-model > span {
+  font-size: 8px;
+  color: var(--color-pearl-muted);
+}
+.usage-tooltip-model b {
+  font-size: 10px;
+  font-weight: 500;
+}
+.usage-tooltip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  margin-top: 5px;
+}
+.usage-tooltip-row b {
+  font-weight: 500;
+}
+.usage-evidence {
+  display: block;
+  margin-top: 7px;
+  font-size: 8px;
+  color: var(--color-pearl-muted);
+}
+@media (forced-colors: active) {
+  .usage-stack {
+    border: 1px solid CanvasText;
+  }
+  .usage-tooltip {
+    border: 1px solid CanvasText;
+  }
+}
+
+.usage-history-note {
+  margin-top: 7px;
+  font-size: 8px;
+  color: var(--color-pearl-muted);
+}

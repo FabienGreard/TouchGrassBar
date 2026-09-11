@@ -46,11 +46,11 @@ const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 153;
 const MIN_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 148;
 const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 153;
 const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 18;
-const ROLLOUT_PARSER_VERSION: i64 = 20;
+const ROLLOUT_PARSER_VERSION: i64 = 21;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
-pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 9;
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 10;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -2601,6 +2601,7 @@ impl PricingMode {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ModelDayKey {
     day: Date,
+    hour: u8,
     model: String,
     pricing_input_tokens: u64,
     pricing_mode: PricingMode,
@@ -2711,6 +2712,7 @@ fn add_model_day_delta(
     }
     let key = ModelDayKey {
         day: utc_ranking_day(timestamp),
+        hour: timestamp.to_offset(UtcOffset::UTC).hour(),
         model: model.unwrap_or(UNKNOWN_MODEL).to_owned(),
         pricing_input_tokens,
         pricing_mode,
@@ -2733,6 +2735,7 @@ fn mark_model_day_incomplete(
 ) {
     let key = ModelDayKey {
         day: utc_ranking_day(timestamp),
+        hour: timestamp.to_offset(UtcOffset::UTC).hour(),
         model: model.unwrap_or(UNKNOWN_MODEL).to_owned(),
         pricing_input_tokens: 0,
         pricing_mode: PricingMode::Standard,
@@ -3534,6 +3537,24 @@ fn ensure_index_schema(
                PRIMARY KEY (path, day, model, pricing_input_tokens, pricing_mode),
                FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
              );
+             CREATE TABLE IF NOT EXISTS codex_usage_file_model_hours (
+               path TEXT NOT NULL,
+               day TEXT NOT NULL,
+               hour INTEGER NOT NULL CHECK(hour BETWEEN 0 AND 23),
+               model TEXT NOT NULL,
+               pricing_input_tokens INTEGER NOT NULL,
+               pricing_mode TEXT NOT NULL CHECK(pricing_mode IN ('standard', 'fast')),
+               input_tokens INTEGER NOT NULL,
+               cached_input_tokens INTEGER NOT NULL,
+               cache_write_input_tokens INTEGER NOT NULL,
+               output_tokens INTEGER NOT NULL,
+               reasoning_output_tokens INTEGER NOT NULL,
+               observed_tokens INTEGER NOT NULL,
+               complete INTEGER NOT NULL,
+               observed_through TEXT NOT NULL,
+               PRIMARY KEY (path, day, hour, model, pricing_input_tokens, pricing_mode),
+               FOREIGN KEY(path) REFERENCES codex_usage_files(path) ON DELETE CASCADE
+             );
              CREATE TABLE IF NOT EXISTS codex_usage_file_days (
                path TEXT NOT NULL,
                day TEXT NOT NULL,
@@ -4125,6 +4146,14 @@ fn prune_expired_index(
     let model_days_complete = transaction.changes() < PRUNE_ROWS_PER_PASS as u64;
     transaction
         .execute(
+            "DELETE FROM codex_usage_file_model_hours WHERE rowid IN (SELECT rowid FROM codex_usage_file_model_hours WHERE day != ?1 LIMIT ?2)",
+            params![today.to_string(), i64::try_from(PRUNE_ROWS_PER_PASS).map_err(|_| ())?],
+        )
+        .map_err(|_| ())?;
+    let model_hours_complete = transaction.changes() < PRUNE_ROWS_PER_PASS as u64;
+
+    transaction
+        .execute(
             "UPDATE codex_usage_file_days
              SET priced_tokens = 0,
                  cost_usd = 0.0,
@@ -4193,6 +4222,7 @@ fn prune_expired_index(
     transaction.commit().map_err(|_| ())?;
     Ok(snapshots_complete
         && model_days_complete
+        && model_hours_complete
         && cost_details_complete
         && file_days_complete
         && files_complete)
@@ -4360,9 +4390,9 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
         .map_err(|_| ())
 }
 
-fn promote_compatible_parser_rows(connection: &Connection) -> Result<usize, ()> {
-    // Parsers 19 and 20 add reviewed CLI versions without changing previously
-    // accepted rows. Promote only rows with complete, included evidence.
+fn promote_compatible_parser_rows(connection: &Connection, today: Date) -> Result<usize, ()> {
+    // Historical accepted rows do not need hourly detail. Today's rows must replay
+    // through parser 21 to backfill the new hour index, even if their daily totals are complete.
     connection
         .execute(
             "UPDATE codex_usage_files
@@ -4380,8 +4410,9 @@ fn promote_compatible_parser_rows(connection: &Connection) -> Result<usize, ()> 
                AND lineage_mode IN (
                  'root', 'explicit-boundary', 'independent', 'parent-resolved'
                )
-               AND provider_ordinal_mode IN ('legacy', 'provider')",
-            params![ROLLOUT_PARSER_VERSION, COMPATIBLE_ROLLOUT_PARSER_VERSION],
+               AND provider_ordinal_mode IN ('legacy', 'provider')
+               AND NOT EXISTS (SELECT 1 FROM codex_usage_file_days d WHERE d.path=codex_usage_files.path AND d.day >= ?3)",
+            params![ROLLOUT_PARSER_VERSION, COMPATIBLE_ROLLOUT_PARSER_VERSION,today.to_string()],
         )
         .map_err(|_| ())
 }
@@ -4711,6 +4742,12 @@ fn commit_file_progress(
     if replace_existing_usage {
         transaction
             .execute(
+                "DELETE FROM codex_usage_file_model_hours WHERE path = ?1",
+                [path],
+            )
+            .map_err(|_| ())?;
+        transaction
+            .execute(
                 "DELETE FROM codex_usage_file_model_days WHERE path = ?1",
                 [path],
             )
@@ -4830,6 +4867,18 @@ fn commit_file_progress(
             );
         } else {
             file_day.complete = false;
+        }
+        if key.day == detail_cutoff + Duration::days(COST_DETAIL_RETENTION_DAYS - 1) {
+            transaction.execute(
+                "INSERT INTO codex_usage_file_model_hours(path,day,hour,model,pricing_input_tokens,pricing_mode,input_tokens,cached_input_tokens,cache_write_input_tokens,output_tokens,reasoning_output_tokens,observed_tokens,complete,observed_through)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                 ON CONFLICT(path,day,hour,model,pricing_input_tokens,pricing_mode) DO UPDATE SET
+                 input_tokens=input_tokens+excluded.input_tokens, cached_input_tokens=cached_input_tokens+excluded.cached_input_tokens,
+                 cache_write_input_tokens=cache_write_input_tokens+excluded.cache_write_input_tokens, output_tokens=output_tokens+excluded.output_tokens,
+                 reasoning_output_tokens=reasoning_output_tokens+excluded.reasoning_output_tokens, observed_tokens=observed_tokens+excluded.observed_tokens,
+                 complete=complete AND excluded.complete, observed_through=MAX(observed_through,excluded.observed_through)",
+                params![path,key.day.to_string(),key.hour,key.model,to_i64(key.pricing_input_tokens)?,key.pricing_mode.as_stored(),to_i64(delta.usage.input)?,to_i64(delta.usage.cached_input)?,to_i64(delta.usage.cache_write_input)?,to_i64(delta.usage.output)?,to_i64(delta.usage.reasoning_output)?,to_i64(delta.usage.total)?,delta.complete,delta.observed_through.format(&Rfc3339).map_err(|_| ())?]
+            ).map_err(|_| ())?;
         }
         if retains_cost_detail {
             transaction
@@ -5148,6 +5197,12 @@ fn reset_dependent_accounting(
     resolved: Option<&ResolvedParentSnapshot>,
 ) -> Result<(), ()> {
     let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    transaction
+        .execute(
+            "DELETE FROM codex_usage_file_model_hours WHERE path = ?1",
+            [path],
+        )
+        .map_err(|_| ())?;
     transaction
         .execute(
             "DELETE FROM codex_usage_file_model_days WHERE path = ?1",
@@ -5902,6 +5957,132 @@ fn read_indexed_usage(
     })
 }
 
+pub(crate) fn load_hourly_usage(
+    connection: &Connection,
+    today: Date,
+) -> Result<Vec<crate::usage_history::HourPart>, ()> {
+    let manifest = pricing_manifest();
+    let mut unknown_models = BTreeMap::new();
+    let mut statement = connection.prepare(
+        "SELECT d.hour,d.model,d.pricing_input_tokens,d.pricing_mode,
+                d.input_tokens,d.cached_input_tokens,d.cache_write_input_tokens,d.output_tokens,d.reasoning_output_tokens,d.observed_tokens,d.complete,d.observed_through
+         FROM codex_usage_file_model_hours d JOIN codex_usage_files f ON f.path=d.path
+         WHERE d.day=?1 AND f.parser_version=?2 AND f.accounting_ready=1 AND f.usage_excluded=0"
+    ).map_err(|_| ())?;
+    statement
+        .query_map(params![today.to_string(), ROLLOUT_PARSER_VERSION], |row| {
+            Ok((
+                row.get::<_, u8>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u64>(2)?,
+                row.get::<_, String>(3)?,
+                TokenUsage {
+                    input: row.get(4)?,
+                    cached_input: row.get(5)?,
+                    cache_write_input: row.get(6)?,
+                    output: row.get(7)?,
+                    reasoning_output: row.get(8)?,
+                    total: row.get(9)?,
+                },
+                row.get::<_, bool>(10)?,
+                row.get::<_, String>(11)?,
+            ))
+        })
+        .map_err(|_| ())?
+        .map(|row| {
+            let (hour, model, pricing_input, mode, usage, complete, observed_at) =
+                row.map_err(|_| ())?;
+            usage.validate()?;
+            let display = manifest
+                .and_then(|m| m.canonical_model_name(&model))
+                .and_then(crate::providers::normalized_model_display_name);
+            let cost = complete
+                .then(|| {
+                    manifest.and_then(|m| {
+                        price_usage_tier_with_manifest(
+                            m,
+                            &model,
+                            today,
+                            usage,
+                            pricing_input,
+                            PricingMode::from_stored(&mode).ok()?,
+                        )
+                    })
+                })
+                .flatten();
+            Ok(crate::usage_history::HourPart {
+                provider: crate::providers::CodingProvider::Codex,
+                hour,
+                key: display.clone().unwrap_or_else(|| {
+                    let next = unknown_models.len();
+                    format!("unknown-{}", unknown_models.entry(model).or_insert(next))
+                }),
+                display,
+                tokens: usage.total,
+                cost,
+                priced_tokens: if cost.is_some() { usage.total } else { 0 },
+                modeled: false,
+                complete,
+                observed_at: OffsetDateTime::parse(&observed_at, &Rfc3339).map_err(|_| ())?,
+                basis: manifest.map(|m| m.basis.clone()),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn load_model_usage_history(
+    connection: &Connection,
+    today: Date,
+) -> Result<Vec<crate::usage_history::ModelDay>, ()> {
+    let manifest = pricing_manifest();
+    let mut unknown_models = BTreeMap::new();
+    let mut statement = connection
+        .prepare(
+            "SELECT d.day, d.model, SUM(d.observed_tokens)
+         FROM codex_usage_file_model_days d JOIN codex_usage_files f ON f.path = d.path
+         WHERE f.parser_version = ?1 AND f.accounting_ready = 1 AND f.usage_excluded = 0
+           AND d.day >= ?2 AND d.day <= ?3 GROUP BY d.day, d.model",
+        )
+        .map_err(|_| ())?;
+    statement
+        .query_map(
+            params![
+                ROLLOUT_PARSER_VERSION,
+                (today - Duration::days(29)).to_string(),
+                today.to_string()
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .map_err(|_| ())?
+        .map(|row| {
+            let (day, model, tokens) = row.map_err(|_| ())?;
+            let display = manifest
+                .and_then(|m| m.canonical_model_name(&model))
+                .and_then(crate::providers::normalized_model_display_name);
+            Ok(crate::usage_history::ModelDay {
+                provider: crate::providers::CodingProvider::Codex,
+                day: Date::parse(
+                    &day,
+                    &time::macros::format_description!("[year]-[month]-[day]"),
+                )
+                .map_err(|_| ())?,
+                key: display.clone().unwrap_or_else(|| {
+                    let next = unknown_models.len();
+                    format!("unknown-{}", unknown_models.entry(model).or_insert(next))
+                }),
+                display,
+                tokens: from_i64(tokens).map_err(|_| ())?,
+            })
+        })
+        .collect()
+}
+
 fn read_top_model_usage(connection: &Connection, today: Date) -> Result<Option<TopModelUsage>, ()> {
     let manifest = pricing_manifest();
     let mut statement = connection
@@ -6093,7 +6274,7 @@ fn index_local_usage_with_budget(
             .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
             .ok()?,
     };
-    let promoted_rows = promote_compatible_parser_rows(&connection)
+    let promoted_rows = promote_compatible_parser_rows(&connection, today)
         .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
         .ok()?;
     if promoted_rows > 0 {
@@ -8508,16 +8689,19 @@ mod tests {
 
     #[test]
     fn sqlite_index_reuses_complete_rows_from_the_previous_compatible_parser() {
-        for previous in [18, 19] {
+        for previous in [18, 19, 20] {
             let fixture = TempUsage::new();
             let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
             fs::write(
                 &fixture.rollout,
-                reviewed_codex_0_148_root_rollout(100).replace("2026-08-24", "2026-08-26"),
+                reviewed_codex_0_148_root_rollout(100).replace("2026-08-24", "2026-08-25"),
             )
             .unwrap();
             let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
-            assert_eq!(first.daily[&now.date()].observed_tokens, 100);
+            assert_eq!(
+                first.daily[&(now.date() - Duration::days(1))].observed_tokens,
+                100
+            );
 
             Connection::open(&fixture.database)
                 .unwrap()
@@ -8541,7 +8725,10 @@ mod tests {
             .unwrap();
 
             assert_eq!(reused.scan_status, UsageScanStatus::Complete);
-            assert_eq!(reused.daily[&now.date()].observed_tokens, 100);
+            assert_eq!(
+                reused.daily[&(now.date() - Duration::days(1))].observed_tokens,
+                100
+            );
             assert_eq!(
                 Connection::open(&fixture.database)
                     .unwrap()
@@ -11221,6 +11408,66 @@ mod tests {
 
         let complete = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
         assert_eq!(complete.daily[&now.date()].observed_tokens, 300);
+    }
+
+    #[test]
+    fn hourly_usage_keeps_real_times_models_costs_and_replay_is_idempotent() {
+        let fixture = TempUsage::new();
+        fs::write(&fixture.rollout, root_rollout(100)).unwrap();
+        fs::write(
+            fixture.root.join("sessions/second.jsonl"),
+            root_rollout(200)
+                .replace("T10:", "T11:")
+                .replace("gpt-5.6-sol", "gpt-5.6-terra"),
+        )
+        .unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let hours = load_hourly_usage(&connection, now.date()).unwrap();
+        assert_eq!(hours.iter().map(|h| h.tokens).sum::<u64>(), 300);
+        assert!(hours.iter().any(|h| h.hour == 10
+            && h.tokens == 100
+            && h.display.as_deref() == Some("GPT 5.6 Sol")
+            && h.cost.is_some_and(|v| v > 0.0)));
+        assert!(hours.iter().any(|h| h.hour == 11
+            && h.tokens == 200
+            && h.display.as_deref() == Some("GPT 5.6 Terra")));
+        assert_eq!(
+            load_model_usage_history(&connection, now.date())
+                .unwrap()
+                .iter()
+                .map(|m| m.tokens)
+                .sum::<u64>(),
+            300
+        );
+        connection
+            .execute("DELETE FROM codex_usage_file_model_hours", [])
+            .unwrap();
+        connection
+            .execute("UPDATE codex_usage_files SET parser_version=20", [])
+            .unwrap();
+        drop(connection);
+        for _ in 0..2 {
+            index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        }
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert_eq!(
+            load_hourly_usage(&connection, now.date())
+                .unwrap()
+                .iter()
+                .map(|h| h.tokens)
+                .sum::<u64>(),
+            300
+        );
+        drop(connection);
+        index_local_usage_at(&fixture.database, &fixture.root, now + Duration::days(1)).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        assert!(
+            load_hourly_usage(&connection, (now + Duration::days(1)).date())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

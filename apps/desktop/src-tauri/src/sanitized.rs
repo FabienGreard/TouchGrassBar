@@ -88,6 +88,8 @@ pub struct SanitizedDesktopStateV3 {
     pub providers: Vec<ProviderPresentation>,
     #[serde(default)]
     pub top_model_usage: Option<TopModelUsage>,
+    #[serde(default)]
+    pub usage_history: Option<crate::usage_history::UsageHistory>,
     pub combined_usage: UsagePeriods,
     pub sync: SyncState,
     pub profile: SanitizedProfileOutcome,
@@ -189,6 +191,7 @@ impl LegacySanitizedDesktopState {
             revision,
             providers,
             top_model_usage: None,
+            usage_history: None,
             combined_usage: unavailable_periods(),
             sync,
             profile,
@@ -271,6 +274,13 @@ impl SanitizedDesktopStateV3 {
                 })
                 .collect::<Vec<_>>(),
         );
+        if self.usage_history.as_ref().is_some_and(|h| {
+            h.scopes
+                .iter()
+                .any(|s| s.provider.is_some_and(|p| disabled_providers.contains(&p)))
+        }) {
+            self.usage_history = None;
+        }
         disabled_providers
     }
 }
@@ -2073,6 +2083,26 @@ impl CachedProjection {
         refreshed.contract_version = CONTRACT_VERSION;
         if let Some(transitioned) = transition_snapshot_at(&refreshed, now) {
             refreshed = transitioned;
+        }
+        if (matches!(&usage_sync, UsageSyncCommit::QueueCurrent(_))
+            || provider_enablement_change.is_some())
+            && let ReadModelStore::Persistent(persistent) = &*store
+        {
+            refreshed.usage_history = crate::usage_history::load(
+                &persistent.connection,
+                now,
+                &refreshed.providers,
+                &enabled_providers,
+            )
+            .ok()
+            .filter(|history| {
+                history.scopes.iter().any(|scope| {
+                    scope
+                        .days
+                        .iter()
+                        .any(|day| !matches!(day.total, UsageTotal::Unavailable))
+                })
+            });
         }
         refreshed.generated_at.clone_from(&cached.generated_at);
         refreshed.revision.clone_from(&cached.revision);
@@ -3998,7 +4028,7 @@ impl UsageTotal {
         })
     }
 
-    fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
+    pub(crate) fn transition_at(&self, now: OffsetDateTime) -> (Self, bool) {
         match self {
             Self::Current {
                 evidence_basis,
@@ -4128,7 +4158,11 @@ fn transition_snapshot_at(
 ) -> Option<SanitizedDesktopStateV3> {
     let previous_generated_at =
         OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339).unwrap_or(now);
-    let mut changed = false;
+    let history_expired = snapshot
+        .usage_history
+        .as_ref()
+        .is_some_and(|h| h.today != now.to_offset(UtcOffset::UTC).date().to_string());
+    let mut changed = history_expired;
     let providers = snapshot
         .providers
         .iter()
@@ -4140,6 +4174,9 @@ fn transition_snapshot_at(
         .collect::<Vec<_>>();
     changed.then(|| {
         let mut transitioned = snapshot.clone();
+        if history_expired {
+            transitioned.usage_history = None;
+        }
         transitioned.providers = providers;
         transitioned.refresh_combined_usage();
         transitioned
@@ -4152,7 +4189,7 @@ fn restore_snapshot_at(
 ) -> Option<SanitizedDesktopStateV3> {
     let previous_generated_at =
         OffsetDateTime::parse(&snapshot.generated_at, &Rfc3339).unwrap_or(now);
-    let mut changed = false;
+    let mut changed = snapshot.usage_history.is_some();
     let providers = snapshot
         .providers
         .iter()
@@ -4168,6 +4205,7 @@ fn restore_snapshot_at(
         .collect::<Vec<_>>();
     changed.then(|| {
         let mut restored = snapshot.clone();
+        restored.usage_history = None;
         restored.providers = providers;
         restored.refresh_combined_usage();
         restored
@@ -4260,6 +4298,9 @@ fn validate_snapshot(snapshot: &SanitizedDesktopStateV3) -> Result<(), &'static 
     if snapshot.combined_usage != expected_combined {
         return Err("native state unavailable");
     }
+    if let Some(history) = &snapshot.usage_history {
+        crate::usage_history::validate(history)?;
+    }
     validate_top_model_usage(snapshot.top_model_usage.as_ref())?;
     let expected_top_model = combined_top_model_usage(
         &snapshot
@@ -4274,7 +4315,7 @@ fn validate_snapshot(snapshot: &SanitizedDesktopStateV3) -> Result<(), &'static 
     Ok(())
 }
 
-fn validate_top_model_usage(usage: Option<&TopModelUsage>) -> Result<(), &'static str> {
+pub(crate) fn validate_top_model_usage(usage: Option<&TopModelUsage>) -> Result<(), &'static str> {
     let Some(usage) = usage else {
         return Ok(());
     };
@@ -4292,7 +4333,7 @@ fn validate_top_model_usage(usage: Option<&TopModelUsage>) -> Result<(), &'stati
     Ok(())
 }
 
-fn validate_usage_total(usage: &UsageTotal) -> Result<(), &'static str> {
+pub(crate) fn validate_usage_total(usage: &UsageTotal) -> Result<(), &'static str> {
     let (UsageTotal::Current {
         observed_at,
         api_equivalent_cost_usd,
@@ -4384,6 +4425,7 @@ fn unavailable_state_at(revision: u64, now: OffsetDateTime) -> SanitizedDesktopS
         revision: revision.max(1).to_string(),
         providers,
         top_model_usage: None,
+        usage_history: None,
         combined_usage: unavailable_periods(),
         sync: SyncState {
             status: SyncStatus::Unavailable,
@@ -4819,6 +4861,7 @@ mod tests {
                 },
             ],
             top_model_usage: None,
+            usage_history: None,
             combined_usage: unavailable_periods(),
             sync: SyncState {
                 status: SyncStatus::Unavailable,
@@ -5757,6 +5800,32 @@ mod tests {
             ProviderSnapshot::Stale { quota_lanes, .. }
                 if quota_lanes.len() == 1 && quota_lanes[0].remaining == Some(50.0)
         ));
+    }
+
+    #[test]
+    fn sync_status_keeps_the_cached_chart_until_refresh_or_day_change() {
+        let database = TestDatabase::new();
+        let clock = Arc::new(FixtureClock::new(test_time()));
+        let source = Arc::new(ScriptedRefreshSource::new([Ok(Some(observed_state(
+            test_time(),
+            42,
+        )))]));
+        let core = NativeCore::open_without_launch(&database.0, clock.clone(), source).unwrap();
+        core.request_refresh(RefreshSource::Manual).unwrap();
+        core.wait_for_refresh_completion().unwrap();
+        core.activate_usage_sync_generation(1).unwrap();
+        let history = core.panel_state().unwrap().usage_history;
+        assert!(history.is_some());
+
+        clock.advance(Duration::from_secs(3600));
+        core.mark_usage_sync_offline().unwrap();
+        assert_eq!(core.panel_state().unwrap().usage_history, history);
+        core.mark_usage_sync_pending().unwrap();
+        assert_eq!(core.panel_state().unwrap().usage_history, history);
+
+        clock.advance(Duration::from_secs(24 * 3600));
+        core.mark_usage_sync_offline().unwrap();
+        assert!(core.panel_state().unwrap().usage_history.is_none());
     }
 
     #[test]

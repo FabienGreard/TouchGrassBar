@@ -1190,6 +1190,7 @@ mod tests {
                 },
             ],
             top_model_usage: None,
+            usage_history: None,
             combined_usage: codex_usage,
             sync: SyncState {
                 status: SyncStatus::Unavailable,

@@ -4273,6 +4273,7 @@ mod tests {
                 model: Some("private-combined-model".to_owned()),
                 observed_tokens: 1_000,
             }),
+            usage_history: None,
             combined_usage: unavailable_periods(),
             sync: SyncState {
                 status: SyncStatus::Unavailable,

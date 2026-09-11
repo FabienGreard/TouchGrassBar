@@ -43,6 +43,19 @@ function fullRelease(overrides: Record<string, unknown> = {}) {
 }
 
 describe("production landing contract", () => {
+  test("the default hourly chart matches its displayed combined token total", () => {
+    const markup = renderToStaticMarkup(
+      createElement(LandingExperience, { initialGardenTime: "day" }),
+    );
+    const values = [...markup.matchAll(/aria-label="[^"]* UTC: ([0-9,]+) tokens"/g)].map((match) =>
+      Number(match[1]!.replaceAll(",", "")),
+    );
+    expect(values).toHaveLength(13);
+    expect(values.reduce((sum, value) => sum + value, 0)).toBe(12_800_000);
+    expect(markup).toContain('aria-label="12,800,000 tokens"');
+    expect(markup).not.toContain('data-slot="metric-gauge"');
+  });
+
   test("uses the approved night headline", () => {
     const markup = renderToStaticMarkup(
       createElement(LandingExperience, { initialGardenTime: "night" }),

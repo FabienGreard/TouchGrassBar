@@ -177,7 +177,7 @@ fn prepares_one_complete_versioned_database() {
         versions,
         vec![
             ("claude-usage-index".to_owned(), 7),
-            ("codex-usage-index".to_owned(), 9),
+            ("codex-usage-index".to_owned(), 10),
             ("database-coordinator".to_owned(), 1),
             ("desktop-lifecycle".to_owned(), 5),
             ("sanitized-desktop-state".to_owned(), 7),
@@ -236,6 +236,7 @@ fn coordinator_upgrades_the_codex_v6_file_turn_shape_with_daily_references() {
              );
              ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
              ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
+             DROP TABLE codex_usage_file_model_hours;
              UPDATE touchgrassbar_schema_versions SET version = 6
              WHERE module = 'codex-usage-index';
              PRAGMA journal_mode = DELETE;",
@@ -333,6 +334,7 @@ fn coordinator_upgrades_the_codex_v7_account_cache_without_rebuilding_rollouts()
              DROP TABLE codex_account_usage_meta_v8;
              ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
              ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
+             DROP TABLE codex_usage_file_model_hours;
              UPDATE touchgrassbar_schema_versions SET version = 7
              WHERE module = 'codex-usage-index';
              PRAGMA journal_mode = DELETE;",
@@ -395,6 +397,7 @@ fn coordinator_adds_the_codex_v9_parser_state_without_losing_rollouts() {
              );
              ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
              ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
+             DROP TABLE codex_usage_file_model_hours;
              UPDATE touchgrassbar_schema_versions SET version = 8
              WHERE module = 'codex-usage-index';
              PRAGMA journal_mode = DELETE;",

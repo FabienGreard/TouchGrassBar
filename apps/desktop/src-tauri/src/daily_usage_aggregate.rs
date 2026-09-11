@@ -844,7 +844,7 @@ fn combined_basis(totals: &[AvailableTotal<'_>]) -> Option<String> {
     (!bases.is_empty()).then(|| bases.into_iter().collect::<Vec<_>>().join(" + "))
 }
 
-fn combine_total(totals: &[&UsageTotal]) -> UsageTotal {
+pub(crate) fn combine_total(totals: &[&UsageTotal]) -> UsageTotal {
     if totals.len() == 1 {
         return totals[0].clone();
     }

@@ -2847,6 +2847,66 @@ fn read_indexed_usage(
     })
 }
 
+pub(crate) fn load_usage_history_detail(
+    connection: &Connection,
+    today: Date,
+) -> Result<crate::usage_history::ProviderHistoryDetail, ()> {
+    use crate::usage_history::{HourPart, ModelDay, ProviderHistoryDetail};
+    let catalog = super::pricing::catalog();
+    let mut result = ProviderHistoryDetail::default();
+    let mut unknown_models = BTreeMap::new();
+    // Resolve copies across the full retention window before selecting current detail.
+    for m in load_active_provider_messages(
+        connection,
+        today - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1),
+        today,
+    )? {
+        if m.day < today - Duration::days(29) {
+            continue;
+        }
+        let display = m
+            .details_retained
+            .then_some(m.model.as_str())
+            .and_then(|name| catalog.and_then(|c| c.canonical_model_name(name)))
+            .and_then(crate::providers::normalized_model_display_name);
+        let key = display.clone().unwrap_or_else(|| {
+            let next = unknown_models.len();
+            format!(
+                "unknown-{}",
+                unknown_models.entry(m.model.clone()).or_insert(next)
+            )
+        });
+        result.models.push(ModelDay {
+            provider: crate::providers::CodingProvider::Claude,
+            day: m.day,
+            key: key.clone(),
+            display: display.clone(),
+            tokens: m.observed_tokens,
+        });
+        if m.day != today {
+            continue;
+        }
+        let decision = (m.complete && m.details_retained)
+            .then(|| catalog.map(|c| price_stored_message(c, &m)))
+            .flatten();
+        let cost = decision.as_ref().and_then(|d| d.cost_usd);
+        result.hours.push(HourPart {
+            provider: crate::providers::CodingProvider::Claude,
+            hour: m.observed_at.to_offset(UtcOffset::UTC).hour(),
+            key,
+            display,
+            tokens: m.observed_tokens,
+            cost,
+            priced_tokens: decision.as_ref().map_or(0, |d| d.priced_tokens),
+            modeled: decision.as_ref().is_some_and(|d| d.modeled),
+            complete: m.complete,
+            observed_at: m.observed_at,
+            basis: super::current_pricing_basis().map(str::to_owned),
+        });
+    }
+    Ok(result)
+}
+
 fn read_top_model_usage(connection: &Connection, today: Date) -> Result<Option<TopModelUsage>, ()> {
     let catalog = super::pricing::catalog();
     let cutoff = today - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
@@ -7011,6 +7071,44 @@ mod tests {
         assert_eq!(local.scan_status, UsageScanStatus::Unavailable);
         assert!(local.daily_usage.is_empty());
         assert_eq!(stored_message_count(&fixture.database()), 0);
+    }
+
+    #[test]
+    fn hourly_usage_deduplicates_copied_messages_and_preserves_model_and_cost() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let at = now() - Duration::minutes(1);
+        let records = [
+            transcript_line(
+                "first-hour",
+                at - Duration::hours(1),
+                "claude-sonnet-4-5-20250929",
+                usage(10, 20, 30, 40),
+            ),
+            transcript_line(
+                "second-hour",
+                at,
+                "claude-sonnet-4-20250514",
+                usage(100, 0, 0, 100),
+            ),
+        ];
+        write_transcript(&config.join("projects/project-a/session.jsonl"), &records);
+        write_transcript(&config.join("projects/project-b/copy.jsonl"), &records);
+        index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        let rows = load_usage_history_detail(&connection, now().date())
+            .unwrap()
+            .hours;
+        assert_eq!(rows.iter().map(|r| r.tokens).sum::<u64>(), 300);
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .any(|r| r.hour == (at - Duration::hours(1)).hour()
+                    && r.tokens == 100
+                    && r.display.as_deref() == Some("Claude Sonnet 4.5")
+                    && r.cost.is_some_and(|v| v > 0.0))
+        );
+        assert!(rows.iter().any(|r| r.hour == at.hour() && r.tokens == 200));
     }
 
     #[test]

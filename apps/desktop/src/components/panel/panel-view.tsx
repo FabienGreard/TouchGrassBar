@@ -16,7 +16,7 @@ import {
 import { LoadingPanel } from "@/components/panel/loading-panel";
 import { PanelHeader, type PanelUpdateAction } from "@/components/panel/panel-header";
 import { ProviderCard } from "@/components/panel/provider-card";
-import { UsageOverview, type UsagePresentation } from "@/components/panel/usage-overview";
+import { UsageOverview } from "@/components/panel/usage-overview";
 import { defaultDoomerboardQuery, type DoomerboardQuery } from "@/native-state/doomerboard-query";
 
 function updateActionPresentation(
@@ -99,7 +99,6 @@ type PanelViewProps = {
   tokenmaxxerRows?: readonly DoomerboardRow[] | undefined;
   updateActionPending?: boolean | undefined;
   updateState?: UpdateState | null | undefined;
-  usagePresentation?: UsagePresentation | undefined;
 };
 
 function PanelView({
@@ -126,7 +125,6 @@ function PanelView({
   tokenmaxxerRows,
   updateActionPending = false,
   updateState = null,
-  usagePresentation,
 }: PanelViewProps) {
   const panelContainerRef = useRef<HTMLElement>(null);
   const visibleProviders: ProviderPresentation[] = state?.providers ?? [];
@@ -160,7 +158,8 @@ function PanelView({
               ))}
             </div>
             <UsageOverview
-              presentation={usagePresentation}
+              history={state.usageHistory}
+              providers={state.providers}
               topModelUsage={state.topModelUsage}
               usage={state.combinedUsage}
             />

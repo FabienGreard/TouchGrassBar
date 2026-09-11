@@ -1,3 +1,4 @@
+import { createUsageDemoHistory } from "../lib/usage-demo";
 import type { ProviderPresentation, UpdateState, UsagePeriods } from "@touchgrass/contracts";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
@@ -147,7 +148,11 @@ export const CompactPanel: Story = {
         </Button>
       </header>
       <ProviderCard presentation={providers[0]!} />
-      <UsageOverview usage={usage} />
+      <UsageOverview
+        usage={usage}
+        providers={providers}
+        history={createUsageDemoHistory(providers, observedAt)}
+      />
       <section className="pb-2">
         <DoomerboardToolbar
           audience="global"
