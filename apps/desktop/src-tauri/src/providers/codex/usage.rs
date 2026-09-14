@@ -41,12 +41,10 @@ const TOKEN_HISTORY_RETENTION_DAYS: i64 = 60;
 const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
-const MIN_SUPPORTED_CODEX_CLI_MINOR: u16 = 130;
-const MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 153;
-const MIN_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 148;
-const MAX_REVIEWED_PROVIDER_ORDINAL_MINOR: u16 = 153;
+const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 130;
+const MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 153;
 const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 18;
-const ROLLOUT_PARSER_VERSION: i64 = 21;
+const ROLLOUT_PARSER_VERSION: i64 = 22;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
@@ -1397,15 +1395,18 @@ fn apply_session_metadata(
     metadata: RawSessionMeta,
     line_timestamp: &str,
 ) -> Result<(), ()> {
-    let supported = is_supported_cli_version(&metadata.cli_version);
-    failure_capture::source_version(&metadata.cli_version, supported);
+    // Version review is diagnostic information. Valid records do not require a reviewed version.
+    failure_capture::source_version(
+        &metadata.cli_version,
+        is_reviewed_cli_version(&metadata.cli_version),
+    );
     let observed_id = normalized_session_id(metadata.id.clone());
     let observed_parent_id = normalized_session_id(metadata.forked_from_id.clone());
     let malformed_parent_id = metadata.forked_from_id.is_some() && observed_parent_id.is_none();
     let observed_fork_timestamp_ns =
         timestamp_ns(metadata.timestamp.as_deref().unwrap_or(line_timestamp)).ok();
     if state.baseline_is_inherited.is_none() {
-        state.schema_supported = supported;
+        state.schema_supported = true;
         let is_subagent = metadata
             .thread_source
             .as_ref()
@@ -1440,9 +1441,6 @@ fn apply_session_metadata(
                         .is_some_and(|value| timestamp_ns(value).is_err()));
         }
     } else {
-        if observed_id.as_deref() == state.leaf_session_id.as_deref() {
-            state.schema_supported &= supported;
-        }
         if state.lineage_mode == LineageMode::Discovering {
             match (state.leaf_session_id.as_deref(), observed_id.as_deref()) {
                 (Some(leaf), Some(observed)) if leaf == observed => {
@@ -1672,7 +1670,7 @@ fn record_precedes_parent_fork(state: &RolloutScanState, timestamp_ns: Option<i6
             .is_some_and(|(fork, timestamp)| timestamp < fork)
 }
 
-fn reviewed_provider_ordinal_origin(line: &[u8], record_type: &str, ordinal: u64) -> bool {
+fn valid_provider_ordinal_origin(line: &[u8], record_type: &str, ordinal: u64) -> bool {
     if record_type != "session_meta" {
         return false;
     }
@@ -1680,16 +1678,7 @@ fn reviewed_provider_ordinal_origin(line: &[u8], record_type: &str, ordinal: u64
         return false;
     };
     let metadata = line.payload;
-    let uses_reviewed_provider_ordinals = metadata
-        .cli_version
-        .split('.')
-        .nth(1)
-        .and_then(|minor| minor.parse::<u16>().ok())
-        .is_some_and(|minor| {
-            (MIN_REVIEWED_PROVIDER_ORDINAL_MINOR..=MAX_REVIEWED_PROVIDER_ORDINAL_MINOR)
-                .contains(&minor)
-        });
-    if !uses_reviewed_provider_ordinals || metadata.history_mode.as_deref() != Some("paginated") {
+    if metadata.history_mode.as_deref() != Some("paginated") {
         return false;
     }
     match metadata.history_base.as_ref() {
@@ -1698,7 +1687,7 @@ fn reviewed_provider_ordinal_origin(line: &[u8], record_type: &str, ordinal: u64
     }
 }
 
-fn reviewed_legacy_ordinal_origin(line: &[u8], record_type: &str) -> bool {
+fn valid_legacy_ordinal_origin(line: &[u8], record_type: &str) -> bool {
     if record_type != "session_meta" {
         return false;
     }
@@ -1709,31 +1698,10 @@ fn reviewed_legacy_ordinal_origin(line: &[u8], record_type: &str) -> bool {
     if metadata.history_base.as_ref().is_some() {
         return false;
     }
-    let minor = metadata
-        .cli_version
-        .split('.')
-        .nth(1)
-        .and_then(|minor| minor.parse::<u16>().ok());
-    match minor {
-        Some(148) => metadata.history_mode.as_deref() == Some("legacy"),
-        Some(130..=147) => metadata
-            .history_mode
-            .as_deref()
-            .is_none_or(|mode| mode == "legacy"),
-        Some(149..=MAX_REVIEWED_PROVIDER_ORDINAL_MINOR) => false,
-        _ => {
-            metadata
-                .thread_source
-                .as_ref()
-                .into_iter()
-                .chain(metadata.source.as_ref())
-                .any(RawThreadSource::is_subagent)
-                && metadata
-                    .history_mode
-                    .as_deref()
-                    .is_none_or(|mode| mode == "legacy")
-        }
-    }
+    metadata
+        .history_mode
+        .as_deref()
+        .is_none_or(|mode| mode == "legacy")
 }
 
 fn effective_record_ordinal(
@@ -1749,7 +1717,7 @@ fn effective_record_ordinal(
             if line_starts_file
                 && expected == 0
                 && ordinal < u64::MAX
-                && reviewed_provider_ordinal_origin(line, record_type, ordinal) =>
+                && valid_provider_ordinal_origin(line, record_type, ordinal) =>
         {
             *mode = ProviderOrdinalMode::Provider;
             Ok(ordinal)
@@ -1757,7 +1725,7 @@ fn effective_record_ordinal(
         (ProviderOrdinalMode::Unknown, RequiredWhenPresent::Missing)
             if line_starts_file
                 && expected == 0
-                && reviewed_legacy_ordinal_origin(line, record_type) =>
+                && valid_legacy_ordinal_origin(line, record_type) =>
         {
             *mode = ProviderOrdinalMode::Legacy;
             Ok(expected)
@@ -1774,7 +1742,7 @@ fn effective_record_ordinal(
     }
 }
 
-fn is_supported_cli_version(version: &str) -> bool {
+fn is_reviewed_cli_version(version: &str) -> bool {
     let mut parts = version.split('.');
     let Some("0") = parts.next() else {
         return false;
@@ -1783,7 +1751,7 @@ fn is_supported_cli_version(version: &str) -> bool {
         return false;
     };
     let remainder = parts.collect::<Vec<_>>().join(".");
-    (MIN_SUPPORTED_CODEX_CLI_MINOR..=MAX_SUPPORTED_CODEX_CLI_MINOR).contains(&minor)
+    (MIN_REVIEWED_CODEX_CLI_MINOR..=MAX_REVIEWED_CODEX_CLI_MINOR).contains(&minor)
         && !remainder.is_empty()
         && remainder
             .bytes()
@@ -5443,10 +5411,6 @@ fn index_file(
         cursor.completion_state == FileCompletionState::DiscardingOverlongLine;
     let mut deferred_until_day = None;
     loop {
-        if cursor.parser_state.exclude_usage && !cursor.parser_state.schema_supported {
-            cursor.parsed_offset = size;
-            break;
-        }
         if *remaining_bytes == 0 || started.elapsed().as_millis() >= max_millis {
             break;
         }
@@ -8397,8 +8361,14 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_index_counts_owned_usage_from_reviewed_codex_children() {
-        for version in ["0.150.0-alpha.8", "0.152.0", "0.153.4"] {
+    fn sqlite_index_counts_owned_usage_from_known_and_new_codex_children() {
+        for version in [
+            "0.150.0-alpha.8",
+            "0.152.0",
+            "0.153.4",
+            "0.154.0-alpha.6.2",
+            "1.0.0",
+        ] {
             let fixture = TempUsage::new();
             let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
             let observed = token_usage(70, 20, 0, 30);
@@ -8542,6 +8512,108 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_index_counts_valid_usage_from_unreviewed_versions() {
+        for version in ["0.154.0-alpha.6.2", "0.999.0", "1.0.0", "private-build"] {
+            let fixture = TempUsage::new();
+            let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+            let rollout =
+                reviewed_codex_0_148_root_rollout(100).replace("0.148.0-alpha.21", version);
+            fs::write(&fixture.rollout, rollout).unwrap();
+
+            let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+            assert_eq!(
+                indexed
+                    .daily
+                    .get(&now.date())
+                    .map(|day| day.observed_tokens),
+                Some(100),
+                "{version}"
+            );
+            assert_eq!(indexed.scan_status, UsageScanStatus::Complete, "{version}");
+            let repeated = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+            assert_eq!(
+                repeated.daily[&now.date()].observed_tokens,
+                100,
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn sqlite_index_counts_valid_legacy_usage_without_a_version_gate() {
+        for version in ["0.154.0-alpha.6.2", "1.0.0", "private-build"] {
+            for history_mode in [None, Some("legacy")] {
+                let fixture = TempUsage::new();
+                let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+                let mut records: Vec<serde_json::Value> = root_rollout(100)
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                records[0]["payload"]["cli_version"] = json!(version);
+                if let Some(mode) = history_mode {
+                    records[0]["payload"]["history_mode"] = json!(mode);
+                }
+                fs::write(&fixture.rollout, jsonl(records)).unwrap();
+                let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+                assert_eq!(indexed.daily[&now.date()].observed_tokens, 100);
+                assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_index_rejects_invalid_records_from_unreviewed_versions() {
+        for invalid in [
+            "ordinal_gap",
+            "history_origin",
+            "history_mode",
+            "counter_sum",
+            "cached_subset",
+            "unknown_counter",
+        ] {
+            let fixture = TempUsage::new();
+            let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+            let rollout = reviewed_codex_0_148_root_rollout(100)
+                .replace("0.148.0-alpha.21", "0.154.0-alpha.6.2");
+            let mut records: Vec<serde_json::Value> = rollout
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            match invalid {
+                "ordinal_gap" => records.last_mut().unwrap()["ordinal"] = json!(99),
+                "history_origin" => records[0]["ordinal"] = json!(50),
+                "history_mode" => records[0]["payload"]["history_mode"] = json!("unknown-mode"),
+                reason => {
+                    let usage =
+                        &mut records.last_mut().unwrap()["payload"]["info"]["total_token_usage"];
+                    match reason {
+                        "counter_sum" => usage["total_tokens"] = json!(999),
+                        "cached_subset" => usage["cached_input_tokens"] = json!(999),
+                        "unknown_counter" => usage["new_token_category"] = json!(999),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            fs::write(&fixture.rollout, jsonl(records)).unwrap();
+            let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+            assert_eq!(
+                indexed
+                    .daily
+                    .values()
+                    .map(|day| day.observed_tokens)
+                    .sum::<u64>(),
+                0,
+                "{invalid}"
+            );
+            assert_eq!(
+                indexed.scan_status,
+                UsageScanStatus::Unavailable,
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn sqlite_index_counts_codex_0_153_usage_across_auth_recovery() {
         let fixture = TempUsage::new();
         let now = OffsetDateTime::parse("2026-09-05T12:00:00Z", &Rfc3339).unwrap();
@@ -8625,7 +8697,7 @@ mod tests {
         let fixture = TempUsage::new();
         let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
         let rollout = reviewed_codex_0_148_root_rollout(100)
-            .replace("0.148.0-alpha.21", "0.150.0-alpha.8")
+            .replace("0.148.0-alpha.21", "0.154.0-alpha.6.2")
             .replace("2026-08-24", "2026-08-26");
         fs::write(&fixture.rollout, rollout).unwrap();
         let first = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
@@ -8648,7 +8720,7 @@ mod tests {
                      schema_supported = 0,
                      accounting_ready = 0,
                      parser_error_seen = 1",
-                [COMPATIBLE_ROLLOUT_PARSER_VERSION],
+                [21],
             )
             .unwrap();
         drop(connection);
@@ -9550,7 +9622,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_index_cleanly_fast_forwards_an_unresolved_subagent_from_an_unreviewed_version() {
+    fn sqlite_index_waits_for_an_unreviewed_subagent_record_to_finish() {
         let fixture = TempUsage::new();
         let mut rollout = json!({
             "timestamp": "2026-08-06T10:00:00Z",
@@ -9584,9 +9656,9 @@ mod tests {
             .unwrap();
 
         assert!(indexed.daily.is_empty());
-        assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
-        assert_eq!(size, offset);
-        assert_eq!(completion, "complete");
+        assert_eq!(indexed.scan_status, UsageScanStatus::Indexing);
+        assert!(offset < size);
+        assert_eq!(completion, "indexing");
         assert!(excluded);
         assert_eq!(detail_rows, 0);
     }
@@ -12534,21 +12606,21 @@ mod tests {
     }
 
     #[test]
-    fn parser_accepts_only_the_reviewed_codex_cli_version_range() {
-        assert!(is_supported_cli_version("0.130.0-alpha.5"));
-        assert!(is_supported_cli_version("0.145.0"));
-        assert!(is_supported_cli_version("0.146.0-alpha.9.2"));
-        assert!(is_supported_cli_version("0.147.0-alpha.6.5"));
-        assert!(is_supported_cli_version("0.148.0-alpha.21"));
-        assert!(is_supported_cli_version("0.149.1"));
-        assert!(is_supported_cli_version("0.150.0-alpha.8"));
-        assert!(is_supported_cli_version("0.151.0-alpha.7.2"));
-        assert!(!is_supported_cli_version("0.129.9"));
-        assert!(is_supported_cli_version("0.152.0"));
-        assert!(is_supported_cli_version("0.153.4"));
-        assert!(!is_supported_cli_version("0.154.0"));
-        assert!(!is_supported_cli_version("1.0.0"));
-        assert!(!is_supported_cli_version("private value"));
+    fn diagnostic_review_status_uses_the_reviewed_codex_cli_version_range() {
+        assert!(is_reviewed_cli_version("0.130.0-alpha.5"));
+        assert!(is_reviewed_cli_version("0.145.0"));
+        assert!(is_reviewed_cli_version("0.146.0-alpha.9.2"));
+        assert!(is_reviewed_cli_version("0.147.0-alpha.6.5"));
+        assert!(is_reviewed_cli_version("0.148.0-alpha.21"));
+        assert!(is_reviewed_cli_version("0.149.1"));
+        assert!(is_reviewed_cli_version("0.150.0-alpha.8"));
+        assert!(is_reviewed_cli_version("0.151.0-alpha.7.2"));
+        assert!(!is_reviewed_cli_version("0.129.9"));
+        assert!(is_reviewed_cli_version("0.152.0"));
+        assert!(is_reviewed_cli_version("0.153.4"));
+        assert!(!is_reviewed_cli_version("0.154.0"));
+        assert!(!is_reviewed_cli_version("1.0.0"));
+        assert!(!is_reviewed_cli_version("private value"));
     }
 
     #[test]
@@ -14279,7 +14351,7 @@ mod tests {
     }
 
     #[test]
-    fn rollout_scan_rejects_unreviewed_provider_ordinal_origins() {
+    fn rollout_scan_rejects_invalid_provider_ordinal_origins() {
         let day = Date::from_calendar_date(2026, Month::August, 6).unwrap();
         for payload in [
             json!({
@@ -14358,23 +14430,6 @@ mod tests {
         let mut days = BTreeMap::new();
         assert!(!scan_rollout_reader(
             current_without_provider_ordinal.as_bytes(),
-            day,
-            day,
-            &mut days,
-        ));
-
-        let codex_0_150_legacy_child = jsonl([json!({
-            "timestamp": "2026-08-26T10:00:00Z",
-            "type": "session_meta",
-            "payload": {
-                "cli_version": "0.150.0-alpha.8",
-                "history_mode": "legacy",
-                "thread_source": "subagent"
-            }
-        })]);
-        let mut days = BTreeMap::new();
-        assert!(!scan_rollout_reader(
-            codex_0_150_legacy_child.as_bytes(),
             day,
             day,
             &mut days,

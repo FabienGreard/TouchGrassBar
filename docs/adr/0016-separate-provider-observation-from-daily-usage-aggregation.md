@@ -27,3 +27,9 @@ Copied Codex history resolves through one trusted parent. The private index stor
 An incomplete local history schedules another bounded pass after 250 milliseconds. A failed pass waits 60 seconds. Provider observations continue to publish independently during catch-up.
 
 Codex and Claude each have one production observation adapter. Both adapters use the same small shared interface. Each adapter keeps its provider-specific evidence and accounting rules behind that interface.
+
+Codex version review is diagnostic information. An unknown version does not
+block valid Observed Usage. The parser selects legacy or paginated record
+ordering from the record structure. It still checks counter arithmetic,
+record order, history boundaries, and copied-history ownership. A parser
+revision change retries files that an earlier version gate rejected.
