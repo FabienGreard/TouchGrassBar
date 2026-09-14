@@ -183,6 +183,10 @@ export const diagnosticParserContextSchema = z
     filesSeen: count.nullable(),
     recordsAccepted: count.nullable(),
     recordsRejected: count.nullable(),
+    // Absent in older clients. Null day means the record timestamp was unreadable.
+    rankingDay: rankingDay.nullable().exactOptional(),
+    recordsAffected: count.exactOptional(),
+    recordsExcluded: count.exactOptional(),
     reason: z.enum(DIAGNOSTIC_PARSER_REASONS),
   })
   .strict();
@@ -313,6 +317,14 @@ export const diagnosticReportSchema = z
       ctx.addIssue({ code: "custom", message: "Invalid failure time order" });
     }
     const failure = report.failure;
+    if (
+      failure.area === "parser" &&
+      failure.context.recordsExcluded !== undefined &&
+      (failure.context.recordsAffected === undefined ||
+        failure.context.recordsExcluded > failure.context.recordsAffected)
+    ) {
+      ctx.addIssue({ code: "custom", message: "Excluded records exceed affected records" });
+    }
     if (failure.area === "pricing") {
       const evidence = failure.context;
       if (

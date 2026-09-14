@@ -307,7 +307,7 @@ test("first Profile accepts a thirty UTC day backfill atomically", async () => {
   ]);
 });
 
-test("a completed sparse Profile backfill keeps missing days absent", async () => {
+test("a completed sparse Profile backfill accepts recovered original-window days", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
@@ -327,11 +327,11 @@ test("a completed sparse Profile backfill keeps missing days absent", async () =
       installationCredential: credential,
       snapshots: [usageSnapshot({ rankingDay: missingDay })],
     }),
-  ).rejects.toThrow("keeps original-window missing days closed");
-  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toHaveLength(2);
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 1 }]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").collect())).toHaveLength(3);
 });
 
-test("an empty Profile backfill completes once and closes new historical days", async () => {
+test("an empty Profile backfill completes once and permits recovered history", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
@@ -365,7 +365,7 @@ test("an empty Profile backfill completes once and closes new historical days", 
       installationCredential: credential,
       snapshots: [usageSnapshot({ rankingDay: previousDay })],
     }),
-  ).rejects.toThrow("keeps original-window missing days closed");
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 1 }]);
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
       profileBackfillAnchor: null,
@@ -551,7 +551,7 @@ test("a completed Profile accepts only in-day delayed post-anchor rows", async (
       profileBackfillAnchor: null,
       snapshots: [usageSnapshot({ rankingDay: "2026-08-07" })],
     }),
-  ).rejects.toThrow("keeps original-window missing days closed");
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 1 }]);
   await expect(
     authenticated.mutation(api.sync.dailyUsage, {
       activeMacGeneration: 1,
@@ -3335,4 +3335,75 @@ test("the app database stores only the installation digest and approved usage fi
       rankingDay: TODAY,
     },
   ]);
+});
+
+test("late imported history brings the seven and thirty day boards up to the local total", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated, touchGrassId } = await createProfile(t, credential, "History import");
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots: [usageSnapshot({ provider: "claude", observedTokens: 500_000_000 })],
+  });
+  const recoveredDay = new Date(NOW.getTime() - 86_400_000).toISOString().slice(0, 10);
+  const recovered = {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: null,
+    snapshots: [
+      usageSnapshot({
+        provider: "claude",
+        rankingDay: recoveredDay,
+        observedTokens: 1_400_000_000,
+        // The import found this older day today, after the initial batch completed.
+        observedAt: NOW.getTime(),
+      }),
+    ],
+  };
+  await expect(authenticated.mutation(api.sync.dailyUsage, recovered)).resolves.toMatchObject([
+    { outcome: "committed", revision: 1 },
+  ]);
+  await expect(authenticated.mutation(api.sync.dailyUsage, recovered)).resolves.toMatchObject([
+    { outcome: "idempotent", revision: 1 },
+  ]);
+  for (const scope of ["claude", "combined"] as const) {
+    for (const windowDays of [1, 7, 30] as const) {
+      await expect(
+        authenticated.query(api.doomerboards.currentGlobal, {
+          rankingDay: TODAY,
+          scope,
+          windowDays,
+        }),
+      ).resolves.toMatchObject([
+        { touchGrassId, tokenScore: windowDays === 1 ? 500_000_000 : 1_900_000_000 },
+      ]);
+    }
+  }
+  const saved = await t.run(async (ctx) => {
+    const profile = await ctx.db
+      .query("tokenmaxxers")
+      .withIndex("by_public_id", (q) => q.eq("publicId", touchGrassId))
+      .unique();
+    if (!profile) throw new Error("Profile missing");
+    return ctx.db
+      .query("usageBuckets")
+      .withIndex("by_tokenmaxxer_id_and_provider_and_ranking_day", (q) =>
+        q.eq("tokenmaxxerId", profile._id),
+      )
+      .take(3);
+  });
+  expect(saved).toHaveLength(2);
+  expect(saved.reduce((sum, row) => sum + row.observedTokens, 0)).toBe(1_900_000_000);
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      ...recovered,
+      snapshots: [
+        usageSnapshot({
+          rankingDay: new Date(NOW.getTime() - 30 * 86_400_000).toISOString().slice(0, 10),
+        }),
+      ],
+    }),
+  ).rejects.toThrow("new historical usage is outside the Profile window");
 });

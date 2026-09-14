@@ -45,7 +45,7 @@ const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 11;
+const TRANSCRIPT_PARSER_VERSION: i64 = 12;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -136,15 +136,36 @@ fn parser_failure(reason: ParserReason) {
 }
 
 fn parse_transcript_line(line: &[u8], dedupe_salt: &[u8; 32]) -> TranscriptLineOutcome {
-    let outcome = parse_transcript_line_inner(line, dedupe_salt);
-    match &outcome {
-        TranscriptLineOutcome::Usage(_) => failure_capture::record_accepted(),
-        TranscriptLineOutcome::Invalid | TranscriptLineOutcome::FrameOnly(_) => {
-            failure_capture::record_rejected()
+    failure_capture::parser_record(|| {
+        let outcome = parse_transcript_line_inner(line, dedupe_salt);
+        let excluded = matches!(
+            outcome,
+            TranscriptLineOutcome::Invalid | TranscriptLineOutcome::FrameOnly(_)
+        );
+        let day = match &outcome {
+            TranscriptLineOutcome::Usage(message) => Some(message.day),
+            TranscriptLineOutcome::FrameOnly(frame) => Some(frame.day),
+            TranscriptLineOutcome::Invalid => {
+                #[derive(Deserialize)]
+                struct Timestamp<'a> {
+                    timestamp: &'a str,
+                }
+                serde_json::from_slice::<Timestamp<'_>>(line)
+                    .ok()
+                    .and_then(|header| OffsetDateTime::parse(header.timestamp, &Rfc3339).ok())
+                    .map(utc_ranking_day)
+            }
+            TranscriptLineOutcome::Ignored => None,
+        };
+        match &outcome {
+            TranscriptLineOutcome::Usage(_) => failure_capture::record_accepted(),
+            TranscriptLineOutcome::Invalid | TranscriptLineOutcome::FrameOnly(_) => {
+                failure_capture::record_rejected()
+            }
+            TranscriptLineOutcome::Ignored => {}
         }
-        TranscriptLineOutcome::Ignored => {}
-    }
-    outcome
+        (outcome, day, excluded)
+    })
 }
 
 fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLineOutcome {
@@ -290,13 +311,9 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
     if let Some(reason) = shape_failure {
         parser_failure(reason);
     }
-    // A reviewed version whose shape drifted still reports counters this parser
-    // understands, so its tokens count and the day becomes partial. A version
-    // that is unreviewed *and* carries an unreviewed shape has no checked
-    // meaning for its counters, so only the frame is recorded.
-    if !reviewed_version && !usage_schema_known {
-        return TranscriptLineOutcome::FrameOnly(frame);
-    }
+    // Read the validated outer counters once. Unknown metadata or inconsistent
+    // repeated counters make usage partial, for every source version. They do
+    // not erase counters whose types and overflow checks we can verify.
     let mut usage = ClaudeTokenUsage {
         input: line.message.usage.input_tokens,
         cache_creation_input: line.message.usage.cache_creation_input_tokens.unwrap_or(0),
@@ -4366,8 +4383,8 @@ mod tests {
             TranscriptLineOutcome::FrameOnly(_)
         ));
 
-        // An unreviewed version that also carries an unreviewed usage shape has
-        // no checked meaning for its counters, so it stays frame-only.
+        // New metadata does not remove the known counters. Its meaning is
+        // unknown, so the record remains partial and unpriced.
         let unreviewed_shape = br#"{
           "type":"assistant",
           "uuid":"PRIVATE-FRAME-ID",
@@ -4388,10 +4405,12 @@ mod tests {
             }
           }
         }"#;
-        assert!(matches!(
-            parse_transcript_line(unreviewed_shape, &SALT),
-            TranscriptLineOutcome::FrameOnly(_)
-        ));
+        let TranscriptLineOutcome::Usage(message) = parse_transcript_line(unreviewed_shape, &SALT)
+        else {
+            panic!("known counters must survive unknown metadata");
+        };
+        assert_eq!(message.usage.observed_tokens(), Some(50));
+        assert!(!message.complete);
 
         // A record with no readable line at all is still invalid.
         assert_eq!(
@@ -4797,6 +4816,86 @@ mod tests {
     }
 
     #[test]
+    fn recovered_usage_keeps_empty_iterations_independent_of_version() {
+        for version in ["2.1.263", "2.1.268", "2.1.270", "2.1.999"] {
+            let record = claude_code_2_1_263_transcript_line(false).replace("2.1.263", version);
+            let TranscriptLineOutcome::Usage(message) =
+                parse_transcript_line(record.as_bytes(), &SALT)
+            else {
+                panic!("known outer counters must survive empty iterations for {version}");
+            };
+            assert_eq!(message.usage.observed_tokens(), Some(104));
+            assert!(!message.complete);
+        }
+    }
+
+    #[test]
+    fn recovered_usage_replays_parser_11_excluded_file_without_duplicate_tokens() {
+        let observed_at = OffsetDateTime::parse("2026-09-14T12:00:00Z", &Rfc3339).unwrap();
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let record = claude_code_2_1_263_transcript_line(false)
+            .replace("2.1.263", "2.1.270")
+            .replace("2026-09-05", "2026-09-10");
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[record.clone(), record],
+        );
+        scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at).unwrap();
+        // Model a completed parser-11 checkpoint with frames but no counted usage.
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection
+            .execute_batch(
+                "UPDATE claude_usage_files SET parser_version = 11;
+            UPDATE claude_usage_frames SET parser_version = 11;
+            DELETE FROM claude_usage_messages;
+            DELETE FROM claude_usage_daily;",
+            )
+            .unwrap();
+        drop(connection);
+        let day = observed_at.date() - Duration::days(4);
+        for _ in 0..2 {
+            let local =
+                scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at)
+                    .unwrap();
+            assert_eq!(local.daily_usage[&day].observed_tokens, 104);
+            assert_eq!(stored_message_count(&fixture.database()), 1);
+        }
+    }
+
+    #[test]
+    fn recovered_usage_diagnostics_identify_day_and_excluded_records() {
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let _scan = failure_capture::ScanFailures::begin();
+            for day in ["2026-09-10", "2026-09-10", "2026-09-11"] {
+                let record = claude_code_2_1_263_transcript_line(false).replace("2026-09-05", day);
+                parse_transcript_line(record.as_bytes(), &SALT);
+            }
+            let mut invalid: serde_json::Value = serde_json::from_str(
+                &claude_code_2_1_263_transcript_line(false).replace("2026-09-05", "2026-09-11"),
+            )
+            .unwrap();
+            invalid["message"]["usage"]["input_tokens"] =
+                serde_json::json!("PRIVATE-invalid-counter");
+            parse_transcript_line(invalid.to_string().as_bytes(), &SALT);
+            parse_transcript_line(b"PRIVATE-invalid-json", &SALT);
+        });
+        let values = serde_json::to_value(&failures).unwrap();
+        assert_eq!(values.as_array().unwrap().len(), 4);
+        assert_eq!(values[0]["context"]["rankingDay"], "2026-09-10");
+        assert_eq!(values[0]["context"]["recordsAffected"], 2);
+        assert_eq!(values[0]["context"]["recordsExcluded"], 0);
+        assert_eq!(values[1]["context"]["rankingDay"], "2026-09-11");
+        assert_eq!(values[1]["context"]["recordsAffected"], 1);
+        assert_eq!(values[2]["context"]["rankingDay"], "2026-09-11");
+        assert_eq!(values[2]["context"]["recordsAffected"], 1);
+        assert_eq!(values[2]["context"]["recordsExcluded"], 1);
+        assert_eq!(values[3]["context"]["rankingDay"], serde_json::Value::Null);
+        assert_eq!(values[3]["context"]["recordsExcluded"], 1);
+        assert!(!values.to_string().contains("PRIVATE"));
+    }
+
+    #[test]
     fn failure_diagnostics_count_partial_records_once_and_remove_private_content() {
         let failures = crate::diagnostics::collect_failures_for_test(|| {
             let _scan = failure_capture::ScanFailures::begin();
@@ -4815,7 +4914,10 @@ mod tests {
             let crate::diagnostics::Failure::Parser { context, .. } = failure else {
                 panic!("parser failure");
             };
-            assert_eq!(context.parser_version, Some(11));
+            assert_eq!(
+                context.parser_version,
+                Some(TRANSCRIPT_PARSER_VERSION as u64)
+            );
             assert_eq!(context.source_versions, ["2.1.263"]);
             assert_eq!(context.records_accepted, Some(1));
             assert_eq!(context.records_rejected, Some(1));

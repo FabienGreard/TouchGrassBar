@@ -465,6 +465,9 @@ mod tests {
                 files_seen: None,
                 records_accepted: None,
                 records_rejected: None,
+                ranking_day: None,
+                records_affected: None,
+                records_excluded: None,
                 reason: ParserReason::ReadFailed,
             },
         }

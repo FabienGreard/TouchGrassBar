@@ -308,7 +308,12 @@ function assertHistoricalAdmission(
     }
     if (backfillIsComplete && !plan.existing) {
       if (plan.snapshot.rankingDay <= anchorDay) {
-        throw new Error("a completed Profile backfill keeps original-window missing days closed");
+        if (plan.snapshot.rankingDay < firstBackfillDay) {
+          throw new Error("new historical usage is outside the Profile window");
+        }
+        // A completed scan or parser repair can discover a previously missing day.
+        // Only the first Active Mac can add it, within its original Profile window.
+        continue;
       }
       const rankingDayStart = Date.parse(`${plan.snapshot.rankingDay}T00:00:00.000Z`);
       const rankingDayEnd = rankingDayStart + 24 * 60 * 60 * 1_000;

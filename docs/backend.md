@@ -92,9 +92,10 @@ creation Ranking Day and the preceding 29 UTC days. This backfill has at most
 60 provider-day rows. The request includes the server-owned creation Ranking
 Day as a completion marker, including when no row is derivable. The marker and
 all rows commit atomically. An exact retry is idempotent. After completion, a
-later historical request normally updates only an existing generation-one
-bucket at a higher revision. Missing days in the original backfill window stay
-absent. A post-creation row that was first observed as current can retry after
+later historical request can update an existing generation-one bucket at a
+higher revision or add a recovered day inside the original 30-day window.
+The retained 60-day limit still applies. An absent day is not proof of zero
+usage or a permanent exclusion. A post-creation row that was first observed as current can retry after
 its day closes only when `observedAt` is inside that exact UTC day. Later Active
 Mac generations cannot use this authority. Other historical observations can
 occur after their Ranking Day, but they cannot precede that day or exceed the

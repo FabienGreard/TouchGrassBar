@@ -70,8 +70,10 @@ one atomic sparse backfill for every derivable Coding Provider day from the
 server-owned creation Ranking Day and the preceding 29 UTC days. It sends an
 explicit completion marker even when the sparse backfill has no rows. The
 marker fixes the admitted window, makes a retry idempotent across UTC rollover,
-and prevents a later insert for a missing day in that original window. A row
-that was first queued as current after the creation day can wait behind the
+and records completion of the initial upload. It does not close missing days:
+the first Active Mac can add a recovered day inside that original window while
+it remains inside the 60-day retention limit. A row that was first queued as
+current after the creation day can wait behind the
 Profile batch and then retry after its day closes. Its observation must be in
 that exact UTC day. Other retained historical changes require a higher revision
 of an existing Usage Bucket.

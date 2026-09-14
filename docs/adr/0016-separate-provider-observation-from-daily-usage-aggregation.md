@@ -33,3 +33,12 @@ block valid Observed Usage. The parser selects legacy or paginated record
 ordering from the record structure. It still checks counter arithmetic,
 record order, history boundaries, and copied-history ownership. A parser
 revision change retries files that an earlier version gate rejected.
+
+## Claude record recovery
+
+Claude source versions affect the completeness claim, not whether validated
+outer token counters contribute. Unknown metadata and inconsistent repeated
+counters leave known usage partial and unpriced. The parser does not add
+repeated counters or guess unknown token categories. Invalid required fields,
+invalid counter types, and overflow still exclude a record. Parser revision 12
+replays older file checkpoints, including files with previously excluded usage.

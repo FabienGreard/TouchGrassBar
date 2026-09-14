@@ -57,6 +57,22 @@ received now can describe a failure from an earlier day.
 version in the context describes the relevant operation or evidence. A null
 version is unknown. Do not infer it from the latest release or receipt time.
 
+For Claude parser reports from the updated client, `context.rankingDay` is
+the affected UTC usage day, when its timestamp can be read. `recordsAffected`
+counts records with that reason on that day during the captured scan;
+`recordsExcluded` counts those records whose tokens were excluded. An error
+can have zero excluded records when known counters still contribute partially.
+`filesSeen`, `recordsAccepted`, `recordsRejected`, and `sourceVersions` describe
+the whole scan. Do not attribute those scan totals to one error or day. Do not
+add record counts across reports as if they were unique records: rescans can
+read the same record again. Repeated occurrences retain the latest captured
+context; `occurrenceCount` is separate from these record counts.
+
+The new fields are optional protocol extensions. Older clients and retained
+reports remain valid without them. A missing date is unknown, not today's date.
+Malformed timestamps cannot be assigned to a usage day. The backend must accept
+these fields before an updated desktop client uploads them.
+
 For missing API-Equivalent Cost:
 
 1. Check parser reports for a rejected usage shape or read failure.

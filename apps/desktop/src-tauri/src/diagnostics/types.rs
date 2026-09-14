@@ -141,6 +141,12 @@ pub(crate) struct ParserContext {
     pub files_seen: Option<u64>,
     pub records_accepted: Option<u64>,
     pub records_rejected: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking_day: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_affected: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_excluded: Option<u64>,
     pub reason: ParserReason,
 }
 
@@ -305,7 +311,13 @@ impl Failure {
                         .all(|item| super::validation::database_module(&item.module))
             }
             Self::Parser { context, .. } => {
-                context.source_versions.len() <= 8
+                context.ranking_day.as_deref().is_none_or(day)
+                    && context.records_excluded.is_none_or(|excluded| {
+                        context
+                            .records_affected
+                            .is_some_and(|affected| excluded <= affected)
+                    })
+                    && context.source_versions.len() <= 8
                     && context
                         .source_versions
                         .iter()

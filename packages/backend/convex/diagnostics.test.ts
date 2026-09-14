@@ -451,3 +451,55 @@ test("retention deletes expired reports in bounded batches and keeps fresh repor
   expect(page.page).toHaveLength(1);
   expect(page.page[0]!.expiresAt).toBe(NOW + DIAGNOSTIC_SERVER_RETENTION_MS);
 });
+
+test("dated parser failures round-trip while old reports stay valid", async () => {
+  const t = testBackend();
+  const owner = await seedReporter(t);
+  const original = fixtures.find((report) => report.failure.area === "parser")!;
+  if (original.failure.area !== "parser") throw new Error("parser fixture required");
+  const report = diagnosticReportSchema.parse({
+    ...original,
+    reportId: crypto.randomUUID(),
+    failure: {
+      ...original.failure,
+      context: {
+        ...original.failure.context,
+        rankingDay: "2026-09-10",
+        recordsAffected: 3,
+        recordsExcluded: 1,
+      },
+    },
+  });
+  for (const value of [original, report]) {
+    await expect(
+      t.mutation(api.diagnostics.submit, {
+        reporterId: owner.reporterId,
+        diagnosticCredential: DIAGNOSTIC_CREDENTIAL,
+        report: value,
+      }),
+    ).resolves.toEqual({ outcome: "accepted", retryAfterMs: null });
+  }
+  const stored = await t.query(internal.diagnostics.forProfile, {
+    tokenmaxxerId: owner.tokenmaxxerId,
+    paginationOpts: { numItems: 10, cursor: null },
+  });
+  expect(stored.page.map((row) => row.report)).toContainEqual(report);
+  expect(
+    diagnosticReportSchema.safeParse({
+      ...report,
+      failure: {
+        ...report.failure,
+        context: { ...report.failure.context, rankingDay: "2026-09-31" },
+      },
+    }).success,
+  ).toBe(false);
+  expect(
+    diagnosticReportSchema.safeParse({
+      ...report,
+      failure: {
+        ...report.failure,
+        context: { ...report.failure.context, recordsAffected: 1, recordsExcluded: 2 },
+      },
+    }).success,
+  ).toBe(false);
+});

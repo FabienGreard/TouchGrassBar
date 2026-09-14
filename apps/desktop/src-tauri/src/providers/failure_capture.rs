@@ -26,6 +26,7 @@ struct ScanEvidence {
 
 thread_local! {
     static SCAN: RefCell<Option<ScanEvidence>> = const { RefCell::new(None) };
+    static PARSER_RECORD: RefCell<Option<Vec<Failure>>> = const { RefCell::new(None) };
 }
 
 pub(crate) struct ScanFailures(bool);
@@ -151,7 +152,7 @@ fn same_reason(left: &Failure, right: &Failure) -> bool {
                 context: y,
                 code: d,
             },
-        ) => a == b && c == d && x.reason == y.reason,
+        ) => a == b && c == d && x.reason == y.reason && x.ranking_day == y.ranking_day,
         (
             Failure::Pricing {
                 provider: a,
@@ -180,12 +181,33 @@ pub(crate) fn capture(failure: Failure) {
         let Some(scan) = scan else {
             return Some(failure);
         };
-        if scan.failures.len() < MAX_SCAN_FAILURES
-            && !scan
-                .failures
-                .iter()
-                .any(|value| same_reason(value, &failure))
+        if let Some(existing) = scan
+            .failures
+            .iter_mut()
+            .find(|value| same_reason(value, &failure))
         {
+            if let (
+                Failure::Parser {
+                    context: current, ..
+                },
+                Failure::Parser { context: next, .. },
+            ) = (existing, &failure)
+            {
+                for (current, next) in [
+                    (&mut current.records_affected, next.records_affected),
+                    (&mut current.records_excluded, next.records_excluded),
+                ] {
+                    if let Some(next) = next {
+                        *current = Some(
+                            current
+                                .unwrap_or(0)
+                                .saturating_add(next)
+                                .min(MAX_SAFE_INTEGER),
+                        );
+                    }
+                }
+            }
+        } else if scan.failures.len() < MAX_SCAN_FAILURES {
             scan.failures.push(failure);
         }
         None
@@ -196,7 +218,7 @@ pub(crate) fn capture(failure: Failure) {
 }
 
 pub(crate) fn parser(provider: Provider, parser_version: i64, reason: ParserReason) {
-    capture(Failure::Parser {
+    let failure = Failure::Parser {
         code: if reason == ParserReason::ReadFailed {
             ParserCode::ParserScanFailed
         } else {
@@ -210,9 +232,57 @@ pub(crate) fn parser(provider: Provider, parser_version: i64, reason: ParserReas
             files_seen: None,
             records_accepted: None,
             records_rejected: None,
+            ranking_day: None,
+            records_affected: None,
+            records_excluded: None,
             reason,
         },
+    };
+    let pending = PARSER_RECORD.with_borrow_mut(|record| {
+        if let Some(record) = record {
+            if !record
+                .iter()
+                .any(|existing| same_reason(existing, &failure))
+            {
+                record.push(failure);
+            }
+            None
+        } else {
+            Some(failure)
+        }
     });
+    if let Some(failure) = pending {
+        capture(failure);
+    }
+}
+
+/// Attach record dates and outcomes without sending any record content.
+/// Scan counters remain scan-wide; affected/excluded counters are per day and reason.
+pub(crate) fn parser_record<T>(parse: impl FnOnce() -> (T, Option<time::Date>, bool)) -> T {
+    struct RecordScope;
+    impl Drop for RecordScope {
+        fn drop(&mut self) {
+            PARSER_RECORD.with_borrow_mut(|record| *record = None);
+        }
+    }
+    PARSER_RECORD.with_borrow_mut(|record| {
+        assert!(record.is_none());
+        *record = Some(Vec::new());
+    });
+    let _scope = RecordScope;
+    let (result, day, excluded) = parse();
+    let failures = PARSER_RECORD
+        .with_borrow_mut(Option::take)
+        .unwrap_or_default();
+    for mut failure in failures {
+        if let Failure::Parser { context, .. } = &mut failure {
+            context.ranking_day = day.map(|day| day.to_string());
+            context.records_affected = Some(1);
+            context.records_excluded = Some(u64::from(excluded));
+        }
+        capture(failure);
+    }
+    result
 }
 
 pub(crate) fn pricing(
