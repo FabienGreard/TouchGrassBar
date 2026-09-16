@@ -44,7 +44,7 @@ const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 130;
 const MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 153;
 const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 18;
-const ROLLOUT_PARSER_VERSION: i64 = 22;
+const ROLLOUT_PARSER_VERSION: i64 = 23;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
@@ -1113,6 +1113,9 @@ struct RawRolloutHeader {
     payload: IgnoredAny,
     #[serde(default, rename = "model")]
     _model: Option<IgnoredAny>,
+    // Response annotations are not token evidence or copied-history boundaries.
+    #[serde(default, rename = "metadata")]
+    _metadata: Option<IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -4360,7 +4363,7 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
 
 fn promote_compatible_parser_rows(connection: &Connection, today: Date) -> Result<usize, ()> {
     // Historical accepted rows do not need hourly detail. Today's rows must replay
-    // through parser 21 to backfill the new hour index, even if their daily totals are complete.
+    // through the current parser to fill the hour index, even if their daily totals are complete.
     connection
         .execute(
             "UPDATE codex_usage_files
@@ -10421,6 +10424,114 @@ mod tests {
             "private-child-name",
         ] {
             assert!(!report.contains(private_value));
+        }
+    }
+
+    fn paginated_fork_with_response_metadata() -> String {
+        let mut baseline = token_count_line("2026-08-06T10:00:02Z", 1_100, 100);
+        baseline["ordinal"] = json!(43);
+        let mut local = token_count_line("2026-08-06T10:00:04Z", 1_200, 100);
+        local["ordinal"] = json!(45);
+        jsonl([
+            json!({
+                "ordinal": 41,
+                "timestamp": "2026-08-06T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "cli_version": "0.154.0-alpha.6.2",
+                    "id": "metadata-child",
+                    "forked_from_id": "metadata-parent",
+                    "forked_from_ordinal_exclusive": 41,
+                    "history_mode": "paginated",
+                    "history_base": {
+                        "thread_id": "metadata-parent",
+                        "end_ordinal_exclusive": 41,
+                        "end_byte_offset": 1
+                    }
+                }
+            }),
+            json!({
+                "ordinal": 42,
+                "timestamp": "2026-08-06T10:00:01Z",
+                "type": "turn_context",
+                "payload": { "model": "gpt-5.6-sol" }
+            }),
+            baseline,
+            json!({
+                "ordinal": 44,
+                "timestamp": "2026-08-06T10:00:03Z",
+                "type": "response_item",
+                "payload": { "type": "function_call_output", "output": "PRIVATE-CONTENT" },
+                "metadata": {
+                    "annotation": "PRIVATE-METADATA",
+                    "model": "PRIVATE-MODEL",
+                    "total_token_usage": { "total_tokens": 999_999 }
+                }
+            }),
+            local,
+        ])
+    }
+
+    #[test]
+    fn sqlite_index_counts_fork_usage_with_response_metadata() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        fs::write(&fixture.rollout, paginated_fork_with_response_metadata()).unwrap();
+
+        let ready = run_usage_passes(&fixture, now, 3);
+
+        assert_eq!(
+            ready.daily.get(&now.date()).map(|day| day.observed_tokens),
+            Some(100)
+        );
+        assert_eq!(ready.scan_status, UsageScanStatus::Complete);
+        let report = debug_usage_pass(&fixture.database, &fixture.root, now).unwrap();
+        for private_value in ["PRIVATE-CONTENT", "PRIVATE-METADATA", "PRIVATE-MODEL"] {
+            assert!(!report.contains(private_value));
+        }
+        let repeated = run_usage_passes(&fixture, now, 2);
+        assert_eq!(repeated.daily[&now.date()].observed_tokens, 100);
+    }
+
+    #[test]
+    fn sqlite_index_replays_parser_22_forks_rejected_by_response_metadata() {
+        for (lineage, excluded) in [("discovering", true), ("independent", false)] {
+            for today in ["2026-08-06T12:00:00Z", "2026-08-07T12:00:00Z"] {
+                let fixture = TempUsage::new();
+                let now = OffsetDateTime::parse(today, &Rfc3339).unwrap();
+                let usage_day = Date::from_calendar_date(2026, time::Month::August, 6).unwrap();
+                fs::write(&fixture.rollout, paginated_fork_with_response_metadata()).unwrap();
+                run_usage_passes(&fixture, now, 3);
+                // Reproduce a completed parser-22 checkpoint. The file has not changed.
+                Connection::open(&fixture.database)
+                    .unwrap()
+                    .execute(
+                        "UPDATE codex_usage_files
+                         SET parser_version = 22, completion_state = 'error',
+                             accounting_ready = 0, parser_error_seen = 1,
+                             lineage_mode = ?1, usage_excluded = ?2",
+                        params![lineage, excluded],
+                    )
+                    .unwrap();
+
+                let repaired = run_usage_passes(&fixture, now, 3);
+
+                assert_eq!(repaired.scan_status, UsageScanStatus::Complete);
+                assert_eq!(repaired.daily[&usage_day].observed_tokens, 100);
+                let repeated = run_usage_passes(&fixture, now, 2);
+                assert_eq!(repeated.daily[&usage_day].observed_tokens, 100);
+                if usage_day == now.date() {
+                    let hour_tokens: u64 = Connection::open(&fixture.database)
+                        .unwrap()
+                        .query_row(
+                            "SELECT SUM(observed_tokens) FROM codex_usage_file_model_hours",
+                            [],
+                            |row| row.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(hour_tokens, 100);
+                }
+            }
         }
     }
 
