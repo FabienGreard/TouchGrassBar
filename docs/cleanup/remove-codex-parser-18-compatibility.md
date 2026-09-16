@@ -2,7 +2,7 @@
 
 - **Status:** rehearsed
 - **Owner issue:** [#95](https://github.com/FabienGreard/TouchGrassBar/issues/95)
-- **Implementation:** [commit c1f0061f](https://github.com/FabienGreard/TouchGrassBar/commit/c1f0061fc9a99914a97ff888bb7079a02f1abf68), parser 19, and [the parser-20 update in PR #106](https://github.com/FabienGreard/TouchGrassBar/pull/106)
+- **Implementation:** [commit c1f0061f](https://github.com/FabienGreard/TouchGrassBar/commit/c1f0061fc9a99914a97ff888bb7079a02f1abf68), parser 19, and [the parser-20 update in PR #106](https://github.com/FabienGreard/TouchGrassBar/pull/106), and [the parser-23 recovery](https://github.com/FabienGreard/TouchGrassBar/commit/768ca6942a7ec4db55f848ac30ae745c0ddfa0f1)
 
 ## Scope
 
