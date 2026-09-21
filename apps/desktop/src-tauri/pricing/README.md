@@ -372,6 +372,36 @@ one million tokens:
 
 ### Claude parser fixture review
 
+The 2026-09-21 parser review adds Claude Code 2.1.272, 2.1.273, 2.1.274,
+and 2.1.276. Structural inspection of records from each version confirmed
+the existing usage fields and matching per-iteration counters. A new 2.1.276
+session confirmed the standard-speed record with a one-hour cache write.
+The local calculation matched its main-model cost. The CLI's total also
+included a helper request that was not in the inspected transcript.
+
+The same review accepts three zero-token synthetic notice formats without
+the redundant `session_id`: a plain notice, an HTTP quota error, and an HTTP
+error with `apiError` and `apiErrorCode`. The parser checks their known field
+types, the synthetic message shape, and every zero counter. Unknown fields
+and nonzero counters still fail those checks. Error text and quota metadata
+are discarded. These notices previously made the scan unavailable and could
+prevent an existing daily aggregate from receiving a recovered cost.
+
+Parser revision 13 rescans revision-12 checkpoints. Tests verify cost
+recovery, stable token totals, duplicate suppression, and an unchanged
+revision on the second scan. This review does not approve other CLI versions,
+the Agent SDK, new nested usage forms, or missing speed where both Standard
+and Fast prices apply. The full `reviewedAt` date stays unchanged.
+
+Exact package records used to verify these version identifiers and integrity
+values are available from the official npm registry:
+[2.1.272](https://registry.npmjs.org/@anthropic-ai%2fclaude-code/2.1.272),
+[2.1.273](https://registry.npmjs.org/@anthropic-ai%2fclaude-code/2.1.273),
+[2.1.274](https://registry.npmjs.org/@anthropic-ai%2fclaude-code/2.1.274), and
+[2.1.276](https://registry.npmjs.org/@anthropic-ai%2fclaude-code/2.1.276).
+The [official usage types](https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/resources/beta/messages/messages.ts)
+remain the reference for additive input categories and inclusive output.
+
 The parser keeps non-null `fallback_credit` partial and unpriced. It accepts
 one `iterations` entry only when its counters match the top-level counters.
 It accepts `output_tokens_details.thinking_tokens` only when that value does

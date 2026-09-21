@@ -216,7 +216,7 @@
   },
   "claude": {
     "reviewedStableVersion": "2.1.236",
-    "reviewedLatestVersion": "2.1.263",
+    "reviewedLatestVersion": "2.1.276",
     "stablePackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/stable",
     "latestPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/latest",
     "reviewedAgentSdkVersion": "0.3.263",

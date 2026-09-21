@@ -36,16 +36,16 @@ const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 /// The structural checks below decide whether its counters can be counted; the
 /// reviewed set only decides whether the resulting day can claim complete
 /// coverage.
-const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 9] = [
+const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 13] = [
     "2.1.223", "2.1.224", "2.1.236", "2.1.241", "2.1.258", "2.1.259", "2.1.260", "2.1.261",
-    "2.1.263",
+    "2.1.263", "2.1.272", "2.1.273", "2.1.274", "2.1.276",
 ];
 const MAX_SUPERSEDED_FRAMES: usize = 64;
 const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 12;
+const TRANSCRIPT_PARSER_VERSION: i64 = 13;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -605,11 +605,15 @@ impl Visitor<'_> for DiscardedStringVisitor {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewedApiErrorEnvelope {
+    #[serde(rename = "apiError")]
+    api_error: Option<DiscardedString>,
+    #[serde(rename = "apiErrorCode")]
+    api_error_code: Option<DiscardedString>,
     #[serde(rename = "apiErrorStatus")]
     api_error_status: Option<u16>,
     cwd: DiscardedString,
     entrypoint: DiscardedString,
-    error: DiscardedString,
+    error: Option<DiscardedString>,
     #[serde(rename = "errorDetails")]
     error_details: Option<DiscardedString>,
     #[serde(rename = "gitBranch")]
@@ -621,11 +625,15 @@ struct ReviewedApiErrorEnvelope {
     message: ReviewedApiErrorMessage,
     #[serde(rename = "parentUuid")]
     parent_uuid: DiscardedString,
+    #[serde(default, rename = "perTurnEffort")]
+    _per_turn_effort: (),
+    #[serde(rename = "quotaLimits")]
+    quota_limits: Option<ReviewedQuotaNotice>,
     #[serde(rename = "requestId")]
     request_id: Option<DiscardedString>,
     #[serde(rename = "sessionId")]
     session_id_camel: DiscardedString,
-    session_id: DiscardedString,
+    session_id: Option<DiscardedString>,
     timestamp: DiscardedString,
     #[serde(rename = "type")]
     record_type: String,
@@ -637,12 +645,9 @@ struct ReviewedApiErrorEnvelope {
 
 impl ReviewedApiErrorEnvelope {
     fn is_reviewed(&self) -> bool {
-        // Two reviewed error-metadata shapes exist: one that predates the HTTP
-        // status fields and one that carries all three together. Any other
-        // combination stays unreviewed. Matching the shape rather than the
-        // Claude Code version keeps the same strictness without withholding
-        // every later release.
-        let error_metadata_is_reviewed =
+        // Legacy records carry both session fields. Keep their original
+        // error metadata checks, including the complete HTTP error tuple.
+        let legacy_error_metadata_is_reviewed =
             match (self.api_error_status, self.error_details, self.request_id) {
                 (None, None, None) => true,
                 (Some(400..=599), Some(error_details), Some(request_id)) => {
@@ -650,14 +655,42 @@ impl ReviewedApiErrorEnvelope {
                 }
                 _ => false,
             };
+        // Current synthetic notices omit session_id. They can be a plain
+        // notice, a sparse HTTP error, or an error with the three extra string
+        // fields. Their message and all usage counters still must be zero.
+        let metadata_is_reviewed = if self.session_id.is_some() {
+            self.is_api_error_message
+                && self.error.is_some_and(DiscardedString::is_non_empty)
+                && self.api_error.is_none()
+                && self.api_error_code.is_none()
+                && self.quota_limits.is_none()
+                && legacy_error_metadata_is_reviewed
+        } else if self.is_api_error_message {
+            self.error.is_some_and(DiscardedString::is_non_empty)
+                && matches!(self.api_error_status, Some(400..=599))
+                && self.request_id.is_some_and(DiscardedString::is_non_empty)
+                && match (self.error_details, self.api_error, self.api_error_code) {
+                    (None, None, None) => true,
+                    (Some(details), Some(error), Some(code)) => {
+                        details.is_non_empty() && error.is_non_empty() && code.is_non_empty()
+                    }
+                    _ => false,
+                }
+        } else {
+            self.error.is_none()
+                && self.api_error_status.is_none()
+                && self.request_id.is_none()
+                && self.error_details.is_none()
+                && self.api_error.is_none()
+                && self.api_error_code.is_none()
+                && self.quota_limits.is_none()
+        };
         [
             self.cwd,
             self.entrypoint,
-            self.error,
             self.git_branch,
             self.parent_uuid,
             self.session_id_camel,
-            self.session_id,
             self.timestamp,
             self.user_type,
             self.uuid,
@@ -665,12 +698,35 @@ impl ReviewedApiErrorEnvelope {
         ]
         .into_iter()
         .all(DiscardedString::is_non_empty)
-            && self.is_api_error_message
             && !self.is_sidechain
             && self.record_type == "assistant"
-            && error_metadata_is_reviewed
+            && metadata_is_reviewed
+            && self.session_id.is_none_or(DiscardedString::is_non_empty)
             && self.message.is_reviewed()
     }
+}
+
+// Only the observed quota-notice shape is accepted. These values describe a
+// zero-usage error, not billable usage, and never enter the usage index.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewedQuotaNotice {
+    #[serde(rename = "isUsingOverage")]
+    _is_using_overage: bool,
+    #[serde(rename = "overageDisabledReason")]
+    _overage_disabled_reason: DiscardedString,
+    #[serde(rename = "overageStatus")]
+    _overage_status: DiscardedString,
+    #[serde(rename = "rateLimitType")]
+    _rate_limit_type: DiscardedString,
+    #[serde(rename = "resetsAt")]
+    _resets_at: u64,
+    #[serde(rename = "status")]
+    _status: DiscardedString,
+    #[serde(rename = "unifiedRateLimitFallbackAvailable")]
+    _unified_rate_limit_fallback_available: bool,
+    #[serde(rename = "upgradePaths")]
+    _upgrade_paths: [DiscardedString; 1],
 }
 
 #[derive(Deserialize)]
@@ -4812,6 +4868,192 @@ mod tests {
                 );
                 assert_eq!(stored_message_count(&fixture.database()), 1);
             }
+        }
+    }
+
+    #[test]
+    fn late_september_claude_versions_restore_pricing_without_duplicate_tokens() {
+        let observed_at = OffsetDateTime::parse("2026-09-21T12:00:00Z", &Rfc3339).unwrap();
+        // These exact versions emitted the same usage shape locally. A fresh
+        // 2.1.276 session also confirmed the cache split and standard speed.
+        for version in ["2.1.272", "2.1.273", "2.1.274", "2.1.276"] {
+            let fixture = FixtureRoot::new();
+            let config = fixture.config();
+            let record = claude_code_2_1_263_transcript_line(true)
+                .replace("2.1.263", version)
+                .replace("2026-09-05", "2026-09-21");
+            write_transcript(
+                &config.join("projects/project-a/session.jsonl"),
+                &[record.clone(), record],
+            );
+            for _ in 0..2 {
+                let local = scan_local_usage_at(
+                    &fixture.database(),
+                    &config,
+                    &fixture.probe(),
+                    observed_at,
+                )
+                .unwrap();
+                let UsageTotal::Current {
+                    observed_tokens,
+                    coverage,
+                    api_equivalent_cost_usd,
+                    ..
+                } = project_usage_periods(Some(&local), observed_at).today
+                else {
+                    panic!("usage must be available for {version}")
+                };
+                assert_eq!(observed_tokens, 104, "{version}");
+                assert!(
+                    api_equivalent_cost_usd.is_some(),
+                    "missing cost for {version}"
+                );
+                assert!((api_equivalent_cost_usd.unwrap() - 0.002_430_25).abs() < 1e-12);
+                assert_eq!(coverage, UsageCoverage::Complete, "{version}");
+                assert_eq!(stored_message_count(&fixture.database()), 1);
+            }
+        }
+    }
+
+    fn late_september_api_error_transcript_line() -> String {
+        let mut record: serde_json::Value =
+            serde_json::from_str(&claude_code_2_1_258_api_error_transcript_line()).unwrap();
+        record.as_object_mut().unwrap().remove("session_id");
+        record["version"] = serde_json::json!("2.1.276");
+        record["apiError"] = serde_json::json!("PRIVATE-API-ERROR");
+        record["apiErrorCode"] = serde_json::json!("PRIVATE-API-CODE");
+        record["perTurnEffort"] = serde_json::Value::Null;
+        record.to_string()
+    }
+
+    #[test]
+    fn late_september_zero_usage_errors_do_not_mark_the_scan_unavailable() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let error = late_september_api_error_transcript_line();
+        let mut notice: serde_json::Value = serde_json::from_str(&error).unwrap();
+        for field in [
+            "error",
+            "apiError",
+            "apiErrorCode",
+            "apiErrorStatus",
+            "errorDetails",
+            "requestId",
+        ] {
+            notice.as_object_mut().unwrap().remove(field);
+        }
+        notice["isApiErrorMessage"] = serde_json::json!(false);
+        let mut quota: serde_json::Value = serde_json::from_str(&error).unwrap();
+        for field in ["apiError", "apiErrorCode", "errorDetails"] {
+            quota.as_object_mut().unwrap().remove(field);
+        }
+        quota["quotaLimits"] = serde_json::json!({
+            "isUsingOverage": false,
+            "overageDisabledReason": "PRIVATE-REASON",
+            "overageStatus": "PRIVATE-STATUS",
+            "rateLimitType": "PRIVATE-TYPE",
+            "resetsAt": 1789980000u64,
+            "status": "PRIVATE-STATUS",
+            "unifiedRateLimitFallbackAvailable": false,
+            "upgradePaths": ["PRIVATE-PATH"]
+        });
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[
+                claude_code_2_1_258_transcript_line(),
+                error.clone(),
+                notice.to_string(),
+                quota.to_string(),
+            ],
+        );
+        let local =
+            scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(local.scan_status, UsageScanStatus::Complete);
+        assert_eq!(stored_message_count(&fixture.database()), 1);
+        assert_eq!(stored_frame_count(&fixture.database()), 1);
+        let report =
+            debug_usage_report(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert!(!report.contains("PRIVATE"));
+        assert_sqlite_artifacts_exclude(&fixture.database(), "PRIVATE-API-CODE");
+        assert_sqlite_artifacts_exclude(&fixture.database(), "PRIVATE-REASON");
+        quota["quotaLimits"]["futureTokens"] = serde_json::json!(100);
+        assert!(matches!(
+            parse_transcript_line(quota.to_string().as_bytes(), &SALT),
+            TranscriptLineOutcome::FrameOnly(_)
+        ));
+        for (field, value) in [
+            ("apiError", serde_json::json!(23)),
+            ("apiErrorCode", serde_json::json!({"private": true})),
+            ("perTurnEffort", serde_json::json!("future")),
+            ("futureField", serde_json::json!(true)),
+            ("session_id", serde_json::json!("")),
+        ] {
+            let mut invalid: serde_json::Value = serde_json::from_str(&error).unwrap();
+            invalid[field] = value;
+            assert!(
+                matches!(
+                    parse_transcript_line(invalid.to_string().as_bytes(), &SALT),
+                    TranscriptLineOutcome::FrameOnly(_)
+                ),
+                "{field}"
+            );
+        }
+        let mut nonzero: serde_json::Value = serde_json::from_str(&error).unwrap();
+        nonzero["message"]["usage"]["input_tokens"] = serde_json::json!(1);
+        assert!(matches!(
+            parse_transcript_line(nonzero.to_string().as_bytes(), &SALT),
+            TranscriptLineOutcome::FrameOnly(_)
+        ));
+    }
+
+    #[test]
+    fn parser_13_reprices_a_parser_12_error_checkpoint_once() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let observed_at = OffsetDateTime::parse("2026-09-21T12:00:00Z", &Rfc3339).unwrap();
+        let record = claude_code_2_1_263_transcript_line(true)
+            .replace("2.1.263", "2.1.276")
+            .replace("2026-09-05", "2026-09-21");
+        let error = late_september_api_error_transcript_line()
+            .replace(&now().date().to_string(), "2026-09-21");
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[record, error],
+        );
+        scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection.execute_batch(
+            "UPDATE claude_usage_files SET parser_version = 12, completion_state = 'error';
+             UPDATE claude_usage_frames SET parser_version = 12;
+             UPDATE claude_usage_messages SET parser_version = 12, complete = 0;
+             UPDATE claude_usage_daily SET coverage = 'partial', priced_tokens = 0,
+               cost_usd = NULL, pricing_basis = NULL, pricing_fingerprint = NULL;
+             UPDATE claude_usage_index_meta SET value = '12' WHERE key = 'usage_aggregate_parser_version';"
+        ).unwrap();
+        drop(connection);
+        let previous_revision = stored_daily_revision(&fixture.database(), observed_at.date());
+        for pass in 0..2 {
+            let local =
+                scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at)
+                    .unwrap();
+            assert_eq!(local.scan_status, UsageScanStatus::Complete);
+            let UsageTotal::Current {
+                observed_tokens,
+                api_equivalent_cost_usd,
+                ..
+            } = project_usage_periods(Some(&local), observed_at).today
+            else {
+                panic!("recovered usage must be available")
+            };
+            assert_eq!(observed_tokens, 104);
+            assert!((api_equivalent_cost_usd.unwrap() - 0.002_430_25).abs() < 1e-12);
+            assert_eq!(local.aggregate_changed, pass == 0);
+            assert_eq!(
+                stored_daily_revision(&fixture.database(), observed_at.date()),
+                previous_revision + 1
+            );
+            assert_eq!(stored_message_count(&fixture.database()), 1);
+            assert_eq!(stored_frame_count(&fixture.database()), 1);
         }
     }
 
