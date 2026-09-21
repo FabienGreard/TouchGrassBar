@@ -2296,6 +2296,32 @@ fn load_stored_daily_aggregates(
     Ok(daily)
 }
 
+// A missing transcript that the current parser read completely keeps all of its
+// evidence in the index. Only a partial read or an earlier parser version
+// leaves evidence that the scan cannot recover.
+const UNRECOVERABLE_MISSING_FILE_CONDITION: &str = "completion_state = 'missing'
+   AND (parser_version != ?1 OR parsed_offset < size_bytes)";
+
+fn latest_unrecoverable_missing_day(connection: &Connection) -> Result<Option<Date>, ()> {
+    let modified_ns = connection
+        .query_row(
+            &format!(
+                "SELECT MAX(modified_ns) FROM claude_usage_files
+                 WHERE {UNRECOVERABLE_MISSING_FILE_CONDITION}"
+            ),
+            [TRANSCRIPT_PARSER_VERSION],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|_| ())?;
+    modified_ns
+        .map(|value| {
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(value))
+                .map(utc_ranking_day)
+                .map_err(|_| ())
+        })
+        .transpose()
+}
+
 fn stored_usage_aggregate_parser_version(connection: &Connection) -> Result<Option<i64>, ()> {
     let stored = connection
         .query_row(
@@ -2415,6 +2441,7 @@ fn refresh_daily_aggregates_with_catalog(
     }
     let parser_correction_pending =
         !existing_daily.is_empty() && stored_parser_version != Some(TRANSCRIPT_PARSER_VERSION);
+    let unrecoverable_evidence_through = latest_unrecoverable_missing_day(&transaction)?;
     let explicit_corrections = if scan_can_prove_complete {
         load_pending_explicit_supersede_days(&transaction, cutoff, today)?
     } else {
@@ -2513,7 +2540,9 @@ fn refresh_daily_aggregates_with_catalog(
             .filter(|_| candidate.priced_tokens > 0)
             .map(|catalog| catalog.basis().to_owned());
         let candidate_cost_usd = (candidate.priced_tokens > 0).then_some(candidate.cost_usd);
-        let coverage = if scan_can_prove_complete && candidate.complete {
+        let evidence_unrecoverable =
+            unrecoverable_evidence_through.is_some_and(|through| day <= through);
+        let coverage = if scan_can_prove_complete && candidate.complete && !evidence_unrecoverable {
             "complete"
         } else {
             "partial"
@@ -2544,6 +2573,7 @@ fn refresh_daily_aggregates_with_catalog(
             ),
             Some(previous) => {
                 let lower_correction_allowed = scan_can_prove_complete
+                    && !evidence_unrecoverable
                     && (parser_correction_pending || explicit_corrections.contains_key(&day));
                 let proven_parser_correction_applied = lower_correction_allowed
                     && candidate.observed_tokens < previous.observed_tokens;
@@ -2888,11 +2918,17 @@ fn read_indexed_usage(
     }
     let (latest_pending_ns, latest_error_ns) = connection
         .query_row(
-            "SELECT
-               MAX(CASE WHEN completion_state = 'indexing' THEN modified_ns END),
-               MAX(CASE WHEN completion_state IN ('error', 'missing') THEN modified_ns END)
-             FROM claude_usage_files",
-            [],
+            &format!(
+                "SELECT
+                   MAX(CASE WHEN completion_state = 'indexing' THEN modified_ns END),
+                   MAX(CASE
+                     WHEN completion_state = 'error'
+                       OR ({UNRECOVERABLE_MISSING_FILE_CONDITION})
+                     THEN modified_ns
+                   END)
+                 FROM claude_usage_files"
+            ),
+            [TRANSCRIPT_PARSER_VERSION],
             |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
         )
         .map_err(|_| ())?;
@@ -3411,16 +3447,19 @@ fn index_local_usage_with_budget(
         }
         remaining_bytes = remaining_bytes.saturating_sub(allowance - file_remaining);
     }
+    // Claude Code deletes old transcripts. A missing file cannot be read again,
+    // so it must not block the scan. The daily refresh protects its retained days.
     let (pending_files, error_files) = connection
         .query_row(
             "SELECT
                COALESCE(SUM(CASE WHEN completion_state = 'indexing' THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN completion_state IN ('error', 'missing') THEN 1 ELSE 0 END), 0)
+               COALESCE(SUM(CASE WHEN completion_state = 'error' THEN 1 ELSE 0 END), 0)
              FROM claude_usage_files",
             [],
             |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
         )
-        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index")).unwrap_or((1, 1));
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .unwrap_or((1, 1));
     let scan_status = if failed || error_files > 0 {
         UsageScanStatus::Unavailable
     } else if !all_complete || pending_files > 0 {
@@ -6534,13 +6573,139 @@ mod tests {
         )
         .expect("missing files must preserve indexed evidence");
 
+        // The current parser read the whole file, so the index keeps all of
+        // its evidence. Claude Code cleanup must not block the scan or cost.
         assert_eq!(second.daily_usage[&now().date()].observed_tokens, 100);
         assert_eq!(
             second.daily_usage[&now().date()].coverage,
+            first.daily_usage[&now().date()].coverage
+        );
+        assert_eq!(second.scan_status, UsageScanStatus::Complete);
+        assert_eq!(
+            second.daily_cost.get(&now().date()),
+            first.daily_cost.get(&now().date())
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            first_revision
+        );
+    }
+
+    #[test]
+    fn a_missing_earlier_parser_transcript_keeps_its_days_and_allows_recent_cost() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let old_day = now().date() - Duration::days(3);
+        let deleted = config.join("projects/project-a/deleted.jsonl");
+        let present = config.join("projects/project-a/present.jsonl");
+        write_transcript(
+            &deleted,
+            &[transcript_line(
+                "fixture-deleted-message",
+                now() - Duration::days(3),
+                "claude-sonnet-4-5-20250929",
+                usage(10, 0, 30, 60),
+            )],
+        );
+        write_transcript(
+            &present,
+            &[transcript_line(
+                "fixture-present-message",
+                now() - Duration::minutes(5),
+                "claude-sonnet-4-5-20250929",
+                usage(1, 0, 3, 6),
+            )],
+        );
+        index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+            .expect("the first scan must work");
+
+        // Model an index that an earlier parser wrote while an older CLI
+        // version kept the recent day unpriced.
+        let earlier_parser = TRANSCRIPT_PARSER_VERSION - 1;
+        let old_modified_ns =
+            i64::try_from(old_day.midnight().assume_utc().unix_timestamp_nanos()).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection
+            .execute_batch(&format!(
+                "UPDATE claude_usage_files SET parser_version = {earlier_parser};
+                 UPDATE claude_usage_messages SET parser_version = {earlier_parser};
+                 UPDATE claude_usage_frames SET parser_version = {earlier_parser};
+                 UPDATE claude_usage_daily
+                   SET priced_tokens = 0, cost_usd = NULL, cost_modeled = 0,
+                       pricing_basis = NULL, pricing_fingerprint = NULL,
+                       coverage = 'partial';
+                 UPDATE claude_usage_index_meta SET value = '{earlier_parser}'
+                   WHERE key = '{USAGE_AGGREGATE_PARSER_VERSION_KEY}';"
+            ))
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE claude_usage_files SET modified_ns = ?1 WHERE path = ?2",
+                params![old_modified_ns, deleted.to_string_lossy()],
+            )
+            .unwrap();
+        drop(connection);
+        let old_revision = stored_daily_revision(&fixture.database(), old_day);
+        fs::remove_file(&deleted).unwrap();
+
+        let recovered = index_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(1),
+        )
+        .expect("a missing transcript must not make the scan unavailable");
+
+        assert_eq!(recovered.scan_status, UsageScanStatus::Complete);
+        assert_eq!(recovered.daily_usage[&now().date()].observed_tokens, 10);
+        assert_eq!(
+            recovered.daily_usage[&now().date()].coverage,
+            UsageCoverage::Complete
+        );
+        assert_eq!(recovered.daily_cost[&now().date()].priced_tokens, 10);
+        assert!(
+            recovered.daily_cost[&now().date()]
+                .api_equivalent_cost_usd
+                .is_some()
+        );
+        // The deleted file cannot be read again. Its day keeps the known
+        // tokens and is not reported as a parser correction.
+        assert_eq!(recovered.daily_usage[&old_day].observed_tokens, 100);
+        assert_eq!(
+            recovered.daily_usage[&old_day].coverage,
             UsageCoverage::Partial
         );
-        assert_eq!(second.scan_status, UsageScanStatus::Unavailable);
-        assert!(stored_daily_revision(&fixture.database(), now().date()) > first_revision);
+        assert!(!recovered.daily_corrections.contains_key(&old_day));
+        assert_eq!(recovered.correction, None);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), old_day),
+            old_revision
+        );
+        let connection = Connection::open(fixture.database()).unwrap();
+        assert_eq!(
+            stored_usage_aggregate_parser_version(&connection).unwrap(),
+            Some(TRANSCRIPT_PARSER_VERSION)
+        );
+        drop(connection);
+
+        let recent_revision = stored_daily_revision(&fixture.database(), now().date());
+        let repeated = index_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(2),
+        )
+        .expect("the repeated scan must work");
+        assert_eq!(repeated.scan_status, UsageScanStatus::Complete);
+        assert_eq!(repeated.daily_usage[&old_day].observed_tokens, 100);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            recent_revision
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), old_day),
+            old_revision
+        );
     }
 
     #[test]

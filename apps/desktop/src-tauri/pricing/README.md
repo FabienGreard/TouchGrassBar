@@ -389,7 +389,17 @@ prevent an existing daily aggregate from receiving a recovered cost.
 
 Parser revision 13 rescans revision-12 checkpoints. Tests verify cost
 recovery, stable token totals, duplicate suppression, and an unchanged
-revision on the second scan. This review does not approve other CLI versions,
+revision on the second scan.
+
+Claude Code deletes old transcripts (`cleanupPeriodDays`, 30 days by
+default). The index keeps a file record for 60 days. Before this change, a
+missing transcript made each scan unavailable until its record expired. The
+daily totals then kept their earlier values and did not receive a new cost.
+Now a missing transcript does not block the scan. If the current parser read
+the complete file, the index keeps all of its evidence. If an earlier parser
+or a partial read indexed the file, the scan cannot recover it. Each day
+through that file's last modification day stays partial and keeps its known
+tokens. A parser correction cannot lower that day. This review does not approve other CLI versions,
 the Agent SDK, new nested usage forms, or missing speed where both Standard
 and Fast prices apply. The full `reviewedAt` date stays unchanged.
 
