@@ -21,7 +21,10 @@ account bucket observation time. It records reconciliation of the sources;
 it does not claim a new token event. Daily history, period totals, and upload
 use the same selection. The native queue and backend accept a larger Codex
 local count at the same or a later observation time. Revision and Active Mac
-checks still apply. An explicit parser correction can reduce a local total
+checks still apply. A completed Codex replay can retain its parser-correction
+marker when it increases a saved account total. This does not permit a
+decrease from account evidence or reuse of an old correction marker for a
+second decrease. An explicit parser correction can reduce a local total
 only after the relevant local scan completes. An ordinary partial scan or
 missing local record cannot subtract previously synchronized usage.
 

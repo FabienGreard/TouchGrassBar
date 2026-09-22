@@ -50,8 +50,10 @@ days partial, even if the file receives new responses today.
 The final candidate current-day comparison counted 4,574 unique responses and
 681,315,018 tokens. Every per-file total matched, with zero duplicates,
 conflicts, or current-day error checkpoints. Current-day coverage was complete.
-The replay of older retained files is still in progress. Full local validation
-passed: 751 native tests, 521 JavaScript tests, 47 database fixtures, type checks,
+The full replay completed with all 2,268 checkpoints on parser 25, zero pending
+files, and five historical error files. A repeated comparison matched
+686,369,197 tokens across 4,601 responses, with zero per-file differences. Full local validation
+passed: 751 native tests, 522 JavaScript tests, 47 database fixtures, type checks,
 Clippy, formatting, production builds, and the local Convex deployment.
 
 Installed-release evidence will be added after signed-candidate verification.

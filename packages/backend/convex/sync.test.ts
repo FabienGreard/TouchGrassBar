@@ -737,6 +737,43 @@ test("newer Codex local usage replaces the account total on every leaderboard ex
   );
 });
 
+test("a completed Codex replay keeps correction provenance when it exceeds an account bucket", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Fabien");
+  const send = (snapshots: UsageSnapshot[]) =>
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots,
+    });
+  await send([usageSnapshot({ evidenceBasis: "provider-reported", observedTokens: 190_199_978 })]);
+  for (const observedTokens of [190_199_978, 100_000_000]) {
+    await expect(
+      send([
+        usageSnapshot({
+          observedTokens,
+          revision: 2,
+          correctionReason: "parser-correction",
+          correctionRevision: 2,
+        }),
+      ]),
+    ).resolves.toMatchObject([{ outcome: "stale", revision: 2 }]);
+  }
+  const replay = usageSnapshot({
+    observedTokens: 686_369_197,
+    revision: 2,
+    correctionReason: "parser-correction",
+    correctionRevision: 2,
+  });
+  expect(await send([replay])).toMatchObject([{ outcome: "committed", revision: 2 }]);
+  expect(await send([replay])).toMatchObject([{ outcome: "idempotent", revision: 2 }]);
+  await expect(send([{ ...replay, revision: 3, observedTokens: 680_000_000 }])).rejects.toThrow();
+  const correction = { ...replay, revision: 3, correctionRevision: 3, observedTokens: 680_000_000 };
+  expect(await send([correction])).toMatchObject([{ outcome: "committed", revision: 3 }]);
+});
+
 test("provider-reported evidence rejects local totals without newer usage", async () => {
   const t = testBackend();
   const credential = installationCredential("A");

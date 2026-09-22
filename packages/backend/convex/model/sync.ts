@@ -411,8 +411,18 @@ function assertNewCorrectionProvenance(
     }
     return;
   }
-  if (existing && existing.evidenceBasis !== "locally-derived") {
-    throw new Error("parser correction requires locally-derived evidence on both revisions");
+  if (
+    existing &&
+    existing.evidenceBasis !== "locally-derived" &&
+    !(
+      snapshot.provider === "codex" &&
+      snapshot.observedTokens > existing.observedTokens &&
+      snapshot.observedAt >= existing.observedAt
+    )
+  ) {
+    throw new Error(
+      "parser correction requires local evidence or a larger Codex local replacement",
+    );
   }
 }
 
