@@ -680,7 +680,64 @@ test("a first Active Mac corrects a later current day after UTC rollover", async
   expect(corrected.score).toMatchObject({ tokenScore: 250 });
 });
 
-test("provider-reported evidence rejects higher and lower local replacements", async () => {
+test("newer Codex local usage replaces the account total on every leaderboard exactly once", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated, touchGrassId } = await createProfile(t, credential, "Fabien");
+  const send = (snapshots: UsageSnapshot[]) =>
+    authenticated.mutation(api.sync.dailyUsage, {
+      profileBackfillAnchor: null,
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      snapshots,
+    });
+  await send([
+    usageSnapshot({ evidenceBasis: "provider-reported", observedTokens: 22_640_561 }),
+    usageSnapshot({ provider: "claude", observedTokens: 463_435 }),
+  ]);
+  const local = usageSnapshot({
+    observedAt: NOW.getTime() + 1000,
+    observedTokens: 551_176_193,
+    revision: 2,
+  });
+  expect(await send([local])).toMatchObject([{ outcome: "committed", revision: 2 }]);
+  expect(await send([local])).toMatchObject([{ outcome: "idempotent", revision: 2 }]);
+  for (const windowDays of [1, 7, 30] as const) {
+    for (const scope of ["codex", "combined"] as const) {
+      const rows = await authenticated.query(api.doomerboards.currentGlobal, {
+        rankingDay: TODAY,
+        scope,
+        windowDays,
+      });
+      expect(rows.find((row) => row.touchGrassId === touchGrassId)).toMatchObject({
+        tokenScore: local.observedTokens + (scope === "combined" ? 463_435 : 0),
+      });
+    }
+  }
+  // A later explicit account bucket remains authoritative, even when lower.
+  const returnedAccount = usageSnapshot({
+    correctionReason: "provider-replacement",
+    correctionRevision: 3,
+    evidenceBasis: "provider-reported",
+    observedAt: NOW.getTime() + 2000,
+    observedTokens: 500_000_000,
+    revision: 3,
+  });
+  expect(await send([returnedAccount])).toMatchObject([{ outcome: "committed" }]);
+  expect(await send([local])).toMatchObject([{ outcome: "stale" }]);
+  expect(await send([returnedAccount])).toMatchObject([{ outcome: "idempotent" }]);
+  const rows = await authenticated.query(api.doomerboards.currentGlobal, {
+    rankingDay: TODAY,
+    scope: "combined",
+    windowDays: 1,
+  });
+  expect(rows.find((row) => row.touchGrassId === touchGrassId)?.tokenScore).toBe(500_463_435);
+  expect(await t.run(async (ctx) => ctx.db.query("usageCorrectionAudits").collect())).toHaveLength(
+    1,
+  );
+});
+
+test("provider-reported evidence rejects local totals without newer usage", async () => {
   const t = testBackend();
   const credential = installationCredential("A");
   const { authenticated } = await createProfile(t, credential, "Fabien");
@@ -695,7 +752,11 @@ test("provider-reported evidence rejects higher and lower local replacements", a
     snapshots: [providerSnapshot],
   });
 
-  for (const observedTokens of [120, 80]) {
+  for (const [observedTokens, offset] of [
+    [80, 100],
+    [100, 100],
+    [120, 0],
+  ] as const) {
     await expect(
       authenticated.mutation(api.sync.dailyUsage, {
         profileBackfillAnchor: null,
@@ -703,7 +764,7 @@ test("provider-reported evidence rejects higher and lower local replacements", a
         installationCredential: credential,
         snapshots: [
           usageSnapshot({
-            observedAt: NOW.getTime() + observedTokens,
+            observedAt: NOW.getTime() + offset,
             observedTokens,
             revision: 2,
           }),

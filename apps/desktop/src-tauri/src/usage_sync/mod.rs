@@ -2108,6 +2108,9 @@ fn queue_validated_daily_aggregate(
         }
         if existing.aggregate.evidence_basis == SyncEvidenceBasis::ProviderReported
             && aggregate.evidence_basis == SyncEvidenceBasis::LocallyDerived
+            && !(aggregate.provider == CodingProvider::Codex
+                && aggregate.observed_at > existing.aggregate.observed_at
+                && aggregate.observed_tokens > existing.aggregate.observed_tokens)
         {
             return Ok(QueueUpdate::Stale {
                 provider: aggregate.provider,
@@ -5627,8 +5630,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_owned_evidence_rejects_higher_and_lower_local_replacements() {
-        for local_tokens in [80, 120] {
+    fn provider_owned_evidence_rejects_local_totals_without_newer_usage() {
+        for (local_tokens, observed_at) in [(80, 2000), (100, 2000), (120, 1000), (120, 500)] {
             let mut connection = connection();
             let transaction = connection.transaction().unwrap();
             queue_daily_aggregate(
@@ -5640,7 +5643,7 @@ mod tests {
             transaction.commit().unwrap();
 
             let transaction = connection.transaction().unwrap();
-            let mut local = aggregate(CodingProvider::Codex, local_tokens, 2_000);
+            let mut local = aggregate(CodingProvider::Codex, local_tokens, observed_at);
             local.evidence_basis = SyncEvidenceBasis::LocallyDerived;
             assert_eq!(
                 queue_daily_aggregate(&transaction, 1, local).unwrap(),
@@ -5659,6 +5662,55 @@ mod tests {
                 SyncEvidenceBasis::ProviderReported
             );
         }
+    }
+
+    #[test]
+    fn newer_codex_local_total_is_queued_after_the_account_total_was_acknowledged() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        queue_daily_aggregate(
+            &transaction,
+            1,
+            aggregate(CodingProvider::Codex, 22_640_561, 1000),
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        let first = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        let transaction = connection.transaction().unwrap();
+        apply_usage_acknowledgements(
+            &transaction,
+            &first,
+            &[acknowledgement(
+                &first.snapshots()[0],
+                AcknowledgementOutcome::Committed,
+                1,
+            )],
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        assert!(load_pending_usage_batch(&connection, 1).unwrap().is_none());
+
+        let mut state = state_with_totals(
+            total(UsageEvidenceBasis::LocallyDerived, 551_176_193, NOW, None),
+            UsageTotal::Unavailable,
+        );
+        // A failed historical scan must not block a complete current day.
+        state.providers[0].usage.scan_status = UsageScanStatus::Unavailable;
+        let transaction = connection.transaction().unwrap();
+        let updates =
+            queue_current_utc_day(&transaction, 1, &state, now(), &enabled_providers()).unwrap();
+        assert!(matches!(
+            updates[0],
+            QueueUpdate::Stored { revision: 2, .. }
+        ));
+        transaction.commit().unwrap();
+        let pending = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        assert_eq!(pending.snapshots()[0].observed_tokens, 551_176_193);
+        assert_eq!(
+            pending.snapshots()[0].evidence_basis,
+            SyncEvidenceBasis::LocallyDerived
+        );
+        assert_eq!(pending.snapshots()[0].correction_reason, None);
     }
 
     #[test]

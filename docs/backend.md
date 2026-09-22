@@ -43,6 +43,13 @@ device, provider, or failure group. See the
 
 ## Snapshot invariant
 
+The display and synchronization use the same selected Daily Usage Aggregate.
+When a newer Codex local total replaces an omitted, older account bucket,
+both the native queue and backend accept it only if its token count and
+observation time are greater. The new value replaces the old value. A later
+account report can replace that local fallback through the existing audited
+provider-replacement path.
+
 One Usage Bucket represents one Active Mac generation, Coding Provider, and UTC Ranking Day. Rust sends a cumulative Daily Usage Snapshot with a monotonically increasing revision. The server treats an equal, exact payload as idempotent. A lower revision is stale. An equal revision with different data is also stale if its token total is not lower. The client rebases that snapshot to the server revision plus one. A snapshot is a conflict if its observation time moves backward or an equal revision has a lower unproved total. The client keeps that uncommitted request, records a terminal conflict for the exact revision, and stops retrying it. A new local observation can create a later revision. An older observation cannot overwrite a newer one. A higher revision may increase the total; a decrease is accepted only with an explicit provider-replacement or parser-correction reason. The request pairs that reason with the original correction revision. A later cumulative retry can identify the same correction without a second audit or authority for a new decrease. Disappearance of a local record is never valid downward evidence.
 
 Each request contains at most 62 snapshots and commits atomically. A committed or idempotent acknowledgement names the submitted revision. A conflict result also names the submitted revision, but it does not acknowledge a commit. A stale acknowledgement names the same or a newer server revision. A timeout retry or concurrent duplicate is a no-op; one invalid snapshot rolls back the whole request. An accepted snapshot updates its Usage Bucket. The server then rebuilds the User Daily Usage value from every accepted Active Mac generation segment. It recomputes the derived score state in the same mutation. “Corrected” is audit provenance rather than a lasting public state. The client cannot submit a Tokenmaxxer ID, combined total, Token Score, rank, or public projection.

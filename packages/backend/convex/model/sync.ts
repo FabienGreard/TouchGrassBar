@@ -508,7 +508,12 @@ async function planSnapshots(
     }
     if (
       existing?.evidenceBasis === "provider-reported" &&
-      snapshot.evidenceBasis === "locally-derived"
+      snapshot.evidenceBasis === "locally-derived" &&
+      !(
+        snapshot.provider === "codex" &&
+        snapshot.observedAt > existing.observedAt &&
+        snapshot.observedTokens > existing.observedTokens
+      )
     ) {
       plans.push({
         acknowledgement: {

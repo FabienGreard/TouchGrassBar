@@ -19,7 +19,11 @@ selected local count keeps its local evidence basis and coverage. A returned
 account bucket takes priority again, including a lower correction or zero.
 This prevents an omitted account day from holding the display at an old count
 while new local usage accumulates. Daily history and period totals use the same
-selection rule.
+selection rule. The native upload queue and backend also accept this newer,
+larger Codex local total. They replace the saved daily value without adding
+the two sources. A local total that is older, equal, or lower cannot replace
+the saved account value. Revision, correction, and Active Mac checks still
+apply.
 
 The module calculates cost coverage and period totals. It produces per-provider and Combined projections after source selection.
 
