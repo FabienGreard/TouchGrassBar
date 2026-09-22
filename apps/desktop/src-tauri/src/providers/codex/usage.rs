@@ -44,7 +44,7 @@ const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 130;
 const MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 153;
 const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 18;
-const ROLLOUT_PARSER_VERSION: i64 = 23;
+const ROLLOUT_PARSER_VERSION: i64 = 24;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
@@ -1170,6 +1170,9 @@ enum RawEventPayload {
     TaskStarted {
         #[serde(default, alias = "turnId")]
         turn_id: Option<String>,
+        // This identifies the root task. Fast pricing still uses this task's turn_id.
+        #[serde(default, rename = "root_turn_id")]
+        _root_turn_id: Option<IgnoredAny>,
         model_context_window: IgnoredAny,
         collaboration_mode_kind: IgnoredAny,
         #[serde(default)]
@@ -1966,6 +1969,7 @@ fn scan_rollout_reader(
                     model_context_window,
                     collaboration_mode_kind,
                     started_at,
+                    ..
                 } = payload
                 {
                     let _ = (
@@ -2909,6 +2913,7 @@ fn process_index_line_inner(
                 model_context_window,
                 collaboration_mode_kind,
                 started_at,
+                ..
             } = payload
             {
                 let _ = (model_context_window, collaboration_mode_kind, started_at);
@@ -7851,6 +7856,129 @@ mod tests {
     }
 
     #[test]
+    fn omitted_account_day_uses_newer_local_tokens_until_the_provider_returns_it() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let account_at = now - Duration::hours(3);
+        let account = AccountUsageObservation {
+            daily_tokens: BTreeMap::from([(now.date(), 100)]),
+        };
+        store_cached_account_usage(Some(&fixture.database), &account, account_at).unwrap();
+        fs::write(&fixture.rollout, root_rollout(300)).unwrap();
+        let local = run_usage_passes(&fixture, now, 2);
+        let project = |cached: &CachedAccountUsageObservation| {
+            project_usage_periods_with_account_time(
+                Some(&cached.observation),
+                Some(&local),
+                now,
+                cached.observed_at,
+                Some(&cached.observed_at_by_day),
+            )
+        };
+        let initial = load_cached_account_usage(Some(&fixture.database)).unwrap();
+        assert!(matches!(
+            project(&initial).today,
+            UsageTotal::Current {
+                observed_tokens: 100,
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                ..
+            }
+        ));
+
+        store_cached_account_usage(
+            Some(&fixture.database),
+            &AccountUsageObservation {
+                daily_tokens: BTreeMap::new(),
+            },
+            now,
+        )
+        .unwrap();
+        let omitted = load_cached_account_usage(Some(&fixture.database)).unwrap();
+        // Keep the account record, but select the newer local count for display and history.
+        assert_eq!(omitted.observation.daily_tokens[&now.date()], 100);
+        let periods = project(&omitted);
+        for total in [&periods.today, &periods.seven_days, &periods.thirty_days] {
+            assert!(
+                matches!(
+                    total,
+                    UsageTotal::Current {
+                        observed_tokens: 300,
+                        evidence_basis: UsageEvidenceBasis::LocallyDerived,
+                        ..
+                    }
+                ),
+                "{total:?}"
+            );
+        }
+        let history = load_daily_usage_history(
+            &Connection::open(&fixture.database).unwrap(),
+            now,
+            now.date(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(history[&now.date()], periods.today);
+
+        for tokens in [80, 0] {
+            store_cached_account_usage(
+                Some(&fixture.database),
+                &AccountUsageObservation {
+                    daily_tokens: BTreeMap::from([(now.date(), tokens)]),
+                },
+                now,
+            )
+            .unwrap();
+            let returned = load_cached_account_usage(Some(&fixture.database)).unwrap();
+            assert!(matches!(project(&returned).today, UsageTotal::Current {
+                observed_tokens,
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                ..
+            } if observed_tokens == tokens));
+        }
+    }
+
+    #[test]
+    fn omitted_account_day_keeps_a_larger_or_newer_account_observation() {
+        for (tokens, hours_ago) in [(400, 3), (300, 3), (100, 1)] {
+            let fixture = TempUsage::new();
+            let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+            store_cached_account_usage(
+                Some(&fixture.database),
+                &AccountUsageObservation {
+                    daily_tokens: BTreeMap::from([(now.date(), tokens)]),
+                },
+                now - Duration::hours(hours_ago),
+            )
+            .unwrap();
+            store_cached_account_usage(
+                Some(&fixture.database),
+                &AccountUsageObservation {
+                    daily_tokens: BTreeMap::new(),
+                },
+                now,
+            )
+            .unwrap();
+            fs::write(&fixture.rollout, root_rollout(300)).unwrap();
+            let local = run_usage_passes(&fixture, now, 2);
+            let cached = load_cached_account_usage(Some(&fixture.database)).unwrap();
+
+            let periods = project_usage_periods_with_account_time(
+                Some(&cached.observation),
+                Some(&local),
+                now,
+                cached.observed_at,
+                Some(&cached.observed_at_by_day),
+            );
+
+            assert!(matches!(periods.today, UsageTotal::Current {
+                observed_tokens,
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                ..
+            } if observed_tokens == tokens));
+        }
+    }
+
+    #[test]
     fn sqlite_account_usage_cache_keeps_the_exact_sixty_day_utc_window() {
         let fixture = TempUsage::new();
         let observed_at = OffsetDateTime::parse("2026-08-06T23:59:00Z", &Rfc3339).unwrap();
@@ -9172,6 +9300,73 @@ mod tests {
 
         assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
         assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_265);
+    }
+
+    #[test]
+    fn sqlite_index_counts_task_resets_with_root_turn_metadata() {
+        for version in ["0.148.0-alpha.21", "0.155.0-alpha.9.2"] {
+            for root_turn_id in [json!(null), json!("private-root-turn")] {
+                let fixture = TempUsage::new();
+                let now = OffsetDateTime::parse("2026-08-24T12:00:00Z", &Rfc3339).unwrap();
+                let mut records = codex_0_148_task_reset_prefix();
+                records[0]["payload"]["cli_version"] = json!(version);
+                records[4]["payload"]["root_turn_id"] = root_turn_id;
+                records.extend(codex_0_148_task_reset_counters());
+                fs::write(&fixture.rollout, jsonl(records)).unwrap();
+
+                let indexed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+
+                assert_eq!(indexed.scan_status, UsageScanStatus::Complete, "{version}");
+                assert_eq!(indexed.daily[&now.date()].observed_tokens, 1_265);
+                let repeated = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+                assert_eq!(repeated.daily[&now.date()].observed_tokens, 1_265);
+                let report = debug_usage_pass(&fixture.database, &fixture.root, now).unwrap();
+                assert!(!report.contains("private-root-turn"));
+            }
+        }
+    }
+
+    #[test]
+    fn sqlite_index_replays_parser_23_errors_from_root_turn_metadata() {
+        for timestamp in ["2026-08-24T12:00:00Z", "2026-08-25T12:00:00Z"] {
+            let fixture = TempUsage::new();
+            let now = OffsetDateTime::parse(timestamp, &Rfc3339).unwrap();
+            let usage_day = Date::from_calendar_date(2026, Month::August, 24).unwrap();
+            let mut records = codex_0_148_task_reset_prefix();
+            records[0]["payload"]["cli_version"] = json!("0.155.0-alpha.9.2");
+            records[4]["payload"]["root_turn_id"] = json!("private-root-turn");
+            records.extend(codex_0_148_task_reset_counters());
+            fs::write(&fixture.rollout, jsonl(records)).unwrap();
+            run_usage_passes(&fixture, now, 2);
+            // The previous parser saved an error at EOF. The source stays unchanged.
+            Connection::open(&fixture.database)
+                .unwrap()
+                .execute(
+                    "UPDATE codex_usage_files
+                     SET parser_version = 23, completion_state = 'error',
+                         accounting_ready = 0, parser_error_seen = 1",
+                    [],
+                )
+                .unwrap();
+
+            let repaired = run_usage_passes(&fixture, now, 2);
+
+            assert_eq!(repaired.scan_status, UsageScanStatus::Complete);
+            assert_eq!(repaired.daily[&usage_day].observed_tokens, 1_265);
+            let repeated = run_usage_passes(&fixture, now, 2);
+            assert_eq!(repeated.daily[&usage_day].observed_tokens, 1_265);
+            if usage_day == now.date() {
+                let hourly_tokens: u64 = Connection::open(&fixture.database)
+                    .unwrap()
+                    .query_row(
+                        "SELECT SUM(observed_tokens) FROM codex_usage_file_model_hours",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(hourly_tokens, 1_265);
+            }
+        }
     }
 
     #[test]

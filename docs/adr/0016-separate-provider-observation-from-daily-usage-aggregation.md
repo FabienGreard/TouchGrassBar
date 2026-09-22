@@ -8,7 +8,18 @@ The compiled Provider Registry owns Provider Presence and stable display identit
 
 Daily Usage Aggregate calculation is a pure shared module. It receives normalized per-Ranking-Day evidence and a supplied clock. It never adds provider and local tokens.
 
-Provider-reported tokens are authoritative for each provider and Ranking Day when a provider bucket exists. Valid local evidence is the fallback only for a day that has no provider bucket. An omitted bucket is not an explicit zero. If neither source has valid evidence, the day is unavailable. The selector never adds provider and local tokens for the same day. A period can contain both evidence bases after the module folds the selected days. Local evidence also supplies reconciled or modeled cost. Price completeness does not control token authority.
+Provider-reported tokens are authoritative for each provider and Ranking Day when the latest response returns that provider bucket. Valid local evidence is the fallback for a day with no provider bucket, or for an older cached bucket under the rule below. An omitted bucket is not an explicit zero. If neither source has valid evidence, the day is unavailable. The selector never adds provider and local tokens for the same day. A period can contain both evidence bases after the module folds the selected days. Local evidence also supplies reconciled or modeled cost. Price completeness does not control token authority.
+
+An omitted day can retain an older account bucket in the private cache. If a
+later successful account response omits that day, local evidence can replace
+the cached bucket in the projection only when its count is greater and its
+last usage event is after the bucket's observation time. A new scan time alone
+does not meet this condition. The cache keeps the account evidence. The
+selected local count keeps its local evidence basis and coverage. A returned
+account bucket takes priority again, including a lower correction or zero.
+This prevents an omitted account day from holding the display at an old count
+while new local usage accumulates. Daily history and period totals use the same
+selection rule.
 
 The module calculates cost coverage and period totals. It produces per-provider and Combined projections after source selection.
 

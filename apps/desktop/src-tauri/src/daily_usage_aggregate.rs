@@ -166,23 +166,38 @@ fn select_usage_day(
     day: Date,
     observed_at_fallback: OffsetDateTime,
 ) -> Option<SelectedUsageDay> {
+    let local = evidence
+        .local_evidence_available
+        .then(|| evidence.local_usage_evidence.get(&day))
+        .flatten();
     if let Some((observed_tokens, observed_at)) = evidence
         .provider_reported_tokens
         .as_ref()
         .and_then(|daily| daily.get(&day).copied())
         .zip(provider_observed_at_for_day(evidence, day))
     {
-        return Some(SelectedUsageDay {
-            observed_tokens,
-            evidence_basis: UsageEvidenceBasis::ProviderReported,
-            coverage: UsageCoverage::Complete,
-            observed_at,
+        // A later sparse response does not refresh an omitted account day.
+        // New local activity can exceed that saved count. A returned account
+        // bucket still takes priority, including a lower correction or zero.
+        let omitted_from_latest = evidence
+            .provider_observed_at
+            .is_some_and(|latest| latest > observed_at);
+        let local_has_newer_usage = local.is_some_and(|local| {
+            local.observed_tokens > observed_tokens
+                && local
+                    .observed_through
+                    .is_some_and(|latest| latest > observed_at)
         });
+        if !omitted_from_latest || !local_has_newer_usage {
+            return Some(SelectedUsageDay {
+                observed_tokens,
+                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                coverage: UsageCoverage::Complete,
+                observed_at,
+            });
+        }
     }
-    if !evidence.local_evidence_available {
-        return None;
-    }
-    let local = evidence.local_usage_evidence.get(&day)?;
+    let local = local?;
     Some(SelectedUsageDay {
         observed_tokens: local.observed_tokens,
         evidence_basis: UsageEvidenceBasis::LocallyDerived,
