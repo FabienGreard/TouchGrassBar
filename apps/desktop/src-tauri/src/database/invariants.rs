@@ -632,6 +632,11 @@ fn verify_update_state(connection: &Connection) -> Result<(), DatabaseOpenError>
 }
 
 fn verify_usage_indexes(connection: &Connection) -> Result<(), DatabaseOpenError> {
+    providers::validate_codex_response_cursors(connection).map_err(|_| {
+        DatabaseOpenError::InvariantFailed {
+            invariant: "codex-response-cursors",
+        }
+    })?;
     if providers::codex_usage_schema_version(connection).map_err(|_| {
         DatabaseOpenError::InvariantFailed {
             invariant: "codex-usage-index",

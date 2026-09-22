@@ -511,7 +511,7 @@ async function planSnapshots(
       snapshot.evidenceBasis === "locally-derived" &&
       !(
         snapshot.provider === "codex" &&
-        snapshot.observedAt > existing.observedAt &&
+        snapshot.observedAt >= existing.observedAt &&
         snapshot.observedTokens > existing.observedTokens
       )
     ) {

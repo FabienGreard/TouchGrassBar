@@ -23,7 +23,7 @@ type FixtureDefinition = {
   revision: string;
   lifecycleVersion: 4 | 5;
   updateStateVersion: 1 | 2 | 3;
-  codexUsageIndexVersion: 2 | 6 | 7 | 8 | 9 | 10;
+  codexUsageIndexVersion: 2 | 6 | 7 | 8 | 9 | 10 | 11;
   hasClaudeUsageIndex: boolean;
   hasTopModelUsage: boolean;
   hasExplicitVersions: boolean;
@@ -39,7 +39,7 @@ type FixtureManifestEntry = {
     databaseFormat: number;
     lifecycle: number;
     sanitizedDesktopState: 4 | 5 | 6 | 7;
-    codexUsageIndex: 2 | 3 | 6 | 7 | 8 | 9 | 10;
+    codexUsageIndex: 2 | 3 | 6 | 7 | 8 | 9 | 10 | 11;
     claudeUsageIndex: 3 | 4 | 7 | null;
     updateState: 1 | 2 | 3;
     databaseCoordinator: 1 | null;
@@ -637,12 +637,24 @@ const definitions: FixtureDefinition[] = [
   },
   {
     tag: "v0.0.48",
-    sourceCommit: "candidate",
-    releaseStatus: "candidate",
+    sourceCommit: "1f37e78316d27c0ab89497c1821b6406fbb6a5fd",
+    releaseStatus: "official",
     revision: "348",
     lifecycleVersion: 5,
     updateStateVersion: 3,
     codexUsageIndexVersion: 10,
+    hasClaudeUsageIndex: true,
+    hasTopModelUsage: true,
+    hasExplicitVersions: true,
+  },
+  {
+    tag: "v0.0.49",
+    sourceCommit: "candidate",
+    releaseStatus: "candidate",
+    revision: "349",
+    lifecycleVersion: 5,
+    updateStateVersion: 3,
+    codexUsageIndexVersion: 11,
     hasClaudeUsageIndex: true,
     hasTopModelUsage: true,
     hasExplicitVersions: true,
@@ -923,7 +935,7 @@ function createCodexUsageSchema(database: Database, definition: FixtureDefinitio
     definition.codexUsageIndexVersion >= 9
       ? `,
       task_counter_reset_pending INTEGER NOT NULL DEFAULT 0,
-      provider_ordinal_mode TEXT NOT NULL DEFAULT 'unknown'`
+      provider_ordinal_mode TEXT NOT NULL DEFAULT 'unknown'${definition.codexUsageIndexVersion >= 11 ? ", response_cursor TEXT" : ""}`
       : "";
   const currentFileColumns = definition.hasExplicitVersions
     ? `,
@@ -1628,9 +1640,11 @@ function validateFixtureContents(
   try {
     const databaseFormat = Number(scalarValue(database.query("PRAGMA user_version").get()));
     const expectedDatabaseFormat = definition.hasExplicitVersions
-      ? definition.codexUsageIndexVersion >= 10
-        ? 8
-        : 7
+      ? definition.codexUsageIndexVersion >= 11
+        ? 9
+        : definition.codexUsageIndexVersion >= 10
+          ? 8
+          : 7
       : definition.lifecycleVersion;
     if (databaseFormat !== expectedDatabaseFormat) {
       throw new Error(`The database format is wrong for ${definition.tag}.`);
@@ -2007,7 +2021,9 @@ async function writeFixture(definition: FixtureDefinition): Promise<FixtureManif
       setModuleVersion(database, "desktop-lifecycle", 5);
       setModuleVersion(database, "update-state", 3);
       setModuleVersion(database, "database-coordinator", 1);
-      database.exec(`PRAGMA user_version = ${definition.codexUsageIndexVersion >= 10 ? 8 : 7}`);
+      database.exec(
+        `PRAGMA user_version = ${definition.codexUsageIndexVersion >= 11 ? 9 : definition.codexUsageIndexVersion >= 10 ? 8 : 7}`,
+      );
     }
     database.exec("COMMIT");
     database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -2032,9 +2048,11 @@ async function writeFixture(definition: FixtureDefinition): Promise<FixtureManif
     releaseStatus: definition.releaseStatus,
     sourceSchema: {
       databaseFormat: definition.hasExplicitVersions
-        ? definition.codexUsageIndexVersion >= 10
-          ? 8
-          : 7
+        ? definition.codexUsageIndexVersion >= 11
+          ? 9
+          : definition.codexUsageIndexVersion >= 10
+            ? 8
+            : 7
         : definition.lifecycleVersion,
       lifecycle: definition.lifecycleVersion,
       sanitizedDesktopState: readModelVersion(definition),

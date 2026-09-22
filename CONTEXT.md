@@ -55,11 +55,11 @@ For the current Ranking Day, whether Observed Usage is `current`, `stale`, or `u
 _Avoid_: Coverage, evidence basis, corrected
 
 **Observed Usage**:
-Coding-provider consumption selected from exactly one source for one provider and Ranking Day. Provider-reported usage takes precedence for that day. If the provider has no bucket for the day, valid locally derived usage can be selected as a fallback. The two sources are never added for the same day. If neither source has valid evidence, usage is unavailable. An omitted provider bucket is not proof of zero usage.
+Coding-provider consumption selected from exactly one source for one provider and Ranking Day. Select provider-reported usage when it is at least as large as valid local usage. A smaller or absent account bucket cannot erase validated local usage; select the local total with its own coverage. The two sources are never added for the same day. If neither source has valid evidence, usage is unavailable. An omitted provider bucket is not proof of zero usage.
 _Avoid_: Quota usage, billed usage, exact usage
 
 **Observed Tokens**:
-Token throughput counted under provider-specific rules without double-counting overlapping fields. Codex provider daily totals are used directly when present. Its local cumulative data supplies a fallback for a missing provider day and supplies pricing and model evidence. The local calculation does not add cached-input or reasoning subsets again. Claude totals input, cache-creation input, cache-read input, and output while treating thinking as part of output. Provider-specific differences in tokenization and reporting remain part of the number.
+Token throughput counted under provider-specific rules without double-counting overlapping fields. Codex selects one daily total from account and validated local evidence. Individual response records include compaction and exclude previous cumulative history when a task resumes. Legacy cumulative records remain a fallback for older files. Local records also supply pricing and model evidence. The local calculation does not add cached-input or reasoning subsets again. Claude totals input, cache-creation input, cache-read input, and output while treating thinking as part of output. Provider-specific differences in tokenization and reporting remain part of the number.
 _Avoid_: Billed tokens, normalized tokens, productivity
 
 **Usage Trend**:
@@ -71,7 +71,7 @@ The unweighted sum of observed tokens for a Tokenmaxxer, time range, and provide
 _Avoid_: Usage score, productivity score, points
 
 **API-Equivalent Cost**:
-An approximate estimate of what Observed Tokens would cost at published per-token prices applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Reconciled cost uses local priced detail that equals the authoritative tokens. Modeled cost applies a defensible average rate from priced local detail to the authoritative tokens and reports that priced-detail coverage. Local-only cost uses available local detail when provider-reported usage is unavailable. An unknown price leaves only that detail unpriced; a period with other usable priced evidence may still have a Modeled or Local-only estimate, while a period with no defensible priced evidence has no estimate. Combined adds only valid provider estimates and reports priced-token coverage when another contributing provider is unpriced; it never applies one provider's rate to another provider. A catalog correction recomputes only affected retained model-days and never changes Token Score or Doomerboard rank.
+An approximate estimate of what Observed Tokens would cost at published per-token prices applicable on the usage date, canonically displayed with `≈` and the label “API equivalent.” It records the immutable, effective-dated pricing-catalog version used. Reconciled cost uses local priced detail that equals the authoritative tokens. Modeled cost applies a defensible average rate from priced local detail to the authoritative tokens and reports that priced-detail coverage. Local-only cost uses available local detail when local usage is selected. An unknown price leaves only that detail unpriced; a period with other usable priced evidence may still have a Modeled or Local-only estimate, while a period with no defensible priced evidence has no estimate. Combined adds only valid provider estimates and reports priced-token coverage when another contributing provider is unpriced; it never applies one provider's rate to another provider. A catalog correction recomputes only affected retained model-days and never changes Token Score or Doomerboard rank.
 _Avoid_: Spend, bill, actual cost
 
 **Daily Usage Aggregate**:
@@ -79,7 +79,7 @@ A summary of Observed Usage for one Coding Provider, one Tokenmaxxer, and one Ra
 _Avoid_: Raw usage, usage log
 
 **Usage Snapshot**:
-A cumulative Daily Usage Aggregate sent by the Active Mac with a monotonically increasing revision. Equal or older revisions are ignored. A higher revision may correct a synchronized Ranking Day, but a decrease requires an explicit provider replacement or parser correction; a missing local record never subtracts usage. Provider-reported usage that arrives later replaces a locally derived value for the same Ranking Day, even when the provider total is lower. “Corrected” describes the audited change, not a lasting public status.
+A cumulative Daily Usage Aggregate sent by the Active Mac with a monotonically increasing revision. Equal or older revisions are ignored. A higher revision may correct a synchronized Ranking Day, but a decrease requires an explicit provider replacement or parser correction; a missing local record never subtracts usage. A later account fetch alone does not prove a correction. A larger validated Codex local total can replace a delayed account total at the same observation time. A completed parser replay can explicitly correct an earlier local count. “Corrected” describes the audited change, not a lasting public status.
 _Avoid_: Token increment, usage event, raw observation
 
 **Pending Usage Snapshot**:

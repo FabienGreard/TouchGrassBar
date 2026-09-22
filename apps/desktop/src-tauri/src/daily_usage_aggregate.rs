@@ -170,42 +170,35 @@ fn select_usage_day(
         .local_evidence_available
         .then(|| evidence.local_usage_evidence.get(&day))
         .flatten();
-    if let Some((observed_tokens, observed_at)) = evidence
+    let provider = evidence
         .provider_reported_tokens
         .as_ref()
         .and_then(|daily| daily.get(&day).copied())
-        .zip(provider_observed_at_for_day(evidence, day))
+        .zip(provider_observed_at_for_day(evidence, day));
+    if let Some((observed_tokens, observed_at)) = provider
+        && local.is_none_or(|local| local.observed_tokens <= observed_tokens)
     {
-        // A later sparse response does not refresh an omitted account day.
-        // New local activity can exceed that saved count. A returned account
-        // bucket still takes priority, including a lower correction or zero.
-        let omitted_from_latest = evidence
-            .provider_observed_at
-            .is_some_and(|latest| latest > observed_at);
-        let local_has_newer_usage = local.is_some_and(|local| {
-            local.observed_tokens > observed_tokens
-                && local
-                    .observed_through
-                    .is_some_and(|latest| latest > observed_at)
+        return Some(SelectedUsageDay {
+            observed_tokens,
+            evidence_basis: UsageEvidenceBasis::ProviderReported,
+            coverage: UsageCoverage::Complete,
+            observed_at,
         });
-        if !omitted_from_latest || !local_has_newer_usage {
-            return Some(SelectedUsageDay {
-                observed_tokens,
-                evidence_basis: UsageEvidenceBasis::ProviderReported,
-                coverage: UsageCoverage::Complete,
-                observed_at,
-            });
-        }
     }
     let local = local?;
+    // Account buckets have no completeness watermark. A fetch time cannot
+    // prove that a smaller account total corrects validated local records.
+    // Reconcile one source, never add the two totals. The observation time
+    // describes this reconciliation, not a new local token event.
+    let observed_at = local
+        .observed_through
+        .or(evidence.local_observed_at)
+        .unwrap_or(observed_at_fallback);
     Some(SelectedUsageDay {
         observed_tokens: local.observed_tokens,
         evidence_basis: UsageEvidenceBasis::LocallyDerived,
         coverage: local.coverage,
-        observed_at: local
-            .observed_through
-            .or(evidence.local_observed_at)
-            .unwrap_or(observed_at_fallback),
+        observed_at: provider.map_or(observed_at, |(_, account_at)| observed_at.max(account_at)),
     })
 }
 
@@ -1919,18 +1912,65 @@ mod tests {
         else {
             panic!("today must be available");
         };
-        assert_eq!(evidence_basis, UsageEvidenceBasis::ProviderReported);
-        assert_eq!(observed_tokens, 0);
-        assert_eq!(api_equivalent_cost_usd, Some(0.0));
+        assert_eq!(evidence_basis, UsageEvidenceBasis::LocallyDerived);
+        assert_eq!(observed_tokens, 40);
+        assert_eq!(api_equivalent_cost_usd, Some(2.0));
         assert_eq!(
             api_equivalent_cost_quality,
-            Some(ApiEquivalentCostQuality::Modeled)
+            Some(ApiEquivalentCostQuality::LocalOnly)
         );
-        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
+        assert_eq!(api_equivalent_cost_coverage_percent, None);
     }
 
     #[test]
-    fn provider_reported_today_remains_authoritative_after_local_scan_completes() {
+    fn delayed_account_bucket_cannot_erase_observed_local_usage() {
+        let now = now();
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: Some(BTreeMap::from([(now.date(), 190_199_978)])),
+            provider_observed_at: Some(now),
+            provider_observed_at_by_day: BTreeMap::from([(now.date(), now)]),
+            local_usage_evidence: BTreeMap::from([(
+                now.date(),
+                usage_detail(
+                    now - Duration::minutes(10),
+                    624_290_184,
+                    UsageCoverage::Complete,
+                ),
+            )]),
+            local_cost_evidence: BTreeMap::from([(
+                now.date(),
+                priced_detail(now, 624_290_184, 800.0),
+            )]),
+            local_evidence_available: true,
+            local_observed_at: Some(now),
+            pricing_basis: Some("fixture-v1".to_owned()),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+        };
+        let periods = calculate_usage_periods(&evidence, now);
+        assert!(matches!(
+            periods.today,
+            UsageTotal::Current {
+                observed_tokens: 624_290_184,
+                evidence_basis: UsageEvidenceBasis::LocallyDerived,
+                api_equivalent_cost_usd: Some(800.0),
+                ..
+            }
+        ));
+        let daily = calculate_daily_usage_aggregates(&evidence, now, now.date(), 30);
+        assert!(matches!(
+            daily[&now.date()],
+            UsageTotal::Current {
+                observed_tokens: 624_290_184,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn larger_local_total_keeps_its_source_and_cost() {
         let now = now();
         let provider_tokens = 467_600;
         let local_tokens = 1_100_000_000;
@@ -1970,16 +2010,16 @@ mod tests {
             panic!("provider-reported Today usage must be available");
         };
 
-        assert_eq!(evidence_basis, UsageEvidenceBasis::ProviderReported);
+        assert_eq!(evidence_basis, UsageEvidenceBasis::LocallyDerived);
         assert_eq!(coverage, UsageCoverage::Complete);
-        assert_eq!(observed_tokens, provider_tokens);
-        let expected_cost = local_cost * provider_tokens as f64 / local_tokens as f64;
+        assert_eq!(observed_tokens, local_tokens);
+        let expected_cost = local_cost;
         assert!((api_equivalent_cost_usd.unwrap() - expected_cost).abs() < 1e-12);
         assert_eq!(
             api_equivalent_cost_quality,
-            Some(ApiEquivalentCostQuality::Modeled)
+            Some(ApiEquivalentCostQuality::LocalOnly)
         );
-        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
+        assert_eq!(api_equivalent_cost_coverage_percent, None);
     }
 
     #[test]

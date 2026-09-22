@@ -11,7 +11,10 @@ use std::{
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::IgnoredAny;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
+
+mod response_usage;
+use response_usage::{ResponseCursor, ResponseRecord};
 use time::{
     Date, Duration, Month, OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339,
 };
@@ -43,12 +46,11 @@ const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 130;
 const MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 153;
-const COMPATIBLE_ROLLOUT_PARSER_VERSION: i64 = 18;
-const ROLLOUT_PARSER_VERSION: i64 = 24;
+const ROLLOUT_PARSER_VERSION: i64 = 25;
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
-pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 10;
+pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 11;
 
 #[derive(Clone, Copy)]
 struct ScanBudget {
@@ -335,7 +337,7 @@ fn utc_ranking_day(timestamp: OffsetDateTime) -> Date {
     timestamp.to_offset(UtcOffset::UTC).date()
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct TokenUsage {
     #[serde(rename = "input_tokens")]
@@ -1013,6 +1015,7 @@ pub(crate) struct LocalUsageObservation {
     has_excluded_usage: bool,
     latest_pending_modified_at: Option<OffsetDateTime>,
     latest_incomplete_modified_at: Option<OffsetDateTime>,
+    incomplete_response_days: BTreeSet<Date>,
     scan_scope_known: bool,
 }
 
@@ -1045,6 +1048,7 @@ impl Default for LocalUsageObservation {
             has_excluded_usage: false,
             latest_pending_modified_at: None,
             latest_incomplete_modified_at: None,
+            incomplete_response_days: BTreeSet::new(),
             scan_scope_known: false,
         }
     }
@@ -1053,13 +1057,24 @@ impl Default for LocalUsageObservation {
 impl LocalUsageObservation {
     fn period_scan_status(&self, today: Date, length: i64) -> UsageScanStatus {
         let period_start = (today - Duration::days(length - 1)).midnight().assume_utc();
-        period_scan_status(
+        let status = period_scan_status(
             self.scan_status,
             self.latest_pending_modified_at,
             self.latest_incomplete_modified_at,
             period_start,
             self.scan_scope_known,
-        )
+        );
+        if status == UsageScanStatus::Complete
+            && self
+                .incomplete_response_days
+                .range(period_start.date()..=today)
+                .next()
+                .is_some()
+        {
+            UsageScanStatus::Unavailable
+        } else {
+            status
+        }
     }
 
     fn suppress_cost_evidence(&mut self) {
@@ -1382,6 +1397,7 @@ struct RolloutScanState {
     snapshot_last_timestamp_ns: Option<i64>,
     snapshot_timestamp_regressed: bool,
     task_counter_reset_pending: bool,
+    response_cursor: Option<ResponseCursor>,
 }
 
 fn normalized_session_id(value: Option<String>) -> Option<String> {
@@ -2888,6 +2904,79 @@ fn process_index_line_inner(
             }
             true
         }
+        "token_usage_record" => {
+            let result = (|| {
+                let record = ResponseRecord::parse(line)?;
+                if state.leaf_session_id.as_deref() != Some(record.thread_id()) {
+                    // Copied parent records belong to the parent, not this task.
+                    return Ok(());
+                }
+                if !state.schema_supported || state.lineage_invalid {
+                    return Err(());
+                }
+                let outcome = record.observe(&mut state.response_cursor, state.previous)?;
+                if matches!(
+                    state.lineage_mode,
+                    LineageMode::Discovering | LineageMode::Unresolved
+                ) {
+                    state.lineage_mode = LineageMode::Independent;
+                    state.exclude_usage = false;
+                }
+                state.response_cursor.as_mut().ok_or(())?.record_day(
+                    day,
+                    cutoff,
+                    outcome.complete,
+                )?;
+                if !in_retention {
+                    return Ok(());
+                }
+                if !outcome.complete {
+                    mark_model_day_incomplete(
+                        output.rows,
+                        timestamp,
+                        state.active_model.as_deref(),
+                    );
+                }
+                if outcome.tokens.total == 0 {
+                    return Ok(());
+                }
+                let turn_id = record.turn_id();
+                if day >= fast_turn_index.detail_cutoff {
+                    fast_turn_index
+                        .referenced_turn_days
+                        .insert((turn_id.to_owned(), day));
+                }
+                let fast = fast_turn_index.turns.get(turn_id);
+                let model = fast
+                    .and_then(|model| model.as_deref())
+                    .filter(|model| model_has_fast_multiplier(model, day))
+                    .or(state.active_model.as_deref());
+                add_model_day_delta(
+                    output.rows,
+                    timestamp,
+                    model,
+                    outcome.tokens,
+                    outcome.tokens.input,
+                    if fast.is_some() {
+                        PricingMode::Fast
+                    } else {
+                        PricingMode::Standard
+                    },
+                )?;
+                Ok(())
+            })();
+            if result.is_err() {
+                if in_retention {
+                    mark_model_day_incomplete(
+                        output.rows,
+                        timestamp,
+                        state.active_model.as_deref(),
+                    );
+                }
+                debug_parser_failure("response_usage", in_retention.then_some(day));
+            }
+            result.is_ok()
+        }
         "event_msg" => {
             let Ok(line) = serde_json::from_slice::<RawEventLine>(line) else {
                 if in_retention {
@@ -3027,6 +3116,9 @@ fn process_index_line_inner(
             } else {
                 None
             };
+            if state.response_cursor.is_some() {
+                return IndexLineOutcome::Processed(true);
+            }
             let last = match raw_last.map(TokenUsage::canonical_last).transpose() {
                 Ok(last) => last,
                 Err(()) if unowned_prefix => {
@@ -3614,6 +3706,17 @@ fn ensure_index_schema(
             .execute(
                 "ALTER TABLE codex_usage_files
                  ADD COLUMN provider_ordinal_mode TEXT NOT NULL DEFAULT 'unknown'",
+                [],
+            )
+            .map_err(|_| ())?;
+    }
+    if !file_columns
+        .iter()
+        .any(|column| column == "response_cursor")
+    {
+        transaction
+            .execute(
+                "ALTER TABLE codex_usage_files ADD COLUMN response_cursor TEXT",
                 [],
             )
             .map_err(|_| ())?;
@@ -4366,33 +4469,6 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
         .map_err(|_| ())
 }
 
-fn promote_compatible_parser_rows(connection: &Connection, today: Date) -> Result<usize, ()> {
-    // Historical accepted rows do not need hourly detail. Today's rows must replay
-    // through the current parser to fill the hour index, even if their daily totals are complete.
-    connection
-        .execute(
-            "UPDATE codex_usage_files
-             SET parser_version = ?1
-             WHERE parser_version >= ?2 AND parser_version < ?1
-               AND completion_state = 'complete'
-               AND parsed_offset = size_bytes
-               AND accounting_ready = 1
-               AND usage_excluded = 0
-               AND schema_supported = 1
-               AND parser_error_seen = 0
-               AND lineage_invalid = 0
-               AND snapshot_timestamp_regressed = 0
-               AND deferred_until_day IS NULL
-               AND lineage_mode IN (
-                 'root', 'explicit-boundary', 'independent', 'parent-resolved'
-               )
-               AND provider_ordinal_mode IN ('legacy', 'provider')
-               AND NOT EXISTS (SELECT 1 FROM codex_usage_file_days d WHERE d.path=codex_usage_files.path AND d.day >= ?3)",
-            params![ROLLOUT_PARSER_VERSION, COMPATIBLE_ROLLOUT_PARSER_VERSION,today.to_string()],
-        )
-        .map_err(|_| ())
-}
-
 fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCursor>, ()> {
     connection
         .query_row(
@@ -4413,7 +4489,7 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                     marker_local_confirmation
                     , accounting_ready, parser_error_seen, snapshot_last_timestamp_ns,
                     snapshot_timestamp_regressed, task_counter_reset_pending,
-                    provider_ordinal_mode
+                    provider_ordinal_mode, response_cursor
              FROM codex_usage_files WHERE path = ?1",
             [path],
             |row| {
@@ -4510,6 +4586,13 @@ fn load_file_cursor(connection: &Connection, path: &str) -> Result<Option<FileCu
                         snapshot_last_timestamp_ns: row.get(42)?,
                         snapshot_timestamp_regressed: row.get(43)?,
                         task_counter_reset_pending: row.get(44)?,
+                        response_cursor: row
+                            .get::<_, Option<String>>(46)?
+                            .map(|value| {
+                                ResponseCursor::decode(&value)
+                                    .map_err(|_| rusqlite::Error::InvalidQuery)
+                            })
+                            .transpose()?,
                         provider_ordinal_mode: ProviderOrdinalMode::from_stored(
                             &row.get::<_, String>(45)?,
                         )
@@ -4653,7 +4736,7 @@ fn commit_file_progress(
                parser_error_seen = ?22, snapshot_last_timestamp_ns = ?23,
                snapshot_timestamp_regressed = ?24,
                task_counter_reset_pending = ?25,
-               provider_ordinal_mode = ?26
+               provider_ordinal_mode = ?26, response_cursor = ?27
              WHERE path = ?1",
             params![
                 path,
@@ -4710,6 +4793,13 @@ fn commit_file_progress(
                 cursor.parser_state.snapshot_timestamp_regressed,
                 cursor.parser_state.task_counter_reset_pending,
                 cursor.parser_state.provider_ordinal_mode.as_stored(),
+                cursor
+                    .parser_state
+                    .response_cursor
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|_| ())?,
             ],
         )
         .map_err(|_| {
@@ -5205,7 +5295,7 @@ fn reset_dependent_accounting(
                    snapshot_last_timestamp_ns = NULL,
                    snapshot_timestamp_regressed = 0,
                    task_counter_reset_pending = 0,
-                   provider_ordinal_mode = 'unknown',
+                   provider_ordinal_mode = 'unknown', response_cursor = NULL,
                    parent_dependency_key = ?2, parent_baseline_input = ?3,
                    parent_baseline_cached_input = ?4,
                    parent_baseline_cache_write_input = ?5, parent_baseline_output = ?6,
@@ -5593,6 +5683,7 @@ fn index_file(
             cursor.parser_state.active_model = None;
             cursor.parser_state.active_turn_id = None;
             cursor.parser_state.previous = None;
+            cursor.parser_state.response_cursor = None;
             cursor.parser_state.record_ordinal = 0;
             cursor.parser_state.provider_ordinal_mode = ProviderOrdinalMode::Unknown;
             cursor.parser_state.snapshot_last_timestamp_ns = None;
@@ -5624,6 +5715,7 @@ fn index_file(
             cursor.parser_state.active_model = None;
             cursor.parser_state.active_turn_id = None;
             cursor.parser_state.previous = None;
+            cursor.parser_state.response_cursor = None;
             cursor.parser_state.record_ordinal = 0;
             cursor.parser_state.provider_ordinal_mode = ProviderOrdinalMode::Unknown;
             cursor.parser_state.snapshot_last_timestamp_ns = None;
@@ -5638,6 +5730,7 @@ fn index_file(
             cursor.parser_state.active_model = None;
             cursor.parser_state.active_turn_id = None;
             cursor.parser_state.previous = None;
+            cursor.parser_state.response_cursor = None;
             cursor.parser_state.record_ordinal = 0;
             cursor.parser_state.provider_ordinal_mode = ProviderOrdinalMode::Unknown;
             cursor.parser_state.last_turn_context_is_first = false;
@@ -5913,6 +6006,20 @@ fn read_indexed_usage(
         )
         .optional()
         .map_err(|_| ())?;
+    let mut incomplete_response_days = BTreeSet::new();
+    let mut statement = connection
+        .prepare(
+            "SELECT response_cursor FROM codex_usage_files WHERE parser_version = ?1
+         AND accounting_ready = 1 AND usage_excluded = 0 AND response_cursor IS NOT NULL",
+        )
+        .map_err(|_| ())?;
+    for value in statement
+        .query_map([ROLLOUT_PARSER_VERSION], |row| row.get::<_, String>(0))
+        .map_err(|_| ())?
+    {
+        incomplete_response_days
+            .extend(ResponseCursor::decode(&value.map_err(|_| ())?)?.incomplete_days()?);
+    }
     let top_model_usage = read_top_model_usage(connection, today)?;
     Ok(LocalUsageObservation {
         daily: rows,
@@ -5925,6 +6032,7 @@ fn read_indexed_usage(
             .chain(latest_pending_modified_hint)
             .max(),
         latest_incomplete_modified_at: parse_modified_at(latest_incomplete_modified_ns)?,
+        incomplete_response_days,
         scan_scope_known,
     })
 }
@@ -6246,15 +6354,6 @@ fn index_local_usage_with_budget(
             .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
             .ok()?,
     };
-    let promoted_rows = promote_compatible_parser_rows(&connection, today)
-        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
-        .ok()?;
-    if promoted_rows > 0 {
-        debug_usage_event(&format!(
-            "compatible_parser_rows_promoted source_version={} target_version={} rows={promoted_rows}",
-            COMPATIBLE_ROLLOUT_PARSER_VERSION, ROLLOUT_PARSER_VERSION
-        ));
-    }
     // Trace evidence and rollout bytes are independent local inputs. A large
     // read-only trace database must not consume the bounded rollout budget.
     let pass_started = Instant::now();
@@ -7180,6 +7279,39 @@ fn provider_usage_evidence(
     }
 }
 
+pub(crate) fn validate_response_cursors(connection: &Connection) -> Result<(), ()> {
+    let mut statement = connection
+        .prepare("SELECT response_cursor FROM codex_usage_files WHERE response_cursor IS NOT NULL")
+        .map_err(|_| ())?;
+    let values = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|_| ())?;
+    for value in values {
+        ResponseCursor::decode(&value.map_err(|_| ())?)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn parser_correction(
+    total: &UsageTotal,
+) -> Option<crate::providers::ProviderCorrection> {
+    matches!(
+        total,
+        UsageTotal::Current {
+            evidence_basis: crate::sanitized::UsageEvidenceBasis::LocallyDerived,
+            coverage: UsageCoverage::Complete,
+            ..
+        } | UsageTotal::Stale {
+            evidence_basis: crate::sanitized::UsageEvidenceBasis::LocallyDerived,
+            coverage: UsageCoverage::Complete,
+            ..
+        }
+    )
+    .then_some(crate::providers::ProviderCorrection::ParserCorrection {
+        source_revision: ROLLOUT_PARSER_VERSION as u64,
+    })
+}
+
 pub(crate) fn load_daily_usage_history(
     connection: &Connection,
     now: OffsetDateTime,
@@ -7856,7 +7988,7 @@ mod tests {
     }
 
     #[test]
-    fn omitted_account_day_uses_newer_local_tokens_until_the_provider_returns_it() {
+    fn delayed_sparse_and_zero_account_buckets_preserve_larger_local_usage() {
         let fixture = TempUsage::new();
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let account_at = now - Duration::hours(3);
@@ -7879,8 +8011,8 @@ mod tests {
         assert!(matches!(
             project(&initial).today,
             UsageTotal::Current {
-                observed_tokens: 100,
-                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                observed_tokens: 300,
+                evidence_basis: UsageEvidenceBasis::LocallyDerived,
                 ..
             }
         ));
@@ -7931,15 +8063,15 @@ mod tests {
             let returned = load_cached_account_usage(Some(&fixture.database)).unwrap();
             assert!(matches!(project(&returned).today, UsageTotal::Current {
                 observed_tokens,
-                evidence_basis: UsageEvidenceBasis::ProviderReported,
+                evidence_basis: UsageEvidenceBasis::LocallyDerived,
                 ..
-            } if observed_tokens == tokens));
+            } if observed_tokens == 300));
         }
     }
 
     #[test]
-    fn omitted_account_day_keeps_a_larger_or_newer_account_observation() {
-        for (tokens, hours_ago) in [(400, 3), (300, 3), (100, 1)] {
+    fn omitted_account_day_keeps_a_larger_or_equal_account_observation() {
+        for (tokens, hours_ago) in [(400, 3), (300, 3), (400, 1)] {
             let fixture = TempUsage::new();
             let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
             store_cached_account_usage(
@@ -8891,8 +9023,8 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_index_reuses_complete_rows_from_the_previous_compatible_parser() {
-        for previous in [18, 19, 20] {
+    fn sqlite_index_replays_historical_rows_from_every_previous_parser() {
+        for previous in [18, 19, 20, 21, 22, 23, 24] {
             let fixture = TempUsage::new();
             let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
             fs::write(
@@ -8927,9 +9059,11 @@ mod tests {
             )
             .unwrap();
 
-            assert_eq!(reused.scan_status, UsageScanStatus::Complete);
+            assert_eq!(reused.scan_status, UsageScanStatus::Indexing);
+            let replayed = run_usage_passes(&fixture, now, 2);
+            assert_eq!(replayed.scan_status, UsageScanStatus::Complete);
             assert_eq!(
-                reused.daily[&(now.date() - Duration::days(1))].observed_tokens,
+                replayed.daily[&(now.date() - Duration::days(1))].observed_tokens,
                 100
             );
             assert_eq!(
@@ -8972,7 +9106,7 @@ mod tests {
                 .unwrap()
                 .execute_batch(&format!(
                     "UPDATE codex_usage_files
-                     SET parser_version = {COMPATIBLE_ROLLOUT_PARSER_VERSION},
+                     SET parser_version = 24,
                          {unsafe_change};"
                 ))
                 .unwrap();
@@ -8998,7 +9132,7 @@ mod tests {
                         row.get::<_, i64>(0)
                     },)
                     .unwrap(),
-                COMPATIBLE_ROLLOUT_PARSER_VERSION,
+                24,
                 "{unsafe_change}"
             );
         }
@@ -9031,7 +9165,7 @@ mod tests {
                      schema_supported = 0,
                      accounting_ready = 0,
                      parser_error_seen = 1",
-                [COMPATIBLE_ROLLOUT_PARSER_VERSION],
+                [24],
             )
             .unwrap();
 
@@ -9929,6 +10063,117 @@ mod tests {
             .unwrap();
         assert!(history_start.is_some());
         assert!(!excluded);
+    }
+
+    #[test]
+    fn response_records_count_resume_and_compaction_without_repeating_history() {
+        let fixture = TempUsage::new();
+        let usage = |tokens| {
+            json!({"input_tokens": tokens, "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0, "output_tokens": 0,
+            "reasoning_output_tokens": 0, "total_tokens": tokens})
+        };
+        let response = |ordinal, id, tokens, total| {
+            json!({
+                "ordinal": ordinal, "timestamp": "2026-08-06T10:01:00Z",
+                "type": "token_usage_record", "payload": {
+                    "thread_id": "fixture-thread", "turn_id": "fixture-turn",
+                    "session_id": "fixture-session", "root_turn_id": "fixture-turn",
+                    "response_id": id, "usage": usage(tokens),
+                    "turn_token_usage": usage(tokens), "thread_token_usage": usage(total)
+                }
+            })
+        };
+        let mut records = vec![
+            json!({"ordinal": 41, "timestamp": "2026-08-06T10:00:00Z", "type": "session_meta", "payload": {
+                "id": "fixture-thread", "cli_version": "0.155.0-alpha.9.2", "history_mode": "paginated",
+                "history_base": {"thread_id": "fixture-thread", "end_ordinal_exclusive": 41, "end_byte_offset": 1000}
+            }}),
+            json!({"ordinal": 42, "timestamp": "2026-08-06T10:00:01Z", "type": "turn_context", "payload": {"model": "gpt-5.6-sol"}}),
+            response(43, "response-one", 100, 1100),
+        ];
+        fs::write(&fixture.rollout, jsonl(records.clone())).unwrap();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let first = run_usage_passes(&fixture, now, 2);
+        assert_eq!(first.daily[&now.date()].observed_tokens, 100);
+        // Resume from SQLite between the independent record and its legacy notification.
+        records.extend([
+            with_ordinal(token_count_line("2026-08-06T10:01:00Z", 1100, 100), 44),
+            response(45, "response-compaction", 50, 1150),
+            with_ordinal(token_count_line("2026-08-06T10:01:00Z", 1100, 100), 46),
+            response(47, "response-two", 100, 1250),
+            with_ordinal(token_count_line("2026-08-06T10:01:00Z", 1200, 100), 48),
+            response(49, "response-two", 100, 1250),
+        ]);
+        fs::write(&fixture.rollout, jsonl(records)).unwrap();
+        let second = run_usage_passes(&fixture, now, 2);
+        assert_eq!(second.daily[&now.date()].observed_tokens, 250);
+        let retry = run_usage_passes(&fixture, now, 2);
+        assert_eq!(retry.daily[&now.date()].observed_tokens, 250);
+    }
+
+    #[test]
+    fn response_usage_keeps_utc_days_and_copied_parent_ownership_separate() {
+        let fixture = TempUsage::new();
+        let usage = |tokens| {
+            json!({"input_tokens": tokens, "cached_input_tokens": 0,
+            "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": tokens})
+        };
+        let response = |ordinal, thread, id, timestamp, tokens, total| {
+            json!({
+                "ordinal": ordinal, "timestamp": timestamp, "type": "token_usage_record",
+                "payload": {"thread_id": thread, "turn_id": "turn", "session_id": "session",
+                    "root_turn_id": "turn", "response_id": id, "usage": usage(tokens),
+                    "turn_token_usage": usage(total), "thread_token_usage": usage(total)}
+            })
+        };
+        fs::write(&fixture.rollout, jsonl([
+            json!({"ordinal": 41, "timestamp": "2026-08-06T23:59:00Z", "type": "session_meta", "payload": {
+                "id": "child", "cli_version": "0.155.0-alpha.9.2", "history_mode": "paginated",
+                "history_base": {"thread_id": "parent", "end_ordinal_exclusive": 41, "end_byte_offset": 1000},
+                "forked_from_id": "parent"
+            }}),
+            json!({"ordinal": 42, "timestamp": "2026-08-06T23:59:01Z", "type": "turn_context", "payload": {"model": "gpt-5.6-sol"}}),
+            response(43, "parent", "copied", "2026-08-06T23:59:02Z", 1000, 1000),
+            response(44, "child", "own-one", "2026-08-06T23:59:59Z", 100, 1100),
+            response(45, "child", "own-two", "2026-08-07T00:00:01Z", 50, 1150),
+            with_ordinal(token_count_line("2026-08-07T00:00:01Z", 1150, 50), 46),
+            response(47, "child", "gap", "2026-08-07T00:01:01Z", 50, 1250),
+            response(48, "child", "next-day", "2026-08-08T00:00:01Z", 25, 1275),
+        ])).unwrap();
+        let now = OffsetDateTime::parse("2026-08-08T01:00:00Z", &Rfc3339).unwrap();
+        let local = run_usage_passes(&fixture, now, 3);
+        assert_eq!(
+            local.daily[&(now.date() - Duration::days(1))].observed_tokens,
+            100
+        );
+        assert_eq!(local.daily[&now.date()].observed_tokens, 25);
+        assert_eq!(
+            local.period_scan_status(now.date(), 1),
+            UsageScanStatus::Complete
+        );
+        let connection = Connection::open(&fixture.database).unwrap();
+        let hourly: u64 = connection
+            .query_row(
+                "SELECT SUM(observed_tokens) FROM codex_usage_file_model_hours",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hourly, 25);
+        assert_eq!(
+            local.period_scan_status(now.date() - Duration::days(1), 1),
+            UsageScanStatus::Unavailable
+        );
+        assert_eq!(
+            local.period_scan_status(now.date() - Duration::days(2), 1),
+            UsageScanStatus::Complete
+        );
+        let periods = project_usage_periods(None, Some(&local), now);
+        assert!(parser_correction(&periods.today).is_some());
+        let history = load_daily_usage_history(&connection, now, now.date(), 3).unwrap();
+        assert!(parser_correction(&history[&(now.date() - Duration::days(1))]).is_none());
+        assert_eq!(run_usage_passes(&fixture, now, 2).daily, local.daily);
     }
 
     #[test]
@@ -14895,7 +15140,7 @@ mod tests {
     }
 
     #[test]
-    fn unpriced_local_scan_does_not_replace_provider_reported_tokens() {
+    fn unpriced_local_tokens_remain_visible_without_an_invented_cost() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let day = now.date();
         let account = AccountUsageObservation {
@@ -14932,15 +15177,15 @@ mod tests {
         else {
             panic!("expected current usage");
         };
-        assert_eq!(observed_tokens, 467_600);
+        assert_eq!(observed_tokens, 1_100_000_000);
         assert_eq!(api_equivalent_cost_usd, None);
         assert_eq!(api_equivalent_cost_quality, None);
-        assert_eq!(evidence_basis, UsageEvidenceBasis::ProviderReported);
+        assert_eq!(evidence_basis, UsageEvidenceBasis::LocallyDerived);
         assert_eq!(coverage, UsageCoverage::Complete);
     }
 
     #[test]
-    fn excluded_local_usage_does_not_replace_provider_reported_tokens() {
+    fn excluded_records_keep_known_local_tokens_partial() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let day = now.date();
         let account = AccountUsageObservation {
@@ -14962,6 +15207,7 @@ mod tests {
             )]),
             scan_status: UsageScanStatus::Complete,
             has_excluded_usage: true,
+            latest_incomplete_modified_at: Some(now),
             scan_scope_known: true,
             ..LocalUsageObservation::default()
         };
@@ -14976,9 +15222,9 @@ mod tests {
         else {
             panic!("expected current usage");
         };
-        assert_eq!(observed_tokens, 467_600);
-        assert_eq!(evidence_basis, UsageEvidenceBasis::ProviderReported);
-        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(observed_tokens, 1_100_000_000);
+        assert_eq!(evidence_basis, UsageEvidenceBasis::LocallyDerived);
+        assert_eq!(coverage, UsageCoverage::Partial);
     }
 
     #[test]
@@ -15056,7 +15302,7 @@ mod tests {
     }
 
     #[test]
-    fn indexing_preserves_the_last_cost_without_replacing_new_account_tokens() {
+    fn indexing_preserves_the_last_cost_for_larger_known_local_usage() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let previous_account = AccountUsageObservation {
             daily_tokens: BTreeMap::from([(now.date(), 100)]),
@@ -15117,13 +15363,13 @@ mod tests {
             panic!("expected current account usage");
         };
 
-        assert_eq!(observed_tokens, 200);
-        assert_eq!(api_equivalent_cost_usd, Some(2.5));
+        assert_eq!(observed_tokens, 201);
+        assert_eq!(api_equivalent_cost_usd, Some(2.5124999999999997));
         assert_eq!(
             api_equivalent_cost_quality,
             Some(ApiEquivalentCostQuality::Modeled)
         );
-        assert_eq!(api_equivalent_cost_coverage_percent, Some(50.0));
+        assert_eq!(api_equivalent_cost_coverage_percent, Some(10000.0 / 201.0));
         assert_eq!(preserved.scan_status, UsageScanStatus::Indexing);
     }
 
@@ -15273,7 +15519,7 @@ mod tests {
     }
 
     #[test]
-    fn account_usage_remains_authoritative_while_local_scan_is_incomplete() {
+    fn larger_known_local_usage_remains_visible_while_indexing() {
         let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
         let account = AccountUsageObservation {
             daily_tokens: BTreeMap::from([(now.date(), 100)]),
@@ -15307,13 +15553,13 @@ mod tests {
         else {
             panic!("expected account usage");
         };
-        assert_eq!(observed_tokens, 100);
-        assert_eq!(api_equivalent_cost_usd, Some(1.0));
+        assert_eq!(observed_tokens, 202);
+        assert_eq!(api_equivalent_cost_usd, Some(2.02));
         assert_eq!(
             api_equivalent_cost_quality,
-            Some(ApiEquivalentCostQuality::Modeled)
+            Some(ApiEquivalentCostQuality::LocalOnly)
         );
-        assert_eq!(api_equivalent_cost_coverage_percent, Some(100.0));
+        assert_eq!(api_equivalent_cost_coverage_percent, None);
     }
 
     #[test]

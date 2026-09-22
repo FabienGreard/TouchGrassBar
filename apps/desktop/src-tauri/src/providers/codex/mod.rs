@@ -5,8 +5,9 @@ use crate::diagnostics::{AccessOperation, AccessReason, Provider};
 use crate::providers::failure_capture;
 pub(crate) use usage::{
     USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION, load_daily_usage_history,
-    load_hourly_usage, load_model_usage_history, prepare_database as prepare_usage_database,
-    usage_index_schema_version,
+    load_hourly_usage, load_model_usage_history, parser_correction,
+    prepare_database as prepare_usage_database, usage_index_schema_version,
+    validate_response_cursors,
 };
 
 pub(super) fn current_pricing_basis() -> Option<&'static str> {
@@ -750,13 +751,17 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
             let observed_at = self.clock.now();
             let account = load_cached_account_usage(self.database_path.as_deref());
             attempt.remaining()?;
-            self.update_usage_projection(
+            let updated = self.update_usage_projection(
                 &mut provider_observation.usage,
                 &mut provider_observation.top_model_usage,
                 account.as_ref(),
                 observed_at,
             );
             attempt.remaining()?;
+            if updated {
+                provider_observation.correction =
+                    parser_correction(&provider_observation.usage.today);
+            }
             return Ok(Some(provider_observation));
         }
         let _failures = failure_capture::ScanFailures::begin();
@@ -803,7 +808,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
                 session_guard.take();
                 let observed_at = self.clock.now();
                 attempt.remaining()?;
-                self.update_usage_projection(
+                let updated = self.update_usage_projection(
                     &mut provider_observation.usage,
                     &mut provider_observation.top_model_usage,
                     account.as_ref(),
@@ -811,6 +816,10 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
                 );
                 attempt.remaining()?;
                 debug_event("usage_projection_completed source=cached_account_or_local");
+                if updated {
+                    provider_observation.correction =
+                        parser_correction(&provider_observation.usage.today);
+                }
                 return Ok(Some(provider_observation));
             }
         };
@@ -835,6 +844,7 @@ impl ProviderObservationAdapter for CodexProviderObservationAdapter {
             account_usage.as_ref(),
             observed_at,
         ) {
+            provider_observation.correction = parser_correction(&provider_observation.usage.today);
             debug_event("usage_projection_completed");
         } else {
             debug_event("usage_projection_preserved");

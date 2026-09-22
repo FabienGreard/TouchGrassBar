@@ -2109,7 +2109,7 @@ fn queue_validated_daily_aggregate(
         if existing.aggregate.evidence_basis == SyncEvidenceBasis::ProviderReported
             && aggregate.evidence_basis == SyncEvidenceBasis::LocallyDerived
             && !(aggregate.provider == CodingProvider::Codex
-                && aggregate.observed_at > existing.aggregate.observed_at
+                && aggregate.observed_at >= existing.aggregate.observed_at
                 && aggregate.observed_tokens > existing.aggregate.observed_tokens)
         {
             return Ok(QueueUpdate::Stale {
@@ -2123,6 +2123,15 @@ fn queue_validated_daily_aggregate(
             && aggregate.observed_tokens < existing.aggregate.observed_tokens
         {
             aggregate.correction_reason = Some(CorrectionReason::ProviderReplacement);
+        }
+        // A completed parser replay is a new observation of retained records.
+        // Its last response can precede the last legacy notification it replaces.
+        // Preserve the observation watermark for this explicit local correction.
+        if aggregate.provider == CodingProvider::Codex
+            && aggregate.correction_reason == Some(CorrectionReason::ParserCorrection)
+            && existing.aggregate.evidence_basis == SyncEvidenceBasis::LocallyDerived
+        {
+            aggregate.observed_at = aggregate.observed_at.max(existing.aggregate.observed_at);
         }
         aggregate.validate()?;
         if aggregate.observed_at < existing.aggregate.observed_at
@@ -5631,7 +5640,7 @@ mod tests {
 
     #[test]
     fn provider_owned_evidence_rejects_local_totals_without_newer_usage() {
-        for (local_tokens, observed_at) in [(80, 2000), (100, 2000), (120, 1000), (120, 500)] {
+        for (local_tokens, observed_at) in [(80, 2000), (100, 2000), (120, 500)] {
             let mut connection = connection();
             let transaction = connection.transaction().unwrap();
             queue_daily_aggregate(
@@ -5665,13 +5674,17 @@ mod tests {
     }
 
     #[test]
-    fn newer_codex_local_total_is_queued_after_the_account_total_was_acknowledged() {
+    fn larger_codex_local_total_is_queued_at_the_account_observation_time() {
         let mut connection = connection();
         let transaction = connection.transaction().unwrap();
         queue_daily_aggregate(
             &transaction,
             1,
-            aggregate(CodingProvider::Codex, 22_640_561, 1000),
+            aggregate(
+                CodingProvider::Codex,
+                22_640_561,
+                u64::try_from(now().unix_timestamp()).unwrap() * 1000 - DAY_START_MILLIS,
+            ),
         )
         .unwrap();
         transaction.commit().unwrap();
@@ -5711,6 +5724,35 @@ mod tests {
             SyncEvidenceBasis::LocallyDerived
         );
         assert_eq!(pending.snapshots()[0].correction_reason, None);
+    }
+
+    #[test]
+    fn codex_replay_corrects_a_legacy_total_without_regressing_its_observation_time() {
+        let mut connection = connection();
+        let transaction = connection.transaction().unwrap();
+        let mut previous = aggregate(CodingProvider::Codex, 200, 2000);
+        previous.evidence_basis = SyncEvidenceBasis::LocallyDerived;
+        queue_daily_aggregate(&transaction, 1, previous).unwrap();
+        let mut corrected = aggregate(CodingProvider::Codex, 100, 1000);
+        corrected.evidence_basis = SyncEvidenceBasis::LocallyDerived;
+        // A count decrease without a completed parser correction remains stale.
+        assert!(matches!(
+            queue_daily_aggregate(&transaction, 1, corrected.clone()).unwrap(),
+            QueueUpdate::Stale { .. }
+        ));
+        corrected.correction_reason = Some(CorrectionReason::ParserCorrection);
+        assert!(matches!(
+            queue_daily_aggregate(&transaction, 1, corrected).unwrap(),
+            QueueUpdate::Stored { revision: 2, .. }
+        ));
+        transaction.commit().unwrap();
+        let pending = load_pending_usage_batch(&connection, 1).unwrap().unwrap();
+        assert_eq!(pending.snapshots()[0].observed_tokens, 100);
+        assert_eq!(pending.snapshots()[0].observed_at, DAY_START_MILLIS + 2000);
+        assert_eq!(
+            pending.snapshots()[0].correction_reason,
+            Some(CorrectionReason::ParserCorrection)
+        );
     }
 
     #[test]

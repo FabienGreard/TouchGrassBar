@@ -91,6 +91,10 @@ pub(crate) fn prepare_usage_databases(path: &Path) -> Result<(), ()> {
     claude::prepare_usage_database(path)
 }
 
+pub(crate) fn validate_codex_response_cursors(connection: &rusqlite::Connection) -> Result<(), ()> {
+    codex::validate_response_cursors(connection)
+}
+
 pub(crate) fn codex_usage_schema_version(connection: &rusqlite::Connection) -> Result<i64, ()> {
     codex::usage_index_schema_version(connection)
 }
@@ -219,8 +223,8 @@ pub(crate) fn load_daily_usage_history(
                 .map(|(day, total)| ProviderDailyUsage {
                     provider: CodingProvider::Codex,
                     day,
+                    correction: codex::parser_correction(&total),
                     total,
-                    correction: None,
                 }),
         ),
         _ => return Err(()),

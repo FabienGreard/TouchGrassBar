@@ -696,7 +696,7 @@ test("newer Codex local usage replaces the account total on every leaderboard ex
     usageSnapshot({ provider: "claude", observedTokens: 463_435 }),
   ]);
   const local = usageSnapshot({
-    observedAt: NOW.getTime() + 1000,
+    observedAt: NOW.getTime(),
     observedTokens: 551_176_193,
     revision: 2,
   });
@@ -755,7 +755,6 @@ test("provider-reported evidence rejects local totals without newer usage", asyn
   for (const [observedTokens, offset] of [
     [80, 100],
     [100, 100],
-    [120, 0],
   ] as const) {
     await expect(
       authenticated.mutation(api.sync.dailyUsage, {

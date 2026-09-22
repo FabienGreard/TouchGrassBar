@@ -172,7 +172,7 @@ pub(super) fn inspect_registered_modules(connection: &Connection) -> Result<(), 
         "codex_usage_file_days",
     ];
     let codex_table_count = count_tables(connection, &codex_tables)?;
-    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7 | 8 | 9 | 10)
+    if !matches!(codex_version, 0 | 2 | 3 | 6 | 7 | 8 | 9 | 10 | 11)
         || (codex_version == 0 && codex_table_count != 0)
         || (codex_version >= 2 && codex_table_count != codex_tables.len())
     {
@@ -333,6 +333,15 @@ fn inspect_known_table_columns(
         ) {
             continue;
         }
+        let expected = if *table == "codex_usage_files" && versions.codex <= 10 {
+            expected.strip_suffix(&["response_cursor"]).ok_or(
+                DatabaseOpenError::MigrationFailed {
+                    stage: "inspect-table-columns",
+                },
+            )?
+        } else {
+            *expected
+        };
         let expected = match (*table, versions.read_model, versions.codex, versions.claude) {
             ("usage_sync_generation_activations", 6, _, _) => LEGACY_USAGE_SYNC_ACTIVATION_COLUMNS,
             ("codex_usage_file_model_days", _, 2 | 3, _) => LEGACY_CODEX_MODEL_DAY_COLUMNS,
@@ -636,12 +645,12 @@ fn inspect_known_object_definitions(
             },
             ("table", "codex_account_usage_days") => match versions.codex {
                 2 | 3 | 6 | 7 => !definition.contains("observed_attextnotnull"),
-                8..=10 => definition.contains("observed_attextnotnull"),
+                8..=11 => definition.contains("observed_attextnotnull"),
                 _ => false,
             },
             ("table", "codex_account_usage_meta") => match versions.codex {
                 2 | 3 | 6 | 7 => definition.contains("observed_attextnotnull"),
-                8..=10 => definition.contains("refreshed_attextnotnull"),
+                8..=11 => definition.contains("refreshed_attextnotnull"),
                 _ => false,
             },
             ("table", "touchgrassbar_update_state") => match versions.update {

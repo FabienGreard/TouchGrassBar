@@ -1,6 +1,6 @@
 use crate::{lifecycle, providers, sanitized, updater};
 
-pub(super) const DATABASE_FORMAT_VERSION: i64 = 8;
+pub(super) const DATABASE_FORMAT_VERSION: i64 = 9;
 pub(super) const COORDINATOR_SCHEMA_MODULE: &str = "database-coordinator";
 pub(super) const COORDINATOR_SCHEMA_VERSION: i64 = 1;
 
@@ -355,6 +355,33 @@ pub(super) const KNOWN_OBJECT_DEFINITIONS: &[&str] = &[
         "snapshot_timestamp_regressedintegernotnulldefault0,",
         "task_counter_reset_pendingintegernotnulldefault0,",
         "provider_ordinal_modetextnotnulldefault'unknown')"
+    ),
+    concat!(
+        "createtablecodex_usage_files(",
+        "pathtextprimarykeynotnull,file_identitytextnotnull,size_bytesintegernotnull,",
+        "modified_nsintegernotnull,parsed_offsetintegernotnull,parsed_prefix_anchortext,",
+        "parser_versionintegernotnull,completion_statetextnotnull,deferred_until_daytext,",
+        "active_modeltext,active_turn_idtext,baseline_is_inheritedinteger,",
+        "history_start_ordinalinteger,record_ordinalintegernotnulldefault0,",
+        "usage_excludedintegernotnulldefault0,schema_supportedintegernotnull,",
+        "previous_inputinteger,previous_cached_inputinteger,",
+        "previous_cache_write_inputinteger,previous_outputinteger,",
+        "previous_reasoning_outputinteger,previous_totalinteger,",
+        "lineage_modetextnotnulldefault'unknown',leaf_session_idtext,",
+        "parent_session_idtext,parent_identity_explicitintegernotnulldefault0,",
+        "fork_timestamp_nsinteger,embedded_ancestor_seenintegernotnulldefault0,",
+        "lineage_invalidintegernotnulldefault0,parent_dependency_keytext,",
+        "parent_baseline_inputinteger,parent_baseline_cached_inputinteger,",
+        "parent_baseline_cache_write_inputinteger,parent_baseline_outputinteger,",
+        "parent_baseline_reasoning_outputinteger,parent_baseline_totalinteger,",
+        "last_turn_context_is_firstintegernotnulldefault0,last_turn_context_ordinalinteger,",
+        "marker_based_boundaryintegernotnulldefault0,",
+        "marker_candidate_invalidatedintegernotnulldefault0,",
+        "marker_local_confirmationinteger,accounting_readyintegernotnulldefault0,",
+        "parser_error_seenintegernotnulldefault0,snapshot_last_timestamp_nsinteger,",
+        "snapshot_timestamp_regressedintegernotnulldefault0,",
+        "task_counter_reset_pendingintegernotnulldefault0,",
+        "provider_ordinal_modetextnotnulldefault'unknown',response_cursortext)"
     ),
     concat!(
         "createtablecodex_usage_token_snapshots(",
@@ -760,6 +787,7 @@ pub(super) const NULLABLE_COLUMNS: &[(&str, &[&str])] = &[
             "last_turn_context_ordinal",
             "marker_local_confirmation",
             "snapshot_last_timestamp_ns",
+            "response_cursor",
         ],
     ),
     (
@@ -1347,6 +1375,7 @@ pub(super) const TABLE_COLUMNS: &[(&str, &[&str])] = &[
             "snapshot_timestamp_regressed",
             "task_counter_reset_pending",
             "provider_ordinal_mode",
+            "response_cursor",
         ],
     ),
     ("codex_usage_index_meta", &["key", "value"]),

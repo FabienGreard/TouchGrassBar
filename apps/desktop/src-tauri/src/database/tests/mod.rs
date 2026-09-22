@@ -177,7 +177,7 @@ fn prepares_one_complete_versioned_database() {
         versions,
         vec![
             ("claude-usage-index".to_owned(), 7),
-            ("codex-usage-index".to_owned(), 10),
+            ("codex-usage-index".to_owned(), 11),
             ("database-coordinator".to_owned(), 1),
             ("desktop-lifecycle".to_owned(), 5),
             ("sanitized-desktop-state".to_owned(), 7),
@@ -234,6 +234,7 @@ fn coordinator_upgrades_the_codex_v6_file_turn_shape_with_daily_references() {
                singleton INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
                observed_at TEXT NOT NULL
              );
+             ALTER TABLE codex_usage_files DROP COLUMN response_cursor;
              ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
              ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
              DROP TABLE codex_usage_file_model_hours;
@@ -332,6 +333,7 @@ fn coordinator_upgrades_the_codex_v7_account_cache_without_rebuilding_rollouts()
              INSERT INTO codex_account_usage_meta(singleton, observed_at)
                SELECT singleton, refreshed_at FROM codex_account_usage_meta_v8;
              DROP TABLE codex_account_usage_meta_v8;
+             ALTER TABLE codex_usage_files DROP COLUMN response_cursor;
              ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
              ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
              DROP TABLE codex_usage_file_model_hours;
@@ -395,6 +397,7 @@ fn coordinator_adds_the_codex_v9_parser_state_without_losing_rollouts() {
                'private-rollout', '1:2', 10, 20, 10, 17, 'complete',
                'gpt-5.6-sol', 1
              );
+             ALTER TABLE codex_usage_files DROP COLUMN response_cursor;
              ALTER TABLE codex_usage_files DROP COLUMN provider_ordinal_mode;
              ALTER TABLE codex_usage_files DROP COLUMN task_counter_reset_pending;
              DROP TABLE codex_usage_file_model_hours;
@@ -1408,4 +1411,60 @@ fn diagnostics_are_bounded_and_do_not_expose_values() {
         assert!(!diagnostic.contains('/'));
         assert!(!diagnostic.contains("private-value"));
     }
+}
+
+#[test]
+fn rejects_an_invalid_codex_response_cursor() {
+    let database = TestDatabase::new();
+    prepare(&database.0).expect("prepare database");
+    Connection::open(&database.0)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO codex_usage_files(path, file_identity, size_bytes, modified_ns,
+         parsed_offset, parser_version, completion_state, schema_supported, response_cursor)
+         VALUES('fixture.jsonl', 'fixture', 0, 0, 0, 25, 'indexing', 1, '{}');",
+        )
+        .unwrap();
+    assert_eq!(
+        prepare(&database.0).expect_err("reject malformed cursor"),
+        DatabaseOpenError::InvariantFailed {
+            invariant: "codex-response-cursors"
+        }
+    );
+}
+
+#[test]
+fn coordinator_adds_response_checkpoint_without_losing_v10_usage() {
+    let database = TestDatabase::new();
+    prepare(&database.0).unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO codex_usage_files(path, file_identity, size_bytes, modified_ns,
+         parsed_offset, parser_version, completion_state, schema_supported)
+         VALUES('fixture.jsonl', 'fixture', 100, 100, 100, 24, 'complete', 1);
+         ALTER TABLE codex_usage_files DROP COLUMN response_cursor;
+         UPDATE touchgrassbar_schema_versions SET version=10 WHERE module='codex-usage-index';
+         PRAGMA user_version=8;",
+        )
+        .unwrap();
+    drop(connection);
+    prepare(&database.0).unwrap();
+    let connection = Connection::open(&database.0).unwrap();
+    let row = connection
+        .query_row(
+            "SELECT parser_version, parsed_offset, response_cursor FROM codex_usage_files",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row, (24, 100, None));
+    drop(connection);
+    prepare(&database.0).expect("reopen migrated checkpoint");
 }
