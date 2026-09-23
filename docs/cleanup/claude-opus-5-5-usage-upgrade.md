@@ -1,8 +1,8 @@
 # Claude Opus 5.5 usage upgrade
 
-- **Status:** rehearsed
+- **Status:** running
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
-- **Implementation:** patch candidate v0.0.51
+- **Implementation:** [v0.0.51](https://github.com/FabienGreard/TouchGrassBar/releases/tag/v0.0.51), commit `42c3deba605e567713434a154fe67cdb998b959f`
 
 ## Scope
 
@@ -57,7 +57,26 @@ cover retained old/new catalogs, missing daily metadata, and the outgoing
 Claude daily aggregate. The wider period summaries retain their existing
 combined provenance.
 
-Signed-release and installed-app evidence will be recorded after publication.
+The v0.0.51 signed app passed the real retained-data checks before and after
+publication. Its exact commit passed [CI run 35839312752](https://github.com/FabienGreard/TouchGrassBar/actions/runs/35839312752).
+[Release run 35840127941](https://github.com/FabienGreard/TouchGrassBar/actions/runs/35840127941)
+passed signing, notarization, Gatekeeper, updater signature checks, and all
+48 database fixtures. All seven public downloads match the verified signed
+draft bytes. The stable update feed names v0.0.51 and its signed archive.
+
+After restart, independent arithmetic still matched 5,111,802 Claude tokens
+and USD 2.7523827. The app, accepted upload, and public leaderboard agreed on
+250,216,305 combined tokens and the API-equivalent cost. The current Claude
+upload includes 2,752,383 cost micros with the exact daily pricing basis.
+There were zero pending uploads or older available Claude checkpoints.
+The production check recorded one successful synchronization, seven successful
+reads, and zero failed executions after publication. The signed app also read
+both quota windows from Claude Code 2.1.280.
+
+The verified v0.0.51 app is running from the downloaded release. The installed
+Applications copy is still v0.0.49. Computer cannot complete the replacement
+until a Finder window is open. Keep this entry until that last step and its
+installed-app checks pass; then record the result and remove it.
 The broader provider audit still identifies the unreviewed stable CLI channel
 and Codex changes; this release does not mark that full audit complete.
 
