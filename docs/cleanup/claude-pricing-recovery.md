@@ -2,7 +2,7 @@
 
 - **Status:** rehearsed
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
-- **Implementation:** Claude parser 15 and catalog `anthropic-standard-2026-09-23-v2` in this change. Add the merged commit or pull request link before merge.
+- **Implementation:** Claude parser 15 and catalog `anthropic-standard-2026-09-23-v2` in [commit 06a8ce25](https://github.com/FabienGreard/TouchGrassBar/commit/06a8ce2567884dae878b157e5c505748dd33f412).
 
 ## Scope
 
