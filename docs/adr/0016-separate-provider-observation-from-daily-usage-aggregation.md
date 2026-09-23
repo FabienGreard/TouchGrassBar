@@ -70,9 +70,16 @@ revision change retries files that an earlier version gate rejected.
 
 ## Claude record recovery
 
-Claude source versions affect the completeness claim, not whether validated
-outer token counters contribute. Unknown metadata and inconsistent repeated
-counters leave known usage partial and unpriced. The parser does not add
-repeated counters or guess unknown token categories. Invalid required fields,
-invalid counter types, and overflow still exclude a record. Parser revision 12
-replays older file checkpoints, including files with previously excluded usage.
+Claude source versions supply diagnostics only. A known counter structure can
+produce complete usage and priced detail regardless of the CLI version.
+Unknown metadata and inconsistent repeated counters leave known usage partial
+and unpriced. Invalid required fields, invalid counter types, and overflow
+still exclude a record. Missing cache duration affects price availability,
+not the validated outer token count.
+
+For one Claude response, a later record can replace an earlier record when
+input, cache counts, model, and pricing metadata agree, and output increases.
+The index orders copies by observation time and counts the selected record
+once. Conflicting copies retain the larger whole record as partial and
+unpriced; a later valid copy cannot erase that conflict. No counters are added
+across copies. Parser revision 15 replays older retained checkpoints.

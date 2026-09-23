@@ -4515,6 +4515,24 @@ mod tests {
     }
 
     #[test]
+    fn retained_claude_catalog_cost_reaches_usage_sync_after_a_catalog_update() {
+        let basis = "anthropic-standard-2026-09-23-v1";
+        let state = state_with_totals(
+            UsageTotal::Unavailable,
+            total(
+                UsageEvidenceBasis::LocallyDerived,
+                100,
+                NOW,
+                Some((2.75, basis, ApiEquivalentCostQuality::Modeled, Some(100.0))),
+            ),
+        );
+        let aggregates = current_utc_daily_aggregates(&state, now()).unwrap();
+        let cost = aggregates[0].api_equivalent_cost.as_ref().unwrap();
+        assert_eq!(cost.micros, 2_750_000);
+        assert_eq!(cost.pricing_basis, basis);
+    }
+
+    #[test]
     fn claude_today_cost_syncs_when_retained_days_use_an_older_catalog() {
         use crate::daily_usage_aggregate::{
             DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_usage_periods,

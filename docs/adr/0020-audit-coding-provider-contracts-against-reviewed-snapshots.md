@@ -40,25 +40,28 @@ not anything changed. Claude Code and Codex both ship faster than this project
 reviews them, so an identity check makes an ordinary provider release an
 outage.
 
-Identity therefore does not gate observation. The reviewed Claude Code version
-set decides whether a Ranking Day can claim complete coverage and a priced
-estimate. It does not decide whether that day's Observed Tokens exist. A record
-from an unreviewed version with a reviewed shape keeps its known counters and
-leaves the day partial. A reviewed-version record with an unreviewed shape also
-keeps the top-level counters whose meaning that version established, ignores
-the unknown fields, and leaves the day partial. The parser never adds an
-unknown field to Observed Tokens. Only a record whose version and shape are both
-unreviewed withholds its counters, because nothing has then checked what those
-counters mean. Reporting zero tokens for work that happened is a worse failure
-than reporting known counters as partial: an omitted bucket is not proof of
-zero usage.
+Identity does not gate observation, Usage Coverage, or API-Equivalent Cost.
+The reviewed Claude Code version set supplies diagnostic evidence only. A record
+from an unreviewed version with a known structure keeps its validated counters
+and can have complete coverage and a price. Unknown usage fields or inconsistent
+repeated counters keep the known outer counters partial and unpriced, for every
+source version. Invalid required fields, invalid counter types, and overflow
+still exclude a record. The parser never adds unknown counters to Observed
+Tokens.
+
+Token coverage and price availability are separate decisions. Missing cache
+write duration does not erase a valid outer cache-creation count. That record
+can have complete token coverage while its price is unavailable. The pricing
+module checks the model, dated rates, cache duration, paid tools, and modifiers.
+A missing speed uses the standard rate and marks the estimate as modeled when
+a fast rate also applies. An explicit unknown speed remains unpriced.
 
 The same rule limits `deny_unknown_fields`. Keep it where an unknown field can
 change the meaning of the counters the parser reads or where the parser cannot
 separate a total from a repeated subset. The Claude top-level usage object is
 an explicit exception: it reads only named reviewed counters, never adds an
 unknown field, records whether the shape is reviewed, and applies the
-version-and-shape rule above. Do not use `deny_unknown_fields` where an added
+structural rule above. Do not use `deny_unknown_fields` where an added
 sibling cannot change the meaning of the fields already read. This includes
 the Codex quota payloads: a Quota Lane reports a provider-defined percentage,
 and blanking it over an unrelated new field serves nobody. Those payloads
@@ -78,7 +81,7 @@ renamed marker falls back to shape. A window the parser cannot read leaves its
 own lane out instead of discarding the window it could read.
 
 This amendment does not relax review. It moves the consequence of an unreviewed
-provider release from an outage to a visible partial result, and leaves the
+provider release from an outage to diagnostic evidence, and leaves the
 audit as the mechanism that tells a maintainer to review.
 
 The report status is `pass`, `review-required`, or `unavailable`. A version, schema, token category, model, rate, date, or modifier change is `review-required`. A missing, timed-out, oversized, redirected, or malformed source is `unavailable`, not a pass. Each non-pass report includes an explicit bounded reason code. Unknown usage fields and unknown models remain visible as review items. An unknown price leaves the related Observed Tokens unpriced and cannot create an API-Equivalent Cost from another model or Coding Provider.

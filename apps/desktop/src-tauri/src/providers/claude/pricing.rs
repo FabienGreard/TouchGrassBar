@@ -15,7 +15,7 @@ const ANTHROPIC_STANDARD_PRICING_JSON: &str =
 const STANDARD_CACHE_READ_MULTIPLIER: f64 = 0.1;
 const DOCUMENTED_CACHE_READ_MULTIPLIERS: [f64; 3] = [STANDARD_CACHE_READ_MULTIPLIER, 0.025, 0.05];
 
-const PRICING_RULES_FINGERPRINT: &str = "service-tier-default-standard;priority-standard-rate;fast-batch-unavailable;missing-paid-metadata-unavailable;web-fetch-no-extra-charge;missing-code-execution-counter-zero;positive-code-execution-unavailable;unknown-paid-tool-unavailable";
+const PRICING_RULES_FINGERPRINT: &str = "service-tier-default-standard;priority-standard-rate;missing-speed-modeled-standard;fast-batch-unavailable;missing-paid-metadata-unavailable;web-fetch-no-extra-charge;missing-code-execution-counter-zero;positive-code-execution-unavailable;unknown-paid-tool-unavailable";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -192,7 +192,6 @@ impl PricingCatalog {
                     "unknown-inference-geo" => PricingReason::UnknownInferenceGeo,
                     "fast-batch-combination" => PricingReason::FastBatchCombination,
                     "missing-fast-price" => PricingReason::MissingFastPrice,
-                    "missing-speed" => PricingReason::MissingSpeed,
                     "unknown-speed" => PricingReason::UnknownSpeed,
                     _ => PricingReason::InvalidCost,
                 };
@@ -244,7 +243,7 @@ impl PricingCatalog {
         };
         // Claude Code subscription logs can omit the inference location. Use
         // the standard global rate, but retain that this rate was modeled.
-        let (geo_factor, modeled) = match (model.supports_us_inference, usage.inference_geo) {
+        let (geo_factor, geo_modeled) = match (model.supports_us_inference, usage.inference_geo) {
             (true, Some("global")) => (1.0, false),
             (true, Some("us")) => (self.us_inference_factor, false),
             (true, None | Some("not_available")) => (1.0, true),
@@ -256,6 +255,7 @@ impl PricingCatalog {
             .iter()
             .copied()
             .find(|entry| entry.applies_to(day));
+        let speed_modeled = usage.speed.is_none() && applicable_fast_entry.is_some();
         let entry = match usage.speed {
             Some("standard") => standard_entry,
             Some("fast") => {
@@ -264,10 +264,10 @@ impl PricingCatalog {
                 }
                 applicable_fast_entry.ok_or("missing-fast-price")?
             }
-            None if applicable_fast_entry.is_none() => standard_entry,
-            None => return Err("missing-speed"),
+            None => standard_entry,
             Some(_) => return Err("unknown-speed"),
         };
+        let modeled = geo_modeled || speed_modeled;
         let token_factor = tier_factor * geo_factor;
         let per_million = |tokens: u64, rate: f64| (tokens as f64 / 1_000_000.0) * rate;
         let token_cost = token_factor
@@ -288,9 +288,9 @@ impl PricingCatalog {
         let applicable_rate = |tokens: u64, rate: f64| {
             (tokens > 0).then(|| format!("{:016x}", (rate * token_factor).to_bits()))
         };
-        let rule_fingerprint = stable_fingerprint(&format!(
+        let mut rule = format!(
             "priced:geo={}:input={}:cache-write-5m={}:cache-write-1h={}:cache-read={}:output={}:web-search={}",
-            if modeled {
+            if geo_modeled {
                 "assumed-global"
             } else {
                 "reported"
@@ -313,7 +313,13 @@ impl PricingCatalog {
             } else {
                 "unused".to_owned()
             },
-        ));
+        );
+        // Keep existing explicit-speed fingerprints stable. Only a newly
+        // assumed standard speed changes this message's pricing evidence.
+        if speed_modeled {
+            rule.push_str(";speed=assumed-standard");
+        }
+        let rule_fingerprint = stable_fingerprint(&rule);
         let _ = usage.web_fetch_requests;
         Ok(PriceDecision {
             cost_usd: Some(cost_usd),
@@ -620,13 +626,13 @@ mod tests {
         let manifest = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON)
             .expect("valid bundled manifest");
         let changed_basis = parse_pricing_manifest(&ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "anthropic-standard-2026-09-23-v1",
             "anthropic-standard-2026-09-23-v2",
+            "anthropic-standard-2026-09-23-v3",
             1,
         ))
         .expect("valid changed basis");
 
-        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-23-v1");
+        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-23-v2");
         assert!(manifest.semantic_fingerprint().starts_with("fnv1a64:"));
         assert_ne!(
             manifest.semantic_fingerprint(),
@@ -955,6 +961,25 @@ mod tests {
                 .cost_usd,
             None
         );
+    }
+
+    #[test]
+    fn pricing_uses_a_modeled_standard_rate_when_speed_is_missing() {
+        let catalog = catalog().unwrap();
+        let day = date("2026-09-23");
+        let standard = catalog.price_message("claude-opus-5-5", day, usage());
+        let assumed = catalog.price_message(
+            "claude-opus-5-5",
+            day,
+            BillableUsage {
+                speed: None,
+                ..usage()
+            },
+        );
+        assert_cost(assumed.clone(), 24.0);
+        assert!(assumed.modeled);
+        assert_eq!(assumed.priced_tokens, 2_000_000);
+        assert_ne!(assumed.rule_fingerprint, standard.rule_fingerprint);
     }
 
     #[test]

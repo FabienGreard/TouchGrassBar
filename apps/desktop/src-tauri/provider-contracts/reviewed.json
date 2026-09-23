@@ -280,7 +280,7 @@
     ],
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/claude/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/anthropic-standard.json",
-    "pricingManifestSemanticSha256": "f142305bf4ad83c360d597f8cbf49b9ceacf3c0238a9d3a4b8efb4ae698e6529",
+    "pricingManifestSemanticSha256": "f998dbae9bf81e9e113d572937b8b423a557a521154b38609574aba58f86b5dc",
     "pricingRuleWindows": [
       {
         "id": "model-token-pricing",

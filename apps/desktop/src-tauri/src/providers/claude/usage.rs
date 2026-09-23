@@ -32,10 +32,8 @@ const RESUME_ANCHOR_BYTES: u64 = 64 * 1024;
 const TOKEN_HISTORY_RETENTION_DAYS: i64 = 60;
 const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 /// Claude Code versions whose transcript shape a maintainer checked against
-/// controlled fixtures. An unreviewed version does not make a record invalid.
-/// The structural checks below decide whether its counters can be counted; the
-/// reviewed set only decides whether the resulting day can claim complete
-/// coverage.
+/// controlled fixtures. Version review supplies diagnostics only. Structural
+/// checks determine token coverage; the price catalog checks billing metadata.
 const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 15] = [
     "2.1.223", "2.1.224", "2.1.236", "2.1.241", "2.1.258", "2.1.259", "2.1.260", "2.1.261",
     "2.1.263", "2.1.272", "2.1.273", "2.1.274", "2.1.276", "2.1.278", "2.1.280",
@@ -45,7 +43,7 @@ const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 14;
+const TRANSCRIPT_PARSER_VERSION: i64 = 15;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -187,9 +185,7 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
         parser_failure(ParserReason::InvalidUsageShape);
         return TranscriptLineOutcome::Invalid;
     };
-    // An unreviewed Claude Code version is not proof that a record is invalid.
-    // Discarding it would report zero tokens for work that happened, so the
-    // reviewed set only withholds `complete` below.
+    // A CLI update does not invalidate counters with a known structure.
     let reviewed_version = reviewed_claude_code_version(&envelope.version);
     failure_capture::source_version(&envelope.version, reviewed_version);
     if envelope.record_type != "assistant"
@@ -349,9 +345,10 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
     let complete = cache_creation_known
         && cache_read_known
         && usage_schema_known
-        && reviewed_version
         && !line.aborted
-        && (usage.cache_creation_input == 0 || cache_breakdown_matches);
+        // Cache duration affects price, not the outer token count. A supplied
+        // contradictory split still makes the evidence partial.
+        && (cache_breakdown.is_none() || cache_breakdown_matches);
     let pricing = ClaudePricingMetadata {
         service_tier: normalized_modifier(line.message.usage.service_tier),
         inference_geo: normalized_inference_geo(line.message.usage.inference_geo),
@@ -1715,6 +1712,9 @@ struct StoredMessage {
     observed_tokens: u64,
     details_retained: bool,
     complete: bool,
+    // Rebuilt from retained copies on each read. A later valid stream update
+    // cannot erase a conflict between other copies of this response.
+    conflicting_copies: bool,
 }
 
 fn store_frame(transaction: &rusqlite::Transaction<'_>, frame: &NormalizedFrame) -> Result<(), ()> {
@@ -2052,7 +2052,23 @@ struct DailyAccumulator {
     pricing_rule_fingerprints: BTreeSet<String>,
 }
 
-fn merge_provider_message(mut current: StoredMessage, candidate: StoredMessage) -> StoredMessage {
+fn is_earlier_output_snapshot(earlier: &StoredMessage, later: &StoredMessage) -> bool {
+    earlier.details_retained
+        && later.details_retained
+        && earlier.day == later.day
+        && earlier.observed_at <= later.observed_at
+        && earlier.model == later.model
+        && earlier.pricing == later.pricing
+        && earlier.usage.input == later.usage.input
+        && earlier.usage.cache_creation_input == later.usage.cache_creation_input
+        && earlier.usage.cache_read_input == later.usage.cache_read_input
+        && earlier.usage.cache_creation_5m_input == later.usage.cache_creation_5m_input
+        && earlier.usage.cache_creation_1h_input == later.usage.cache_creation_1h_input
+        && earlier.usage.output < later.usage.output
+}
+
+fn merge_provider_message(current: StoredMessage, candidate: StoredMessage) -> StoredMessage {
+    let conflicting_copies = current.conflicting_copies || candidate.conflicting_copies;
     if current.day == candidate.day && current.observed_tokens == candidate.observed_tokens {
         let details_match = current.model == candidate.model
             && current.usage == candidate.usage
@@ -2065,21 +2081,22 @@ fn merge_provider_message(mut current: StoredMessage, candidate: StoredMessage) 
             } else {
                 current
             };
-            selected.complete = complete;
+            selected.conflicting_copies = conflicting_copies;
+            selected.complete = complete && !conflicting_copies;
             selected.observed_at = observed_at;
             return selected;
         }
     }
-    match candidate.observed_tokens > current.observed_tokens {
-        true => StoredMessage {
-            complete: false,
-            ..candidate
-        },
-        false => {
-            current.complete = false;
-            current
-        }
-    }
+    let candidate_follows = is_earlier_output_snapshot(&current, &candidate);
+    let current_follows = is_earlier_output_snapshot(&candidate, &current);
+    let mut selected = if candidate.observed_tokens > current.observed_tokens {
+        candidate
+    } else {
+        current
+    };
+    selected.conflicting_copies = conflicting_copies || !(candidate_follows || current_follows);
+    selected.complete &= !selected.conflicting_copies;
+    selected
 }
 
 fn load_active_provider_messages(
@@ -2166,12 +2183,13 @@ fn load_active_provider_messages(
                             .map_err(|_| rusqlite::Error::InvalidQuery)?,
                         details_retained: !row.get::<_, String>(3)?.is_empty(),
                         complete: row.get(18)?,
+                        conflicting_copies: false,
                     },
                 ))
             },
         )
         .map_err(|_| ())?;
-    let mut provider_messages = BTreeMap::<String, StoredMessage>::new();
+    let mut provider_messages = BTreeMap::<String, Vec<StoredMessage>>::new();
     for message in messages {
         let (message_key, candidate) = message.map_err(|_| ())?;
         if candidate.details_retained
@@ -2179,17 +2197,20 @@ fn load_active_provider_messages(
         {
             return Err(());
         }
-        match provider_messages.entry(message_key) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(candidate);
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                let current = entry.get().clone();
-                entry.insert(merge_provider_message(current, candidate));
-            }
-        }
+        provider_messages
+            .entry(message_key)
+            .or_default()
+            .push(candidate);
     }
-    Ok(provider_messages.into_values().collect())
+    Ok(provider_messages
+        .into_values()
+        .filter_map(|mut copies| {
+            // Source paths and salted frame keys do not define stream order.
+            // Parse timestamps before sorting so different UTC offsets agree.
+            copies.sort_by_key(|copy| copy.observed_at);
+            copies.into_iter().reduce(merge_provider_message)
+        })
+        .collect())
 }
 
 fn price_stored_message(
@@ -4578,7 +4599,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_counts_unreviewed_versions_partially_and_marks_nullable_cache_counters_partial() {
+    fn parser_accepts_unreviewed_versions_and_marks_nullable_cache_counters_partial() {
         // A later Claude Code release that keeps the reviewed usage shape must
         // keep contributing its tokens. Withholding them would report zero for
         // work that happened.
@@ -4606,7 +4627,7 @@ mod tests {
             panic!("an unreviewed version with a reviewed shape must keep its tokens");
         };
         assert_eq!(message.usage.observed_tokens(), Some(50));
-        assert!(!message.complete);
+        assert!(message.complete);
 
         let nullable = br#"{
           "type":"assistant",
@@ -4753,6 +4774,7 @@ mod tests {
             observed_tokens: 40,
             details_retained: true,
             complete: true,
+            conflicting_copies: false,
         };
         let larger = StoredMessage {
             day: now().date(),
@@ -4763,6 +4785,7 @@ mod tests {
             observed_tokens: 100,
             details_retained: true,
             complete: true,
+            conflicting_copies: false,
         };
 
         let merged = merge_provider_message(smaller, larger);
@@ -5585,7 +5608,7 @@ mod tests {
     fn scan_counts_an_unreviewed_release_that_keeps_the_reviewed_usage_shape() {
         // Claude Code ships faster than this parser is reviewed. A release that
         // keeps the reviewed usage shape must keep contributing Observed
-        // Tokens, marked partial, instead of reporting zero for the day.
+        // Tokens and API-Equivalent Cost. Version review is diagnostic only.
         let unreviewed = claude_code_2_1_258_transcript_line().replacen(
             r#""version":"2.1.258""#,
             r#""version":"2.1.262""#,
@@ -5611,8 +5634,8 @@ mod tests {
 
         assert_eq!(local.scan_status, UsageScanStatus::Complete);
         assert_eq!(observed_tokens, 100);
-        assert_eq!(coverage, UsageCoverage::Partial);
-        assert!(!local.daily_cost.contains_key(&now().date()));
+        assert_eq!(coverage, UsageCoverage::Complete);
+        assert_eq!(local.daily_cost[&now().date()].priced_tokens, 100);
     }
 
     #[test]
@@ -5663,10 +5686,6 @@ mod tests {
                     r#""future_tokens":1,"thinking_tokens":15"#,
                     1,
                 ),
-            ),
-            (
-                "unreviewed Claude Code version",
-                reviewed.replacen(r#""version":"2.1.241""#, r#""version":"2.1.262""#, 1),
             ),
         ] {
             let TranscriptLineOutcome::Usage(parsed) =
@@ -6164,6 +6183,217 @@ mod tests {
             )
             .is_none(),
             "the larger partial total must not refresh again without a change"
+        );
+    }
+
+    #[test]
+    fn pricing_survives_an_unreviewed_cli_version() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let record = claude_code_2_1_258_transcript_line().replace("2.1.258", "2.1.999");
+        write_transcript(&config.join("projects/project/session.jsonl"), &[record]);
+        let local =
+            scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(local.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(
+            local.daily_usage[&now().date()].coverage,
+            UsageCoverage::Complete
+        );
+        let cost = &local.daily_cost[&now().date()];
+        assert_eq!(cost.priced_tokens, 100);
+        assert!((cost.api_equivalent_cost_usd.unwrap() - 0.000_714).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pricing_recovers_when_a_final_stream_record_is_appended() {
+        for layout in ["append", "copies", "reverse-copies", "same-time"] {
+            let fixture = FixtureRoot::new();
+            let config = fixture.config();
+            let first_path = config.join(if layout == "reverse-copies" {
+                "projects/z/subagents/early.jsonl"
+            } else {
+                "projects/a/early.jsonl"
+            });
+            let final_path = if layout == "append" {
+                first_path.clone()
+            } else {
+                config.join(if layout == "reverse-copies" {
+                    "projects/a/final.jsonl"
+                } else {
+                    "projects/z/subagents/final.jsonl"
+                })
+            };
+            let mut early: serde_json::Value =
+                serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
+            early["uuid"] = serde_json::json!("stream-early-frame");
+            early["message"]["usage"]["output_tokens"] = serde_json::json!(1);
+            early["message"]["usage"]["iterations"] = serde_json::json!([]);
+            early["message"]["usage"]["output_tokens_details"] =
+                serde_json::json!({"thinking_tokens": 0});
+            write_transcript(&first_path, &[early.to_string()]);
+            let first =
+                scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+            assert_eq!(first.daily_usage[&now().date()].observed_tokens, 61);
+
+            let mut final_record: serde_json::Value =
+                serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
+            let final_time = now() - Duration::minutes(if layout == "same-time" { 5 } else { 1 });
+            final_record["timestamp"] = serde_json::json!(final_time.format(&Rfc3339).unwrap());
+            if layout == "append" {
+                write_transcript(&final_path, &[early.to_string(), final_record.to_string()]);
+            } else {
+                write_transcript(&final_path, &[final_record.to_string()]);
+            }
+            let final_usage =
+                scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+            assert_eq!(final_usage.daily_usage[&now().date()].observed_tokens, 100);
+            assert_eq!(
+                final_usage.daily_usage[&now().date()].coverage,
+                UsageCoverage::Complete
+            );
+            assert_eq!(final_usage.daily_cost[&now().date()].priced_tokens, 100);
+            assert!(
+                (final_usage.daily_cost[&now().date()]
+                    .api_equivalent_cost_usd
+                    .unwrap()
+                    - 0.000_714)
+                    .abs()
+                    < 1e-12
+            );
+            let revision = stored_daily_revision(&fixture.database(), now().date());
+            let repeated =
+                scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+            assert_eq!(repeated.daily_cost, final_usage.daily_cost);
+            assert_eq!(
+                stored_daily_revision(&fixture.database(), now().date()),
+                revision
+            );
+            let connection = Connection::open(fixture.database()).unwrap();
+            let history = load_usage_history_detail(&connection, now().date()).unwrap();
+            assert_eq!(
+                history.hours.iter().map(|part| part.tokens).sum::<u64>(),
+                100
+            );
+            assert!(
+                (history
+                    .hours
+                    .iter()
+                    .filter_map(|part| part.cost)
+                    .sum::<f64>()
+                    - 0.000_714)
+                    .abs()
+                    < 1e-12
+            );
+        }
+    }
+
+    #[test]
+    fn pricing_keeps_conflicting_stream_copies_unpriced_in_every_order() {
+        let base = StoredMessage {
+            day: now().date(),
+            observed_at: now() - Duration::minutes(3),
+            model: "claude-sonnet-4-5-20250929".to_owned(),
+            usage: usage(10, 20, 30, 1),
+            pricing: ClaudePricingMetadata::default(),
+            observed_tokens: 61,
+            details_retained: true,
+            complete: true,
+            conflicting_copies: false,
+        };
+        for conflict_kind in ["input", "model", "speed"] {
+            let mut conflict = base.clone();
+            conflict.observed_at += Duration::minutes(1);
+            match conflict_kind {
+                "input" => conflict.usage.input = 11,
+                "model" => conflict.model = "claude-opus-5".to_owned(),
+                "speed" => conflict.pricing.speed = Some("fast".to_owned()),
+                _ => unreachable!(),
+            }
+            conflict.observed_tokens = conflict.usage.observed_tokens().unwrap();
+            let final_record = StoredMessage {
+                observed_at: now() - Duration::minutes(1),
+                usage: usage(10, 20, 30, 40),
+                observed_tokens: 100,
+                ..base.clone()
+            };
+            for [a, b, c] in [
+                [0, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ] {
+                let records = [base.clone(), conflict.clone(), final_record.clone()];
+                let merged = merge_provider_message(
+                    merge_provider_message(records[a].clone(), records[b].clone()),
+                    records[c].clone(),
+                );
+                assert_eq!(merged.observed_tokens, 100);
+                assert!(!merged.complete, "{conflict_kind}, {a}/{b}/{c}");
+            }
+            let pair = merge_provider_message(base.clone(), conflict);
+            assert!(!pair.complete, "{conflict_kind}");
+        }
+    }
+
+    #[test]
+    fn pricing_does_not_control_token_coverage_when_cache_duration_is_missing() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let record = transcript_line(
+            "missing-ttl",
+            now(),
+            "claude-sonnet-4-5-20250929",
+            ClaudeTokenUsage {
+                cache_creation_5m_input: None,
+                cache_creation_1h_input: None,
+                ..usage(10, 20, 30, 40)
+            },
+        );
+        write_transcript(&config.join("projects/project/session.jsonl"), &[record]);
+        let local =
+            scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(local.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(
+            local.daily_usage[&now().date()].coverage,
+            UsageCoverage::Complete
+        );
+        assert!(!local.daily_cost.contains_key(&now().date()));
+    }
+
+    #[test]
+    fn pricing_replays_parser_14_unpriced_records_once() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let record = claude_code_2_1_258_transcript_line().replace("2.1.258", "2.1.999");
+        write_transcript(&config.join("projects/project/session.jsonl"), &[record]);
+        scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection.execute_batch(
+            "UPDATE claude_usage_files SET parser_version = 14;
+             UPDATE claude_usage_frames SET parser_version = 14;
+             UPDATE claude_usage_messages SET parser_version = 14, complete = 0;
+             UPDATE claude_usage_daily SET coverage = 'partial', priced_tokens = 0,
+               cost_usd = NULL, cost_modeled = 0, pricing_basis = NULL, pricing_fingerprint = NULL;
+             UPDATE claude_usage_index_meta SET value = '14' WHERE key = 'usage_aggregate_parser_version';"
+        ).unwrap();
+        drop(connection);
+        let before = stored_daily_revision(&fixture.database(), now().date());
+        let recovered =
+            scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(recovered.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(recovered.daily_cost[&now().date()].priced_tokens, 100);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            before + 1
+        );
+        let repeated =
+            scan_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(repeated.daily_cost, recovered.daily_cost);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            before + 1
         );
     }
 
@@ -7273,7 +7503,7 @@ mod tests {
         assert_eq!(detail.api_equivalent_cost_usd, Some(18.0));
         assert_eq!(
             local.pricing_basis.as_deref(),
-            Some("anthropic-standard-2026-09-23-v1")
+            Some("anthropic-standard-2026-09-23-v2")
         );
 
         let UsageTotal::Current {
@@ -7545,7 +7775,7 @@ mod tests {
 
     #[test]
     fn mixed_retained_price_books_keep_bounded_provenance_during_incomplete_scan() {
-        const NEW_BASIS: &str = "anthropic-standard-2026-09-23-v2";
+        const NEW_BASIS: &str = "anthropic-standard-2026-09-23-v3";
 
         let fixture = FixtureRoot::new();
         let config = fixture.config();

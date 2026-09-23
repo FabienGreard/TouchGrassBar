@@ -155,6 +155,20 @@ match the multiplier the period declares. The audit compares the declared set
 against the models the pricing page names in that exception. Do not add a third
 multiplier without an official Anthropic source.
 
+The `2026-09-23-v2` catalog keeps all published rates and effective dates.
+It changes one estimate rule: missing `speed` uses the standard rate, marked
+as modeled when the model also has a fast rate on that day. Explicit fast
+usage still uses the fast rate. An unknown speed remains unpriced. The
+per-message fingerprint records the standard-speed assumption; explicit-speed
+records keep their existing fingerprint and daily pricing basis.
+
+Claude parser 15 also removes the CLI version gate from validated usage and
+pricing. It replaces an earlier response snapshot only when the later output
+count grows and the input, cache, model, and pricing fields agree. It keeps
+incompatible copies partial and unpriced. Missing cache-write duration leaves
+its known tokens complete but unpriced. Retained older checkpoints are replayed
+through the normal bounded scan. This changes no SQLite schema.
+
 The pricing code applies these supported modifiers:
 
 - Batch uses 0.5 times the token rates.
@@ -168,8 +182,8 @@ The reviewed usage schema does not include a code-execution counter. The
 scanner detects a code-execution server-tool block from its bounded type and
 name metadata. The pricing code omits cost for that block or for a future
 nonzero code-execution count because neither contains the time-based charge.
-The absence of both does not block token pricing. Missing or unknown paid
-metadata also omits cost.
+The absence of both does not block token pricing. Missing required paid-tool or cache-duration metadata also omits cost.
+Unknown price modifiers remain unpriced.
 
 Do not add a model, alias, price, modifier, or effective date without an
 official Anthropic source. Do not apply this manifest to Amazon Bedrock or
@@ -290,12 +304,11 @@ unchanged. The review refreshes that section and window evidence.
 The full public-source audit checks both providers' parser and pricing areas
 and passes with 15 sources, so `reviewedAt` advances to 2026-09-05.
 
-The reviewed set does not gate parsing. A version outside it is read with the
-same structural checks, contributes its Observed Tokens, and leaves its Ranking
-Day partial and unpriced until a fixture proves the shape. Claude Code ships
-faster than this parser is reviewed, so a version gate would report zero tokens
-for work that happened. Only an unreviewed version that also carries an
-unreviewed usage shape withholds its counters.
+The reviewed set supplies diagnostics only. A version outside it uses the
+same structural checks and can produce complete Observed Usage and priced
+detail. Unknown usage fields leave known counters partial and unpriced for
+all versions. Invalid required fields, invalid counter types, and overflow
+exclude a record.
 
 The public package review on 2026-08-26 resolved each moving channel to an
 exact package record and checked its npm `dist.integrity` value:
@@ -329,10 +342,9 @@ reviewed shape exactly. This check
 includes the wrapper, message, content, zero-token counters, zero paid-tool
 counters, and null extended usage fields. The later reviewed shape also requires
 an HTTP error status, non-empty error details, and a non-empty request
-identifier. A different API-error shape fails closed. Transcript identity does
-not gate known top-level counters: an unreviewed version with a reviewed usage
-shape stays partial, while a record with both an unreviewed version and an
-unreviewed usage shape withholds its counters.
+identifier. A different API-error shape fails closed. The CLI version does not gate
+validated top-level counters. Unknown usage fields keep those counters
+partial and unpriced.
 
 The `2026-09-23-v1` review adds Claude Opus 5.5 (`claude-opus-5-5`).
 Anthropic
@@ -525,8 +537,9 @@ Use this process when the audit reports a new Claude Code or Agent SDK version:
    ```
 
 8. Add the exact Claude Code version to the reviewed set only after every
-   fixture passes. Adding it is what lets that version's days claim complete
-   coverage and a priced estimate; its tokens already count without it. Update the reviewed package versions, signatures, semantic markers,
+   fixture passes. The set is diagnostic evidence; counter structure and price
+   metadata determine coverage and cost. Update the reviewed package versions,
+   signatures, semantic markers,
    and full-review date as applicable. Delete the temporary config and raw
    JSONL. Never commit or attach them.
 
