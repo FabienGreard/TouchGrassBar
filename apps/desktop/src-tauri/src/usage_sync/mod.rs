@@ -4515,6 +4515,56 @@ mod tests {
     }
 
     #[test]
+    fn claude_today_cost_syncs_when_retained_days_use_an_older_catalog() {
+        use crate::daily_usage_aggregate::{
+            DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_usage_periods,
+        };
+
+        let basis = crate::providers::current_pricing_basis(CodingProvider::Claude).unwrap();
+        let today = now().date();
+        let evidence = ProviderUsageEvidence {
+            provider_reported_tokens: None,
+            provider_observed_at: None,
+            provider_observed_at_by_day: BTreeMap::new(),
+            local_usage_evidence: BTreeMap::from([(
+                today,
+                DailyUsageEvidence {
+                    observed_tokens: 100,
+                    coverage: UsageCoverage::Complete,
+                    observed_through: Some(now()),
+                },
+            )]),
+            local_cost_evidence: BTreeMap::from([(
+                today,
+                DailyCostEvidence {
+                    observed_tokens: 100,
+                    priced_tokens: 100,
+                    api_equivalent_cost_usd: Some(2.75),
+                    pricing_basis: Some(basis.to_owned()),
+                    ..DailyCostEvidence::default()
+                },
+            )]),
+            local_evidence_available: true,
+            local_observed_at: Some(now()),
+            pricing_basis: Some(format!("anthropic-standard-2026-09-02-v1 + {basis}")),
+            scan_status: UsageScanStatus::Complete,
+            today_scan_status: UsageScanStatus::Complete,
+            seven_day_scan_status: UsageScanStatus::Complete,
+            thirty_day_scan_status: UsageScanStatus::Complete,
+        };
+        let today = calculate_usage_periods(&evidence, now()).today;
+        let state = state_with_totals(UsageTotal::Unavailable, today);
+
+        let aggregates = current_utc_daily_aggregates(&state, now()).unwrap();
+
+        assert_eq!(aggregates.len(), 1);
+        assert_eq!(aggregates[0].observed_tokens, 100);
+        let cost = aggregates[0].api_equivalent_cost.as_ref().unwrap();
+        assert_eq!(cost.micros, 2_750_000);
+        assert_eq!(cost.pricing_basis, basis);
+    }
+
+    #[test]
     fn bundled_current_pricing_basis_queues_a_today_snapshot() {
         let codex_basis = crate::providers::current_pricing_basis(CodingProvider::Codex)
             .expect("bundled Codex pricing basis");

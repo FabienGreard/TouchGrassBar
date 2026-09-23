@@ -7636,6 +7636,16 @@ mod tests {
             api_equivalent_cost_usd,
             api_equivalent_cost_basis,
             ..
+        } = project_usage_periods(Some(&local), now()).today
+        else {
+            panic!("today must retain its own price book");
+        };
+        assert_eq!(api_equivalent_cost_usd, Some(18.0));
+        assert_eq!(api_equivalent_cost_basis.as_deref(), Some(NEW_BASIS));
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            ..
         } = project_usage_periods(Some(&local), now()).seven_days
         else {
             panic!("mixed retained price books must keep seven-day cost");

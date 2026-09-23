@@ -2,7 +2,7 @@
 
 - **Status:** rehearsed
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
-- **Implementation:** patch candidate v0.0.50
+- **Implementation:** patch candidate v0.0.51
 
 ## Scope
 
@@ -41,8 +41,21 @@ and USD 2.5278392 API equivalent. Four earlier Opus 5 messages added 175,883
 tokens and USD 0.2245435. The current-day total was 5,111,802 tokens and
 USD 2.7523827, with complete coverage. No source usage copies conflicted.
 The direct Claude Code 2.1.280 quota probe returned both quota windows.
-Validation passed 755 native tests, 523 JavaScript tests, 48 database fixtures,
+Validation passed 756 native tests, 523 JavaScript tests, 48 database fixtures,
 Clippy, formatting, contract checks, repository quality, and production builds.
+
+The signed v0.0.50 draft passed token-count checks, but live verification found
+that Today inherited a combined catalog label from older retained days. The
+sync validator correctly rejected that label and omitted the Claude cost.
+The draft remains unpublished and its immutable tag stays unchanged. Its
+synthetic candidate fixture was replaced explicitly by the v0.0.51 candidate;
+no official fixture was changed.
+
+The correction gives Today the exact pricing basis stored for its UTC day.
+Missing daily pricing metadata leaves the cost unavailable. Regression checks
+cover retained old/new catalogs, missing daily metadata, and the outgoing
+Claude daily aggregate. The wider period summaries retain their existing
+combined provenance.
 
 Signed-release and installed-app evidence will be recorded after publication.
 The broader provider audit still identifies the unreviewed stable CLI channel

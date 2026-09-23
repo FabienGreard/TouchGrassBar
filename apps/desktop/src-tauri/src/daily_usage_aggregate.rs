@@ -494,7 +494,17 @@ fn project_period(
     let Some(selected) = select_usage_period(evidence, period_days(today, length, 0), now) else {
         return UsageTotal::Unavailable;
     };
-    let cost = selected_period_cost(evidence, &selected);
+    // Today is also the source of the outgoing UTC-day aggregate. Historical
+    // catalog labels must not change or invalidate that day's stored price.
+    let pricing_basis = if length == 1 {
+        evidence
+            .local_cost_evidence
+            .get(&today)
+            .and_then(|detail| detail.pricing_basis.clone())
+    } else {
+        evidence.pricing_basis.clone()
+    };
+    let cost = selected_period_cost(evidence, &selected).filter(|_| pricing_basis.is_some());
     let trend_previous_tokens =
         select_usage_period(evidence, period_days(today, length, length), now)
             .map(|previous| previous.observed_tokens);
@@ -512,7 +522,7 @@ fn project_period(
         api_equivalent_cost_usd: cost.map(|cost| cost.usd),
         trend_percent: trend,
         trend_previous_tokens,
-        api_equivalent_cost_basis: cost.and_then(|_| evidence.pricing_basis.clone()),
+        api_equivalent_cost_basis: cost.and(pricing_basis),
         api_equivalent_cost_quality: cost.map(|cost| cost.quality),
         api_equivalent_cost_coverage_percent: cost.and_then(|cost| cost.coverage_percent),
     }
@@ -1203,6 +1213,18 @@ mod tests {
             seven_day_scan_status: UsageScanStatus::Complete,
             thirty_day_scan_status: UsageScanStatus::Complete,
         };
+
+        let periods = calculate_usage_periods(&evidence, now);
+        let UsageTotal::Current {
+            api_equivalent_cost_usd,
+            api_equivalent_cost_basis,
+            ..
+        } = periods.today
+        else {
+            panic!("today's usage must remain available");
+        };
+        assert_eq!(api_equivalent_cost_usd, None);
+        assert_eq!(api_equivalent_cost_basis, None);
 
         let daily = calculate_daily_usage_aggregates(&evidence, now, today, 1);
         let UsageTotal::Current {
