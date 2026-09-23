@@ -216,10 +216,10 @@
   },
   "claude": {
     "reviewedStableVersion": "2.1.236",
-    "reviewedLatestVersion": "2.1.276",
+    "reviewedLatestVersion": "2.1.280",
     "stablePackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/stable",
     "latestPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-code/latest",
-    "reviewedAgentSdkVersion": "0.3.263",
+    "reviewedAgentSdkVersion": "0.3.280",
     "agentSdkPackageUrl": "https://registry.npmjs.org/@anthropic-ai%2fclaude-agent-sdk/latest",
     "usageTypesSourceUrl": "https://raw.githubusercontent.com/anthropics/anthropic-sdk-typescript/main/src/resources/beta/messages/messages.ts",
     "usageInterfaces": {
@@ -246,7 +246,7 @@
         "cache_creation_input_tokens": "required:number",
         "cache_read_input_tokens": "required:number",
         "input_tokens": "required:number",
-        "model": "required:MessagesAPI.Model",
+        "model": "required:MessagesAPI.Model | null",
         "output_tokens": "required:number",
         "type": "required:'message'"
       },
@@ -280,19 +280,19 @@
     ],
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/claude/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/anthropic-standard.json",
-    "pricingManifestSemanticSha256": "582c77db51a2c5aeadb14b83f899282a8f806fbfc4189e9d9ec44352485bdbeb",
+    "pricingManifestSemanticSha256": "f142305bf4ad83c360d597f8cbf49b9ceacf3c0238a9d3a4b8efb4ae698e6529",
     "pricingRuleWindows": [
       {
         "id": "model-token-pricing",
         "startHeading": "## Model pricing",
         "endHeading": "## Cloud platform pricing",
-        "semanticSha256": "3f937db56d6b09238ea547eb216c79d86959f707d35484268ba503f6610673c5"
+        "semanticSha256": "5e81ee72c2cdf06feeaa1fc64c325df9f8f3eb6ed246dfa1e9aaa07c4bd27a5f"
       },
       {
         "id": "feature-pricing-rules",
         "startHeading": "## Feature-specific pricing",
         "endHeading": "## Claude Managed Agents pricing",
-        "semanticSha256": "85292a5e99f9ff07bf91ffb04dda7e1decda4043dd31ee2919ab57ed92c94c34"
+        "semanticSha256": "7b5d5d10bd21f3db76a38614e8b2a117d735ceda32df8b5acdc3e78e22feddc8"
       }
     ],
     "pricingEvidence": {
@@ -309,8 +309,27 @@
         {
           "id": "release-notes",
           "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
-          "windowSemanticSha256": "048c3d25362eecb45e38dad5274e4713054ec1c69e1d98c971a50f0c52579616",
+          "windowSemanticSha256": "cbb180b2e688bf492b5726dbd54d74dbedc82a3ce6bbd9c7e5d0b642de44a5a2",
           "sections": [
+            {
+              "id": "opus-5-5-launch",
+              "heading": "### September 22, 2026",
+              "selector": "We've launched **Claude Opus 5.5**",
+              "date": "2026-09-22",
+              "semanticSha256": "29c3fe493fba0dc81dcb513c831d910dd06c42ea55bcb4c7967bab5e4174f6ff",
+              "checkpoints": [
+                {
+                  "model": "claude-opus-5-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-opus-5-5",
+                  "periodKind": "fast",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "fable-mythos-5-1-launch",
               "heading": "### September 1, 2026",

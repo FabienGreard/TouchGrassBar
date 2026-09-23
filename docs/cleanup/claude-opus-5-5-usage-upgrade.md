@@ -1,0 +1,68 @@
+# Claude Opus 5.5 usage upgrade
+
+- **Status:** rehearsed
+- **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
+- **Implementation:** patch candidate v0.0.50
+
+## Scope
+
+Claude parser 14 reviews Claude Code 2.1.278, 2.1.280, and the nullable iteration model
+field. The bundled price catalog adds Opus 5.5 Standard and Fast rates from
+its September 22 launch. Normal bounded indexing replays older local
+checkpoints and prices retained usage. There is no SQLite or cloud schema
+change, temporary compatibility path, or cloud backfill.
+
+## Execution plan
+
+1. Verify synthetic current-CLI usage, duplicate records, pricing modifiers,
+   optional iteration model metadata, parser-13 replay, and repeated scans.
+2. Replay a private copy of the installed database with the candidate.
+3. Compare Opus 5.5 token totals and cost with independent source arithmetic.
+4. Verify all released database fixtures and run the required quality checks.
+5. Publish and install the signed patch. Check the retained Claude index,
+   current usage and cost, production synchronization, and public update feed.
+6. Record aggregate evidence and remove this entry when its exit condition holds.
+
+## Verification
+
+The new regressions failed before the CLI review and parser revision update:
+Opus 5.5 records stayed partial and unpriced. The synthetic pricing fixture
+counts each outer counter once, including output that already contains thinking.
+The parser-13 fixture must gain a priced estimate without changing its tokens,
+and the second pass must not change the daily revision again.
+
+The final candidate replayed a fresh installed-database copy. All 22 available
+Claude files completed on parser 14, with zero pending or error files. Two
+older checkpoints refer to missing source files and remain marked missing.
+Repeated passes read zero additional bytes and kept the same daily values.
+
+Independent arithmetic matched 39 unique Opus 5.5 messages: 4,935,919 tokens
+and USD 2.5278392 API equivalent. Four earlier Opus 5 messages added 175,883
+tokens and USD 0.2245435. The current-day total was 5,111,802 tokens and
+USD 2.7523827, with complete coverage. No source usage copies conflicted.
+The direct Claude Code 2.1.280 quota probe returned both quota windows.
+Validation passed 755 native tests, 523 JavaScript tests, 48 database fixtures,
+Clippy, formatting, contract checks, repository quality, and production builds.
+
+Signed-release and installed-app evidence will be recorded after publication.
+The broader provider audit still identifies the unreviewed stable CLI channel
+and Codex changes; this release does not mark that full audit complete.
+
+## Recovery
+
+The replay uses the existing transactional, bounded scanner. A restart resumes
+its work. Preserve the source transcripts. Do not change the installed database
+by hand or change version markers to force old code to open it.
+
+## Cleanup targets
+
+Remove only this execution record after verification. Keep the parser review,
+price catalog, regression fixtures, and nullable-model validation permanently.
+The broader provider audit issue remains open for its other review items.
+
+## Exit condition
+
+The signed patch is public and installed. No retained Claude checkpoint waits
+on an older parser. Opus 5.5 local tokens and cost match independent evidence,
+the selected daily aggregates synchronize, and the stable feed names the patch.
+Existing invalid historical records remain explicitly partial.

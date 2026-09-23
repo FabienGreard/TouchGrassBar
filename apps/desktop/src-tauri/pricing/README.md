@@ -334,6 +334,44 @@ not gate known top-level counters: an unreviewed version with a reviewed usage
 shape stays partial, while a record with both an unreviewed version and an
 unreviewed usage shape withholds its counters.
 
+The `2026-09-23-v1` review adds Claude Opus 5.5 (`claude-opus-5-5`).
+Anthropic
+[launched it on 2026-09-22](https://platform.claude.com/docs/en/release-notes/overview).
+That release note supplies the inclusive start date for the Standard and Fast
+periods. The periods stay open. The
+[pricing page](https://platform.claude.com/docs/en/about-claude/pricing)
+prices a cache read on this model at 0.05 times the base input price. This is a
+second documented exception to the 0.1 times rule. The manifest validator
+accepts only documented multiplier values. The audit checks each exception
+against the models that the page names. Caching multipliers apply on top of Fast prices, so the Fast cache
+read is also 0.05 times the Fast input price. The model supports
+`inference_geo`, so the 1.1 times US inference modifier applies. These rates
+apply to one million tokens:
+
+| Usage                | Standard USD | Fast USD |
+| -------------------- | -----------: | -------: |
+| Input                |         4.00 |     8.00 |
+| 5-minute cache write |         5.00 |    10.00 |
+| 1-hour cache write   |         8.00 |    16.00 |
+| Cache read           |         0.20 |     0.40 |
+| Output               |        20.00 |    40.00 |
+
+A local Claude Code `2.1.280` transcript with Opus 5.5 records supplied the
+reviewed usage shape. Retained `2.1.278` records also match the preceding
+reviewed shape and are included, so usage before the CLI update stays priced.
+Controlled synthetic fixtures verify Standard and Fast
+cost, both cache-write durations, cache reads, inclusive output and thinking,
+iteration totals, duplicate records, and repeated scans. Parser 14 reparses
+retained older checkpoints so previously unpriced Opus 5.5 usage gains the
+reviewed estimate without changing its token count.
+
+The public Claude Agent SDK `0.3.280` still emits a `BetaMessage` in assistant
+messages. Its thinking counter is part of output. The API iteration model
+field now permits null. The parser accepts null or absent model metadata and
+requires a supplied model to match the outer message before it prices usage.
+This review covers the latest CLI and Claude pricing.
+The stable CLI checkpoint and full `reviewedAt` date stay unchanged.
+
 The `2026-09-02-v1` review added Claude Fable 5.1 and Claude Mythos 5.1.
 Anthropic
 [launched both on 2026-09-01](https://platform.claude.com/docs/en/release-notes/overview).

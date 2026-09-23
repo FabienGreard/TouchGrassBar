@@ -7,12 +7,13 @@ use time::{Date, Month};
 
 const ANTHROPIC_STANDARD_PRICING_JSON: &str =
     include_str!("../../../pricing/anthropic-standard.json");
-/// Anthropic documents a cache read at 0.1x the base input price, with a
-/// published 0.025x exception for Claude Fable 5.1 and Claude Mythos 5.1. A
-/// period declares which documented multiplier it uses; any other value is
-/// rejected so an unreviewed cache rate cannot enter the catalog.
+/// Anthropic documents a cache read at 0.1x the base input price, with
+/// published exceptions: 0.025x for Claude Fable 5.1 and Claude Mythos 5.1,
+/// and 0.05x for Claude Opus 5.5. A period declares which documented
+/// multiplier it uses; any other value is rejected so an unreviewed cache rate
+/// cannot enter the catalog.
 const STANDARD_CACHE_READ_MULTIPLIER: f64 = 0.1;
-const DOCUMENTED_CACHE_READ_MULTIPLIERS: [f64; 2] = [STANDARD_CACHE_READ_MULTIPLIER, 0.025];
+const DOCUMENTED_CACHE_READ_MULTIPLIERS: [f64; 3] = [STANDARD_CACHE_READ_MULTIPLIER, 0.025, 0.05];
 
 const PRICING_RULES_FINGERPRINT: &str = "service-tier-default-standard;priority-standard-rate;fast-batch-unavailable;missing-paid-metadata-unavailable;web-fetch-no-extra-charge;missing-code-execution-counter-zero;positive-code-execution-unavailable;unknown-paid-tool-unavailable";
 
@@ -619,19 +620,19 @@ mod tests {
         let manifest = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON)
             .expect("valid bundled manifest");
         let changed_basis = parse_pricing_manifest(&ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "anthropic-standard-2026-09-02-v1",
-            "anthropic-standard-2026-09-02-v2",
+            "anthropic-standard-2026-09-23-v1",
+            "anthropic-standard-2026-09-23-v2",
             1,
         ))
         .expect("valid changed basis");
 
-        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-02-v1");
+        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-23-v1");
         assert!(manifest.semantic_fingerprint().starts_with("fnv1a64:"));
         assert_ne!(
             manifest.semantic_fingerprint(),
             changed_basis.semantic_fingerprint()
         );
-        assert_eq!(manifest.models.len(), 17);
+        assert_eq!(manifest.models.len(), 18);
     }
 
     #[test]
@@ -663,7 +664,7 @@ mod tests {
     fn cache_read_multiplier_must_be_a_documented_anthropic_rate() {
         let undocumented_multiplier = ANTHROPIC_STANDARD_PRICING_JSON.replacen(
             "\"cacheReadMultiplier\": 0.025",
-            "\"cacheReadMultiplier\": 0.05",
+            "\"cacheReadMultiplier\": 0.075",
             1,
         );
         let rate_without_its_declared_multiplier = ANTHROPIC_STANDARD_PRICING_JSON.replacen(
@@ -711,6 +712,66 @@ mod tests {
         assert!(
             manifest
                 .price_message("claude-fable-5-1", date("2026-08-31"), usage())
+                .cost_usd
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn prices_the_reduced_opus_5_5_cache_read_rate() {
+        let manifest = catalog().expect("bundled catalog");
+        let all_buckets = BillableUsage {
+            input_tokens: 1_000_000,
+            cache_creation_input_tokens: 2_000_000,
+            cache_creation_5m_input_tokens: Some(1_000_000),
+            cache_creation_1h_input_tokens: Some(1_000_000),
+            cache_read_input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            ..usage()
+        };
+
+        // 4 input + 5 5m write + 8 1h write + 0.20 cache read + 20 output.
+        let standard = manifest.price_message("claude-opus-5-5", date("2026-09-22"), all_buckets);
+        assert_cost(standard.clone(), 37.2);
+        assert_eq!(standard.priced_tokens, 5_000_000);
+
+        // 8 input + 10 5m write + 16 1h write + 0.40 cache read + 40 output.
+        assert_cost(
+            manifest.price_message(
+                "claude-opus-5-5",
+                date("2026-09-22"),
+                BillableUsage {
+                    speed: Some("fast"),
+                    ..all_buckets
+                },
+            ),
+            74.4,
+        );
+
+        for (service_tier, inference_geo, speed, expected) in [
+            ("batch", "global", "standard", 18.6),
+            ("standard", "us", "standard", 40.92),
+            ("standard", "us", "fast", 81.84),
+        ] {
+            assert_cost(
+                manifest.price_message(
+                    "claude-opus-5-5",
+                    date("2026-09-22"),
+                    BillableUsage {
+                        service_tier: Some(service_tier),
+                        inference_geo: Some(inference_geo),
+                        speed: Some(speed),
+                        ..all_buckets
+                    },
+                ),
+                expected,
+            );
+        }
+
+        // The launch day is inclusive; the day before it has no bundled rule.
+        assert!(
+            manifest
+                .price_message("claude-opus-5-5", date("2026-09-21"), usage())
                 .cost_usd
                 .is_none()
         );

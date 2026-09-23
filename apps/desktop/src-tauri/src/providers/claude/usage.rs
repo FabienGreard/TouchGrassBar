@@ -36,16 +36,16 @@ const COST_DETAIL_RETENTION_DAYS: i64 = 30;
 /// The structural checks below decide whether its counters can be counted; the
 /// reviewed set only decides whether the resulting day can claim complete
 /// coverage.
-const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 13] = [
+const REVIEWED_CLAUDE_CODE_VERSIONS: [&str; 15] = [
     "2.1.223", "2.1.224", "2.1.236", "2.1.241", "2.1.258", "2.1.259", "2.1.260", "2.1.261",
-    "2.1.263", "2.1.272", "2.1.273", "2.1.274", "2.1.276",
+    "2.1.263", "2.1.272", "2.1.273", "2.1.274", "2.1.276", "2.1.278", "2.1.280",
 ];
 const MAX_SUPERSEDED_FRAMES: usize = 64;
 const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 13;
+const TRANSCRIPT_PARSER_VERSION: i64 = 14;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -247,7 +247,7 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
         .usage
         .iterations
         .as_ref()
-        .is_none_or(|iterations| iterations.matches(&line.message.usage))
+        .is_none_or(|iterations| iterations.matches(&line.message.usage, &line.message.model))
         && line
             .message
             .usage
@@ -292,7 +292,7 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
             .usage
             .iterations
             .as_ref()
-            .is_some_and(|iterations| !iterations.matches(&line.message.usage))
+            .is_some_and(|iterations| !iterations.matches(&line.message.usage, &line.message.model))
     {
         Some(ParserReason::IterationShapeMismatch)
     } else if line
@@ -465,17 +465,19 @@ enum RawMessageIterations {
 }
 
 impl RawMessageIterations {
-    fn matches(&self, usage: &RawClaudeTokenUsage) -> bool {
+    fn matches(&self, usage: &RawClaudeTokenUsage, model: &str) -> bool {
         let Self::Reviewed([iteration]) = self else {
             return false;
         };
-        iteration.matches(usage)
+        iteration.matches(usage, model)
     }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewedMessageIteration {
+    #[serde(default)]
+    model: Option<String>,
     cache_creation: ReviewedMessageIterationCacheCreation,
     cache_creation_input_tokens: u64,
     cache_read_input_tokens: u64,
@@ -486,8 +488,9 @@ struct ReviewedMessageIteration {
 }
 
 impl ReviewedMessageIteration {
-    fn matches(&self, usage: &RawClaudeTokenUsage) -> bool {
+    fn matches(&self, usage: &RawClaudeTokenUsage, model: &str) -> bool {
         self.message_type == "message"
+            && self.model.as_deref().is_none_or(|value| value == model)
             && self.input_tokens == usage.input_tokens
             && Some(self.cache_creation_input_tokens) == usage.cache_creation_input_tokens
             && Some(self.cache_read_input_tokens) == usage.cache_read_input_tokens
@@ -4914,8 +4917,9 @@ mod tests {
     fn late_september_claude_versions_restore_pricing_without_duplicate_tokens() {
         let observed_at = OffsetDateTime::parse("2026-09-21T12:00:00Z", &Rfc3339).unwrap();
         // These exact versions emitted the same usage shape locally. A fresh
-        // 2.1.276 session also confirmed the cache split and standard speed.
-        for version in ["2.1.272", "2.1.273", "2.1.274", "2.1.276"] {
+        // 2.1.276 session and retained 2.1.278 records also confirmed the cache
+        // split, inclusive thinking output, matching iteration, and standard speed.
+        for version in ["2.1.272", "2.1.273", "2.1.274", "2.1.276", "2.1.278"] {
             let fixture = FixtureRoot::new();
             let config = fixture.config();
             let record = claude_code_2_1_263_transcript_line(true)
@@ -4951,6 +4955,154 @@ mod tests {
                 assert_eq!(coverage, UsageCoverage::Complete, "{version}");
                 assert_eq!(stored_message_count(&fixture.database()), 1);
             }
+        }
+    }
+
+    fn opus_5_5_transcript_line(speed: &str) -> String {
+        // Synthetic counters with the shape observed in Claude Code 2.1.280.
+        // Iteration and thinking counters repeat parts of the outer usage.
+        let mut record: serde_json::Value =
+            serde_json::from_str(&claude_code_2_1_263_transcript_line(true)).unwrap();
+        record["version"] = serde_json::json!("2.1.280");
+        record["timestamp"] = serde_json::json!("2026-09-23T10:00:00Z");
+        record["message"]["model"] = serde_json::json!("claude-opus-5-5");
+        record["message"]["usage"] = serde_json::json!({
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 20,
+            "cache_read_input_tokens": 30,
+            "output_tokens": 40,
+            "output_tokens_details": { "thinking_tokens": 15 },
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": 12,
+                "ephemeral_1h_input_tokens": 8
+            },
+            "server_tool_use": { "web_search_requests": 0, "web_fetch_requests": 0 },
+            "service_tier": "standard",
+            "inference_geo": "not_available",
+            "speed": speed,
+            "iterations": [{
+                "type": "message",
+                "input_tokens": 10,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 30,
+                "output_tokens": 40,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 12,
+                    "ephemeral_1h_input_tokens": 8
+                }
+            }]
+        });
+        record.to_string()
+    }
+
+    #[test]
+    fn opus_5_5_counts_usage_once_and_prices_standard_and_fast_transcripts() {
+        let observed_at = OffsetDateTime::parse("2026-09-23T12:00:00Z", &Rfc3339).unwrap();
+        for (speed, cost) in [("standard", 0.000_970), ("fast", 0.001_940)] {
+            let fixture = FixtureRoot::new();
+            let record = opus_5_5_transcript_line(speed);
+            write_transcript(
+                &fixture.config().join("projects/project-a/session.jsonl"),
+                &[record.clone(), record],
+            );
+            for _ in 0..2 {
+                let local = scan_local_usage_at(
+                    &fixture.database(),
+                    &fixture.config(),
+                    &fixture.probe(),
+                    observed_at,
+                )
+                .unwrap();
+                let UsageTotal::Current {
+                    observed_tokens,
+                    coverage,
+                    api_equivalent_cost_usd,
+                    ..
+                } = project_usage_periods(Some(&local), observed_at).today
+                else {
+                    panic!("Opus 5.5 usage must be available");
+                };
+                assert_eq!(observed_tokens, 100);
+                assert_eq!(coverage, UsageCoverage::Complete);
+                assert!((api_equivalent_cost_usd.unwrap() - cost).abs() < 1e-12);
+                assert_eq!(stored_message_count(&fixture.database()), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn opus_5_5_checks_optional_iteration_model_without_adding_usage() {
+        for (model, complete) in [
+            (serde_json::Value::Null, true),
+            (serde_json::json!("claude-opus-5-5"), true),
+            (serde_json::json!("claude-opus-5"), false),
+            (serde_json::json!(12), false),
+        ] {
+            let mut record: serde_json::Value =
+                serde_json::from_str(&opus_5_5_transcript_line("standard")).unwrap();
+            record["message"]["usage"]["iterations"][0]["model"] = model.clone();
+            let TranscriptLineOutcome::Usage(message) =
+                parse_transcript_line(record.to_string().as_bytes(), &SALT)
+            else {
+                panic!("Known outer counters must remain available");
+            };
+            assert_eq!(message.usage.observed_tokens(), Some(100));
+            assert_eq!(message.complete, complete, "iteration model: {model}");
+        }
+    }
+
+    #[test]
+    fn opus_5_5_replays_parser_13_unpriced_usage_without_changing_tokens() {
+        let fixture = FixtureRoot::new();
+        let observed_at = OffsetDateTime::parse("2026-09-23T12:00:00Z", &Rfc3339).unwrap();
+        write_transcript(
+            &fixture.config().join("projects/project-a/session.jsonl"),
+            &[opus_5_5_transcript_line("standard")],
+        );
+        scan_local_usage_at(
+            &fixture.database(),
+            &fixture.config(),
+            &fixture.probe(),
+            observed_at,
+        )
+        .unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection.execute_batch(
+            "UPDATE claude_usage_files SET parser_version = 13;
+             UPDATE claude_usage_frames SET parser_version = 13;
+             UPDATE claude_usage_messages SET parser_version = 13, complete = 0;
+             UPDATE claude_usage_daily SET coverage = 'partial', priced_tokens = 0,
+               cost_usd = NULL, pricing_basis = NULL, pricing_fingerprint = NULL;
+             UPDATE claude_usage_index_meta SET value = '13' WHERE key = 'usage_aggregate_parser_version';"
+        ).unwrap();
+        drop(connection);
+        let previous_revision = stored_daily_revision(&fixture.database(), observed_at.date());
+        for pass in 0..2 {
+            let local = scan_local_usage_at(
+                &fixture.database(),
+                &fixture.config(),
+                &fixture.probe(),
+                observed_at,
+            )
+            .unwrap();
+            let UsageTotal::Current {
+                observed_tokens,
+                coverage,
+                api_equivalent_cost_usd,
+                ..
+            } = project_usage_periods(Some(&local), observed_at).today
+            else {
+                panic!("Replayed Opus 5.5 usage must be available");
+            };
+            assert_eq!(observed_tokens, 100);
+            assert_eq!(coverage, UsageCoverage::Complete);
+            assert!((api_equivalent_cost_usd.unwrap() - 0.000_970).abs() < 1e-12);
+            assert_eq!(local.aggregate_changed, pass == 0);
+            assert_eq!(
+                stored_daily_revision(&fixture.database(), observed_at.date()),
+                previous_revision + 1
+            );
+            assert_eq!(stored_message_count(&fixture.database()), 1);
         }
     }
 
@@ -7121,7 +7273,7 @@ mod tests {
         assert_eq!(detail.api_equivalent_cost_usd, Some(18.0));
         assert_eq!(
             local.pricing_basis.as_deref(),
-            Some("anthropic-standard-2026-09-02-v1")
+            Some("anthropic-standard-2026-09-23-v1")
         );
 
         let UsageTotal::Current {
@@ -7376,7 +7528,7 @@ mod tests {
                 .unwrap()
         };
         let initial = read_daily();
-        let changed_basis = pricing_catalog_with_basis("anthropic-standard-2026-09-02-v2");
+        let changed_basis = pricing_catalog_with_basis("anthropic-standard-2026-09-23-v2");
         let cutoff = now().date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
 
         refresh_daily_aggregates_with_catalog(
@@ -7393,7 +7545,7 @@ mod tests {
 
     #[test]
     fn mixed_retained_price_books_keep_bounded_provenance_during_incomplete_scan() {
-        const NEW_BASIS: &str = "anthropic-standard-2026-09-02-v2";
+        const NEW_BASIS: &str = "anthropic-standard-2026-09-23-v2";
 
         let fixture = FixtureRoot::new();
         let config = fixture.config();

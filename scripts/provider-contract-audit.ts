@@ -2354,45 +2354,44 @@ async function auditClaude(context: AuditContext) {
 }
 
 const STANDARD_CACHE_READ_MULTIPLIER = 0.1;
-const REDUCED_CACHE_READ_MULTIPLIER = 0.025;
+const REDUCED_CACHE_READ_MULTIPLIERS = [0.025, 0.05] as const;
 
-// Anthropic prices a cache read at 0.1x base input, with a published 0.025x
-// exception named for specific models. The manifest declares the multiplier per
-// period, so the reviewed set of reduced-rate models must equal the documented
-// set exactly. A model added to or dropped from the published exception is a
-// pricing-rule change that requires review.
+// Anthropic prices a cache read at 0.1x base input, with published reduced
+// multipliers named for specific models. The manifest declares the multiplier
+// per period, so for each reduced multiplier the reviewed set of models must
+// equal the documented set exactly. A model added to or dropped from a
+// published exception is a pricing-rule change that requires review.
+function documentedCacheReadExceptions(source: string) {
+  const exceptions = new Map<number, Set<string>>(
+    REDUCED_CACHE_READ_MULTIPLIERS.map((multiplier) => [multiplier, new Set<string>()]),
+  );
+  const clause = /Cache read \(hit\)\s*\|\s*0\.1x base input price \(([^)]+)\)/iu.exec(source)?.[1];
+  for (const part of (clause ?? "").split(";")) {
+    const match = /^\s*([0-9.]+)x on (.+)$/u.exec(part);
+    if (!match?.[1] || !match[2]) continue;
+    const names = match[2]
+      .split(/\s*(?:,|\band\b)\s*/u)
+      .map((entry) => plainMarkdown(entry).trim().toLowerCase())
+      .filter((entry) => entry.length > 0);
+    const multiplier = Number(match[1]);
+    const documented = exceptions.get(multiplier) ?? new Set<string>();
+    for (const name of names) documented.add(name);
+    exceptions.set(multiplier, documented);
+  }
+  return exceptions;
+}
+
 function auditAnthropicCacheReadMultipliers(
   context: AuditContext,
   manifest: AnthropicManifest,
   source: string,
 ) {
-  const exception =
-    /Cache read \(hit\)\s*\|\s*0\.1x base input price \(0\.025x on ([^)]+)\)/iu.exec(source);
-  const documented = new Set(
-    (exception?.[1] ?? "")
-      .split(/\s*(?:,|\band\b)\s*/u)
-      .map((entry) => plainMarkdown(entry).trim().toLowerCase())
-      .filter((entry) => entry.length > 0),
-  );
-  const declared = new Set(
-    manifest.models
-      .filter((model) =>
-        [...model.standardPeriods, ...model.fastPeriods].some(
-          (period) => period.cacheReadMultiplier === REDUCED_CACHE_READ_MULTIPLIER,
-        ),
-      )
-      .flatMap((model) => reviewedModelNames(model)),
-  );
-  const undocumented = [...declared].filter((name) => !documented.has(name));
-  const unclaimed = [...documented].filter((name) => !declared.has(name));
+  const exceptions = documentedCacheReadExceptions(source);
 
   for (const model of manifest.models) {
     for (const period of [...model.standardPeriods, ...model.fastPeriods]) {
       const multiplier = period.cacheReadMultiplier ?? STANDARD_CACHE_READ_MULTIPLIER;
-      if (
-        multiplier !== STANDARD_CACHE_READ_MULTIPLIER &&
-        multiplier !== REDUCED_CACHE_READ_MULTIPLIER
-      ) {
+      if (multiplier !== STANDARD_CACHE_READ_MULTIPLIER && !exceptions.has(multiplier)) {
         finding(
           context,
           "claude",
@@ -2417,16 +2416,29 @@ function auditAnthropicCacheReadMultipliers(
     }
   }
 
-  if (undocumented.length > 0 || unclaimed.length > 0) {
-    finding(
-      context,
-      "claude",
-      "pricing",
-      "review-required",
-      "pricing-modifier-changed",
-      `The documented 0.025x cache read exception changed: ${undocumented.length} bundled model(s) are not named and ${unclaimed.length} named model(s) have no bundled rule.`,
-      context.contract.claude.pricingSourceUrl,
+  for (const [multiplier, documented] of exceptions) {
+    const declared = new Set(
+      manifest.models
+        .filter((model) =>
+          [...model.standardPeriods, ...model.fastPeriods].some(
+            (period) => period.cacheReadMultiplier === multiplier,
+          ),
+        )
+        .flatMap((model) => reviewedModelNames(model)),
     );
+    const undocumented = [...declared].filter((name) => !documented.has(name));
+    const unclaimed = [...documented].filter((name) => !declared.has(name));
+    if (undocumented.length > 0 || unclaimed.length > 0) {
+      finding(
+        context,
+        "claude",
+        "pricing",
+        "review-required",
+        "pricing-modifier-changed",
+        `The documented ${multiplier}x cache read exception changed: ${undocumented.length} bundled model(s) are not named and ${unclaimed.length} named model(s) have no bundled rule.`,
+        context.contract.claude.pricingSourceUrl,
+      );
+    }
   }
 }
 
@@ -2562,7 +2574,10 @@ function auditAnthropicPricing(context: AuditContext, manifest: AnthropicManifes
         !ratesEqual(fast.outputUsdPerMillion, published.output) ||
         !ratesEqual(fast.cacheWrite5mUsdPerMillion, published.input * 1.25) ||
         !ratesEqual(fast.cacheWrite1hUsdPerMillion, published.input * 2) ||
-        !ratesEqual(fast.cacheReadUsdPerMillion, published.input * 0.1)
+        !ratesEqual(
+          fast.cacheReadUsdPerMillion,
+          published.input * (fast.cacheReadMultiplier ?? STANDARD_CACHE_READ_MULTIPLIER),
+        )
       ) {
         finding(
           context,

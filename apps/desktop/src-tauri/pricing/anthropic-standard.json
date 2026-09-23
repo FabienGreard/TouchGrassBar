@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "basis": "anthropic-standard-2026-09-02-v1",
+  "basis": "anthropic-standard-2026-09-23-v1",
   "batchFactor": 0.5,
   "usInferenceFactor": 1.1,
   "webSearchUsdPerThousand": 10.0,
@@ -74,6 +74,35 @@
         }
       ],
       "fastPeriods": []
+    },
+    {
+      "name": "claude-opus-5-5",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-09-22",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 4.0,
+          "cacheWrite5mUsdPerMillion": 5.0,
+          "cacheWrite1hUsdPerMillion": 8.0,
+          "cacheReadUsdPerMillion": 0.2,
+          "cacheReadMultiplier": 0.05,
+          "outputUsdPerMillion": 20.0
+        }
+      ],
+      "fastPeriods": [
+        {
+          "effectiveFrom": "2026-09-22",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 8.0,
+          "cacheWrite5mUsdPerMillion": 10.0,
+          "cacheWrite1hUsdPerMillion": 16.0,
+          "cacheReadUsdPerMillion": 0.4,
+          "cacheReadMultiplier": 0.05,
+          "outputUsdPerMillion": 40.0
+        }
+      ]
     },
     {
       "name": "claude-opus-5",
