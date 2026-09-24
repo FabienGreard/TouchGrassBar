@@ -9,7 +9,7 @@
     "modelCatalogPath": "codex-rs/models-manager/models.json",
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/codex/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/openai-standard.json",
-    "pricingManifestSemanticSha256": "aa7410f18427651e6ecf2806557a0a9ea5ab277f1dc1566395afefe0b772669a",
+    "pricingManifestSemanticSha256": "1c4d8766fff574acb6e59225e92b23adec8803831948cea9589d4ac7592c8c93",
     "pricingRuleWindows": [
       {
         "id": "api-token-and-tool-pricing",
@@ -48,6 +48,35 @@
           "url": "https://developers.openai.com/api/docs/changelog.md",
           "windowSemanticSha256": "035af557249d5a481f55335d73a82b5221972e2a5c3ceb857503b75c97751bde",
           "sections": [
+            {
+              "id": "gpt-6-sol-luna-launch",
+              "heading": "### Sep 22",
+              "selector": "Released GPT-6 Sol",
+              "date": "2026-09-22",
+              "semanticSha256": "3a434b2f8827c033ee444b4f0a16113356b52f2fe64904ceecabfaf580f7640c",
+              "checkpoints": [
+                {
+                  "model": "gpt-6-sol",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6-sol",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6-luna",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6-luna",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "gpt-6-astra-launch",
               "heading": "### Sep 3",

@@ -77,7 +77,9 @@ evidence. A missing scan field means unknown, including for older reports.
 
 `scan_incomplete` is a failed scan that cannot finish. It can report a retained
 file error even when no record is parsed again. For Claude, `files.error > 0`
-blocks the complete-scan gate that accepts replacement costs. Codex can retain partial
+keeps the scan unavailable. Releases through v0.0.53 also block replacement
+costs in this state. Updated clients can accept a larger valid priced subset
+while keeping usage partial and retaining the known token total. Codex can retain partial
 pricing evidence. Its optional `files.deferred` and `files.excluded` counts
 show deferred processing and excluded usage. These counts can overlap other
 states. `files.indexing` shows unfinished files. `files.olderParser` includes retained files from earlier
@@ -172,3 +174,35 @@ A real local HTTP canary must also prove authenticated registration,
 submission without a product session, an identical retry, and rejection of
 an invalid diagnostic credential. Production verification is a separate
 deployment step and requires authorization for that target.
+
+## Unknown model evidence
+
+New clients include an optional `model` identifier on `unknown_model` pricing
+failures for Codex and Claude. Capture and validation accept at most 96 ASCII
+characters from provider model families (`gpt-` followed by a digit, `o` followed
+by a digit, `codex-`, or `claude-`). Only lowercase letters, digits, dots,
+underscores, and hyphens are accepted. The last character must be alphanumeric.
+Values with spaces, paths, or other characters are omitted at capture.
+This field contains model metadata, not prompts or provider source text.
+Different names have separate failure groups within the existing queue bounds.
+
+Old reports remain valid without this field. Their missing model names cannot
+be recovered from uploaded counts. Deploy the optional backend validator before
+shipping clients that emit the field. This is a permanent additive field; no
+backfill or temporary compatibility path is required.
+
+## Rejected Claude records
+
+New clients separate malformed headers, assistant envelopes, frame identity,
+timestamps, message metadata, content shape, input counters, output counters,
+cache-read counters, cache-write counters, and remaining usage metadata into
+fixed parser reason codes. Missing and invalid values share the relevant code.
+No rejected value, free-text parser error, or source content leaves the Mac.
+The existing affected/excluded counts and UTC day show the impact of each code.
+
+On first use, the diagnostic replay marker resets only retained failed-file
+cursors. The normal bounded scanner rereads those files and emits the more
+specific reasons. Valid messages, complete-file cursors, daily totals, and
+parser version stay unchanged. The operation commits its marker and cursor
+changes together and does not repeat on later refreshes. A missing source file
+cannot be recovered by this diagnostic pass.

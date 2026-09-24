@@ -116,3 +116,19 @@ addition to Daily Usage Aggregates. Sensitive source material remains local.
 It adds the narrow diagnostic-delivery exception to ADR-0017 and a separate
 bounded diagnostic file queue to ADR-0011. The canonical product database,
 its migration rules, and normal Active Mac authority remain unchanged.
+
+## Unknown model evidence
+
+New clients include an optional `model` identifier on `unknown_model` pricing
+failures for Codex and Claude. Capture and validation accept at most 96 ASCII
+characters from provider model families (`gpt-` followed by a digit, `o` followed
+by a digit, `codex-`, or `claude-`). Only lowercase letters, digits, dots,
+underscores, and hyphens are accepted. The last character must be alphanumeric.
+Values with spaces, paths, or other characters are omitted at capture.
+This field contains model metadata, not prompts or provider source text.
+Different names have separate failure groups within the existing queue bounds.
+
+Old reports remain valid without this field. Their missing model names cannot
+be recovered from uploaded counts. Deploy the optional backend validator before
+shipping clients that emit the field. This is a permanent additive field; no
+backfill or temporary compatibility path is required.

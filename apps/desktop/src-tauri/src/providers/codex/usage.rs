@@ -802,7 +802,13 @@ fn debug_pricing_lookup_failure(model: &str, day: Date, failure: PricingLookupFa
             PricingLookupFailure::UnknownModel => PricingReason::UnknownModel,
         }
     };
-    failure_capture::pricing(Provider::Codex, Some(day), reason, current_pricing_basis());
+    failure_capture::pricing_with_model(
+        Provider::Codex,
+        Some(day),
+        reason,
+        current_pricing_basis(),
+        Some(model),
+    );
     log_pricing_lookup_failure(model, day, failure);
 }
 
@@ -13119,7 +13125,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-standard-2026-09-05-v1");
+        assert_eq!(manifest.basis, "openai-standard-2026-09-24-v1");
         assert!(
             catalog_entry(
                 &manifest,
@@ -13779,6 +13785,75 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn unknown_model_diagnostics_keep_distinct_safe_model_names() {
+        let day = Date::from_calendar_date(2026, Month::September, 24).unwrap();
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let _scan = failure_capture::ScanFailures::begin();
+            for model in [
+                "gpt-99-one",
+                "gpt-99-two",
+                "gpt-99-one",
+                "/private/model",
+                "gpt-99 secret",
+            ] {
+                assert!(
+                    price_usage_tier(
+                        model,
+                        day,
+                        token_usage(100, 0, 0, 10),
+                        100,
+                        PricingMode::Standard
+                    )
+                    .is_none()
+                );
+            }
+        });
+        assert_eq!(failures.len(), 3);
+        let models: Vec<_> = failures
+            .iter()
+            .map(|failure| {
+                let crate::diagnostics::Failure::Pricing { context, .. } = failure else {
+                    panic!("pricing failure required")
+                };
+                assert_eq!(context.reason, PricingReason::UnknownModel);
+                context.model.as_deref()
+            })
+            .collect();
+        assert_eq!(models, [Some("gpt-99-one"), Some("gpt-99-two"), None]);
+        let encoded = serde_json::to_string(&failures).unwrap();
+        assert!(!encoded.contains("private"));
+        assert!(!encoded.contains("secret"));
+    }
+
+    #[test]
+    fn gpt_6_sol_and_luna_prices_start_at_launch_with_all_context_tiers() {
+        let launch = Date::from_calendar_date(2026, Month::September, 22).unwrap();
+        let usage = token_usage(400_000, 100_000, 100_000, 100_000);
+        for (model, short, long) in [("gpt-6-sol", 1.67, 2.84), ("gpt-6-luna", 0.0835, 0.142)] {
+            for (context, standard) in [(272_000, short), (272_001, long)] {
+                for (mode, expected) in [
+                    (PricingMode::Standard, standard),
+                    (PricingMode::Fast, standard * 2.0),
+                ] {
+                    assert!(
+                        price_usage_tier(
+                            model,
+                            launch - Duration::days(1),
+                            usage,
+                            context,
+                            mode.clone()
+                        )
+                        .is_none()
+                    );
+                    let cost = price_usage_tier(model, launch, usage, context, mode)
+                        .expect("new Codex models need their published launch prices");
+                    assert!((cost - expected).abs() < 1e-12, "{model} at {context}");
+                }
+            }
+        }
     }
 
     #[test]

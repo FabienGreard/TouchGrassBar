@@ -91,6 +91,18 @@ export const DIAGNOSTIC_PARSER_REASONS = [
   "scan_incomplete",
   "invalid_json",
   "invalid_usage_shape",
+  "invalid_record_header",
+  "invalid_assistant_envelope",
+  "invalid_frame_identity",
+  "invalid_timestamp",
+  "invalid_message_metadata",
+  "invalid_message_content",
+  "invalid_input_counter",
+  "invalid_output_counter",
+  "invalid_cache_read_counter",
+  "invalid_cache_write_counter",
+  "invalid_usage_metadata",
+
   "invalid_counter",
   "unsupported_record",
   "invariant_failed",
@@ -240,6 +252,12 @@ export const diagnosticParserContextSchema = z
 
 export const diagnosticPricingContextSchema = z
   .object({
+    model: z
+      .string()
+      .min(2)
+      .max(96)
+      .regex(/^[a-z0-9][a-z0-9._-]*[a-z0-9]$/)
+      .exactOptional(),
     rankingDay: rankingDay.nullable(),
     revision: revision.nullable(),
     parserVersion: version.nullable(),
@@ -377,6 +395,15 @@ export const diagnosticReportSchema = z
     }
     if (failure.area === "pricing") {
       const evidence = failure.context;
+      if (
+        evidence.model !== undefined &&
+        (evidence.reason !== "unknown_model" ||
+          !(failure.provider === "codex"
+            ? /^(?:gpt-[0-9]|o[0-9]|codex-)/.test(evidence.model)
+            : evidence.model.startsWith("claude-")))
+      ) {
+        ctx.addIssue({ code: "custom", message: "Invalid diagnostic model identifier" });
+      }
       if (
         evidence.observedTokens !== null &&
         evidence.pricedTokens !== null &&

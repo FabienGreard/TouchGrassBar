@@ -187,7 +187,11 @@ test("registration needs current profile session, installation credential and ge
 test("anonymous narrow credential accepts all failure areas and assigns profile/device; reports do not update product health", async () => {
   const t = testBackend();
   const owner = await seedReporter(t);
-  for (const report of fixtures) {
+  // Model-name reports have a separate upload test; keep this batch within the burst limit.
+  const legacyFixtures = fixtures.filter(
+    (report) => report.failure.area !== "pricing" || report.failure.context.model === undefined,
+  );
+  for (const report of legacyFixtures) {
     expect(
       await t.mutation(api.diagnostics.submit, {
         reporterId: owner.reporterId,
@@ -200,7 +204,7 @@ test("anonymous narrow credential accepts all failure areas and assigns profile/
     tokenmaxxerId: owner.tokenmaxxerId,
     paginationOpts: { numItems: 10, cursor: null },
   });
-  expect(page.page).toHaveLength(fixtures.length);
+  expect(page.page).toHaveLength(legacyFixtures.length);
   for (const row of page.page) {
     expect(row).toMatchObject({
       ...owner,
@@ -235,7 +239,7 @@ test("anonymous narrow credential accepts all failure areas and assigns profile/
         paginationOpts: { numItems: 10, cursor: null },
       })
     ).page,
-  ).toHaveLength(fixtures.length);
+  ).toHaveLength(legacyFixtures.length);
   expect(
     (
       await t.query(internal.diagnostics.forTouchGrassId, {
@@ -539,4 +543,71 @@ test("automatic refresh diagnostics accept both providers without a support sess
     paginationOpts: { numItems: 10, cursor: null },
   });
   expect(page.page).toHaveLength(6);
+});
+
+test("unknown models survive upload and have distinct support groups", async () => {
+  const t = testBackend();
+  const owner = await seedReporter(t);
+  const original = fixtures.find((report) => report.failure.area === "pricing")!;
+  const models = ["gpt-99-one", "gpt-99-two", "claude-future-99"];
+  for (const model of models) {
+    const report = diagnosticReportSchema.parse({
+      ...original,
+      reportId: crypto.randomUUID(),
+      failure: {
+        ...original.failure,
+        code: "pricing_calculation_failed",
+        provider: model.startsWith("claude-") ? "claude" : "codex",
+        context: { ...original.failure.context, reason: "unknown_model", model },
+      },
+    });
+    await t.mutation(api.diagnostics.submit, {
+      reporterId: owner.reporterId,
+      diagnosticCredential: DIAGNOSTIC_CREDENTIAL,
+      report,
+    });
+  }
+  const stored = await t.query(internal.diagnostics.forProfile, {
+    tokenmaxxerId: owner.tokenmaxxerId,
+    paginationOpts: { numItems: 10, cursor: null },
+  });
+  expect(
+    stored.page
+      .map((row) =>
+        row.report.failure.area === "pricing" ? row.report.failure.context.model : null,
+      )
+      .sort(),
+  ).toEqual([...models].sort());
+  expect(new Set(stored.page.map((row) => row.groupKey)).size).toBe(models.length);
+});
+
+test("specific Claude parser failures survive support lookup", async () => {
+  const t = testBackend();
+  const owner = await seedReporter(t);
+  const original = fixtures.find((report) => report.failure.area === "parser")!;
+  const report = diagnosticReportSchema.parse({
+    ...original,
+    reportId: crypto.randomUUID(),
+    failure: {
+      ...original.failure,
+      provider: "claude",
+      context: {
+        ...original.failure.context,
+        reason: "invalid_input_counter",
+        rankingDay: "2026-09-10",
+        recordsAffected: 2,
+        recordsExcluded: 2,
+      },
+    },
+  });
+  await t.mutation(api.diagnostics.submit, {
+    reporterId: owner.reporterId,
+    diagnosticCredential: DIAGNOSTIC_CREDENTIAL,
+    report,
+  });
+  const stored = await t.query(internal.diagnostics.forProfile, {
+    tokenmaxxerId: owner.tokenmaxxerId,
+    paginationOpts: { numItems: 10, cursor: null },
+  });
+  expect(stored.page[0]!.report).toEqual(report);
 });

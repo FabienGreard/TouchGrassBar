@@ -21,3 +21,40 @@ test("scan evidence rejects private fields, unbounded days, and impossible count
   ])
     expect(usageScanContextSchema.safeParse(value).success).toBe(false);
 });
+
+const pricingReport = fixtures.find((item) => item.failure.area === "pricing")!;
+const modelReport = (provider: string, model: unknown, reason = "unknown_model") => ({
+  ...pricingReport,
+  failure: {
+    ...pricingReport.failure,
+    code: "pricing_calculation_failed",
+    provider,
+    context: { ...pricingReport.failure.context, reason, model },
+  },
+});
+
+test("unknown model names are bounded and cannot contain source text or paths", () => {
+  for (const [provider, model] of [
+    ["codex", "gpt-99-one"],
+    ["codex", "o9"],
+    ["claude", "claude-future-99"],
+  ]) {
+    expect(diagnosticReportSchema.safeParse(modelReport(provider!, model)).success).toBe(true);
+  }
+  for (const model of [
+    "/private/model",
+    "gpt-99 secret",
+    "gpt-99\nsecret",
+    "gpt-99@host",
+    "gpt-99/secret",
+    "gpt-" + "x".repeat(97),
+    null,
+  ]) {
+    expect(diagnosticReportSchema.safeParse(modelReport("codex", model)).success).toBe(false);
+  }
+  expect(diagnosticReportSchema.safeParse(modelReport("claude", "gpt-99-one")).success).toBe(false);
+  expect(
+    diagnosticReportSchema.safeParse(modelReport("codex", "gpt-99-one", "missing_effective_price"))
+      .success,
+  ).toBe(false);
+});

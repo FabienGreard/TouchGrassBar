@@ -195,11 +195,12 @@ impl PricingCatalog {
                     "unknown-speed" => PricingReason::UnknownSpeed,
                     _ => PricingReason::InvalidCost,
                 };
-                failure_capture::pricing(
+                failure_capture::pricing_with_model(
                     Provider::Claude,
                     Some(day),
                     reason_code,
                     Some(self.basis()),
+                    Some(model_name),
                 );
                 PriceDecision::unavailable(reason)
             })
@@ -838,6 +839,23 @@ mod tests {
                 .cost_usd,
             None
         );
+    }
+
+    #[test]
+    fn unknown_model_failure_includes_the_bounded_model_name() {
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(
+                catalog()
+                    .unwrap()
+                    .price_message("claude-future-99", date("2026-09-24"), usage())
+                    .cost_usd
+                    .is_none()
+            );
+        });
+        let crate::diagnostics::Failure::Pricing { context, .. } = &failures[0] else {
+            panic!("pricing failure required")
+        };
+        assert_eq!(context.model.as_deref(), Some("claude-future-99"));
     }
 
     #[test]

@@ -3555,6 +3555,7 @@ fn convert_cost(
             code: crate::diagnostics::PricingCode::PricingCalculationFailed,
             provider,
             context: crate::diagnostics::PricingContext {
+                model: None,
                 ranking_day: Some(ranking_day.to_owned()),
                 revision: None,
                 parser_version: None,
@@ -3606,6 +3607,7 @@ fn convert_cost(
             code: crate::diagnostics::PricingCode::PricingCatalogNotApproved,
             provider,
             context: crate::diagnostics::PricingContext {
+                model: None,
                 ranking_day: Some(ranking_day.to_owned()),
                 revision: None,
                 parser_version: None,

@@ -8,6 +8,7 @@ mod types;
 mod validation;
 
 pub(crate) use types::*;
+pub(crate) use validation::model_identifier;
 
 use std::{
     path::Path,

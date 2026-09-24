@@ -43,6 +43,7 @@ const RETAINED_CODEX_PRICING_BASES: &[&str] = &[
     "openai-api-2026-08-09-v3",
     "openai-standard-2026-08-06-v1",
     "openai-standard-2026-08-26-v2",
+    "openai-standard-2026-09-05-v1",
 ];
 const RETAINED_CLAUDE_PRICING_BASES: &[&str] = &[
     "anthropic-standard-2026-08-07-v1",
