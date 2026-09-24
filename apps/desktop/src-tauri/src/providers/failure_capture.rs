@@ -22,7 +22,7 @@ struct ScanEvidence {
     reviewed: bool,
     unreviewed: bool,
     provider_stopping: bool,
-    usage_scan: Option<crate::diagnostics::scan::UsageScanContext>,
+    usage_scan: Vec<(Provider, crate::diagnostics::scan::UsageScanContext)>,
 }
 
 thread_local! {
@@ -59,18 +59,22 @@ impl Drop for ScanFailures {
         for mut failure in scan.failures {
             match &mut failure {
                 Failure::Parser {
-                    provider: Provider::Claude,
-                    context,
-                    ..
+                    provider, context, ..
                 } => {
-                    context.scan = scan.usage_scan.clone();
+                    context.scan = scan
+                        .usage_scan
+                        .iter()
+                        .find(|(id, _)| id == provider)
+                        .map(|(_, context)| context.clone());
                 }
                 Failure::Pricing {
-                    provider: Provider::Claude,
-                    context,
-                    ..
+                    provider, context, ..
                 } => {
-                    context.scan = scan.usage_scan.clone();
+                    context.scan = scan
+                        .usage_scan
+                        .iter()
+                        .find(|(id, _)| id == provider)
+                        .map(|(_, context)| context.clone());
                 }
                 _ => {}
             }
@@ -91,28 +95,23 @@ impl Drop for ScanFailures {
     }
 }
 
-pub(crate) fn usage_scan(context: crate::diagnostics::scan::UsageScanContext) {
+pub(crate) fn usage_scan(provider: Provider, context: crate::diagnostics::scan::UsageScanContext) {
     SCAN.with_borrow_mut(|scan| {
         if let Some(scan) = scan {
-            scan.usage_scan = Some(context);
+            scan.usage_scan.retain(|(id, _)| *id != provider);
+            scan.usage_scan.push((provider, context));
         }
     });
 }
 
-pub(crate) fn needs_usage_scan() -> bool {
+pub(crate) fn needs_usage_scan(provider: Provider) -> bool {
     SCAN.with_borrow(|scan| {
         scan.as_ref().is_some_and(|scan| {
-            scan.failures.iter().any(|failure| {
-                matches!(
-                    failure,
-                    Failure::Parser {
-                        provider: Provider::Claude,
-                        ..
-                    } | Failure::Pricing {
-                        provider: Provider::Claude,
-                        ..
-                    }
-                )
+            scan.failures.iter().any(|failure| match failure {
+                Failure::Parser { provider: id, .. } | Failure::Pricing { provider: id, .. } => {
+                    *id == provider
+                }
+                _ => false,
             })
         })
     })

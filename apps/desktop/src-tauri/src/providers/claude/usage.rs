@@ -3325,7 +3325,8 @@ pub(crate) fn read_scan_context(
     today: Date,
     status: crate::diagnostics::scan::ScanStatus,
 ) -> Result<crate::diagnostics::scan::UsageScanContext, ()> {
-    crate::diagnostics::scan::read_claude(
+    crate::diagnostics::scan::read(
+        crate::providers::CodingProvider::Claude,
         connection,
         today,
         TRANSCRIPT_PARSER_VERSION as u64,
@@ -3335,7 +3336,7 @@ pub(crate) fn read_scan_context(
 }
 
 fn capture_scan_context(connection: &Connection, today: Date, status: UsageScanStatus) {
-    if !failure_capture::needs_usage_scan() {
+    if !failure_capture::needs_usage_scan(Provider::Claude) {
         return;
     }
     use crate::diagnostics::scan::ScanStatus;
@@ -3345,7 +3346,7 @@ fn capture_scan_context(connection: &Connection, today: Date, status: UsageScanS
         UsageScanStatus::Unavailable => ScanStatus::Unavailable,
     };
     if let Ok(context) = read_scan_context(connection, today, status) {
-        failure_capture::usage_scan(context);
+        failure_capture::usage_scan(Provider::Claude, context);
     }
 }
 

@@ -11,7 +11,15 @@ describe("Tauri Settings adapter", () => {
     const claudeScan = reports.find(
       (report) => report.failure.context.reason === "scan_incomplete",
     )!.failure.context.scan;
-    const report = { schemaVersion: 1, appVersion: "0.0.53", capturedAt: 1, claudeScan };
+    const report = {
+      schemaVersion: 1,
+      appVersion: "0.0.53",
+      capturedAt: 1,
+      providers: [
+        { provider: "codex", scan: claudeScan },
+        { provider: "claude", scan: claudeScan },
+      ],
+    };
     const invoke = vi.fn(async () => JSON.stringify(report));
     const adapter = createTauriSettingsAdapter({ invoke, listen: vi.fn() });
     const result = await adapter.readSupportReport();

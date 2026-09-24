@@ -6,7 +6,7 @@ use crate::providers::failure_capture;
 pub(crate) use usage::{
     USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION, load_daily_usage_history,
     load_hourly_usage, load_model_usage_history, parser_correction,
-    prepare_database as prepare_usage_database, usage_index_schema_version,
+    prepare_database as prepare_usage_database, read_scan_context, usage_index_schema_version,
     validate_response_cursors,
 };
 

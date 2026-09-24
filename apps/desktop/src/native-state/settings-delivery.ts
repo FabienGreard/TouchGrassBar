@@ -1,3 +1,4 @@
+import type { SupportSessionState } from "@touchgrass/contracts";
 import {
   settingsNavigationRequestSchema,
   settingsStateSchema,
@@ -26,6 +27,8 @@ type SettingsPortOutcome<Value> =
   | { fault: { code: SettingsPortFaultCode }; ok: false };
 
 type SettingsPort = {
+  readSupportSession: () => Promise<SettingsPortOutcome<SupportSessionState>>;
+  setSupportSession: (enabled: boolean) => Promise<SettingsPortOutcome<SupportSessionState>>;
   readSupportReport: () => Promise<SettingsPortOutcome<string>>;
   hide: () => Promise<SettingsPortOutcome<void>>;
   openLoginItemsSettings: () => Promise<SettingsPortOutcome<void>>;
@@ -196,6 +199,14 @@ function createSettingsDelivery(port: SettingsPort) {
   };
 
   return {
+    async readSupportSession() {
+      const outcome = await port.readSupportSession();
+      return outcome.ok ? outcome.value : null;
+    },
+    async setSupportSession(enabled: boolean) {
+      const outcome = await port.setSupportSession(enabled);
+      return outcome.ok ? outcome.value : null;
+    },
     async readSupportReport() {
       const outcome = await port.readSupportReport();
       return outcome.ok ? outcome.value : null;

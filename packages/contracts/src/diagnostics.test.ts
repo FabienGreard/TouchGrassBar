@@ -13,7 +13,10 @@ test("old failure reports and new bounded scan reports remain valid", () => {
       schemaVersion: 1,
       appVersion: "0.0.53",
       capturedAt: 1,
-      claudeScan: scan,
+      providers: [
+        { provider: "codex", scan },
+        { provider: "claude", scan },
+      ],
     }).success,
   ).toBe(true);
 });

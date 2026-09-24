@@ -245,7 +245,10 @@ pub(crate) struct DiagnosticRuntime {
 }
 
 impl DiagnosticRuntime {
-    pub(crate) fn start(profile: Arc<Mutex<ProfileCoordinator>>) -> Self {
+    pub(crate) fn start(
+        profile: Arc<Mutex<ProfileCoordinator>>,
+        support: Arc<crate::remote_support::RemoteSupport>,
+    ) -> Self {
         let shared = SHARED.get().cloned();
         let worker = shared.as_ref().and_then(|shared| {
             let shared = Arc::clone(shared);
@@ -255,6 +258,7 @@ impl DiagnosticRuntime {
                     #[cfg(target_os = "macos")]
                     let mut client = transport::Client::new();
                     while !shared.stopped.load(Ordering::Relaxed) {
+                        support.pump();
                         drain_captured(&shared);
                         #[cfg(target_os = "macos")]
                         client.pump(&shared, &profile);

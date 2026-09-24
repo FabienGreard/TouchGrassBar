@@ -1,3 +1,4 @@
+import type { SupportSessionState } from "@touchgrass/contracts";
 import {
   Brand,
   Button,
@@ -39,6 +40,8 @@ const settingsSectionDetails: Record<SettingsSection, { description: string; lab
   },
 };
 type SettingsScreenProps = {
+  onReadSupportSession?: (() => Promise<SupportSessionState | null>) | undefined;
+  onSetSupportSession?: ((enabled: boolean) => Promise<SupportSessionState | null>) | undefined;
   onReadSupportReport?: (() => Promise<string | null>) | undefined;
   autoUpdates?: boolean | null | undefined;
   busyProviders?: boolean | undefined;
@@ -77,6 +80,8 @@ type SettingsScreenProps = {
 
 function SettingsScreen({
   onReadSupportReport,
+  onReadSupportSession,
+  onSetSupportSession,
   autoUpdates = null,
   busyProviders = false,
   launchAtLogin = null,
@@ -231,7 +236,11 @@ function SettingsScreen({
                   state={updateState}
                 />
               </section>
-              <SupportSettings readReport={onReadSupportReport} />
+              <SupportSettings
+                readReport={onReadSupportReport}
+                readSession={onReadSupportSession}
+                setSession={onSetSupportSession}
+              />
             </div>
           ) : null}
           {section === "providers" ? (

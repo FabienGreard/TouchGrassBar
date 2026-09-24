@@ -29,7 +29,17 @@ use crate::sanitized::{
 };
 use time::{Date, OffsetDateTime};
 
-pub(crate) use claude::read_scan_context as read_claude_scan_context;
+pub(crate) fn read_scan_context(
+    provider: CodingProvider,
+    connection: &rusqlite::Connection,
+    today: Date,
+    status: crate::diagnostics::scan::ScanStatus,
+) -> Result<crate::diagnostics::scan::UsageScanContext, ()> {
+    match provider {
+        CodingProvider::Codex => codex::read_scan_context(connection, today, status),
+        CodingProvider::Claude => claude::read_scan_context(connection, today, status),
+    }
+}
 pub use registry::{CodingProvider, ProviderPresenceStatus};
 pub(crate) use registry::{PROVIDER_REGISTRY, detect_provider_presence, provider_descriptor};
 

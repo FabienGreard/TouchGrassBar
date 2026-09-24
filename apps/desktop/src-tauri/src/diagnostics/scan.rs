@@ -25,6 +25,10 @@ pub(crate) struct ScanFiles {
     pub error: u64,
     pub missing: u64,
     pub older_parser: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -35,7 +39,7 @@ pub(crate) struct ScanDay {
     pub priced_tokens: u64,
     pub cost_micros: Option<u64>,
     pub pricing_basis: Option<String>,
-    pub revision: u64,
+    pub revision: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -65,6 +69,8 @@ impl UsageScanContext {
                 self.files.error,
                 self.files.missing,
                 self.files.older_parser,
+                self.files.deferred.unwrap_or(0),
+                self.files.excluded.unwrap_or(0),
             ]
             .iter()
             .all(|n| *n <= MAX_SAFE_INTEGER)
@@ -73,7 +79,9 @@ impl UsageScanContext {
                 super::types::day(&item.ranking_day)
                     && item.observed_tokens <= MAX_SAFE_INTEGER
                     && item.priced_tokens <= item.observed_tokens
-                    && (1..=MAX_SAFE_INTEGER).contains(&item.revision)
+                    && item
+                        .revision
+                        .is_none_or(|n| (1..=MAX_SAFE_INTEGER).contains(&n))
                     && item.cost_micros.is_none_or(|n| n <= MAX_SAFE_INTEGER)
                     && item
                         .pricing_basis
@@ -88,7 +96,8 @@ impl UsageScanContext {
 }
 
 /// The caller supplies the scan outcome. A manual read uses Unknown.
-pub(crate) fn read_claude(
+pub(crate) fn read(
+    provider: crate::providers::CodingProvider,
     connection: &Connection,
     today: Date,
     parser_version: u64,
@@ -104,42 +113,60 @@ pub(crate) fn read_claude(
     let started = std::time::Instant::now();
     connection.progress_handler(1000, Some(move || started.elapsed().as_millis() >= 100));
     let _deadline = Deadline(connection);
+    use crate::providers::CodingProvider;
+    let files_sql = match provider {
+        CodingProvider::Claude => {
+            "SELECT COALESCE(SUM(completion_state = 'complete'), 0), COALESCE(SUM(completion_state = 'indexing'), 0), COALESCE(SUM(completion_state = 'error'), 0), COALESCE(SUM(completion_state = 'missing'), 0), COALESCE(SUM(parser_version < ?1), 0), NULL, NULL FROM claude_usage_files"
+        }
+        CodingProvider::Codex => {
+            "SELECT COALESCE(SUM(completion_state = 'complete'), 0), COALESCE(SUM(completion_state NOT IN ('complete', 'error', 'deferred', 'deferred-error', 'missing')), 0), COALESCE(SUM(completion_state IN ('error', 'deferred-error')), 0), COALESCE(SUM(completion_state = 'missing'), 0), COALESCE(SUM(parser_version < ?1), 0), COALESCE(SUM(completion_state IN ('deferred', 'deferred-error')), 0), COALESCE(SUM(usage_excluded = 1), 0) FROM codex_usage_files"
+        }
+    };
     let files = connection
-        .query_row(
-            "SELECT
-           COALESCE(SUM(completion_state = 'complete'), 0),
-           COALESCE(SUM(completion_state = 'indexing'), 0),
-           COALESCE(SUM(completion_state = 'error'), 0),
-           COALESCE(SUM(completion_state = 'missing'), 0),
-           COALESCE(SUM(parser_version < ?1), 0)
-         FROM claude_usage_files",
-            [parser_version],
-            |row| {
-                Ok(ScanFiles {
-                    complete: row.get(0)?,
-                    indexing: row.get(1)?,
-                    error: row.get(2)?,
-                    missing: row.get(3)?,
-                    older_parser: row.get(4)?,
-                })
-            },
-        )
+        .query_row(files_sql, [parser_version], |row| {
+            Ok(ScanFiles {
+                complete: row.get(0)?,
+                indexing: row.get(1)?,
+                error: row.get(2)?,
+                missing: row.get(3)?,
+                older_parser: row.get(4)?,
+                deferred: row.get(5)?,
+                excluded: row.get(6)?,
+            })
+        })
         .map_err(|_| ())?;
-    let aggregate_parser_version = connection.query_row(
+    let aggregate_parser_version = if provider == CodingProvider::Claude {
+        connection.query_row(
         "SELECT value FROM claude_usage_index_meta WHERE key = 'usage_aggregate_parser_version'",
         [], |row| row.get::<_, String>(0),
-    ).optional().map_err(|_| ())?.map(|value| value.parse::<u64>().map_err(|_| ())).transpose()?;
+    ).optional().map_err(|_| ())?.map(|value| value.parse::<u64>().map_err(|_| ())).transpose()?
+    } else {
+        None
+    };
     let mut statement = connection
         .prepare(
-            "SELECT day, observed_tokens, priced_tokens, cost_usd, pricing_basis, revision
-         FROM claude_usage_daily WHERE day >= ?1 AND day <= ?2 ORDER BY day DESC LIMIT 30",
+            match provider {
+              CodingProvider::Claude => "SELECT day, observed_tokens, priced_tokens, cost_usd, pricing_basis, revision FROM claude_usage_daily WHERE ?3 >= 0 AND day >= ?1 AND day <= ?2 ORDER BY day DESC LIMIT 30",
+              CodingProvider::Codex => "WITH basis AS (
+                SELECT d.day, CASE WHEN COUNT(*) = COUNT(d.pricing_basis) AND COUNT(DISTINCT d.pricing_basis) = 1 THEN MIN(d.pricing_basis) END AS pricing_basis
+                FROM codex_usage_file_model_days d JOIN codex_usage_files f ON f.path = d.path
+                WHERE f.parser_version = ?3 AND f.accounting_ready = 1 AND f.usage_excluded = 0 AND d.day >= ?1 AND d.day <= ?2 AND d.complete = 1 AND d.cost_usd IS NOT NULL GROUP BY d.day
+              ) SELECT d.day, SUM(d.observed_tokens),
+                CASE WHEN b.pricing_basis IS NOT NULL THEN SUM(d.priced_tokens) ELSE 0 END,
+                CASE WHEN b.pricing_basis IS NOT NULL AND SUM(d.priced_tokens) > 0 THEN SUM(d.cost_usd) END,
+                b.pricing_basis, NULL
+                FROM codex_usage_file_days d JOIN codex_usage_files f ON f.path = d.path LEFT JOIN basis b ON b.day = d.day
+                WHERE f.parser_version = ?3 AND f.accounting_ready = 1 AND f.usage_excluded = 0 AND d.day >= ?1 AND d.day <= ?2
+                GROUP BY d.day ORDER BY d.day DESC LIMIT 30",
+            }
         )
         .map_err(|_| ())?;
     let rows = statement
         .query_map(
             params![
                 (today - Duration::days(MAX_DAYS - 1)).to_string(),
-                today.to_string()
+                today.to_string(),
+                parser_version
             ],
             |row| {
                 let usd: Option<f64> = row.get(3)?;

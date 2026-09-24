@@ -38,7 +38,7 @@ providers, no usage, initial indexing, normal Active Mac transfer, low pricing
 coverage alone, and an unreviewed provider version alone are not failures.
 There are no health pings, success reports, or automatic recovery reports.
 
-Claude parser and pricing reports can include the final scan attempt's
+Codex and Claude parser and pricing reports can include the final scan attempt's
 bounded state: file-state counts, running and committed aggregate parser
 versions, catalog, and at most 30 daily token and cost summaries. A retained
 file error that prevents scan completion is a failed scan, even when no new
@@ -47,16 +47,41 @@ record is read. It uses the existing failure queue and grouping rules.
 ## User-requested local report
 
 Settings can read and copy a separate Support Report at the person's request.
-It contains the app version, capture time, and the same bounded Claude scan
-evidence. It uses fixed read-only queries in one transaction with short lock
+It contains the app version, capture time, and bounded scan
+evidence for each compiled provider. It uses fixed read-only queries in one transaction with short lock
 and query deadlines. Stored state cannot prove scan completion, so this
-manual report marks scan status unknown. A failed read produces no report.
+manual report marks scan status unknown. A failed provider read returns null for that provider. Failure to open the
+database produces no report.
 
 This Support Report may enter the Settings interface through a dedicated,
 validated command. Automatic Failure Reports still never enter React. Copy
-does not upload the report or start a repair. Remote support sessions require
-a separate authority and command interface; the diagnostic credential remains
-submission-only.
+does not upload the report or start a repair. The diagnostic credential remains submission-only.
+
+## Approved remote support
+
+Settings can approve a 30-minute Support Session for the current Profile,
+installation, and Active Mac generation. Approval is held in native process
+memory. Quitting the app, local cancellation, expiry, or an authority change
+stops delivery. The person must approve again after a restart. Failed server
+cancellation cannot restore local approval.
+
+During approval, the native worker polls for one fixed operation: read a fresh
+Support Report. Each poll and result uses current Profile session and Active
+Mac authority. Deployment administrators can request a report and inspect its
+result through internal functions. They cannot create the person's approval.
+No operation accepts a path, SQL, shell command, or source content.
+
+Requests have a two-minute deadline within session expiry. There is at most
+one pending request per session; new requests are at least 30 seconds apart.
+The native worker retains a result in memory for delivery retry. The backend
+accepts the first result and never changes it. Requests record the supplied
+operator label, request time, deadline, completion time, and report or fixed
+read-failure code. This label is audit context, not an authentication claim.
+
+Support Reports expire seven days after the request. Session audit records
+expire seven days after the session. An hourly job removes expired rows in
+bounded batches. A missing result does not establish device health. Remote
+repair requires a separate decision and fixed operations.
 
 ## Local delivery
 

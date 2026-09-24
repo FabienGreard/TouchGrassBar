@@ -5,6 +5,7 @@ import {
   DIAGNOSTIC_PRICING_REASONS,
   DIAGNOSTIC_SYNC_REASONS,
   type DiagnosticReport,
+  type SupportReport,
 } from "@touchgrass/contracts";
 import { type Infer, v } from "convex/values";
 
@@ -28,6 +29,8 @@ const usageScanContext = v.object({
     error: v.number(),
     missing: v.number(),
     olderParser: v.number(),
+    deferred: v.optional(v.number()),
+    excluded: v.optional(v.number()),
   }),
   days: v.array(
     v.object({
@@ -36,7 +39,7 @@ const usageScanContext = v.object({
       pricedTokens: v.number(),
       costMicros: nullableNumber,
       pricingBasis: nullableString,
-      revision: v.number(),
+      revision: nullableNumber,
     }),
   ),
 });
@@ -176,3 +179,21 @@ export const diagnosticStoredReportValidator = v.object({
   expiresAt: v.number(),
   report: diagnosticReportValidator,
 });
+
+export const supportReportValidator = v.object({
+  schemaVersion: v.literal(1),
+  appVersion: v.string(),
+  capturedAt: v.number(),
+  providers: v.array(
+    v.object({ provider: providerValidator, scan: v.union(usageScanContext, v.null()) }),
+  ),
+});
+
+type ValidatorSupportReport = Infer<typeof supportReportValidator>;
+export type SupportValidatorMatchesContract = Assert<
+  ValidatorSupportReport extends SupportReport
+    ? SupportReport extends ValidatorSupportReport
+      ? true
+      : false
+    : false
+>;

@@ -189,6 +189,8 @@ export const usageScanContextSchema = z
         error: count,
         missing: count,
         olderParser: count,
+        deferred: count.exactOptional(),
+        excluded: count.exactOptional(),
       })
       .strict(),
     days: z
@@ -200,7 +202,7 @@ export const usageScanContextSchema = z
             pricedTokens: count,
             costMicros: count.nullable(),
             pricingBasis: catalogVersion.nullable(),
-            revision,
+            revision: revision.nullable(),
           })
           .strict(),
       )
@@ -224,7 +226,17 @@ export const supportReportSchema = z
     schemaVersion: z.literal(1),
     appVersion: numericVersion,
     capturedAt: count,
-    claudeScan: usageScanContextSchema,
+    providers: z
+      .array(
+        z
+          .object({
+            provider: z.enum(["codex", "claude"]),
+            scan: usageScanContextSchema.nullable(),
+          })
+          .strict(),
+      )
+      .length(2)
+      .refine((items) => new Set(items.map((item) => item.provider)).size === items.length),
   })
   .strict();
 
@@ -419,3 +431,8 @@ export const diagnosticReportSchema = z
 
 export type DiagnosticReport = z.infer<typeof diagnosticReportSchema>;
 export type DiagnosticFailure = z.infer<typeof diagnosticFailureSchema>;
+
+export type SupportReport = z.infer<typeof supportReportSchema>;
+
+export const supportSessionStateSchema = z.object({ expiresAt: count.nullable() }).strict();
+export type SupportSessionState = z.infer<typeof supportSessionStateSchema>;
