@@ -22,6 +22,7 @@ struct ScanEvidence {
     reviewed: bool,
     unreviewed: bool,
     provider_stopping: bool,
+    usage_scan: Vec<(Provider, crate::diagnostics::scan::UsageScanContext)>,
 }
 
 thread_local! {
@@ -56,6 +57,27 @@ impl Drop for ScanFailures {
             return;
         };
         for mut failure in scan.failures {
+            match &mut failure {
+                Failure::Parser {
+                    provider, context, ..
+                } => {
+                    context.scan = scan
+                        .usage_scan
+                        .iter()
+                        .find(|(id, _)| id == provider)
+                        .map(|(_, context)| context.clone());
+                }
+                Failure::Pricing {
+                    provider, context, ..
+                } => {
+                    context.scan = scan
+                        .usage_scan
+                        .iter()
+                        .find(|(id, _)| id == provider)
+                        .map(|(_, context)| context.clone());
+                }
+                _ => {}
+            }
             if let Failure::Parser { context, .. } = &mut failure {
                 context.files_seen = Some(scan.files_seen);
                 context.records_accepted = Some(scan.records_accepted);
@@ -71,6 +93,28 @@ impl Drop for ScanFailures {
             diagnostics::capture_at_epoch(failure, scan.capture_epoch);
         }
     }
+}
+
+pub(crate) fn usage_scan(provider: Provider, context: crate::diagnostics::scan::UsageScanContext) {
+    SCAN.with_borrow_mut(|scan| {
+        if let Some(scan) = scan {
+            scan.usage_scan.retain(|(id, _)| *id != provider);
+            scan.usage_scan.push((provider, context));
+        }
+    });
+}
+
+pub(crate) fn needs_usage_scan(provider: Provider) -> bool {
+    SCAN.with_borrow(|scan| {
+        scan.as_ref().is_some_and(|scan| {
+            scan.failures.iter().any(|failure| match failure {
+                Failure::Parser { provider: id, .. } | Failure::Pricing { provider: id, .. } => {
+                    *id == provider
+                }
+                _ => false,
+            })
+        })
+    })
 }
 
 pub(crate) fn file_seen() {
@@ -219,7 +263,10 @@ pub(crate) fn capture(failure: Failure) {
 
 pub(crate) fn parser(provider: Provider, parser_version: i64, reason: ParserReason) {
     let failure = Failure::Parser {
-        code: if reason == ParserReason::ReadFailed {
+        code: if matches!(
+            reason,
+            ParserReason::ReadFailed | ParserReason::ScanIncomplete
+        ) {
             ParserCode::ParserScanFailed
         } else {
             ParserCode::ParserRecordInvalid
@@ -235,6 +282,7 @@ pub(crate) fn parser(provider: Provider, parser_version: i64, reason: ParserReas
             ranking_day: None,
             records_affected: None,
             records_excluded: None,
+            scan: None,
             reason,
         },
     };
@@ -306,6 +354,7 @@ pub(crate) fn pricing(
             priced_tokens: None,
             local_cost_micros: None,
             outgoing_cost_micros: None,
+            scan: None,
         },
     });
 }

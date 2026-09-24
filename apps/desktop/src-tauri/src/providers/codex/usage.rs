@@ -47,6 +47,37 @@ const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 130;
 const MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 153;
 const ROLLOUT_PARSER_VERSION: i64 = 25;
+
+fn read_scan_context(
+    connection: &Connection,
+    today: Date,
+    status: crate::diagnostics::scan::ScanStatus,
+) -> Result<crate::diagnostics::scan::UsageScanContext, ()> {
+    crate::diagnostics::scan::read(
+        crate::providers::CodingProvider::Codex,
+        connection,
+        today,
+        ROLLOUT_PARSER_VERSION as u64,
+        current_pricing_basis(),
+        status,
+    )
+}
+
+fn capture_scan_context(connection: &Connection, today: Date, status: UsageScanStatus) {
+    if !failure_capture::needs_usage_scan(Provider::Codex) {
+        return;
+    }
+    use crate::diagnostics::scan::ScanStatus;
+    let status = match status {
+        UsageScanStatus::Complete => ScanStatus::Complete,
+        UsageScanStatus::Indexing => ScanStatus::Indexing,
+        UsageScanStatus::Unavailable => ScanStatus::Unavailable,
+    };
+    if let Ok(context) = read_scan_context(connection, today, status) {
+        failure_capture::usage_scan(Provider::Codex, context);
+    }
+}
+
 const REQUIRED_PARENT_PROBE_ORDER_VERSION: u8 = 2;
 const UNKNOWN_MODEL: &str = "__unknown__";
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "codex-usage-index";
@@ -6394,6 +6425,7 @@ fn index_local_usage_with_budget(
         if !pricing_complete {
             local.suppress_cost_evidence();
         }
+        capture_scan_context(&connection, today, UsageScanStatus::Indexing);
         return Some(local);
     }
     let discovery_started = Instant::now();
@@ -6815,6 +6847,14 @@ fn index_local_usage_with_budget(
     } else {
         UsageScanStatus::Complete
     };
+    if scan_status == UsageScanStatus::Unavailable {
+        failure_capture::parser(
+            Provider::Codex,
+            ROLLOUT_PARSER_VERSION,
+            crate::diagnostics::ParserReason::ScanIncomplete,
+        );
+    }
+    capture_scan_context(&connection, today, scan_status);
     let stop = if failed {
         "error"
     } else if scan_status == UsageScanStatus::Complete {
@@ -11213,7 +11253,20 @@ mod tests {
         )
         .unwrap();
 
-        let observation = run_usage_passes(&fixture, now, 2);
+        let mut observation = None;
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            observation = Some(run_usage_passes(&fixture, now, 2));
+        });
+        let observation = observation.unwrap();
+        assert!(failures.iter().any(|failure| matches!(failure,
+            crate::diagnostics::Failure::Parser { provider: Provider::Codex, context, .. }
+            if context.reason == crate::diagnostics::ParserReason::ScanIncomplete && context.scan.as_ref().is_some_and(|scan| scan.files.error > 0 && scan.status == crate::diagnostics::scan::ScanStatus::Unavailable)
+        )));
+        assert!(
+            !serde_json::to_string(&failures)
+                .unwrap()
+                .contains("last-only-root")
+        );
         let (completion_state, parser_error_seen): (String, bool) =
             Connection::open(&fixture.database)
                 .unwrap()

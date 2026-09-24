@@ -38,6 +38,32 @@ providers, no usage, initial indexing, normal Active Mac transfer, low pricing
 coverage alone, and an unreviewed provider version alone are not failures.
 There are no health pings, success reports, or automatic recovery reports.
 
+Codex and Claude parser and pricing reports can include the final scan attempt's
+bounded state: file-state counts, running and committed aggregate parser
+versions, catalog, and at most 30 daily token and cost summaries. A retained
+file error that prevents scan completion is a failed scan, even when no new
+record is read. It uses the existing failure queue and grouping rules.
+
+## Automatic operational logs
+
+Diagnostics run during normal app work and upload in the background. They do
+not require a support session, a report request, a copy action, or a Settings
+control. Support reads reports already received by the backend.
+
+The logs use fixed event codes and typed fields. Provider refresh deadlines,
+caught adapter panics, and a returned provider identity that does not match the
+requested provider produce a `provider_access_failed` event with operation
+`refresh_provider`. The event records the reason, never the panic payload.
+Capture preserves the Profile authority epoch from the start of the refresh.
+Cancellation and a missing provider installation remain quiet. Provider
+adapters continue to report their classified request failures.
+
+The same automatic queue carries database, parser, pricing, provider access,
+and synchronization failures. Scan and pricing events can include bounded
+file counts and daily token/cost evidence. An unavailable diagnostic read
+leaves that context unknown. Raw console output, process stderr, provider
+logs, source contents, and credentials are not uploaded.
+
 ## Local delivery
 
 The bounded diagnostic queue is outside the main SQLite database. It must

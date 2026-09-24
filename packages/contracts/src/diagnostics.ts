@@ -88,6 +88,7 @@ export const DIAGNOSTIC_DATABASE_STAGES = [
 
 export const DIAGNOSTIC_PARSER_REASONS = [
   "read_failed",
+  "scan_incomplete",
   "invalid_json",
   "invalid_usage_shape",
   "invalid_counter",
@@ -175,6 +176,51 @@ export const diagnosticDatabaseContextSchema = z
   })
   .strict();
 
+export const usageScanContextSchema = z
+  .object({
+    status: z.enum(["complete", "indexing", "unavailable", "unknown"]),
+    parserVersion: version,
+    aggregateParserVersion: version.nullable(),
+    catalogVersion: catalogVersion.nullable(),
+    files: z
+      .object({
+        complete: count,
+        indexing: count,
+        error: count,
+        missing: count,
+        olderParser: count,
+        deferred: count.exactOptional(),
+        excluded: count.exactOptional(),
+      })
+      .strict(),
+    days: z
+      .array(
+        z
+          .object({
+            rankingDay,
+            observedTokens: count,
+            pricedTokens: count,
+            costMicros: count.nullable(),
+            pricingBasis: catalogVersion.nullable(),
+            revision: revision.nullable(),
+          })
+          .strict(),
+      )
+      .max(30),
+  })
+  .strict()
+  .superRefine((scan, ctx) => {
+    if (
+      scan.days.some(
+        (day, i) =>
+          day.pricedTokens > day.observedTokens ||
+          (i > 0 && scan.days[i - 1]!.rankingDay <= day.rankingDay),
+      )
+    ) {
+      ctx.addIssue({ code: "custom", message: "Invalid scan daily evidence" });
+    }
+  });
+
 export const diagnosticParserContextSchema = z
   .object({
     parserVersion: version.nullable(),
@@ -187,6 +233,7 @@ export const diagnosticParserContextSchema = z
     rankingDay: rankingDay.nullable().exactOptional(),
     recordsAffected: count.exactOptional(),
     recordsExcluded: count.exactOptional(),
+    scan: usageScanContextSchema.exactOptional(),
     reason: z.enum(DIAGNOSTIC_PARSER_REASONS),
   })
   .strict();
@@ -202,6 +249,7 @@ export const diagnosticPricingContextSchema = z
     pricedTokens: count.nullable(),
     localCostMicros: count.nullable(),
     outgoingCostMicros: count.nullable(),
+    scan: usageScanContextSchema.exactOptional(),
   })
   .strict();
 
@@ -219,13 +267,15 @@ export const diagnosticSyncContextSchema = z
 
 export const diagnosticProviderAccessContextSchema = z
   .object({
-    operation: z.enum(["read_usage", "read_quota", "refresh_credentials"]),
+    operation: z.enum(["read_usage", "read_quota", "refresh_credentials", "refresh_provider"]),
     reason: z.enum([
       "read_failed",
       "permission_denied",
       "request_failed",
       "invalid_response",
       "credentials_rejected",
+      "deadline_exceeded",
+      "adapter_panicked",
     ]),
     statusCode,
     retryCount: count,

@@ -1,7 +1,10 @@
 # Failure Diagnostics
 
 Use this support interface to inspect received failures without access to a
-Tokenmaxxer's Mac. The module implements
+Tokenmaxxer's Mac. Collection and upload run automatically during normal app
+work. The person does not need to copy a report, start a session, or approve
+a diagnostic request. Support reads reports already received by the backend.
+The module implements
 [ADR-0021](adr/0021-send-bounded-failure-diagnostics.md).
 
 ## Read reports
@@ -34,19 +37,55 @@ public issues. Use a minimal description and synthetic reproduction data.
 
 ## Capture triggers
 
-| Area            | Report trigger                                                                           | States that stay quiet                                                                      |
-| --------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Database        | Open, migration, invariant, or a supported runtime storage operation fails.              | Successful open or migration.                                                               |
-| Parser          | A source read fails, or a complete usage record has an invalid or unsupported shape.     | No source, initial indexing, an unfinished trailing record, or an unreviewed version alone. |
-| Pricing         | A calculation fails, or an existing cost is removed because its catalog is not approved. | No usage or low coverage alone.                                                             |
-| Provider access | An attempted quota or account-usage request fails or has an invalid response.            | Provider absent, provider disabled, or normal cancellation.                                 |
-| Sync            | Delivery fails, a response is invalid, or an exact usage revision conflicts.             | No pending work, normal Active Mac transfer, or a successful session refresh.               |
+| Area            | Report trigger                                                                                   | States that stay quiet                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Database        | Open, migration, invariant, or a supported runtime storage operation fails.                      | Successful open or migration.                                                               |
+| Parser          | A source read fails, or a complete usage record has an invalid or unsupported shape.             | No source, initial indexing, an unfinished trailing record, or an unreviewed version alone. |
+| Pricing         | A calculation fails, or an existing cost is removed because its catalog is not approved.         | No usage or low coverage alone.                                                             |
+| Provider access | A quota/account request fails, a refresh times out or panics, or a provider response is invalid. | Provider absent, provider disabled, or normal cancellation.                                 |
+| Sync            | Delivery fails, a response is invalid, or an exact usage revision conflicts.                     | No pending work, normal Active Mac transfer, or a successful session refresh.               |
 
 A later success does not send a recovery report. The worker retries only
 queued failures. A report credential must have been registered during an
 earlier healthy Profile session to report a database failure remotely.
 
+## Automatic log content
+
+Each event contains an app version, architecture, occurrence timestamps,
+repeat count, provider when applicable, fixed error code, and typed context.
+These are structured operational logs. Raw console output and provider log
+files can contain private source data, so they stay on the Mac.
+
+A `provider_access_failed` event with `operation: refresh_provider` records:
+
+- `deadline_exceeded`: the provider refresh exceeded its time limit;
+- `adapter_panicked`: the provider adapter panicked; its panic text stays local;
+- `invalid_response`: the response named a different provider.
+
+Database, provider-request, and sync events retain their existing stage,
+reason, HTTP status, and revision fields when known. Scan and pricing events
+now include the bounded local index evidence described below. This permits
+remote diagnosis from received events without a command channel to the Mac.
+
 ## Interpret a report
+
+For a Codex or Claude parser or pricing failure, updated clients can include
+`context.scan`. It contains the completed scan attempt's status, the running
+parser version, the last committed aggregate parser version, the pricing
+catalog, file counts by state, and at most 30 days of stored token and cost
+evidence. A missing scan field means unknown, including for older reports.
+
+`scan_incomplete` is a failed scan that cannot finish. It can report a retained
+file error even when no record is parsed again. For Claude, `files.error > 0`
+blocks the complete-scan gate that accepts replacement costs. Codex can retain partial
+pricing evidence. Its optional `files.deferred` and `files.excluded` counts
+show deferred processing and excluded usage. These counts can overlap other
+states. `files.indexing` shows unfinished files. `files.olderParser` includes retained files from earlier
+parsers; missing files can remain in this count. File counts cover the whole
+index, not one usage day. For Claude, a lower aggregate parser version means
+that the current parser has not completed its aggregate update. Codex does not store
+that marker or a daily scan revision; those fields are null. These fields
+explain the captured attempt; they do not prove the present device state.
 
 Read `report.failure.area`, `code`, and the typed `context` first. Check
 `report.firstOccurredAt`, `lastOccurredAt`, and `contextCapturedAt` before
@@ -110,6 +149,15 @@ The local queue expires reports after seven days and has a 2 MiB storage
 budget, including atomic replacement. Server records expire 14 days after
 receipt. An hourly internal cleanup deletes expired records in bounded
 batches. Diagnostics are independent of normal usage synchronization.
+
+## Release order
+
+Deploy the backend validator that accepts the optional `scan` field and
+`scan_incomplete` reason, and the new `refresh_provider` operation and
+refresh failure reasons before publishing this desktop version. Existing
+reports remain valid. Verify an updated client's failed scan arrives with
+file counts and daily pricing evidence. A successful backend deployment
+alone does not prove that the desktop report was delivered.
 
 ## Verification
 

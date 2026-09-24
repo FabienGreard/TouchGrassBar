@@ -223,5 +223,81 @@
         "pendingCount": 0
       }
     }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "88888888-8888-4888-8888-888888888888",
+    "failure": {
+      "area": "parser",
+      "provider": "claude",
+      "code": "parser_scan_failed",
+      "context": {
+        "parserVersion": 15,
+        "sourceVersions": ["2.1.263"],
+        "reviewStatus": "reviewed",
+        "filesSeen": 4,
+        "recordsAccepted": 120,
+        "recordsRejected": 2,
+        "reason": "scan_incomplete",
+        "scan": {
+          "status": "unavailable",
+          "parserVersion": 15,
+          "aggregateParserVersion": 14,
+          "catalogVersion": "anthropic-standard-2026-09-23-v2",
+          "files": {
+            "complete": 40,
+            "indexing": 0,
+            "error": 2,
+            "missing": 1,
+            "olderParser": 0
+          },
+          "days": [
+            {
+              "rankingDay": "2026-09-10",
+              "observedTokens": 1000000,
+              "pricedTokens": 0,
+              "costMicros": null,
+              "pricingBasis": null,
+              "revision": 3
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000009",
+    "failure": {
+      "area": "provider_access",
+      "provider": "claude",
+      "code": "provider_access_failed",
+      "context": {
+        "operation": "refresh_provider",
+        "reason": "adapter_panicked",
+        "statusCode": 503,
+        "retryCount": 2
+      }
+    }
   }
 ]

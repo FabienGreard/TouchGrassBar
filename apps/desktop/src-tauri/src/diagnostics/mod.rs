@@ -2,6 +2,7 @@
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 mod queue;
+pub(crate) mod scan;
 mod transport;
 mod types;
 mod validation;
