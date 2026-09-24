@@ -1,4 +1,4 @@
-//! Content-free failure evidence. A scan emits at most one report per day/reason.
+//! Content-free failure evidence, bounded per day, reason, and fixed rejection detail.
 
 use std::cell::RefCell;
 
@@ -196,7 +196,13 @@ fn same_reason(left: &Failure, right: &Failure) -> bool {
                 context: y,
                 code: d,
             },
-        ) => a == b && c == d && x.reason == y.reason && x.ranking_day == y.ranking_day,
+        ) => {
+            a == b
+                && c == d
+                && x.reason == y.reason
+                && x.ranking_day == y.ranking_day
+                && x.rejection == y.rejection
+        }
         (
             Failure::Pricing {
                 provider: a,
@@ -268,6 +274,15 @@ pub(crate) fn capture(failure: Failure) {
 }
 
 pub(crate) fn parser(provider: Provider, parser_version: i64, reason: ParserReason) {
+    parser_with_rejection(provider, parser_version, reason, None);
+}
+
+pub(crate) fn parser_with_rejection(
+    provider: Provider,
+    parser_version: i64,
+    reason: ParserReason,
+    rejection: Option<diagnostics::RecordRejection>,
+) {
     let failure = Failure::Parser {
         code: if matches!(
             reason,
@@ -279,6 +294,7 @@ pub(crate) fn parser(provider: Provider, parser_version: i64, reason: ParserReas
         },
         provider,
         context: ParserContext {
+            rejection,
             parser_version: u64::try_from(parser_version).ok(),
             source_versions: Vec::new(),
             review_status: ReviewStatus::Unknown,

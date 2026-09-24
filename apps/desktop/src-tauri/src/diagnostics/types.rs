@@ -76,6 +76,37 @@ codes!(ParserReason {
     UnknownUsageFields,
     FallbackCreditUnsupported
 });
+codes!(RejectionField {
+    Aborted,
+    Message,
+    MessageId,
+    MessageType,
+    MessageRole,
+    Model
+});
+codes!(RejectionProblem {
+    Missing,
+    Null,
+    WrongType,
+    UnexpectedValue,
+    InvalidFormat
+});
+codes!(TokenCounterState {
+    Absent,
+    Invalid,
+    Partial,
+    Zero,
+    Nonzero
+});
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RecordRejection {
+    pub field: RejectionField,
+    pub problem: RejectionProblem,
+    pub token_counters: TokenCounterState,
+}
+
 codes!(PricingReason {
     UnknownModel,
     CatalogUnavailable,
@@ -151,6 +182,8 @@ pub(crate) struct DatabaseContext {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ParserContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<RecordRejection>,
     pub parser_version: Option<u64>,
     pub source_versions: Vec<String>,
     pub review_status: ReviewStatus,
@@ -319,6 +352,12 @@ impl Failure {
                 .expect("fixed group is an array")
                 .push(model.clone());
         }
+        if let Some(rejection) = context.get("rejection") {
+            group
+                .as_array_mut()
+                .expect("fixed group is an array")
+                .push(rejection.clone());
+        }
         group.to_string()
     }
 
@@ -338,8 +377,16 @@ impl Failure {
                         .iter()
                         .all(|item| super::validation::database_module(&item.module))
             }
-            Self::Parser { context, .. } => {
-                context.ranking_day.as_deref().is_none_or(day)
+            Self::Parser {
+                context,
+                provider,
+                code,
+            } => {
+                (context.rejection.is_none()
+                    || (*provider == Provider::Claude
+                        && *code == ParserCode::ParserRecordInvalid
+                        && context.reason == ParserReason::InvalidMessageMetadata))
+                    && context.ranking_day.as_deref().is_none_or(day)
                     && context.scan.as_ref().is_none_or(|scan| scan.valid())
                     && context.records_excluded.is_none_or(|excluded| {
                         context
@@ -499,6 +546,45 @@ mod tests {
             context.reason = PricingReason::MissingEffectivePrice;
         }
         assert!(!other.valid());
+    }
+
+    #[test]
+    fn rejection_details_separate_queue_groups_and_reject_wrong_context() {
+        let reports: Vec<Report> = serde_json::from_str(include_str!(
+            "../../../../../packages/contracts/fixtures/diagnostic-reports-v1.json"
+        ))
+        .unwrap();
+        let original = reports.iter().find(|r| matches!(&r.failure, Failure::Parser { context, .. } if context.rejection.is_some())).unwrap().failure.clone();
+        assert!(original.valid());
+        for change in 0..3 {
+            let mut other = original.clone();
+            if let Failure::Parser { context, .. } = &mut other {
+                let detail = context.rejection.as_mut().unwrap();
+                match change {
+                    0 => detail.field = RejectionField::MessageId,
+                    1 => detail.problem = RejectionProblem::Null,
+                    _ => detail.token_counters = TokenCounterState::Zero,
+                }
+            }
+            assert!(other.valid());
+            assert_ne!(original.group(), other.group());
+        }
+        for change in 0..3 {
+            let mut other = original.clone();
+            if let Failure::Parser {
+                context,
+                provider,
+                code,
+            } = &mut other
+            {
+                match change {
+                    0 => *provider = Provider::Codex,
+                    1 => *code = ParserCode::ParserScanFailed,
+                    _ => context.reason = ParserReason::ScanIncomplete,
+                }
+            }
+            assert!(!other.valid());
+        }
     }
 
     #[test]

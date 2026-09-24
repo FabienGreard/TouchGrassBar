@@ -17,7 +17,9 @@ use crate::daily_usage_aggregate::{
     DailyCostEvidence, DailyUsageEvidence, ProviderUsageEvidence, calculate_daily_usage_aggregates,
     calculate_usage_periods, checked_sum, period_days,
 };
-use crate::diagnostics::{ParserReason, Provider};
+use crate::diagnostics::{
+    ParserReason, Provider, RecordRejection, RejectionField, RejectionProblem, TokenCounterState,
+};
 use crate::providers::{BoundedUnknownFields, ProviderCorrection, failure_capture};
 use crate::sanitized::{
     ApiEquivalentCostQuality, TopModelUsage, UsageCoverage, UsagePeriods, UsageScanStatus,
@@ -218,6 +220,107 @@ fn rejected_assistant_shape_reason(line: &[u8]) -> ParserReason {
     ParserReason::InvalidUsageMetadata
 }
 
+// Shape evidence only. A nonzero state does not establish valid, unique usage.
+fn rejected_counter_state(value: &serde_json::Value) -> TokenCounterState {
+    use TokenCounterState::*;
+    let Some(usage) = value.pointer("/message/usage") else {
+        return Absent;
+    };
+    if usage.is_null() {
+        return Absent;
+    }
+    let Some(usage) = usage.as_object() else {
+        return Invalid;
+    };
+    let fields = [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ];
+    let mut present = 0;
+    let mut nonzero = false;
+    for field in fields {
+        let Some(value) = usage.get(field).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let Some(count) = value.as_u64() else {
+            return Invalid;
+        };
+        present += 1;
+        nonzero |= count > 0;
+    }
+    match present {
+        0 => Absent,
+        4 if nonzero => Nonzero,
+        4 => Zero,
+        _ => Partial,
+    }
+}
+
+fn metadata_rejection(value: &serde_json::Value) -> Option<RecordRejection> {
+    use RejectionField::*;
+    use RejectionProblem::*;
+    let detail = |field, problem| {
+        Some(RecordRejection {
+            field,
+            problem,
+            token_counters: rejected_counter_state(value),
+        })
+    };
+    if let Some(aborted) = value.get("aborted") {
+        if !aborted.is_boolean() {
+            return detail(Aborted, if aborted.is_null() { Null } else { WrongType });
+        }
+    }
+    let message = match value.get("message") {
+        None => return detail(Message, Missing),
+        Some(v) if v.is_null() => return detail(Message, Null),
+        Some(v) => match v.as_object() {
+            Some(v) => v,
+            None => return detail(Message, WrongType),
+        },
+    };
+    for (key, field) in [
+        ("id", MessageId),
+        ("type", MessageType),
+        ("role", MessageRole),
+        ("model", Model),
+    ] {
+        let text = match message.get(key) {
+            None => return detail(field, Missing),
+            Some(v) if v.is_null() => return detail(field, Null),
+            Some(v) => match v.as_str() {
+                Some(v) => v,
+                None => return detail(field, WrongType),
+            },
+        };
+        let problem = match field {
+            MessageId if !valid_provider_identifier(text) => Some(InvalidFormat),
+            MessageType if text != "message" => Some(UnexpectedValue),
+            MessageRole if text != "assistant" => Some(UnexpectedValue),
+            Model if !valid_model_name(text) => Some(InvalidFormat),
+            _ => None,
+        };
+        if let Some(problem) = problem {
+            return detail(field, problem);
+        }
+    }
+    None
+}
+
+fn metadata_failure(line: &[u8]) {
+    let rejection = serde_json::from_slice::<serde_json::Value>(line)
+        .ok()
+        .and_then(|value| metadata_rejection(&value));
+    failure_capture::parser_with_rejection(
+        Provider::Claude,
+        TRANSCRIPT_PARSER_VERSION,
+        ParserReason::InvalidMessageMetadata,
+        rejection,
+    );
+}
+
 fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLineOutcome {
     let header = match serde_json::from_slice::<RawTranscriptHeader>(_line) {
         Ok(header) => header,
@@ -266,7 +369,12 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
         observed_at,
     };
     let Ok(line) = serde_json::from_slice::<RawAssistantLine>(_line) else {
-        parser_failure(rejected_assistant_shape_reason(_line));
+        let reason = rejected_assistant_shape_reason(_line);
+        if reason == ParserReason::InvalidMessageMetadata {
+            metadata_failure(_line);
+        } else {
+            parser_failure(reason);
+        }
         return TranscriptLineOutcome::FrameOnly(frame);
     };
     if line.record_type != "assistant"
@@ -274,14 +382,14 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
         || line.message.role != "assistant"
         || !valid_provider_identifier(&line.message.id)
     {
-        parser_failure(ParserReason::InvalidMessageMetadata);
+        metadata_failure(_line);
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     if line.message.model == "<synthetic>" && is_reviewed_zero_usage_api_error(_line) {
         return TranscriptLineOutcome::Ignored;
     }
     if !valid_model_name(&line.message.model) {
-        parser_failure(ParserReason::InvalidMessageMetadata);
+        metadata_failure(_line);
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     let cache_creation_known = line.message.usage.cache_creation_input_tokens.is_some();
@@ -1640,7 +1748,7 @@ impl StoredFileSummary {
 fn prepare_error_diagnostic_replay(connection: &mut Connection) -> Result<(), ()> {
     let transaction = connection.transaction().map_err(|_| ())?;
     let inserted = transaction.execute(
-        "INSERT OR IGNORE INTO claude_usage_index_meta(key, value) VALUES('error_diagnostic_replay_v1', '1')", [],
+        "INSERT OR IGNORE INTO claude_usage_index_meta(key, value) VALUES('error_diagnostic_replay_v2', '1')", [],
     ).map_err(|_| ())?;
     if inserted > 0 {
         transaction.execute(
@@ -6566,6 +6674,128 @@ mod tests {
     }
 
     #[test]
+    fn metadata_rejection_identifies_field_and_counter_state() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
+        value["message"].as_object_mut().unwrap().remove("model");
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let _scan = failure_capture::ScanFailures::begin();
+            assert!(matches!(
+                parse_transcript_line(value.to_string().as_bytes(), &[7; 32]),
+                TranscriptLineOutcome::FrameOnly(_)
+            ));
+        });
+        let report = serde_json::to_value(&failures[0]).unwrap();
+        assert_eq!(
+            report["context"]["rejection"],
+            serde_json::json!({
+                "field": "model", "problem": "missing", "tokenCounters": "nonzero"
+            })
+        );
+    }
+
+    #[test]
+    fn metadata_rejection_details_are_bounded_and_keep_distinct_scan_groups() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
+        for (pointer, value, field, problem) in [
+            ("/aborted", serde_json::json!(null), "aborted", "null"),
+            (
+                "/aborted",
+                serde_json::json!("PRIVATE"),
+                "aborted",
+                "wrong_type",
+            ),
+            ("/message", serde_json::json!(null), "message", "null"),
+            ("/message", serde_json::json!([]), "message", "wrong_type"),
+            (
+                "/message/id",
+                serde_json::json!("PRIVATE /path"),
+                "message_id",
+                "invalid_format",
+            ),
+            (
+                "/message/type",
+                serde_json::json!("PRIVATE"),
+                "message_type",
+                "unexpected_value",
+            ),
+            (
+                "/message/role",
+                serde_json::json!("PRIVATE"),
+                "message_role",
+                "unexpected_value",
+            ),
+            ("/message/model", serde_json::json!(null), "model", "null"),
+            (
+                "/message/model",
+                serde_json::json!(5),
+                "model",
+                "wrong_type",
+            ),
+            (
+                "/message/model",
+                serde_json::json!("<synthetic>"),
+                "model",
+                "invalid_format",
+            ),
+        ] {
+            let mut record = fixture.clone();
+            if pointer == "/aborted" {
+                record["aborted"] = value;
+            } else {
+                *record.pointer_mut(pointer).unwrap() = value;
+            }
+            let failures = crate::diagnostics::collect_failures_for_test(|| {
+                assert!(matches!(
+                    parse_transcript_line(record.to_string().as_bytes(), &[7; 32]),
+                    TranscriptLineOutcome::FrameOnly(_)
+                ));
+            });
+            let result = serde_json::to_value(&failures[0]).unwrap();
+            assert_eq!(result["context"]["rejection"]["field"], field);
+            assert_eq!(result["context"]["rejection"]["problem"], problem);
+            assert!(!result.to_string().contains("PRIVATE"));
+        }
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let _scan = failure_capture::ScanFailures::begin();
+            for (usage, expected) in [
+                (serde_json::json!(null), "absent"),
+                (serde_json::json!({"input_tokens": -1}), "invalid"),
+                (
+                    serde_json::json!({"input_tokens": 12, "output_tokens": 0}),
+                    "partial",
+                ),
+                (
+                    serde_json::json!({"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}),
+                    "zero",
+                ),
+                (
+                    serde_json::json!({"input_tokens": 12, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}),
+                    "nonzero",
+                ),
+            ] {
+                let mut record = fixture.clone();
+                record["message"].as_object_mut().unwrap().remove("model");
+                record["message"]["usage"] = usage;
+                assert_eq!(
+                    serde_json::to_value(rejected_counter_state(&record)).unwrap(),
+                    expected
+                );
+                for _ in 0..2 {
+                    parse_transcript_line(record.to_string().as_bytes(), &[7; 32]);
+                }
+            }
+        });
+        assert_eq!(failures.len(), 5);
+        for failure in failures {
+            let result = serde_json::to_value(failure).unwrap();
+            assert_eq!(result["context"]["recordsAffected"], 2);
+            assert_eq!(result["context"]["recordsExcluded"], 2);
+        }
+    }
+
+    #[test]
     fn rejected_usage_diagnostics_identify_fixed_fields_without_source_values() {
         let fixture: serde_json::Value =
             serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
@@ -6644,7 +6874,7 @@ mod tests {
         let valid = claude_code_2_1_258_transcript_line();
         let mut invalid: serde_json::Value = serde_json::from_str(&valid).unwrap();
         invalid["uuid"] = serde_json::json!("invalid-fixture-frame");
-        invalid["message"]["usage"]["input_tokens"] = serde_json::json!("invalid-counter");
+        invalid["message"].as_object_mut().unwrap().remove("model");
         write_transcript(
             &config.join("projects/project/failed.jsonl"),
             &[valid.clone(), invalid.to_string()],
@@ -6656,10 +6886,11 @@ mod tests {
         let mut connection = Connection::open(fixture.database()).unwrap();
         connection
             .execute(
-                "DELETE FROM claude_usage_index_meta WHERE key = 'error_diagnostic_replay_v1'",
+                "DELETE FROM claude_usage_index_meta WHERE key = 'error_diagnostic_replay_v2'",
                 [],
             )
             .unwrap();
+        connection.execute("INSERT OR IGNORE INTO claude_usage_index_meta(key, value) VALUES('error_diagnostic_replay_v1', '1')", []).unwrap();
         let good_offset: i64 = connection
             .query_row(
                 "SELECT parsed_offset FROM claude_usage_files WHERE completion_state = 'complete'",
@@ -6685,7 +6916,7 @@ mod tests {
             );
             assert_eq!(after.daily_cost, before.daily_cost);
         });
-        assert!(failures.iter().any(|failure| matches!(failure, crate::diagnostics::Failure::Parser { context, .. } if context.reason == ParserReason::InvalidInputCounter && context.records_excluded == Some(1))));
+        assert!(failures.iter().any(|failure| matches!(failure, crate::diagnostics::Failure::Parser { context, .. } if context.reason == ParserReason::InvalidMessageMetadata && context.rejection.as_ref().is_some_and(|detail| detail.field == RejectionField::Model && detail.problem == RejectionProblem::Missing && detail.token_counters == TokenCounterState::Nonzero) && context.records_excluded == Some(1))));
         let repeated = crate::diagnostics::collect_failures_for_test(|| {
             index_local_usage_at(
                 &fixture.database(),
@@ -6695,7 +6926,7 @@ mod tests {
             )
             .unwrap();
         });
-        assert!(!repeated.iter().any(|failure| matches!(failure, crate::diagnostics::Failure::Parser { context, .. } if context.reason == ParserReason::InvalidInputCounter)));
+        assert!(!repeated.iter().any(|failure| matches!(failure, crate::diagnostics::Failure::Parser { context, .. } if context.reason == ParserReason::InvalidMessageMetadata && context.rejection.as_ref().is_some_and(|detail| detail.field == RejectionField::Model && detail.problem == RejectionProblem::Missing && detail.token_counters == TokenCounterState::Nonzero))));
         assert_eq!(
             stored_daily_revision(&fixture.database(), now().date()),
             revision

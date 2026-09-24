@@ -187,9 +187,11 @@ test("registration needs current profile session, installation credential and ge
 test("anonymous narrow credential accepts all failure areas and assigns profile/device; reports do not update product health", async () => {
   const t = testBackend();
   const owner = await seedReporter(t);
-  // Model-name reports have a separate upload test; keep this batch within the burst limit.
+  // Detailed reports have separate upload tests; keep this batch within the burst limit.
   const legacyFixtures = fixtures.filter(
-    (report) => report.failure.area !== "pricing" || report.failure.context.model === undefined,
+    (report) =>
+      (report.failure.area !== "pricing" || report.failure.context.model === undefined) &&
+      (report.failure.area !== "parser" || report.failure.context.rejection === undefined),
   );
   for (const report of legacyFixtures) {
     expect(
@@ -610,4 +612,40 @@ test("specific Claude parser failures survive support lookup", async () => {
     paginationOpts: { numItems: 10, cursor: null },
   });
   expect(stored.page[0]!.report).toEqual(report);
+});
+
+test("metadata rejection detail survives upload and separates support groups", async () => {
+  const t = testBackend();
+  const owner = await seedReporter(t);
+  const original = fixtures.find(
+    (r) => r.failure.area === "parser" && r.failure.context.rejection,
+  )!;
+  const reports = [];
+  for (const rejection of [
+    { field: "model", problem: "missing", tokenCounters: "nonzero" },
+    { field: "message_id", problem: "invalid_format", tokenCounters: "nonzero" },
+    { field: "model", problem: "missing", tokenCounters: "zero" },
+    { field: "model", problem: "null", tokenCounters: "nonzero" },
+  ]) {
+    const report = diagnosticReportSchema.parse({
+      ...original,
+      reportId: crypto.randomUUID(),
+      failure: {
+        ...original.failure,
+        context: { ...original.failure.context, rejection },
+      },
+    });
+    reports.push(report);
+    await t.mutation(api.diagnostics.submit, {
+      reporterId: owner.reporterId,
+      diagnosticCredential: DIAGNOSTIC_CREDENTIAL,
+      report,
+    });
+  }
+  const stored = await t.query(internal.diagnostics.forProfile, {
+    tokenmaxxerId: owner.tokenmaxxerId,
+    paginationOpts: { numItems: 10, cursor: null },
+  });
+  expect(stored.page.map((row) => row.report)).toEqual(expect.arrayContaining(reports));
+  expect(new Set(stored.page.map((row) => row.groupKey)).size).toBe(reports.length);
 });

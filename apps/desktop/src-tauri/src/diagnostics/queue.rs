@@ -459,6 +459,7 @@ mod tests {
             provider: Provider::Claude,
             code: ParserCode::ParserScanFailed,
             context: ParserContext {
+                rejection: None,
                 parser_version: Some(11),
                 source_versions: vec![],
                 review_status: ReviewStatus::Unknown,

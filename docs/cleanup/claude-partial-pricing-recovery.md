@@ -74,3 +74,18 @@ and a repeated scan neither replays the failure nor adds a daily revision.
 Live verification must record the new reason distribution if an updated client
 still has rejected records. Do not declare its token gap fixed from a pricing
 recovery alone.
+
+## Detailed rejection replay
+
+[The detailed rejection change](https://github.com/FabienGreard/TouchGrassBar/commit/0955e467)
+adds permanent `error_diagnostic_replay_v2` with the
+same atomic cursor-reset and bounded scan behavior. The v1 marker stays in the
+index; it cannot prevent the v2 scan. The replay regression starts with a v1
+marker and retained failed files, then verifies field-level evidence, unchanged
+known tokens and costs, unchanged complete-file cursors, and no second replay.
+
+Owner issue #112 also tracks this rollout. Deploy the additive rejection
+validator before shipping the new client. Verify an affected updated client
+emits field/problem/counter-state codes. Do not close the remaining parser
+investigation based only on pricing recovery. Keep both replay markers until
+supported schema history makes their removal safe.

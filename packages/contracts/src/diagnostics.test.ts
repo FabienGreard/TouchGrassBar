@@ -58,3 +58,28 @@ test("unknown model names are bounded and cannot contain source text or paths", 
       .success,
   ).toBe(false);
 });
+
+test("rejection evidence permits only fixed codes in the relevant Claude failure", () => {
+  const original = fixtures.find((r) => "rejection" in r.failure.context)!;
+  const evidence = { field: "model", problem: "missing", tokenCounters: "nonzero" };
+  const check = (rejection: unknown, provider = "claude", reason = "invalid_message_metadata") =>
+    diagnosticReportSchema.safeParse({
+      ...original,
+      failure: {
+        ...original.failure,
+        provider,
+        context: { ...original.failure.context, reason, rejection },
+      },
+    }).success;
+  expect(check(evidence)).toBe(true);
+  for (const value of [
+    null,
+    { ...evidence, field: "/private/path" },
+    { ...evidence, problem: "raw error" },
+    { ...evidence, tokenCounters: 123 },
+    { ...evidence, content: "private" },
+  ])
+    expect(check(value)).toBe(false);
+  expect(check(evidence, "codex")).toBe(false);
+  expect(check(evidence, "claude", "scan_incomplete")).toBe(false);
+});
