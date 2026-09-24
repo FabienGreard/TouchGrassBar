@@ -38,6 +38,26 @@ providers, no usage, initial indexing, normal Active Mac transfer, low pricing
 coverage alone, and an unreviewed provider version alone are not failures.
 There are no health pings, success reports, or automatic recovery reports.
 
+Claude parser and pricing reports can include the final scan attempt's
+bounded state: file-state counts, running and committed aggregate parser
+versions, catalog, and at most 30 daily token and cost summaries. A retained
+file error that prevents scan completion is a failed scan, even when no new
+record is read. It uses the existing failure queue and grouping rules.
+
+## User-requested local report
+
+Settings can read and copy a separate Support Report at the person's request.
+It contains the app version, capture time, and the same bounded Claude scan
+evidence. It uses fixed read-only queries in one transaction with short lock
+and query deadlines. Stored state cannot prove scan completion, so this
+manual report marks scan status unknown. A failed read produces no report.
+
+This Support Report may enter the Settings interface through a dedicated,
+validated command. Automatic Failure Reports still never enter React. Copy
+does not upload the report or start a repair. Remote support sessions require
+a separate authority and command interface; the diagnostic credential remains
+submission-only.
+
 ## Local delivery
 
 The bounded diagnostic queue is outside the main SQLite database. It must

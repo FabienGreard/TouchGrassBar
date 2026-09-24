@@ -50,6 +50,7 @@ codes!(ReviewStatus {
 });
 codes!(ParserReason {
     ReadFailed,
+    ScanIncomplete,
     InvalidJson,
     InvalidUsageShape,
     InvalidCounter,
@@ -147,6 +148,8 @@ pub(crate) struct ParserContext {
     pub records_affected: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records_excluded: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<super::scan::UsageScanContext>,
     pub reason: ParserReason,
 }
 
@@ -162,6 +165,8 @@ pub(crate) struct PricingContext {
     pub priced_tokens: Option<u64>,
     pub local_cost_micros: Option<u64>,
     pub outgoing_cost_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan: Option<super::scan::UsageScanContext>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -312,6 +317,7 @@ impl Failure {
             }
             Self::Parser { context, .. } => {
                 context.ranking_day.as_deref().is_none_or(day)
+                    && context.scan.as_ref().is_none_or(|scan| scan.valid())
                     && context.records_excluded.is_none_or(|excluded| {
                         context
                             .records_affected
@@ -325,6 +331,7 @@ impl Failure {
             }
             Self::Pricing { code, context, .. } => {
                 context.ranking_day.as_deref().is_none_or(day)
+                    && context.scan.as_ref().is_none_or(|scan| scan.valid())
                     && context.revision.is_none_or(|value| value > 0)
                     && context
                         .catalog_version
@@ -383,6 +390,7 @@ impl Failure {
                         && (!matches!(
                             key.as_str(),
                             "parserVersion"
+                                | "aggregateParserVersion"
                                 | "observedFormat"
                                 | "expectedFormat"
                                 | "observedVersion"

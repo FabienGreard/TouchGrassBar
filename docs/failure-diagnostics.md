@@ -48,6 +48,21 @@ earlier healthy Profile session to report a database failure remotely.
 
 ## Interpret a report
 
+For a Claude parser or pricing failure, updated clients can include
+`context.scan`. It contains the completed scan attempt's status, the running
+parser version, the last committed aggregate parser version, the pricing
+catalog, file counts by state, and at most 30 days of stored token and cost
+evidence. A missing scan field means unknown, including for older reports.
+
+`scan_incomplete` is a failed scan that cannot finish. It can report a retained
+file error even when no record is parsed again. `files.error > 0` blocks the
+complete-scan gate that accepts replacement costs. `files.indexing` shows
+unfinished files. `files.olderParser` includes retained files from earlier
+parsers; missing files can remain in this count. File counts cover the whole
+index, not one usage day. A lower aggregate parser version means that the
+current parser has not completed its aggregate update. These fields explain
+the captured attempt; they do not prove the present device state.
+
 Read `report.failure.area`, `code`, and the typed `context` first. Check
 `report.firstOccurredAt`, `lastOccurredAt`, and `contextCapturedAt` before
 the server `receivedAt`. The timestamps are UTC epoch milliseconds. A report
@@ -110,6 +125,33 @@ The local queue expires reports after seven days and has a 2 MiB storage
 budget, including atomic replacement. Server records expire 14 days after
 receipt. An hourly internal cleanup deletes expired records in bounded
 batches. Diagnostics are independent of normal usage synchronization.
+
+## Local support report
+
+In Settings → General → Support, select **Copy support report**. This reads
+the same bounded Claude scan evidence from the local database. Paste the
+report into the support conversation. It is not uploaded automatically.
+The report contains the app version and capture time, but no Profile
+credentials, source paths, provider record identifiers, or conversations.
+
+A manual read uses `status: unknown`: stored file states cannot prove that
+the last source-directory traversal completed. The file counts, aggregate
+parser version, and daily pricing values are still available. The command
+uses a read-only connection, one consistent read transaction, a short lock
+timeout, and a query deadline. It does not scan transcripts or change the
+database. An unavailable read returns an error instead of invented zeroes.
+
+The report is limited to Claude usage in this release. Approved remote
+support actions are tracked in [#110](https://github.com/FabienGreard/TouchGrassBar/issues/110).
+The current app has no remote execution or repair interface.
+
+## Release order
+
+Deploy the backend validator that accepts the optional `scan` field and
+`scan_incomplete` reason before publishing this desktop version. Existing
+reports remain valid. Verify an updated client's failed scan arrives with
+file counts and daily pricing evidence. A successful backend deployment
+alone does not prove that the desktop report was delivered.
 
 ## Verification
 

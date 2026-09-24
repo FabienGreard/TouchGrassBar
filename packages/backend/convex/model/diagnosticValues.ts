@@ -17,6 +17,30 @@ function literals<const T extends readonly string[]>(values: T) {
 const nullableNumber = v.union(v.number(), v.null());
 const nullableString = v.union(v.string(), v.null());
 
+const usageScanContext = v.object({
+  status: literals(["complete", "indexing", "unavailable", "unknown"]),
+  parserVersion: v.number(),
+  aggregateParserVersion: nullableNumber,
+  catalogVersion: nullableString,
+  files: v.object({
+    complete: v.number(),
+    indexing: v.number(),
+    error: v.number(),
+    missing: v.number(),
+    olderParser: v.number(),
+  }),
+  days: v.array(
+    v.object({
+      rankingDay: v.string(),
+      observedTokens: v.number(),
+      pricedTokens: v.number(),
+      costMicros: nullableNumber,
+      pricingBasis: nullableString,
+      revision: v.number(),
+    }),
+  ),
+});
+
 export const diagnosticFailureValidator = v.union(
   v.object({
     area: v.literal("database"),
@@ -56,6 +80,7 @@ export const diagnosticFailureValidator = v.union(
       rankingDay: v.optional(nullableString),
       recordsAffected: v.optional(v.number()),
       recordsExcluded: v.optional(v.number()),
+      scan: v.optional(usageScanContext),
       reason: literals(DIAGNOSTIC_PARSER_REASONS),
     }),
   }),
@@ -73,6 +98,7 @@ export const diagnosticFailureValidator = v.union(
       pricedTokens: nullableNumber,
       localCostMicros: nullableNumber,
       outgoingCostMicros: nullableNumber,
+      scan: v.optional(usageScanContext),
     }),
   }),
   v.object({

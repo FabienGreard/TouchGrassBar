@@ -3320,6 +3320,35 @@ fn index_local_usage_at(
     )
 }
 
+pub(crate) fn read_scan_context(
+    connection: &Connection,
+    today: Date,
+    status: crate::diagnostics::scan::ScanStatus,
+) -> Result<crate::diagnostics::scan::UsageScanContext, ()> {
+    crate::diagnostics::scan::read_claude(
+        connection,
+        today,
+        TRANSCRIPT_PARSER_VERSION as u64,
+        super::current_pricing_basis(),
+        status,
+    )
+}
+
+fn capture_scan_context(connection: &Connection, today: Date, status: UsageScanStatus) {
+    if !failure_capture::needs_usage_scan() {
+        return;
+    }
+    use crate::diagnostics::scan::ScanStatus;
+    let status = match status {
+        UsageScanStatus::Complete => ScanStatus::Complete,
+        UsageScanStatus::Indexing => ScanStatus::Indexing,
+        UsageScanStatus::Unavailable => ScanStatus::Unavailable,
+    };
+    if let Ok(context) = read_scan_context(connection, today, status) {
+        failure_capture::usage_scan(context);
+    }
+}
+
 fn index_local_usage_with_budget(
     database_path: &Path,
     config_root: &Path,
@@ -3491,6 +3520,11 @@ fn index_local_usage_with_budget(
     } else {
         UsageScanStatus::Complete
     };
+    // A retained error can block repricing without parsing that record again.
+    // Report this failed scan through the existing bounded failure queue.
+    if scan_status == UsageScanStatus::Unavailable {
+        parser_failure(ParserReason::ScanIncomplete);
+    }
     let aggregate_changed = refresh_daily_aggregates(
         &connection,
         cutoff,
@@ -3502,6 +3536,7 @@ fn index_local_usage_with_budget(
     prune_private_message_details(&connection, today)
         .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
         .ok()?;
+    capture_scan_context(&connection, today, scan_status);
     debug_usage_event(&format!(
         "scan_completed status={scan_status:?} files={} bytes_read={} elapsed_ms={}",
         ordered_files.len(),
@@ -3579,6 +3614,63 @@ fn stored_daily_revision(database_path: &Path, day: Date) -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn persistent_scan_error_reports_final_file_and_daily_pricing_state() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let path = config.join("projects/private-project/session.jsonl");
+        write_transcript(
+            &path,
+            &[transcript_line(
+                "private-message",
+                now() - Duration::minutes(5),
+                "claude-sonnet-4-20250514",
+                usage(100, 0, 0, 0),
+            )],
+        );
+        index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        connection.execute("UPDATE claude_usage_daily SET priced_tokens = 0, cost_usd = NULL, pricing_basis = NULL", []).unwrap();
+        drop(connection);
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{invalid json}\n")
+            .unwrap();
+        for _ in 0..2 {
+            let failures = crate::diagnostics::collect_failures_for_test(|| {
+                index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+                    .unwrap();
+            });
+            let scan = failures
+                .iter()
+                .find_map(|failure| match failure {
+                    crate::diagnostics::Failure::Parser { context, .. }
+                        if context.reason == ParserReason::ScanIncomplete =>
+                    {
+                        context.scan.as_ref()
+                    }
+                    _ => None,
+                })
+                .expect("a retained error must keep reporting the scan blocker");
+            assert_eq!(
+                scan.status,
+                crate::diagnostics::scan::ScanStatus::Unavailable
+            );
+            assert_eq!(scan.files.error, 1);
+            assert_eq!(scan.days[0].observed_tokens, 100);
+            assert_eq!(scan.days[0].priced_tokens, 0);
+            assert_eq!(scan.days[0].cost_micros, None);
+            assert!(
+                !serde_json::to_string(&failures)
+                    .unwrap()
+                    .contains("private")
+            );
+        }
+    }
     use std::{
         fs,
         path::{Path, PathBuf},

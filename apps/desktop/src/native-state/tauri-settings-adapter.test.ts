@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import reports from "../../../../packages/contracts/fixtures/diagnostic-reports-v1.json";
 
 import {
   createTauriSettingsAdapter,
@@ -6,6 +7,25 @@ import {
 } from "@/native-state/tauri-settings-adapter";
 
 describe("Tauri Settings adapter", () => {
+  test("accepts only the fixed support report and rejects private or oversized payloads", async () => {
+    const claudeScan = reports.find(
+      (report) => report.failure.context.reason === "scan_incomplete",
+    )!.failure.context.scan;
+    const report = { schemaVersion: 1, appVersion: "0.0.53", capturedAt: 1, claudeScan };
+    const invoke = vi.fn(async () => JSON.stringify(report));
+    const adapter = createTauriSettingsAdapter({ invoke, listen: vi.fn() });
+    const result = await adapter.readSupportReport();
+    expect(result.ok).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("get_support_report", undefined);
+    for (const value of [
+      JSON.stringify({ ...report, credential: "private" }),
+      "x".repeat(33 * 1024),
+      "not json",
+    ]) {
+      invoke.mockResolvedValueOnce(value);
+      expect((await adapter.readSupportReport()).ok).toBe(false);
+    }
+  });
   test("opens only the fixed native Login Items action and contains its failures", async () => {
     const invoke = vi.fn(async () => undefined);
     const adapter = createTauriSettingsAdapter({ invoke, listen: vi.fn() });

@@ -44,6 +44,7 @@ function port(): SettingsPort & {
   let navigate = ignoreNavigation;
   let clearRecovery = ignoreRecoveryClear;
   return {
+    readSupportReport: vi.fn(async () => ({ ok: true as const, value: "{}" })),
     clearRecovery: () => clearRecovery(),
     hide: vi.fn(async () => ({ ok: true as const, value: undefined })),
     openLoginItemsSettings: vi.fn(async () => ({ ok: true as const, value: undefined })),

@@ -102,6 +102,7 @@ function SettingsCoordinator({
   return (
     <>
       <SettingsScreen
+        onReadSupportReport={() => delivery.readSupportReport()}
         autoUpdates={
           updateView.state === null || updateView.state.update.status === "unavailable"
             ? null

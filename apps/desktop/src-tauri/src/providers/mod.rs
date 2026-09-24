@@ -29,6 +29,7 @@ use crate::sanitized::{
 };
 use time::{Date, OffsetDateTime};
 
+pub(crate) use claude::read_scan_context as read_claude_scan_context;
 pub use registry::{CodingProvider, ProviderPresenceStatus};
 pub(crate) use registry::{PROVIDER_REGISTRY, detect_provider_presence, provider_descriptor};
 

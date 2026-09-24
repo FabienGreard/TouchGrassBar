@@ -13,6 +13,7 @@ mod provider_installation;
 mod providers;
 mod quota_headroom;
 pub mod sanitized;
+mod support;
 pub mod updater;
 mod usage_history;
 mod usage_sync;
@@ -1141,6 +1142,23 @@ fn settings_state_with_recovery_key_suffix(
 }
 
 #[tauri::command]
+async fn get_support_report(
+    window: WebviewWindow,
+    app: AppHandle,
+    reports: State<'_, support::SupportReports>,
+) -> Result<String, String> {
+    require_settings(&window)?;
+    let reports = support::SupportReports(reports.0.clone());
+    let version = app.package_info().version.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        reports.read(&version, time::OffsetDateTime::now_utc())
+    })
+    .await
+    .map_err(|_| "support-report-unavailable".to_owned())?
+    .map_err(|_| "support-report-unavailable".to_owned())
+}
+
+#[tauri::command]
 fn get_settings_state(
     window: WebviewWindow,
     app: AppHandle,
@@ -1353,6 +1371,7 @@ pub fn run() {
             get_doomerboard,
             get_sanitized_state,
             get_settings_state,
+            get_support_report,
             get_update_state,
             hide_surface,
             hide_panel,
@@ -1413,6 +1432,7 @@ pub fn run() {
                     None
                 }
             };
+            app.manage(support::SupportReports(database_path.clone()));
             let prepared_database =
                 database_path
                     .as_deref()

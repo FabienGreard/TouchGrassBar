@@ -9,7 +9,7 @@ mod usage;
 
 pub(crate) use usage::{
     USAGE_INDEX_SCHEMA_MODULE, USAGE_INDEX_SCHEMA_VERSION, load_daily_usage_history,
-    load_usage_history_detail, prepare_database as prepare_usage_database,
+    load_usage_history_detail, prepare_database as prepare_usage_database, read_scan_context,
     usage_index_schema_version,
 };
 

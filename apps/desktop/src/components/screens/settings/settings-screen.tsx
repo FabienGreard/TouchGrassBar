@@ -22,6 +22,7 @@ import {
 } from "./settings-section";
 import { SettingsToggleRow } from "./settings-toggle-row";
 import { UpdatesSettings } from "./updates-settings";
+import { SupportSettings } from "./support-settings";
 
 const settingsSectionDetails: Record<SettingsSection, { description: string; label: string }> = {
   general: {
@@ -38,6 +39,7 @@ const settingsSectionDetails: Record<SettingsSection, { description: string; lab
   },
 };
 type SettingsScreenProps = {
+  onReadSupportReport?: (() => Promise<string | null>) | undefined;
   autoUpdates?: boolean | null | undefined;
   busyProviders?: boolean | undefined;
   launchAtLogin?: boolean | null | undefined;
@@ -74,6 +76,7 @@ type SettingsScreenProps = {
 };
 
 function SettingsScreen({
+  onReadSupportReport,
   autoUpdates = null,
   busyProviders = false,
   launchAtLogin = null,
@@ -228,6 +231,7 @@ function SettingsScreen({
                   state={updateState}
                 />
               </section>
+              <SupportSettings readReport={onReadSupportReport} />
             </div>
           ) : null}
           {section === "providers" ? (

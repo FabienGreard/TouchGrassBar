@@ -26,6 +26,7 @@ type SettingsPortOutcome<Value> =
   | { fault: { code: SettingsPortFaultCode }; ok: false };
 
 type SettingsPort = {
+  readSupportReport: () => Promise<SettingsPortOutcome<string>>;
   hide: () => Promise<SettingsPortOutcome<void>>;
   openLoginItemsSettings: () => Promise<SettingsPortOutcome<void>>;
   read: () => Promise<SettingsPortOutcome<unknown>>;
@@ -195,6 +196,10 @@ function createSettingsDelivery(port: SettingsPort) {
   };
 
   return {
+    async readSupportReport() {
+      const outcome = await port.readSupportReport();
+      return outcome.ok ? outcome.value : null;
+    },
     async activate() {
       const revision = ++activationRevision;
       const [navigation, recoveryClear] = await Promise.all([

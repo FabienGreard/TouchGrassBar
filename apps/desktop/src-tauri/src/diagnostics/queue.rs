@@ -468,6 +468,7 @@ mod tests {
                 ranking_day: None,
                 records_affected: None,
                 records_excluded: None,
+                scan: None,
                 reason: ParserReason::ReadFailed,
             },
         }

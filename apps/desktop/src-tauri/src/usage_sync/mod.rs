@@ -3564,6 +3564,7 @@ fn convert_cost(
                 priced_tokens: None,
                 local_cost_micros: None,
                 outgoing_cost_micros: None,
+                scan: None,
             },
         });
         UsageSyncError::INVALID_VALUE
@@ -3616,6 +3617,7 @@ fn convert_cost(
                 priced_tokens: None,
                 local_cost_micros: Some(cost.micros),
                 outgoing_cost_micros: None,
+                scan: None,
             },
         });
         return Ok(None);

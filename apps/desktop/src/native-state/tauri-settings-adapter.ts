@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { SETTINGS_NAVIGATION_EVENT, SETTINGS_RECOVERY_CLEAR_EVENT } from "@touchgrass/contracts";
+import {
+  SETTINGS_NAVIGATION_EVENT,
+  SETTINGS_RECOVERY_CLEAR_EVENT,
+  supportReportSchema,
+} from "@touchgrass/contracts";
 
 import type {
   SettingsPort,
@@ -37,6 +41,22 @@ function createTauriSettingsAdapter(
   bindings: TauriSettingsBindings = defaultBindings,
 ): SettingsPort {
   return {
+    readSupportReport: async () => {
+      const outcome = await closedInvoke(
+        bindings,
+        "get_support_report",
+        "settings-state-unavailable",
+      );
+      if (!outcome.ok) return outcome;
+      try {
+        if (typeof outcome.value !== "string" || outcome.value.length > 32 * 1024)
+          throw new Error();
+        const report = supportReportSchema.parse(JSON.parse(outcome.value));
+        return { ok: true, value: JSON.stringify(report, null, 2) };
+      } catch {
+        return { ok: false, fault: { code: "settings-state-unavailable" } };
+      }
+    },
     openLoginItemsSettings: async () => {
       const outcome = await closedInvoke(
         bindings,
