@@ -2601,9 +2601,14 @@ fn refresh_daily_aggregates_with_catalog(
                     && (parser_correction_pending || explicit_corrections.contains_key(&day));
                 let proven_parser_correction_applied = lower_correction_allowed
                     && candidate.observed_tokens < previous.observed_tokens;
-                let accept_candidate = scan_can_prove_complete
+                // A failed file must not freeze pricing for valid current-parser
+                // records. An incomplete pass may replace the priced subset only
+                // when it covers more tokens; it cannot reduce retained usage or
+                // discard a larger previously priced subset during replay.
+                let accept_candidate = (scan_can_prove_complete
                     && (lower_correction_allowed
-                        || candidate.observed_tokens >= previous.observed_tokens);
+                        || candidate.observed_tokens >= previous.observed_tokens))
+                    || candidate.priced_tokens > previous.priced_tokens;
                 let observed_tokens = if lower_correction_allowed {
                     candidate.observed_tokens
                 } else {
@@ -6487,6 +6492,192 @@ mod tests {
         assert_eq!(
             stored_daily_revision(&fixture.database(), now().date()),
             before + 1
+        );
+    }
+
+    #[test]
+    fn parser_replay_recovers_pricing_despite_an_unrelated_invalid_record() {
+        for (replay, aggregate_parser, retained_tokens) in [
+            (true, Some(14_i64), 100_u64),
+            (false, None, 200),
+            (false, Some(TRANSCRIPT_PARSER_VERSION), 200),
+        ] {
+            let fixture = FixtureRoot::new();
+            let config = fixture.config();
+            write_transcript(
+                &config.join("projects/project/valid.jsonl"),
+                &[claude_code_2_1_258_transcript_line()],
+            );
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+            let connection = Connection::open(fixture.database()).unwrap();
+            if replay {
+                connection
+                    .execute_batch(
+                        "UPDATE claude_usage_files SET parser_version = 14;
+                     UPDATE claude_usage_frames SET parser_version = 14;
+                     UPDATE claude_usage_messages SET parser_version = 14, complete = 0;",
+                    )
+                    .unwrap();
+            }
+            connection.execute(
+                "UPDATE claude_usage_daily SET observed_tokens = ?1, coverage = 'partial', priced_tokens = 0,
+                   cost_usd = NULL, cost_modeled = 0, pricing_basis = NULL, pricing_fingerprint = NULL",
+                [retained_tokens],
+            ).unwrap();
+            connection
+                .execute(
+                    "DELETE FROM claude_usage_index_meta WHERE key = ?1",
+                    [USAGE_AGGREGATE_PARSER_VERSION_KEY],
+                )
+                .unwrap();
+            if let Some(version) = aggregate_parser {
+                connection
+                    .execute(
+                        "INSERT INTO claude_usage_index_meta(key, value) VALUES(?1, ?2)",
+                        params![USAGE_AGGREGATE_PARSER_VERSION_KEY, version.to_string()],
+                    )
+                    .unwrap();
+            }
+            drop(connection);
+            let mut invalid: serde_json::Value =
+                serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
+            invalid["uuid"] = serde_json::json!("invalid-fixture-frame");
+            invalid["message"]["usage"]["input_tokens"] = serde_json::json!("invalid-counter");
+            write_transcript(
+                &config.join("projects/project/invalid.jsonl"),
+                &[invalid.to_string()],
+            );
+            let recovered = index_local_usage_at(
+                &fixture.database(),
+                &config,
+                &fixture.probe(),
+                now() + Duration::minutes(1),
+            )
+            .unwrap();
+            assert_eq!(recovered.scan_status, UsageScanStatus::Unavailable);
+            assert_eq!(
+                recovered.daily_usage[&now().date()].observed_tokens,
+                retained_tokens
+            );
+            let connection = Connection::open(fixture.database()).unwrap();
+            let messages =
+                load_active_provider_messages(&connection, now().date(), now().date()).unwrap();
+            assert_eq!(messages.len(), 1);
+            assert!(messages[0].complete);
+            assert_eq!(messages[0].observed_tokens, 100);
+            let catalog = super::super::pricing::catalog().unwrap();
+            let price = price_stored_message(catalog, &messages[0]);
+            assert_eq!(price.priced_tokens, 100);
+            assert!(price.cost_usd.is_some());
+            assert!(
+                recovered.daily_cost.get(&now().date()).is_some_and(|cost| {
+                    cost.priced_tokens == 100 && cost.api_equivalent_cost_usd.is_some()
+                }),
+                "valid replayed usage must recover pricing despite an unrelated invalid record"
+            );
+            assert_eq!(
+                recovered.daily_usage[&now().date()].coverage,
+                UsageCoverage::Partial
+            );
+            assert_eq!(recovered.correction, None);
+            assert_eq!(
+                stored_usage_aggregate_parser_version(&connection).unwrap(),
+                aggregate_parser
+            );
+            let revision = stored_daily_revision(&fixture.database(), now().date());
+            drop(connection);
+            let repeated = index_local_usage_at(
+                &fixture.database(),
+                &config,
+                &fixture.probe(),
+                now() + Duration::minutes(2),
+            )
+            .unwrap();
+            assert_eq!(repeated.daily_cost, recovered.daily_cost);
+            assert!(!repeated.aggregate_changed);
+            assert_eq!(
+                stored_daily_revision(&fixture.database(), now().date()),
+                revision
+            );
+            // A later incomplete pass with less priced detail must keep the
+            // larger accepted subset and must not lower the retained token count.
+            let connection = Connection::open(fixture.database()).unwrap();
+            connection
+                .execute("UPDATE claude_usage_messages SET complete = 0", [])
+                .unwrap();
+            let cutoff = now().date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
+            assert!(!refresh_daily_aggregates(&connection, cutoff, now().date(), false).unwrap());
+            assert_eq!(
+                stored_daily_revision(&fixture.database(), now().date()),
+                revision
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_scan_extends_existing_priced_evidence_without_duplicate_revisions() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let path = config.join("projects/project/session.jsonl");
+        let first = transcript_line(
+            "first-priced",
+            now() - Duration::minutes(5),
+            "claude-sonnet-4-5-20250929",
+            usage(100, 0, 0, 0),
+        );
+        let invalid = "{invalid-json".to_owned();
+        write_transcript(&path, &[first.clone(), invalid.clone()]);
+        let initial =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(initial.daily_cost[&now().date()].priced_tokens, 100);
+        let revision = stored_daily_revision(&fixture.database(), now().date());
+        write_transcript(
+            &path,
+            &[
+                first,
+                invalid,
+                transcript_line(
+                    "second-priced",
+                    now() - Duration::minutes(1),
+                    "claude-sonnet-4-5-20250929",
+                    usage(50, 0, 0, 0),
+                ),
+            ],
+        );
+        let extended = index_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(1),
+        )
+        .unwrap();
+        assert_eq!(extended.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(extended.daily_usage[&now().date()].observed_tokens, 150);
+        assert_eq!(extended.daily_cost[&now().date()].priced_tokens, 150);
+        assert!(
+            (extended.daily_cost[&now().date()]
+                .api_equivalent_cost_usd
+                .unwrap()
+                - 0.000_45)
+                .abs()
+                < 1e-12
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            revision + 1
+        );
+        let repeated = index_local_usage_at(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now() + Duration::minutes(2),
+        )
+        .unwrap();
+        assert_eq!(repeated.daily_cost, extended.daily_cost);
+        assert!(!repeated.aggregate_changed);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            revision + 1
         );
     }
 

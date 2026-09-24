@@ -77,7 +77,9 @@ evidence. A missing scan field means unknown, including for older reports.
 
 `scan_incomplete` is a failed scan that cannot finish. It can report a retained
 file error even when no record is parsed again. For Claude, `files.error > 0`
-blocks the complete-scan gate that accepts replacement costs. Codex can retain partial
+keeps the scan unavailable. Releases through v0.0.53 also block replacement
+costs in this state. Updated clients can accept a larger valid priced subset
+while keeping usage partial and retaining the known token total. Codex can retain partial
 pricing evidence. Its optional `files.deferred` and `files.excluded` counts
 show deferred processing and excluded usage. These counts can overlap other
 states. `files.indexing` shows unfinished files. `files.olderParser` includes retained files from earlier

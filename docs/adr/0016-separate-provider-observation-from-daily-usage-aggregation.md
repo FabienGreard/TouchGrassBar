@@ -83,3 +83,11 @@ The index orders copies by observation time and counts the selected record
 once. Conflicting copies retain the larger whole record as partial and
 unpriced; a later valid copy cannot erase that conflict. No counters are added
 across copies. Parser revision 15 replays older retained checkpoints.
+
+A failed Claude scan can still improve API-Equivalent Cost. Accept a daily
+priced subset from valid current-parser records when it covers more tokens
+than the stored priced subset. Keep the known token total and partial Usage
+Coverage. A smaller or equal priced subset from an incomplete pass retains
+the stored cost and pricing basis. Only a completed scan can authorize a
+parser correction that lowers Observed Tokens. This rule also runs on
+unchanged checkpoints; it does not require a parser revision or index reset.
