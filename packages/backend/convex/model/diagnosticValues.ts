@@ -2,6 +2,9 @@ import {
   DIAGNOSTIC_DATABASE_MODULES,
   DIAGNOSTIC_DATABASE_STAGES,
   DIAGNOSTIC_PARSER_REASONS,
+  DIAGNOSTIC_REJECTION_FIELDS,
+  DIAGNOSTIC_REJECTION_PROBLEMS,
+  DIAGNOSTIC_TOKEN_COUNTER_STATES,
   DIAGNOSTIC_PRICING_REASONS,
   DIAGNOSTIC_SYNC_REASONS,
   type DiagnosticReport,
@@ -82,6 +85,13 @@ export const diagnosticFailureValidator = v.union(
       rankingDay: v.optional(nullableString),
       recordsAffected: v.optional(v.number()),
       recordsExcluded: v.optional(v.number()),
+      rejection: v.optional(
+        v.object({
+          field: literals(DIAGNOSTIC_REJECTION_FIELDS),
+          problem: literals(DIAGNOSTIC_REJECTION_PROBLEMS),
+          tokenCounters: literals(DIAGNOSTIC_TOKEN_COUNTER_STATES),
+        }),
+      ),
       scan: v.optional(usageScanContext),
       reason: literals(DIAGNOSTIC_PARSER_REASONS),
     }),

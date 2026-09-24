@@ -132,3 +132,12 @@ Old reports remain valid without this field. Their missing model names cannot
 be recovered from uploaded counts. Deploy the optional backend validator before
 shipping clients that emit the field. This is a permanent additive field; no
 backfill or temporary compatibility path is required.
+
+## Rejected message evidence
+
+Claude metadata failures can include optional fixed enums for the failed field,
+condition, and structural token-counter state. Raw values, counter amounts,
+message identifiers, and content stay local. The first failed check is reported;
+nonzero counters do not establish valid usage. Scan aggregation, local queue
+keys, and support groups preserve these distinctions within existing bounds.
+The field is additive and permanent. Old reports retain their existing groups.

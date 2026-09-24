@@ -233,8 +233,39 @@ export const usageScanContextSchema = z
     }
   });
 
+export const DIAGNOSTIC_REJECTION_FIELDS = [
+  "aborted",
+  "message",
+  "message_id",
+  "message_type",
+  "message_role",
+  "model",
+] as const;
+export const DIAGNOSTIC_REJECTION_PROBLEMS = [
+  "missing",
+  "null",
+  "wrong_type",
+  "unexpected_value",
+  "invalid_format",
+] as const;
+export const DIAGNOSTIC_TOKEN_COUNTER_STATES = [
+  "absent",
+  "invalid",
+  "partial",
+  "zero",
+  "nonzero",
+] as const;
+
 export const diagnosticParserContextSchema = z
   .object({
+    rejection: z
+      .object({
+        field: z.enum(DIAGNOSTIC_REJECTION_FIELDS),
+        problem: z.enum(DIAGNOSTIC_REJECTION_PROBLEMS),
+        tokenCounters: z.enum(DIAGNOSTIC_TOKEN_COUNTER_STATES),
+      })
+      .strict()
+      .exactOptional(),
     parserVersion: version.nullable(),
     sourceVersions: z.array(sourceVersion).max(8),
     reviewStatus: z.enum(["reviewed", "unreviewed", "mixed", "unknown"]),
@@ -392,6 +423,15 @@ export const diagnosticReportSchema = z
         failure.context.recordsExcluded > failure.context.recordsAffected)
     ) {
       ctx.addIssue({ code: "custom", message: "Excluded records exceed affected records" });
+    }
+    if (
+      failure.area === "parser" &&
+      failure.context.rejection !== undefined &&
+      (failure.provider !== "claude" ||
+        failure.code !== "parser_record_invalid" ||
+        failure.context.reason !== "invalid_message_metadata")
+    ) {
+      ctx.addIssue({ code: "custom", message: "Invalid rejection evidence context" });
     }
     if (failure.area === "pricing") {
       const evidence = failure.context;

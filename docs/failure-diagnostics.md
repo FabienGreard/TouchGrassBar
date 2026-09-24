@@ -206,3 +206,32 @@ specific reasons. Valid messages, complete-file cursors, daily totals, and
 parser version stay unchanged. The operation commits its marker and cursor
 changes together and does not repeat on later refreshes. A missing source file
 cannot be recovered by this diagnostic pass.
+
+## Claude message metadata rejection
+
+New clients can attach optional `rejection` evidence to Claude
+`parser_record_invalid` reports with reason `invalid_message_metadata`:
+
+- `field`: `aborted`, `message`, `message_id`, `message_type`, `message_role`, or `model`;
+- `problem`: `missing`, `null`, `wrong_type`, `unexpected_value`, or `invalid_format`;
+- `tokenCounters`: `absent`, `invalid`, `partial`, `zero`, or `nonzero`.
+
+The counter state inspects only input, output, cache-read, and cache-creation
+counters. `absent` means no non-null counters were found, `invalid` means the
+usage object or a present counter has an invalid type or range, and `partial`
+means only some counters are present. `zero` and `nonzero` require all four
+unsigned integer counters. No counter values or source fields are uploaded.
+These are structural observations, not proof that a record is unique, billable,
+or safe to count. A zero record is not by itself proof of an API error.
+
+Capture reports the first failed metadata check. Other fields can also be
+invalid. Different field, problem, and counter-state combinations remain
+separate within the existing scan, queue, and upload limits. Old reports remain
+valid without this field. No usage acceptance rule changes.
+
+The `error_diagnostic_replay_v2` marker makes existing failed files eligible for
+one more bounded scan, including on clients that already ran v1. Complete-file
+checkpoints and retained usage stay in place. Check the updated app version,
+the new rejection evidence, and daily token/cost invariants before concluding
+that the rollout is complete. Deploy the additive backend validator before
+shipping the app.
