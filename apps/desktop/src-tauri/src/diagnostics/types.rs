@@ -100,14 +100,17 @@ codes!(SyncReason {
 codes!(AccessOperation {
     ReadUsage,
     ReadQuota,
-    RefreshCredentials
+    RefreshCredentials,
+    RefreshProvider
 });
 codes!(AccessReason {
     ReadFailed,
     PermissionDenied,
     RequestFailed,
     InvalidResponse,
-    CredentialsRejected
+    CredentialsRejected,
+    DeadlineExceeded,
+    AdapterPanicked
 });
 codes!(Architecture {
     Aarch64,

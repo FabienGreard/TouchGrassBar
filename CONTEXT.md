@@ -104,21 +104,6 @@ Successful operations send no report. A failure time is separate from the
 server receipt time; silence does not prove recovery or current health.
 _Avoid_: Usage log, health snapshot, public activity
 
-**Support Report**:
-A person-requested, bounded view of local scan state for a support conversation.
-It contains app and parser versions, file-state counts, and daily pricing
-evidence for all compiled Coding Providers. Copying it does not upload it or start a repair. Source content,
-paths, record identifiers, and credentials stay on the Mac. A manual database
-read cannot prove scan completion and marks that status unknown.
-_Avoid_: Database dump, remote session, health report
-
-**Support Session**:
-A 30-minute approval that a person starts in Settings. It lets support request
-fresh Support Reports from the active Mac. Current Profile and installation
-authority apply to each request and reply. The person can end it at any time;
-quitting the app also ends local approval. It permits no repair commands.
-_Avoid_: Remote shell, unattended access, diagnostic credential
-
 **Sanitized Desktop State**:
 The versioned, revisioned, bounded projection of native-owned product state that may enter the React interface. It contains display-safe provider, Profile, synchronization, and social data but no credentials or provider source material. React replaces it from a complete cached snapshot; revision notices never carry partial state.
 _Avoid_: App state, native state, raw snapshot

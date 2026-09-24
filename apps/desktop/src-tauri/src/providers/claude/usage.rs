@@ -3320,7 +3320,7 @@ fn index_local_usage_at(
     )
 }
 
-pub(crate) fn read_scan_context(
+fn read_scan_context(
     connection: &Connection,
     today: Date,
     status: crate::diagnostics::scan::ScanStatus,

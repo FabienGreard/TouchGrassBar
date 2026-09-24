@@ -29,17 +29,6 @@ use crate::sanitized::{
 };
 use time::{Date, OffsetDateTime};
 
-pub(crate) fn read_scan_context(
-    provider: CodingProvider,
-    connection: &rusqlite::Connection,
-    today: Date,
-    status: crate::diagnostics::scan::ScanStatus,
-) -> Result<crate::diagnostics::scan::UsageScanContext, ()> {
-    match provider {
-        CodingProvider::Codex => codex::read_scan_context(connection, today, status),
-        CodingProvider::Claude => claude::read_scan_context(connection, today, status),
-    }
-}
 pub use registry::{CodingProvider, ProviderPresenceStatus};
 pub(crate) use registry::{PROVIDER_REGISTRY, detect_provider_presence, provider_descriptor};
 
@@ -498,6 +487,7 @@ impl ProviderObservationCoordinator {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let diagnostic_epoch = crate::diagnostics::capture_epoch();
         let previous = cached.clone();
         self.normalize_registry(&mut cached);
         let mut completed_providers = BTreeSet::new();
@@ -558,7 +548,11 @@ impl ProviderObservationCoordinator {
                 match result {
                     Ok(Ok(Some(observation))) => {
                         if observation.quota.provider() != provider {
-                            debug_refresh_failure(provider, "invalid_provider");
+                            report_refresh_failure(
+                                provider,
+                                crate::diagnostics::AccessReason::InvalidResponse,
+                                diagnostic_epoch,
+                            );
                         } else if let Some(presentation) = cached.provider_mut(provider) {
                             provider_correction = observation.correction;
                             let previous_presentation = presentation.clone();
@@ -579,13 +573,21 @@ impl ProviderObservationCoordinator {
                         return Err(RefreshFailure::Cancelled);
                     }
                     Ok(Err(RefreshFailure::DeadlineExceeded)) => {
-                        debug_refresh_failure(provider, "deadline_exceeded");
+                        report_refresh_failure(
+                            provider,
+                            crate::diagnostics::AccessReason::DeadlineExceeded,
+                            diagnostic_epoch,
+                        );
                     }
                     Ok(Err(RefreshFailure::SourceUnavailable)) => {
-                        debug_refresh_failure(provider, "source_unavailable");
+                        debug_source_unavailable(provider);
                     }
                     Err(_) => {
-                        debug_refresh_failure(provider, "adapter_panicked");
+                        report_refresh_failure(
+                            provider,
+                            crate::diagnostics::AccessReason::AdapterPanicked,
+                            diagnostic_epoch,
+                        );
                     }
                 }
 
@@ -864,16 +866,41 @@ fn debug_process_shutdown(process_count: usize, deadline_count: usize) {
 #[cfg(not(debug_assertions))]
 fn debug_process_shutdown(_process_count: usize, _deadline_count: usize) {}
 
-#[cfg(debug_assertions)]
-fn debug_refresh_failure(provider: CodingProvider, reason: &str) {
-    let provider = provider_descriptor(provider).display_name.to_lowercase();
+fn debug_source_unavailable(provider: CodingProvider) {
+    // Missing provider installations also return SourceUnavailable. The adapters
+    // capture classified request failures; this broad outcome must stay quiet.
+    #[cfg(debug_assertions)]
     eprintln!(
-        "[TouchGrassBar][provider-observation] refresh_failed provider={provider} reason={reason}"
+        "[TouchGrassBar][provider-observation] refresh_failed provider={provider:?} reason=source_unavailable"
     );
+    #[cfg(not(debug_assertions))]
+    let _ = provider;
 }
 
-#[cfg(not(debug_assertions))]
-fn debug_refresh_failure(_provider: CodingProvider, _reason: &str) {}
+fn report_refresh_failure(
+    provider: CodingProvider,
+    reason: crate::diagnostics::AccessReason,
+    epoch: u64,
+) {
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[TouchGrassBar][provider-observation] refresh_failed provider={provider:?} reason={reason:?}"
+    );
+    use crate::diagnostics::{AccessOperation, Failure, ProviderAccessCode, ProviderAccessContext};
+    crate::diagnostics::capture_at_epoch(
+        Failure::ProviderAccess {
+            provider,
+            code: ProviderAccessCode::ProviderAccessFailed,
+            context: ProviderAccessContext {
+                operation: AccessOperation::RefreshProvider,
+                reason,
+                status_code: None,
+                retry_count: 0,
+            },
+        },
+        epoch,
+    );
+}
 
 #[cfg(debug_assertions)]
 fn debug_refresh_event(provider: CodingProvider, status: &str) {
@@ -986,6 +1013,107 @@ mod tests {
     struct FixedAdapter {
         provider: CodingProvider,
         result: Result<Option<ProviderObservation>, RefreshFailure>,
+    }
+
+    struct PanickingAdapter(CodingProvider);
+    impl ProviderObservationAdapter for PanickingAdapter {
+        fn provider(&self) -> CodingProvider {
+            self.0
+        }
+        fn refresh(
+            &self,
+            _cached: &ProviderPresentation,
+            _attempt: &RefreshAttempt,
+        ) -> Result<Option<ProviderObservation>, RefreshFailure> {
+            panic!("private-path-and-credentials-must-stay-local");
+        }
+    }
+
+    #[test]
+    fn every_provider_automatically_reports_refresh_timeouts_panics_and_invalid_results() {
+        use crate::diagnostics::{AccessOperation, AccessReason, Failure};
+        for descriptor in PROVIDER_REGISTRY {
+            let provider = descriptor.provider;
+            let other = if provider == CodingProvider::Codex {
+                CodingProvider::Claude
+            } else {
+                CodingProvider::Codex
+            };
+            let cases: Vec<(Arc<dyn ProviderObservationAdapter>, AccessReason)> = vec![
+                (
+                    Arc::new(FixedAdapter {
+                        provider,
+                        result: Err(RefreshFailure::DeadlineExceeded),
+                    }),
+                    AccessReason::DeadlineExceeded,
+                ),
+                (
+                    Arc::new(PanickingAdapter(provider)),
+                    AccessReason::AdapterPanicked,
+                ),
+                (
+                    Arc::new(FixedAdapter {
+                        provider,
+                        result: Ok(Some(ProviderObservation {
+                            quota: ProviderSnapshot::Unavailable {
+                                provider: other,
+                                quota_lanes: [],
+                            },
+                            usage: usage_with_tokens(42),
+                            top_model_usage: None,
+                            correction: None,
+                        })),
+                    }),
+                    AccessReason::InvalidResponse,
+                ),
+            ];
+            for (adapter, expected) in cases {
+                let coordinator = ProviderObservationCoordinator::new(vec![adapter]);
+                let failures = crate::diagnostics::collect_failures_for_test(|| {
+                    coordinator
+                        .refresh(unavailable_state(1), &RefreshAttempt::test())
+                        .unwrap();
+                });
+                assert_eq!(failures.len(), 1);
+                let Failure::ProviderAccess {
+                    provider: reported_provider,
+                    context,
+                    ..
+                } = &failures[0]
+                else {
+                    panic!("expected provider failure");
+                };
+                assert_eq!(*reported_provider, provider);
+                assert_eq!(context.operation, AccessOperation::RefreshProvider);
+                assert_eq!(context.reason, expected);
+                assert!(
+                    !serde_json::to_string(&failures)
+                        .unwrap()
+                        .contains("private-path")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_change_missing_source_and_cancelled_refreshes_emit_no_failure() {
+        for descriptor in PROVIDER_REGISTRY {
+            for result in [
+                Ok(None),
+                Err(RefreshFailure::Cancelled),
+                Err(RefreshFailure::SourceUnavailable),
+            ] {
+                let coordinator =
+                    ProviderObservationCoordinator::new(vec![Arc::new(FixedAdapter {
+                        provider: descriptor.provider,
+                        result,
+                    })]);
+                let failures = crate::diagnostics::collect_failures_for_test(|| {
+                    let _ = coordinator.refresh(unavailable_state(1), &RefreshAttempt::test());
+                });
+                assert!(failures.is_empty());
+            }
+        }
     }
 
     struct MutableEnablement {

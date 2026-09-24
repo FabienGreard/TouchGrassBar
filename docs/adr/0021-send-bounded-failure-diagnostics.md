@@ -44,44 +44,25 @@ versions, catalog, and at most 30 daily token and cost summaries. A retained
 file error that prevents scan completion is a failed scan, even when no new
 record is read. It uses the existing failure queue and grouping rules.
 
-## User-requested local report
+## Automatic operational logs
 
-Settings can read and copy a separate Support Report at the person's request.
-It contains the app version, capture time, and bounded scan
-evidence for each compiled provider. It uses fixed read-only queries in one transaction with short lock
-and query deadlines. Stored state cannot prove scan completion, so this
-manual report marks scan status unknown. A failed provider read returns null for that provider. Failure to open the
-database produces no report.
+Diagnostics run during normal app work and upload in the background. They do
+not require a support session, a report request, a copy action, or a Settings
+control. Support reads reports already received by the backend.
 
-This Support Report may enter the Settings interface through a dedicated,
-validated command. Automatic Failure Reports still never enter React. Copy
-does not upload the report or start a repair. The diagnostic credential remains submission-only.
+The logs use fixed event codes and typed fields. Provider refresh deadlines,
+caught adapter panics, and a returned provider identity that does not match the
+requested provider produce a `provider_access_failed` event with operation
+`refresh_provider`. The event records the reason, never the panic payload.
+Capture preserves the Profile authority epoch from the start of the refresh.
+Cancellation and a missing provider installation remain quiet. Provider
+adapters continue to report their classified request failures.
 
-## Approved remote support
-
-Settings can approve a 30-minute Support Session for the current Profile,
-installation, and Active Mac generation. Approval is held in native process
-memory. Quitting the app, local cancellation, expiry, or an authority change
-stops delivery. The person must approve again after a restart. Failed server
-cancellation cannot restore local approval.
-
-During approval, the native worker polls for one fixed operation: read a fresh
-Support Report. Each poll and result uses current Profile session and Active
-Mac authority. Deployment administrators can request a report and inspect its
-result through internal functions. They cannot create the person's approval.
-No operation accepts a path, SQL, shell command, or source content.
-
-Requests have a two-minute deadline within session expiry. There is at most
-one pending request per session; new requests are at least 30 seconds apart.
-The native worker retains a result in memory for delivery retry. The backend
-accepts the first result and never changes it. Requests record the supplied
-operator label, request time, deadline, completion time, and report or fixed
-read-failure code. This label is audit context, not an authentication claim.
-
-Support Reports expire seven days after the request. Session audit records
-expire seven days after the session. An hourly job removes expired rows in
-bounded batches. A missing result does not establish device health. Remote
-repair requires a separate decision and fixed operations.
+The same automatic queue carries database, parser, pricing, provider access,
+and synchronization failures. Scan and pricing events can include bounded
+file counts and daily token/cost evidence. An unavailable diagnostic read
+leaves that context unknown. Raw console output, process stderr, provider
+logs, source contents, and credentials are not uploaded.
 
 ## Local delivery
 

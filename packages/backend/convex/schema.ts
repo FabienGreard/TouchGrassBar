@@ -13,16 +13,7 @@ import {
   scoreWindowValidator as scoreWindow,
 } from "./model/values";
 
-import { supportSessionFields, supportRequestFields } from "./model/supportValues";
-
 export default defineSchema({
-  supportSessions: defineTable(supportSessionFields)
-    .index("by_deviceId", ["deviceId"])
-    .index("by_tokenmaxxerId", ["tokenmaxxerId"])
-    .index("by_deleteAt", ["deleteAt"]),
-  supportRequests: defineTable(supportRequestFields)
-    .index("by_sessionId", ["sessionId"])
-    .index("by_deleteAt", ["deleteAt"]),
   signupProofs: defineTable({
     expiresAt: v.number(),
     nonceDigest: v.string(),

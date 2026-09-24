@@ -13,7 +13,7 @@ pub(crate) enum ScanStatus {
     Complete,
     Indexing,
     Unavailable,
-    /// A manual database read cannot prove that source traversal completed.
+    /// The scan outcome could not be established.
     Unknown,
 }
 
@@ -95,7 +95,7 @@ impl UsageScanContext {
     }
 }
 
-/// The caller supplies the scan outcome. A manual read uses Unknown.
+/// Read fixed scan evidence for an automatic failure report.
 pub(crate) fn read(
     provider: crate::providers::CodingProvider,
     connection: &Connection,
@@ -201,4 +201,114 @@ pub(crate) fn read(
         days: rows.collect::<Result<Vec<_>, _>>().map_err(|_| ())?,
     };
     context.valid().then_some(context).ok_or(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::CodingProvider;
+    use rusqlite::OpenFlags;
+    #[test]
+    fn both_provider_reads_are_bounded_read_only_and_exclude_private_source_material() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("fixture.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(
+            "CREATE TABLE claude_usage_files(path TEXT, completion_state TEXT, parser_version INTEGER);
+             INSERT INTO claude_usage_files VALUES('/private/customer/project', 'error', 14);
+             INSERT INTO claude_usage_files VALUES('/private/session', 'complete', 15);
+             CREATE TABLE claude_usage_index_meta(key TEXT, value TEXT);
+             INSERT INTO claude_usage_index_meta VALUES('usage_aggregate_parser_version', '14');
+             INSERT INTO claude_usage_index_meta VALUES('dedupe_salt', 'private-secret');
+             CREATE TABLE claude_usage_daily(day TEXT, observed_tokens INTEGER, priced_tokens INTEGER,
+               cost_usd REAL, pricing_basis TEXT, revision INTEGER);
+             CREATE TABLE codex_usage_files(path TEXT, completion_state TEXT, parser_version INTEGER, usage_excluded INTEGER, accounting_ready INTEGER);
+             INSERT INTO codex_usage_files VALUES('/private/codex-session', 'deferred-error', 25, 0, 1);
+             INSERT INTO codex_usage_files VALUES('/private/excluded-session', 'complete', 25, 1, 1);
+             CREATE TABLE codex_usage_file_days(path TEXT, day TEXT, observed_tokens INTEGER, priced_tokens INTEGER, cost_usd REAL);
+             INSERT INTO codex_usage_file_days VALUES('/private/codex-session', '2026-09-24', 1000, 500, 0.25);
+             INSERT INTO codex_usage_file_days VALUES('/private/excluded-session', '2026-09-24', 9000, 9000, 99.0);
+             CREATE TABLE codex_usage_file_model_days(path TEXT, day TEXT, complete INTEGER, cost_usd REAL, pricing_basis TEXT);
+             INSERT INTO codex_usage_file_model_days VALUES('/private/codex-session', '2026-09-24', 1, 0.25, 'openai-standard-2026-08-26-v2');
+             CREATE TABLE credentials(secret TEXT);
+             INSERT INTO credentials VALUES('private-secret');"
+        ).unwrap();
+
+        let today = time::macros::date!(2026 - 09 - 24);
+        for offset in 0..40 {
+            connection
+                .execute(
+                    "INSERT INTO claude_usage_daily VALUES(?1, 100, 0, NULL, NULL, 1)",
+                    [(today - Duration::days(offset)).to_string()],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        let before = std::fs::read(&path).unwrap();
+        let connection =
+            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        let codex = read(
+            CodingProvider::Codex,
+            &transaction,
+            today,
+            25,
+            None,
+            ScanStatus::Unavailable,
+        )
+        .unwrap();
+        let claude = read(
+            CodingProvider::Claude,
+            &transaction,
+            today,
+            15,
+            None,
+            ScanStatus::Unavailable,
+        )
+        .unwrap();
+        assert_eq!(codex.files.error, 1);
+        assert_eq!(codex.files.deferred, Some(1));
+        assert_eq!(codex.files.excluded, Some(1));
+        assert_eq!(codex.days[0].observed_tokens, 1000);
+        assert_eq!(codex.days[0].priced_tokens, 500);
+        assert_eq!(codex.days[0].cost_micros, Some(250000));
+        assert_eq!(codex.days[0].revision, None);
+        assert_eq!(claude.aggregate_parser_version, Some(14));
+        assert_eq!(claude.files.error, 1);
+        assert_eq!(claude.files.older_parser, 1);
+        assert_eq!(claude.days.len(), 30);
+        assert_eq!(claude.days[0].cost_micros, None);
+        let text = serde_json::to_string(&(codex, claude)).unwrap();
+        assert!(!text.contains("private"));
+        assert!(!text.contains("dedupe"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        drop(transaction);
+        drop(connection);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute("DROP TABLE codex_usage_file_model_days", [])
+            .unwrap();
+        assert!(
+            read(
+                CodingProvider::Codex,
+                &connection,
+                today,
+                25,
+                None,
+                ScanStatus::Unavailable
+            )
+            .is_err()
+        );
+        assert!(
+            read(
+                CodingProvider::Claude,
+                &connection,
+                today,
+                15,
+                None,
+                ScanStatus::Unavailable
+            )
+            .is_ok()
+        );
+    }
 }

@@ -274,5 +274,30 @@
         }
       }
     }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000009",
+    "failure": {
+      "area": "provider_access",
+      "provider": "claude",
+      "code": "provider_access_failed",
+      "context": {
+        "operation": "refresh_provider",
+        "reason": "adapter_panicked",
+        "statusCode": 503,
+        "retryCount": 2
+      }
+    }
   }
 ]

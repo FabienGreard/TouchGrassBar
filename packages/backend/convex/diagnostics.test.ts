@@ -503,3 +503,40 @@ test("dated parser failures round-trip while old reports stay valid", async () =
     }).success,
   ).toBe(false);
 });
+
+test("automatic refresh diagnostics accept both providers without a support session", async () => {
+  const t = testBackend();
+  const owner = await seedReporter(t);
+  let suffix = 20;
+  for (const provider of ["codex", "claude"] as const) {
+    for (const reason of ["deadline_exceeded", "adapter_panicked", "invalid_response"] as const) {
+      const report = diagnosticReportSchema.parse({
+        ...fixtures[0],
+        reportId: `00000000-0000-4000-8000-${String(suffix++).padStart(12, "0")}`,
+        failure: {
+          area: "provider_access",
+          provider,
+          code: "provider_access_failed",
+          context: {
+            operation: "refresh_provider",
+            reason,
+            statusCode: null,
+            retryCount: 0,
+          },
+        },
+      });
+      expect(
+        await t.mutation(api.diagnostics.submit, {
+          reporterId: owner.reporterId,
+          diagnosticCredential: DIAGNOSTIC_CREDENTIAL,
+          report,
+        }),
+      ).toEqual({ outcome: "accepted", retryAfterMs: null });
+    }
+  }
+  const page = await t.query(internal.diagnostics.forTouchGrassId, {
+    touchGrassId: "TG-AAAAAA",
+    paginationOpts: { numItems: 10, cursor: null },
+  });
+  expect(page.page).toHaveLength(6);
+});

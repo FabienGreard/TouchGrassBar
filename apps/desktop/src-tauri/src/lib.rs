@@ -12,9 +12,7 @@ pub mod profile;
 mod provider_installation;
 mod providers;
 mod quota_headroom;
-mod remote_support;
 pub mod sanitized;
-mod support;
 pub mod updater;
 mod usage_history;
 mod usage_sync;
@@ -1143,50 +1141,6 @@ fn settings_state_with_recovery_key_suffix(
 }
 
 #[tauri::command]
-async fn get_support_session(
-    window: WebviewWindow,
-    runtime: State<'_, Arc<remote_support::RemoteSupport>>,
-) -> Result<remote_support::SessionState, String> {
-    require_settings(&window)?;
-    let runtime = Arc::clone(&runtime);
-    tauri::async_runtime::spawn_blocking(move || runtime.state())
-        .await
-        .map_err(|_| "support-unavailable".to_owned())?
-        .map_err(|_| "support-unavailable".to_owned())
-}
-
-#[tauri::command]
-async fn set_support_session(
-    window: WebviewWindow,
-    runtime: State<'_, Arc<remote_support::RemoteSupport>>,
-    enabled: bool,
-) -> Result<remote_support::SessionState, String> {
-    require_settings(&window)?;
-    let runtime = Arc::clone(&runtime);
-    tauri::async_runtime::spawn_blocking(move || runtime.set_enabled(enabled))
-        .await
-        .map_err(|_| "support-unavailable".to_owned())?
-        .map_err(|_| "support-unavailable".to_owned())
-}
-
-#[tauri::command]
-async fn get_support_report(
-    window: WebviewWindow,
-    app: AppHandle,
-    reports: State<'_, support::SupportReports>,
-) -> Result<String, String> {
-    require_settings(&window)?;
-    let reports = support::SupportReports(reports.0.clone());
-    let version = app.package_info().version.to_string();
-    tauri::async_runtime::spawn_blocking(move || {
-        reports.read(&version, time::OffsetDateTime::now_utc())
-    })
-    .await
-    .map_err(|_| "support-report-unavailable".to_owned())?
-    .map_err(|_| "support-report-unavailable".to_owned())
-}
-
-#[tauri::command]
 fn get_settings_state(
     window: WebviewWindow,
     app: AppHandle,
@@ -1399,9 +1353,6 @@ pub fn run() {
             get_doomerboard,
             get_sanitized_state,
             get_settings_state,
-            get_support_report,
-            get_support_session,
-            set_support_session,
             get_update_state,
             hide_surface,
             hide_panel,
@@ -1462,7 +1413,6 @@ pub fn run() {
                     None
                 }
             };
-            app.manage(support::SupportReports(database_path.clone()));
             let prepared_database =
                 database_path
                     .as_deref()
@@ -1551,18 +1501,10 @@ pub fn run() {
             let profile_coordinator = Arc::new(Mutex::new(profile::production_coordinator(
                 lifecycle.clone(),
             )));
-            let remote_support = Arc::new(remote_support::RemoteSupport::new(
-                Arc::clone(&profile_coordinator),
-                support::SupportReports(database_path.clone()),
-                app.package_info().version.to_string(),
-                diagnostics_enabled,
-            ));
-            app.manage(Arc::clone(&remote_support));
             if diagnostics_enabled {
-                app.manage(diagnostics::DiagnosticRuntime::start(
-                    Arc::clone(&profile_coordinator),
-                    remote_support,
-                ));
+                app.manage(diagnostics::DiagnosticRuntime::start(Arc::clone(
+                    &profile_coordinator,
+                )));
             }
             #[cfg(target_os = "macos")]
             app.manage(doomerboard::production_runtime(

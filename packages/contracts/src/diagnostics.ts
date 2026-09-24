@@ -221,25 +221,6 @@ export const usageScanContextSchema = z
     }
   });
 
-export const supportReportSchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    appVersion: numericVersion,
-    capturedAt: count,
-    providers: z
-      .array(
-        z
-          .object({
-            provider: z.enum(["codex", "claude"]),
-            scan: usageScanContextSchema.nullable(),
-          })
-          .strict(),
-      )
-      .length(2)
-      .refine((items) => new Set(items.map((item) => item.provider)).size === items.length),
-  })
-  .strict();
-
 export const diagnosticParserContextSchema = z
   .object({
     parserVersion: version.nullable(),
@@ -286,13 +267,15 @@ export const diagnosticSyncContextSchema = z
 
 export const diagnosticProviderAccessContextSchema = z
   .object({
-    operation: z.enum(["read_usage", "read_quota", "refresh_credentials"]),
+    operation: z.enum(["read_usage", "read_quota", "refresh_credentials", "refresh_provider"]),
     reason: z.enum([
       "read_failed",
       "permission_denied",
       "request_failed",
       "invalid_response",
       "credentials_rejected",
+      "deadline_exceeded",
+      "adapter_panicked",
     ]),
     statusCode,
     retryCount: count,
@@ -431,8 +414,3 @@ export const diagnosticReportSchema = z
 
 export type DiagnosticReport = z.infer<typeof diagnosticReportSchema>;
 export type DiagnosticFailure = z.infer<typeof diagnosticFailureSchema>;
-
-export type SupportReport = z.infer<typeof supportReportSchema>;
-
-export const supportSessionStateSchema = z.object({ expiresAt: count.nullable() }).strict();
-export type SupportSessionState = z.infer<typeof supportSessionStateSchema>;

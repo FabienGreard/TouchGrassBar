@@ -4,8 +4,6 @@ import { internal } from "./_generated/api";
 
 const crons = cronJobs();
 
-crons.interval("delete expired support sessions", { hours: 1 }, internal.support.deleteExpired, {});
-
 crons.interval(
   "delete expired failure reports",
   { hours: 1 },

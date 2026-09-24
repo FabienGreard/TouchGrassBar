@@ -1,12 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  SETTINGS_NAVIGATION_EVENT,
-  SETTINGS_RECOVERY_CLEAR_EVENT,
-  supportReportSchema,
-  supportSessionStateSchema,
-  type SupportSessionState,
-} from "@touchgrass/contracts";
+import { SETTINGS_NAVIGATION_EVENT, SETTINGS_RECOVERY_CLEAR_EVENT } from "@touchgrass/contracts";
 
 import type {
   SettingsPort,
@@ -42,36 +36,7 @@ async function closedInvoke(
 function createTauriSettingsAdapter(
   bindings: TauriSettingsBindings = defaultBindings,
 ): SettingsPort {
-  async function sessionCommand(
-    command: string,
-    payload?: Record<string, unknown>,
-  ): Promise<SettingsPortOutcome<SupportSessionState>> {
-    const outcome = await closedInvoke(bindings, command, "settings-state-unavailable", payload);
-    if (!outcome.ok) return outcome;
-    const parsed = supportSessionStateSchema.safeParse(outcome.value);
-    return parsed.success
-      ? { ok: true, value: parsed.data }
-      : { ok: false, fault: { code: "settings-state-unavailable" } };
-  }
   return {
-    readSupportSession: () => sessionCommand("get_support_session"),
-    setSupportSession: (enabled) => sessionCommand("set_support_session", { enabled }),
-    readSupportReport: async () => {
-      const outcome = await closedInvoke(
-        bindings,
-        "get_support_report",
-        "settings-state-unavailable",
-      );
-      if (!outcome.ok) return outcome;
-      try {
-        if (typeof outcome.value !== "string" || outcome.value.length > 32 * 1024)
-          throw new Error();
-        const report = supportReportSchema.parse(JSON.parse(outcome.value));
-        return { ok: true, value: JSON.stringify(report, null, 2) };
-      } catch {
-        return { ok: false, fault: { code: "settings-state-unavailable" } };
-      }
-    },
     openLoginItemsSettings: async () => {
       const outcome = await closedInvoke(
         bindings,

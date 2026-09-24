@@ -19,7 +19,6 @@ export const touchGrassAuthPolicy = {
 } as const;
 
 export const rateLimiter = new RateLimiter(components.rateLimiter, {
-  supportSessionStart: { capacity: 3, kind: "token bucket", period: 60 * MINUTE, rate: 3 },
   diagnosticRegistration: {
     capacity: 3,
     kind: "token bucket",

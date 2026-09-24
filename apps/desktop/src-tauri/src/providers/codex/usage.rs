@@ -48,7 +48,7 @@ const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 130;
 const MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 153;
 const ROLLOUT_PARSER_VERSION: i64 = 25;
 
-pub(crate) fn read_scan_context(
+fn read_scan_context(
     connection: &Connection,
     today: Date,
     status: crate::diagnostics::scan::ScanStatus,
