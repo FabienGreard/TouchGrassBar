@@ -166,6 +166,58 @@ fn parse_transcript_line(line: &[u8], dedupe_salt: &[u8; 32]) -> TranscriptLineO
     })
 }
 
+// Only inspect a bounded, already-rejected line. Return a fixed code, never a
+// field value, serde error, path, or source content.
+fn rejected_assistant_shape_reason(line: &[u8]) -> ParserReason {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
+        return ParserReason::InvalidJson;
+    };
+    if value
+        .get("aborted")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return ParserReason::InvalidMessageMetadata;
+    }
+    let Some(message) = value.get("message").and_then(serde_json::Value::as_object) else {
+        return ParserReason::InvalidMessageMetadata;
+    };
+    if ["id", "type", "role", "model"]
+        .iter()
+        .any(|key| message.get(*key).is_none_or(|value| !value.is_string()))
+    {
+        return ParserReason::InvalidMessageMetadata;
+    }
+    let Some(usage) = message.get("usage").and_then(serde_json::Value::as_object) else {
+        return ParserReason::InvalidUsageMetadata;
+    };
+    for (field, required, reason) in [
+        ("input_tokens", true, ParserReason::InvalidInputCounter),
+        ("output_tokens", true, ParserReason::InvalidOutputCounter),
+        (
+            "cache_read_input_tokens",
+            false,
+            ParserReason::InvalidCacheReadCounter,
+        ),
+        (
+            "cache_creation_input_tokens",
+            false,
+            ParserReason::InvalidCacheWriteCounter,
+        ),
+    ] {
+        if usage.get(field).map_or(required, |value| {
+            value.as_u64().is_none() && (required || !value.is_null())
+        }) {
+            return reason;
+        }
+    }
+    if message.get("content").is_none_or(|content| {
+        serde_json::from_value::<AssistantContentMetadata>(content.clone()).is_err()
+    }) {
+        return ParserReason::InvalidMessageContent;
+    }
+    ParserReason::InvalidUsageMetadata
+}
+
 fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> TranscriptLineOutcome {
     let header = match serde_json::from_slice::<RawTranscriptHeader>(_line) {
         Ok(header) => header,
@@ -173,7 +225,7 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
             parser_failure(if error.is_syntax() || error.is_eof() {
                 ParserReason::InvalidJson
             } else {
-                ParserReason::InvalidUsageShape
+                ParserReason::InvalidRecordHeader
             });
             return TranscriptLineOutcome::Invalid;
         }
@@ -182,7 +234,7 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
         return TranscriptLineOutcome::Ignored;
     }
     let Ok(envelope) = serde_json::from_slice::<RawAssistantEnvelope>(_line) else {
-        parser_failure(ParserReason::InvalidUsageShape);
+        parser_failure(ParserReason::InvalidAssistantEnvelope);
         return TranscriptLineOutcome::Invalid;
     };
     // A CLI update does not invalidate counters with a known structure.
@@ -196,11 +248,11 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
             .iter()
             .any(|value| !valid_provider_identifier(value))
     {
-        parser_failure(ParserReason::InvalidUsageShape);
+        parser_failure(ParserReason::InvalidFrameIdentity);
         return TranscriptLineOutcome::Invalid;
     }
     let Ok(observed_at) = OffsetDateTime::parse(&envelope.timestamp, &Rfc3339) else {
-        parser_failure(ParserReason::InvalidUsageShape);
+        parser_failure(ParserReason::InvalidTimestamp);
         return TranscriptLineOutcome::Invalid;
     };
     let frame = NormalizedFrame {
@@ -214,7 +266,7 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
         observed_at,
     };
     let Ok(line) = serde_json::from_slice::<RawAssistantLine>(_line) else {
-        parser_failure(ParserReason::InvalidUsageShape);
+        parser_failure(rejected_assistant_shape_reason(_line));
         return TranscriptLineOutcome::FrameOnly(frame);
     };
     if line.record_type != "assistant"
@@ -222,14 +274,14 @@ fn parse_transcript_line_inner(_line: &[u8], _dedupe_salt: &[u8; 32]) -> Transcr
         || line.message.role != "assistant"
         || !valid_provider_identifier(&line.message.id)
     {
-        parser_failure(ParserReason::InvalidUsageShape);
+        parser_failure(ParserReason::InvalidMessageMetadata);
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     if line.message.model == "<synthetic>" && is_reviewed_zero_usage_api_error(_line) {
         return TranscriptLineOutcome::Ignored;
     }
     if !valid_model_name(&line.message.model) {
-        parser_failure(ParserReason::InvalidUsageShape);
+        parser_failure(ParserReason::InvalidMessageMetadata);
         return TranscriptLineOutcome::FrameOnly(frame);
     }
     let cache_creation_known = line.message.usage.cache_creation_input_tokens.is_some();
@@ -1581,6 +1633,21 @@ impl StoredFileSummary {
             || self.parser_version != TRANSCRIPT_PARSER_VERSION
             || self.completion_state != "complete"
     }
+}
+
+// Reread retained failures once to obtain the more specific diagnostic codes.
+// This only resets failed file cursors, not valid messages or daily totals.
+fn prepare_error_diagnostic_replay(connection: &mut Connection) -> Result<(), ()> {
+    let transaction = connection.transaction().map_err(|_| ())?;
+    let inserted = transaction.execute(
+        "INSERT OR IGNORE INTO claude_usage_index_meta(key, value) VALUES('error_diagnostic_replay_v1', '1')", [],
+    ).map_err(|_| ())?;
+    if inserted > 0 {
+        transaction.execute(
+            "UPDATE claude_usage_files SET parsed_offset = 0, resume_anchor = NULL, completion_state = 'indexing' WHERE completion_state = 'error'", [],
+        ).map_err(|_| ())?;
+    }
+    transaction.commit().map_err(|_| ())
 }
 
 fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, StoredFileSummary>, ()> {
@@ -3371,6 +3438,9 @@ fn index_local_usage_with_budget(
         .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
         .ok()?;
     ensure_index_schema(&mut connection, database_path)
+        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .ok()?;
+    prepare_error_diagnostic_replay(&mut connection)
         .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
         .ok()?;
     let dedupe_salt = load_or_create_dedupe_salt(&connection)
@@ -6492,6 +6562,143 @@ mod tests {
         assert_eq!(
             stored_daily_revision(&fixture.database(), now().date()),
             before + 1
+        );
+    }
+
+    #[test]
+    fn rejected_usage_diagnostics_identify_fixed_fields_without_source_values() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(&claude_code_2_1_258_transcript_line()).unwrap();
+        for (pointer, bad, expected) in [
+            (
+                "/message/usage/input_tokens",
+                serde_json::json!("PRIVATE-SECRET"),
+                ParserReason::InvalidInputCounter,
+            ),
+            (
+                "/message/usage/output_tokens",
+                serde_json::json!(-1),
+                ParserReason::InvalidOutputCounter,
+            ),
+            (
+                "/message/usage/cache_read_input_tokens",
+                serde_json::json!({"private":true}),
+                ParserReason::InvalidCacheReadCounter,
+            ),
+            (
+                "/message/usage/cache_creation_input_tokens",
+                serde_json::json!(false),
+                ParserReason::InvalidCacheWriteCounter,
+            ),
+            (
+                "/message/content",
+                serde_json::json!("PRIVATE-CONTENT"),
+                ParserReason::InvalidMessageContent,
+            ),
+            (
+                "/message/model",
+                serde_json::json!(5),
+                ParserReason::InvalidMessageMetadata,
+            ),
+            (
+                "/message/usage/speed",
+                serde_json::json!(12),
+                ParserReason::InvalidUsageMetadata,
+            ),
+            (
+                "/timestamp",
+                serde_json::json!("PRIVATE-TIMESTAMP"),
+                ParserReason::InvalidTimestamp,
+            ),
+            (
+                "/version",
+                serde_json::json!({}),
+                ParserReason::InvalidAssistantEnvelope,
+            ),
+        ] {
+            let mut value = fixture.clone();
+            *value.pointer_mut(pointer).unwrap() = bad;
+            let failures = crate::diagnostics::collect_failures_for_test(|| {
+                assert!(!matches!(
+                    parse_transcript_line(value.to_string().as_bytes(), &[7; 32]),
+                    TranscriptLineOutcome::Usage(_)
+                ));
+            });
+            let crate::diagnostics::Failure::Parser { context, .. } = &failures[0] else {
+                panic!("parser failure required")
+            };
+            assert_eq!(context.reason, expected, "{pointer}");
+            assert_eq!(context.records_excluded, Some(1));
+            assert!(
+                !serde_json::to_string(&failures)
+                    .unwrap()
+                    .contains("PRIVATE")
+            );
+        }
+    }
+
+    #[test]
+    fn retained_error_diagnostics_replay_once_without_changing_known_usage() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let valid = claude_code_2_1_258_transcript_line();
+        let mut invalid: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        invalid["uuid"] = serde_json::json!("invalid-fixture-frame");
+        invalid["message"]["usage"]["input_tokens"] = serde_json::json!("invalid-counter");
+        write_transcript(
+            &config.join("projects/project/failed.jsonl"),
+            &[valid.clone(), invalid.to_string()],
+        );
+        write_transcript(&config.join("projects/project/valid.jsonl"), &[valid]);
+        let before =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        let revision = stored_daily_revision(&fixture.database(), now().date());
+        let mut connection = Connection::open(fixture.database()).unwrap();
+        connection
+            .execute(
+                "DELETE FROM claude_usage_index_meta WHERE key = 'error_diagnostic_replay_v1'",
+                [],
+            )
+            .unwrap();
+        let good_offset: i64 = connection
+            .query_row(
+                "SELECT parsed_offset FROM claude_usage_files WHERE completion_state = 'complete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        prepare_error_diagnostic_replay(&mut connection).unwrap();
+        assert_eq!(connection.query_row("SELECT parsed_offset FROM claude_usage_files WHERE completion_state = 'indexing'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(connection.query_row("SELECT parsed_offset FROM claude_usage_files WHERE completion_state = 'complete'", [], |row| row.get::<_, i64>(0)).unwrap(), good_offset);
+        drop(connection);
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let after = index_local_usage_at(
+                &fixture.database(),
+                &config,
+                &fixture.probe(),
+                now() + Duration::minutes(1),
+            )
+            .unwrap();
+            assert_eq!(
+                after.daily_usage[&now().date()].observed_tokens,
+                before.daily_usage[&now().date()].observed_tokens
+            );
+            assert_eq!(after.daily_cost, before.daily_cost);
+        });
+        assert!(failures.iter().any(|failure| matches!(failure, crate::diagnostics::Failure::Parser { context, .. } if context.reason == ParserReason::InvalidInputCounter && context.records_excluded == Some(1))));
+        let repeated = crate::diagnostics::collect_failures_for_test(|| {
+            index_local_usage_at(
+                &fixture.database(),
+                &config,
+                &fixture.probe(),
+                now() + Duration::minutes(2),
+            )
+            .unwrap();
+        });
+        assert!(!repeated.iter().any(|failure| matches!(failure, crate::diagnostics::Failure::Parser { context, .. } if context.reason == ParserReason::InvalidInputCounter)));
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            revision
         );
     }
 

@@ -22,7 +22,7 @@ pricing from valid records already stored by the current parser.
 The regression failed before the fix and passed after it. Tests cover parser
 replay, absent aggregate parser metadata, unchanged current-parser checkpoints,
 retained token totals, and growth of the priced subset. Repeat scans do not add
-revisions. All 773 native tests pass; one existing test remains ignored.
+revisions. The native regression and compatibility tests pass; one existing test remains ignored.
 
 Live recovery still needs evidence from an updated affected client: previously
 unpriced daily usage gains priced tokens and a cost, known token totals remain,
@@ -57,3 +57,20 @@ stay unpriced. The normal repricing pass uses stored detail without an index
 reset. Remove the older approved basis only after the retained history window
 and supported clients no longer require it; track that removal in the owner
 issue if it remains after this repair is verified.
+
+## Failed-file diagnostic replay
+
+The permanent `claude_usage_index_meta` marker `error_diagnostic_replay_v1`
+records a one-time reset of error-file offsets for the new fixed parser codes.
+The marker and cursor updates commit atomically. No message, aggregate, or
+complete-file checkpoint is deleted. Normal byte/time budgets and checkpoints
+bound the reread and permit resumption. The marker must remain until a later
+schema migration or supported-version change proves that old error checkpoints
+cannot return; do not delete it when closing this rollout entry.
+
+The regression verifies that a retained failure produces its specific reason,
+known tokens and prices stay unchanged, complete-file cursors stay unchanged,
+and a repeated scan neither replays the failure nor adds a daily revision.
+Live verification must record the new reason distribution if an updated client
+still has rejected records. Do not declare its token gap fixed from a pricing
+recovery alone.

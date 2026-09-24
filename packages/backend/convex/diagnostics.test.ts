@@ -580,3 +580,34 @@ test("unknown models survive upload and have distinct support groups", async () 
   ).toEqual([...models].sort());
   expect(new Set(stored.page.map((row) => row.groupKey)).size).toBe(models.length);
 });
+
+test("specific Claude parser failures survive support lookup", async () => {
+  const t = testBackend();
+  const owner = await seedReporter(t);
+  const original = fixtures.find((report) => report.failure.area === "parser")!;
+  const report = diagnosticReportSchema.parse({
+    ...original,
+    reportId: crypto.randomUUID(),
+    failure: {
+      ...original.failure,
+      provider: "claude",
+      context: {
+        ...original.failure.context,
+        reason: "invalid_input_counter",
+        rankingDay: "2026-09-10",
+        recordsAffected: 2,
+        recordsExcluded: 2,
+      },
+    },
+  });
+  await t.mutation(api.diagnostics.submit, {
+    reporterId: owner.reporterId,
+    diagnosticCredential: DIAGNOSTIC_CREDENTIAL,
+    report,
+  });
+  const stored = await t.query(internal.diagnostics.forProfile, {
+    tokenmaxxerId: owner.tokenmaxxerId,
+    paginationOpts: { numItems: 10, cursor: null },
+  });
+  expect(stored.page[0]!.report).toEqual(report);
+});

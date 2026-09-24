@@ -190,3 +190,19 @@ Old reports remain valid without this field. Their missing model names cannot
 be recovered from uploaded counts. Deploy the optional backend validator before
 shipping clients that emit the field. This is a permanent additive field; no
 backfill or temporary compatibility path is required.
+
+## Rejected Claude records
+
+New clients separate malformed headers, assistant envelopes, frame identity,
+timestamps, message metadata, content shape, input counters, output counters,
+cache-read counters, cache-write counters, and remaining usage metadata into
+fixed parser reason codes. Missing and invalid values share the relevant code.
+No rejected value, free-text parser error, or source content leaves the Mac.
+The existing affected/excluded counts and UTC day show the impact of each code.
+
+On first use, the diagnostic replay marker resets only retained failed-file
+cursors. The normal bounded scanner rereads those files and emits the more
+specific reasons. Valid messages, complete-file cursors, daily totals, and
+parser version stay unchanged. The operation commits its marker and cursor
+changes together and does not repeat on later refreshes. A missing source file
+cannot be recovered by this diagnostic pass.
