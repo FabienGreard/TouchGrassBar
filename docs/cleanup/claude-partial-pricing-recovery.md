@@ -77,7 +77,8 @@ recovery alone.
 
 ## Detailed rejection replay
 
-The next diagnostic change adds permanent `error_diagnostic_replay_v2` with the
+[The detailed rejection change](https://github.com/FabienGreard/TouchGrassBar/commit/0955e467)
+adds permanent `error_diagnostic_replay_v2` with the
 same atomic cursor-reset and bounded scan behavior. The v1 marker stays in the
 index; it cannot prevent the v2 scan. The replay regression starts with a v1
 marker and retained failed files, then verifies field-level evidence, unchanged
