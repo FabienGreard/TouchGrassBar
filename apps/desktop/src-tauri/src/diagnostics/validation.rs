@@ -116,3 +116,28 @@ pub(super) fn catalog_version(value: &str) -> bool {
 fn lower_hex(byte: u8) -> bool {
     byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }
+
+/// Only bounded provider model identifiers, never a path or arbitrary log text.
+pub(crate) fn model_identifier(provider: super::Provider, value: &str) -> bool {
+    let family_matches = match provider {
+        super::Provider::Codex => {
+            value
+                .strip_prefix("gpt-")
+                .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
+                || value
+                    .strip_prefix('o')
+                    .is_some_and(|s| s.starts_with(|c: char| c.is_ascii_digit()))
+                || value.starts_with("codex-")
+        }
+        super::Provider::Claude => value.starts_with("claude-"),
+    };
+    family_matches
+        && (2..=96).contains(&value.len())
+        && value.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_')
+        })
+        && value
+            .bytes()
+            .last()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+}

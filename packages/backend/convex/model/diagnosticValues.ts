@@ -96,6 +96,7 @@ export const diagnosticFailureValidator = v.union(
       parserVersion: nullableNumber,
       catalogVersion: nullableString,
       reason: literals(DIAGNOSTIC_PRICING_REASONS),
+      model: v.optional(v.string()),
       observedTokens: nullableNumber,
       pricedTokens: nullableNumber,
       localCostMicros: nullableNumber,

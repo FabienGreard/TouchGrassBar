@@ -240,6 +240,12 @@ export const diagnosticParserContextSchema = z
 
 export const diagnosticPricingContextSchema = z
   .object({
+    model: z
+      .string()
+      .min(2)
+      .max(96)
+      .regex(/^[a-z0-9][a-z0-9._-]*[a-z0-9]$/)
+      .exactOptional(),
     rankingDay: rankingDay.nullable(),
     revision: revision.nullable(),
     parserVersion: version.nullable(),
@@ -377,6 +383,15 @@ export const diagnosticReportSchema = z
     }
     if (failure.area === "pricing") {
       const evidence = failure.context;
+      if (
+        evidence.model !== undefined &&
+        (evidence.reason !== "unknown_model" ||
+          !(failure.provider === "codex"
+            ? /^(?:gpt-[0-9]|o[0-9]|codex-)/.test(evidence.model)
+            : evidence.model.startsWith("claude-")))
+      ) {
+        ctx.addIssue({ code: "custom", message: "Invalid diagnostic model identifier" });
+      }
       if (
         evidence.observedTokens !== null &&
         evidence.pricedTokens !== null &&

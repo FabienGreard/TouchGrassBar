@@ -29,6 +29,17 @@ local usage work.
 
 ## OpenAI rules
 
+The `2026-09-24-v1` review adds `gpt-6-sol` and `gpt-6-luna` from their
+[September 22 launch](https://developers.openai.com/api/docs/changelog#sep-22).
+The [price table](https://developers.openai.com/api/docs/pricing) confirms
+Standard input, cache read, cache write, and output rates per million tokens:
+Sol uses USD 2, 0.20, 2.50, and 10; Luna uses USD 0.10, 0.01, 0.125, and 0.50.
+Above 272,000 input tokens, input and cache rates double and output rates
+increase by 1.5. Fast rates are twice the corresponding Standard rates.
+Both periods start on 2026-09-22 and remain open. No aliases are added.
+EU data residency is available only with Standard processing for these models.
+This price-only review does not advance the full provider review date.
+
 The `2026-09-05-v1` review adds `gpt-6-astra` from its
 [September 3 launch](https://developers.openai.com/api/docs/changelog#sep-3).
 The [model page](https://developers.openai.com/api/docs/models/gpt-6-astra)

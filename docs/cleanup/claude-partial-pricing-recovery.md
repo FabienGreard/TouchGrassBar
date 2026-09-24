@@ -2,7 +2,7 @@
 
 - **Status:** rehearsed
 - **Owner issue:** [#112](https://github.com/FabienGreard/TouchGrassBar/issues/112)
-- **Implementation:** branch `codex/claude-partial-pricing-recovery`; pull request linked in the owner issue
+- **Implementation:** [PR #113](https://github.com/FabienGreard/TouchGrassBar/pull/113)
 
 ## Scope
 
@@ -22,7 +22,7 @@ pricing from valid records already stored by the current parser.
 The regression failed before the fix and passed after it. Tests cover parser
 replay, absent aggregate parser metadata, unchanged current-parser checkpoints,
 retained token totals, and growth of the priced subset. Repeat scans do not add
-revisions. All 769 native tests pass; one existing test remains ignored.
+revisions. All 773 native tests pass; one existing test remains ignored.
 
 Live recovery still needs evidence from an updated affected client: previously
 unpriced daily usage gains priced tokens and a cost, known token totals remain,
@@ -46,3 +46,14 @@ tests, ADR, and diagnostic guidance. There are no temporary fields or indexes.
 The patch is public and an affected updated client has synchronized recovered
 pricing with the verification invariants above. Record evidence in issue #112
 before closing it and removing this entry.
+
+## Codex catalog and model diagnostics rollout
+
+The same patch adds `openai-standard-2026-09-24-v1`. Deploy its approved basis
+and the optional unknown-model diagnostic field before the desktop release.
+Keep `openai-standard-2026-09-05-v1` approved while older clients or unchanged
+retained rows can send it. New model rates apply from 2026-09-22; earlier dates
+stay unpriced. The normal repricing pass uses stored detail without an index
+reset. Remove the older approved basis only after the retained history window
+and supported clients no longer require it; track that removal in the owner
+issue if it remains after this repair is verified.

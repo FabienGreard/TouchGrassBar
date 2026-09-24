@@ -299,5 +299,67 @@
         "retryCount": 2
       }
     }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000011",
+    "failure": {
+      "area": "pricing",
+      "provider": "codex",
+      "code": "pricing_calculation_failed",
+      "context": {
+        "rankingDay": "2026-09-11",
+        "revision": 42,
+        "parserVersion": 4,
+        "catalogVersion": "openai-standard-2026-09-05-v9",
+        "reason": "unknown_model",
+        "observedTokens": 1000,
+        "pricedTokens": 1000,
+        "localCostMicros": 125000,
+        "outgoingCostMicros": null,
+        "model": "gpt-99-one"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000012",
+    "failure": {
+      "area": "pricing",
+      "provider": "claude",
+      "code": "pricing_calculation_failed",
+      "context": {
+        "rankingDay": "2026-09-11",
+        "revision": 42,
+        "parserVersion": 4,
+        "catalogVersion": "openai-standard-2026-09-05-v9",
+        "reason": "unknown_model",
+        "observedTokens": 1000,
+        "pricedTokens": 1000,
+        "localCostMicros": 125000,
+        "outgoingCostMicros": null,
+        "model": "claude-future-99"
+      }
+    }
   }
 ]

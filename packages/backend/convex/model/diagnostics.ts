@@ -80,6 +80,9 @@ export function diagnosticGroupKey(report: DiagnosticReport) {
           ? failure.context.parserVersion
           : null,
       catalogVersion: failure.area === "pricing" ? failure.context.catalogVersion : null,
+      ...(failure.area === "pricing" && failure.context.model !== undefined
+        ? { model: failure.context.model }
+        : {}),
     }),
   );
 }

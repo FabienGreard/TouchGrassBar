@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "basis": "openai-standard-2026-09-05-v1",
+  "basis": "openai-standard-2026-09-24-v1",
   "models": [
     {
       "name": "gpt-6-astra",
@@ -200,6 +200,62 @@
             "cachedInputUsdPerMillion": 0.08,
             "cacheWriteUsdPerMillion": 1.0,
             "outputUsdPerMillion": 3.6
+          }
+        }
+      ]
+    },
+    {
+      "name": "gpt-6-sol",
+      "aliases": [],
+      "periods": [
+        {
+          "effectiveFrom": "2026-09-22",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 2,
+          "cachedInputUsdPerMillion": 0.2,
+          "cacheWriteUsdPerMillion": 2.5,
+          "outputUsdPerMillion": 10,
+          "fastMultiplier": 2.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          },
+          "fastLongContext": {
+            "effectiveFrom": "2026-09-22",
+            "effectiveUntil": null,
+            "inputUsdPerMillion": 8,
+            "cachedInputUsdPerMillion": 0.8,
+            "cacheWriteUsdPerMillion": 10.0,
+            "outputUsdPerMillion": 30
+          }
+        }
+      ]
+    },
+    {
+      "name": "gpt-6-luna",
+      "aliases": [],
+      "periods": [
+        {
+          "effectiveFrom": "2026-09-22",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 0.1,
+          "cachedInputUsdPerMillion": 0.01,
+          "cacheWriteUsdPerMillion": 0.125,
+          "outputUsdPerMillion": 0.5,
+          "fastMultiplier": 2.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          },
+          "fastLongContext": {
+            "effectiveFrom": "2026-09-22",
+            "effectiveUntil": null,
+            "inputUsdPerMillion": 0.4,
+            "cachedInputUsdPerMillion": 0.04,
+            "cacheWriteUsdPerMillion": 0.5,
+            "outputUsdPerMillion": 1.5
           }
         }
       ]

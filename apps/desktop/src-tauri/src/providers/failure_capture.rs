@@ -208,7 +208,13 @@ fn same_reason(left: &Failure, right: &Failure) -> bool {
                 context: y,
                 code: d,
             },
-        ) => a == b && c == d && x.reason == y.reason && x.ranking_day == y.ranking_day,
+        ) => {
+            a == b
+                && c == d
+                && x.reason == y.reason
+                && x.ranking_day == y.ranking_day
+                && x.model == y.model
+        }
         _ => left == right,
     }
 }
@@ -339,10 +345,26 @@ pub(crate) fn pricing(
     reason: PricingReason,
     catalog_version: Option<&str>,
 ) {
+    pricing_with_model(provider, day, reason, catalog_version, None);
+}
+
+pub(crate) fn pricing_with_model(
+    provider: Provider,
+    day: Option<time::Date>,
+    reason: PricingReason,
+    catalog_version: Option<&str>,
+    model: Option<&str>,
+) {
     capture(Failure::Pricing {
         code: PricingCode::PricingCalculationFailed,
         provider,
         context: PricingContext {
+            model: model
+                .filter(|model| {
+                    reason == PricingReason::UnknownModel
+                        && diagnostics::model_identifier(provider, model)
+                })
+                .map(str::to_owned),
             ranking_day: day.map(|day| day.to_string()),
             revision: None,
             // Repricing can read records from an older parser. Do not assign the running parser to that evidence.

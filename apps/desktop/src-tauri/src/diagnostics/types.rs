@@ -159,6 +159,8 @@ pub(crate) struct ParserContext {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PricingContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub ranking_day: Option<String>,
     pub revision: Option<u64>,
     pub parser_version: Option<u64>,
@@ -282,7 +284,7 @@ impl Failure {
         // The context can change between occurrences. It must not create a new rate-limit group.
         let value = serde_json::to_value(self).expect("fixed diagnostic fields serialize");
         let context = &value["context"];
-        serde_json::json!([
+        let mut group = serde_json::json!([
             value["area"],
             value["code"],
             value["provider"],
@@ -298,8 +300,14 @@ impl Failure {
             context["modules"],
             context["observedFormat"],
             context["expectedFormat"]
-        ])
-        .to_string()
+        ]);
+        if let Some(model) = context.get("model") {
+            group
+                .as_array_mut()
+                .expect("fixed group is an array")
+                .push(model.clone());
+        }
+        group.to_string()
     }
 
     pub(super) fn valid(&self) -> bool {
@@ -332,8 +340,16 @@ impl Failure {
                         .iter()
                         .all(|value| source_version(value))
             }
-            Self::Pricing { code, context, .. } => {
+            Self::Pricing {
+                code,
+                context,
+                provider,
+            } => {
                 context.ranking_day.as_deref().is_none_or(day)
+                    && context.model.as_deref().is_none_or(|model| {
+                        context.reason == PricingReason::UnknownModel
+                            && super::validation::model_identifier(*provider, model)
+                    })
                     && context.scan.as_ref().is_none_or(|scan| scan.valid())
                     && context.revision.is_none_or(|value| value > 0)
                     && context
@@ -440,6 +456,38 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_model_validation_and_grouping_match_the_backend_contract() {
+        let raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../packages/contracts/fixtures/diagnostic-reports-v1.json"
+        ))
+        .unwrap();
+        let reports: Vec<Report> = serde_json::from_value(raw).unwrap();
+        let original = reports.iter().find(|r| matches!(&r.failure, Failure::Pricing { context, .. } if context.model.is_some())).unwrap().failure.clone();
+        let mut other = original.clone();
+        if let Failure::Pricing { context, .. } = &mut other {
+            context.model = Some("gpt-99-two".to_owned());
+        }
+        assert_ne!(original.group(), other.group());
+        for model in [
+            "/private/model",
+            "gpt-99 secret",
+            "gpt-99\nsecret",
+            "gpt-99@host",
+            "claude-future-99",
+        ] {
+            if let Failure::Pricing { context, .. } = &mut other {
+                context.model = Some(model.to_owned());
+            }
+            assert!(!other.valid());
+        }
+        if let Failure::Pricing { context, .. } = &mut other {
+            context.model = Some("gpt-99-one".to_owned());
+            context.reason = PricingReason::MissingEffectivePrice;
+        }
+        assert!(!other.valid());
+    }
 
     #[test]
     fn shared_backend_fixtures_round_trip_without_schema_drift() {
