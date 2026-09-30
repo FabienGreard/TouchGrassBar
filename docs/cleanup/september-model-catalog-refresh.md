@@ -1,6 +1,6 @@
 # September model catalog rollout
 
-- **Status:** planned
+- **Status:** running
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
 - **Implementation:** [49e2eecd](https://github.com/FabienGreard/TouchGrassBar/commit/49e2eecd0d08ffef0f7c5b4c703df9cf2f2e46df)
   updates the bundled pricing manifests and generated native contract.
@@ -31,7 +31,30 @@ and supported modifiers. Recovery tests remove the synthetic provider source
 before repricing. The retained detail gains a cost without a new parse or a
 token change. Repeated repricing makes no further aggregate change. The sync
 suite accepts every native approved basis, including both new bases. Live
-rollout evidence is still required.
+recovery evidence from a released client is still required.
+
+## Release verification
+
+[v0.0.56](https://github.com/FabienGreard/TouchGrassBar/releases/tag/v0.0.56)
+is public.
+Candidate commit `1e6218fe52fcc3c403d26e2b1c002f920b118e6c` passed
+[CI run 36685493492](https://github.com/FabienGreard/TouchGrassBar/actions/runs/36685493492).
+The exact backend passed a dry deployment and deployed to production
+`next-pig-820` before tag creation. The post-deployment check recorded five
+successful usage synchronizations, thirteen successful leaderboard reads, and
+no failed executions. A separate bounded read returned 45 populated rows,
+including 29 rows with cost.
+
+[Release run 36686349026](https://github.com/FabienGreard/TouchGrassBar/actions/runs/36686349026)
+passed all 53 database fixtures, signing, notarization, Gatekeeper, and updater
+signature checks. All seven public downloads match the verified draft hashes.
+The downloaded updater archive passed a separate signature check. The downloaded
+DMG passed separate code signature, notarization ticket, and Gatekeeper checks.
+The stable update feed names version 0.0.56 and its signed archive.
+
+These production checks prove backend availability and synchronization from
+existing clients. Keep this entry until the released app provides live model
+recovery evidence and the retained pricing bases meet the exit condition.
 
 ## Recovery
 
