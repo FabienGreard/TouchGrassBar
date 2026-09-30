@@ -29,6 +29,19 @@ local usage work.
 
 ## OpenAI rules
 
+The `2026-09-30-v1` review adds `gpt-6.1-sol` from its
+[September 29 launch](https://developers.openai.com/api/docs/changelog#sep-29).
+The [model page](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+and [price table](https://developers.openai.com/api/docs/pricing) define Standard
+rates per million tokens: USD 2 input, 0.10 cache read, 2.50 cache write, and
+10 output. Above 272,000 input tokens, input and cache rates double and output
+rates increase by 1.5 for the full request. Fast prices are twice Standard
+prices in both context bands. Both periods start on 2026-09-29 and remain open.
+The older `gpt-6-sol` keeps its own cache-read rate. No alias is added.
+This model review keeps the full provider review date and the broader rule
+window hashes unchanged. Issue #99 still owns the other audit findings,
+including Astra Ultrafast pricing and provider protocol changes.
+
 The `2026-09-24-v1` review adds `gpt-6-sol` and `gpt-6-luna` from their
 [September 22 launch](https://developers.openai.com/api/docs/changelog#sep-22).
 The [price table](https://developers.openai.com/api/docs/pricing) confirms
@@ -146,6 +159,17 @@ The `2026-08-26-v2` review used these dated first-party changes:
   end date.
 
 ## Anthropic rules
+
+The `2026-09-30-v1` review adds `claude-sonnet-5-5` from its
+[September 28 launch](https://platform.claude.com/docs/en/release-notes/overview#september-28-2026).
+The [model page](https://platform.claude.com/docs/en/models/sonnet-5-5/overview)
+and [price table](https://platform.claude.com/docs/en/about-claude/pricing)
+define rates per million tokens: USD 2 input, 2.50 for a five-minute cache
+write, 4 for a one-hour cache write, 0.20 cache read, and 10 output.
+The period starts on 2026-09-28 and remains open. Batch uses the 50% discount;
+US inference uses the 1.1 multiplier. Sonnet 5.5 has no published Fast price
+and no reviewed alias. This model review keeps the broader evidence and rule
+window hashes unchanged; issue #99 owns their remaining review.
 
 `anthropic-standard.json` contains public Claude API list prices. It does not
 contain private offers, volume discounts, partner cloud prices, or Priority

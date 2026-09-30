@@ -627,19 +627,19 @@ mod tests {
         let manifest = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON)
             .expect("valid bundled manifest");
         let changed_basis = parse_pricing_manifest(&ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "anthropic-standard-2026-09-23-v2",
-            "anthropic-standard-2026-09-23-v3",
+            "anthropic-standard-2026-09-30-v1",
+            "anthropic-standard-2026-09-30-v2",
             1,
         ))
         .expect("valid changed basis");
 
-        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-23-v2");
+        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-30-v1");
         assert!(manifest.semantic_fingerprint().starts_with("fnv1a64:"));
         assert_ne!(
             manifest.semantic_fingerprint(),
             changed_basis.semantic_fingerprint()
         );
-        assert_eq!(manifest.models.len(), 18);
+        assert_eq!(manifest.models.len(), 19);
     }
 
     #[test]
@@ -779,6 +779,57 @@ mod tests {
         assert!(
             manifest
                 .price_message("claude-opus-5-5", date("2026-09-21"), usage())
+                .cost_usd
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sonnet_5_5_prices_cache_buckets_and_modifiers_from_launch() {
+        let manifest = catalog().expect("bundled catalog");
+        let all_buckets = BillableUsage {
+            input_tokens: 1_000_000,
+            cache_creation_input_tokens: 2_000_000,
+            cache_creation_5m_input_tokens: Some(1_000_000),
+            cache_creation_1h_input_tokens: Some(1_000_000),
+            cache_read_input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+            ..usage()
+        };
+        // 2 input + 2.50 5m write + 4 1h write + 0.20 read + 10 output.
+        for (service_tier, inference_geo, expected) in [
+            ("standard", "global", 18.7),
+            ("batch", "global", 9.35),
+            ("standard", "us", 20.57),
+        ] {
+            let decision = manifest.price_message(
+                "claude-sonnet-5-5",
+                date("2026-09-28"),
+                BillableUsage {
+                    service_tier: Some(service_tier),
+                    inference_geo: Some(inference_geo),
+                    ..all_buckets
+                },
+            );
+            assert_cost(decision.clone(), expected);
+            assert_eq!(decision.priced_tokens, 5_000_000);
+        }
+        assert!(
+            manifest
+                .price_message("claude-sonnet-5-5", date("2026-09-27"), all_buckets)
+                .cost_usd
+                .is_none()
+        );
+        assert!(
+            manifest
+                .price_message(
+                    "claude-sonnet-5-5",
+                    date("2026-09-28"),
+                    BillableUsage {
+                        speed: Some("fast"),
+                        ..all_buckets
+                    },
+                )
                 .cost_usd
                 .is_none()
         );

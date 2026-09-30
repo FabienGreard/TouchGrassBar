@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "basis": "anthropic-standard-2026-09-23-v2",
+  "basis": "anthropic-standard-2026-09-30-v1",
   "batchFactor": 0.5,
   "usInferenceFactor": 1.1,
   "webSearchUsdPerThousand": 10.0,
@@ -259,6 +259,23 @@
           "cacheWrite1hUsdPerMillion": 30.0,
           "cacheReadUsdPerMillion": 1.5,
           "outputUsdPerMillion": 75.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-sonnet-5-5",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-09-28",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 2.0,
+          "cacheWrite5mUsdPerMillion": 2.5,
+          "cacheWrite1hUsdPerMillion": 4.0,
+          "cacheReadUsdPerMillion": 0.2,
+          "outputUsdPerMillion": 10.0
         }
       ],
       "fastPeriods": []

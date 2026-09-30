@@ -12614,6 +12614,68 @@ mod tests {
     }
 
     #[test]
+    fn gpt_6_1_sol_catalog_recovers_retained_cost_without_a_rescan() {
+        let fixture = TempUsage::new();
+        fs::write(
+            &fixture.rollout,
+            root_rollout(1_000_000)
+                .replace("gpt-5.6-sol", "gpt-6.1-sol")
+                .replace("2026-08-06", "2026-09-29"),
+        )
+        .unwrap();
+        let now = OffsetDateTime::parse("2026-09-29T12:00:00Z", &Rfc3339).unwrap();
+        index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        let connection = Connection::open(&fixture.database).unwrap();
+        let read = || {
+            connection
+                .query_row(
+                    "SELECT f.parsed_offset, d.observed_tokens, d.cost_usd,
+                        s.priced_tokens, s.cost_usd
+                 FROM codex_usage_file_model_days d
+                 JOIN codex_usage_files f ON f.path = d.path
+                 JOIN codex_usage_file_days s ON s.path = d.path AND s.day = d.day",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, u64>(1)?,
+                            row.get::<_, Option<f64>>(2)?,
+                            row.get::<_, u64>(3)?,
+                            row.get::<_, f64>(4)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let current = pricing_manifest().unwrap();
+        let mut old: serde_json::Value =
+            serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
+        old["basis"] = json!("openai-standard-2026-09-24-v1");
+        old["models"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|model| model["name"] != "gpt-6.1-sol");
+        let old = parse_pricing_manifest(&old.to_string()).unwrap();
+        reprice_index_with_manifest(&connection, &old, now.date(), now.date()).unwrap();
+        let unpriced = read();
+        assert_eq!(unpriced.1, 1_000_000);
+        assert_eq!(unpriced.2, None);
+        assert_eq!(unpriced.3, 0);
+
+        fs::remove_file(&fixture.rollout).unwrap();
+        reprice_index_with_manifest(&connection, current, now.date(), now.date()).unwrap();
+        let recovered = read();
+        assert_eq!(recovered.0, unpriced.0, "the parse cursor must not move");
+        assert_eq!(recovered.1, unpriced.1, "token totals must not change");
+        assert_eq!(recovered.3, recovered.1);
+        // 700K input uses USD 4/MTok; 300K output uses USD 15/MTok.
+        assert!((recovered.2.unwrap() - 7.3).abs() < 1e-12);
+        assert!((recovered.4 - 7.3).abs() < 1e-12);
+        reprice_index_with_manifest(&connection, current, now.date(), now.date()).unwrap();
+        assert_eq!(read(), recovered);
+    }
+
+    #[test]
     fn semantic_manifest_change_reprices_only_affected_model_days() {
         let fixture = TempUsage::new();
         fs::write(&fixture.rollout, root_rollout(100)).unwrap();
@@ -13125,7 +13187,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-standard-2026-09-24-v1");
+        assert_eq!(manifest.basis, "openai-standard-2026-09-30-v1");
         assert!(
             catalog_entry(
                 &manifest,
@@ -13826,6 +13888,40 @@ mod tests {
         let encoded = serde_json::to_string(&failures).unwrap();
         assert!(!encoded.contains("private"));
         assert!(!encoded.contains("secret"));
+    }
+
+    #[test]
+    fn gpt_6_1_sol_prices_all_context_tiers_from_launch() {
+        let launch = Date::from_calendar_date(2026, Month::September, 29).unwrap();
+        // Input includes cache reads and writes; output includes reasoning.
+        let usage = token_usage(400_000, 100_000, 100_000, 100_000);
+        for (context, standard) in [(272_000, 1.66), (272_001, 2.82)] {
+            for (mode, expected) in [
+                (PricingMode::Standard, standard),
+                (PricingMode::Fast, standard * 2.0),
+            ] {
+                assert!(
+                    price_usage_tier(
+                        "gpt-6.1-sol",
+                        launch - Duration::days(1),
+                        usage,
+                        context,
+                        mode.clone(),
+                    )
+                    .is_none()
+                );
+                let cost = price_usage_tier("gpt-6.1-sol", launch, usage, context, mode)
+                    .expect("GPT-6.1 Sol needs its published launch prices");
+                assert!((cost - expected).abs() < 1e-12, "context={context}");
+            }
+        }
+        assert_eq!(
+            pricing_manifest()
+                .unwrap()
+                .canonical_model_name("gpt-6.1-sol"),
+            Some("gpt-6.1-sol")
+        );
+        assert!(pricing_manifest().unwrap().model("gpt-6.1").is_none());
     }
 
     #[test]

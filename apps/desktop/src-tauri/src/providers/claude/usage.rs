@@ -8225,7 +8225,7 @@ mod tests {
         assert_eq!(detail.api_equivalent_cost_usd, Some(18.0));
         assert_eq!(
             local.pricing_basis.as_deref(),
-            Some("anthropic-standard-2026-09-23-v2")
+            Some("anthropic-standard-2026-09-30-v1")
         );
 
         let UsageTotal::Current {
@@ -8334,6 +8334,74 @@ mod tests {
         assert_eq!(local.daily_usage[&now().date()].observed_tokens, 2_000_000);
         assert!(!local.daily_cost.contains_key(&now().date()));
         assert_sqlite_artifacts_exclude(&fixture.database(), PRIVATE_MODIFIER);
+    }
+
+    #[test]
+    fn sonnet_5_5_catalog_recovers_retained_cost_without_a_rescan() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let now = OffsetDateTime::parse("2026-09-28T12:00:00Z", &Rfc3339).unwrap();
+        let transcript = config.join("projects/project-a/session.jsonl");
+        write_transcript(
+            &transcript,
+            &[transcript_line(
+                "fixture-new-sonnet",
+                now - Duration::minutes(5),
+                "claude-sonnet-5-5",
+                usage(1_000_000, 0, 0, 1_000_000),
+            )],
+        );
+        index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        let read = || {
+            connection
+                .query_row(
+                    "SELECT observed_tokens, priced_tokens, cost_usd, revision
+                 FROM claude_usage_daily WHERE day = ?1",
+                    [now.date().to_string()],
+                    |row| {
+                        Ok((
+                            row.get::<_, u64>(0)?,
+                            row.get::<_, u64>(1)?,
+                            row.get::<_, Option<f64>>(2)?,
+                            row.get::<_, u64>(3)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let cutoff = now.date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
+        let mut old: serde_json::Value =
+            serde_json::from_str(super::super::pricing::bundled_manifest_for_test()).unwrap();
+        old["basis"] = serde_json::json!("anthropic-standard-2026-09-23-v2");
+        old["models"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|model| model["name"] != "claude-sonnet-5-5");
+        let old = super::super::pricing::catalog_from_manifest_for_test(&old.to_string()).unwrap();
+        refresh_daily_aggregates_with_catalog(&connection, cutoff, now.date(), true, Some(&old))
+            .unwrap();
+        let unpriced = read();
+        assert_eq!(unpriced.0, 2_000_000);
+        assert_eq!(unpriced.1, 0);
+        assert_eq!(unpriced.2, None);
+
+        fs::remove_file(&transcript).unwrap();
+        let current = super::super::pricing::catalog().unwrap();
+        refresh_daily_aggregates_with_catalog(&connection, cutoff, now.date(), true, Some(current))
+            .unwrap();
+        let recovered = read();
+        assert_eq!(recovered.0, unpriced.0, "token totals must not change");
+        assert_eq!(recovered.1, recovered.0);
+        assert_eq!(recovered.2, Some(12.0));
+        assert_eq!(recovered.3, unpriced.3 + 1);
+        refresh_daily_aggregates_with_catalog(&connection, cutoff, now.date(), true, Some(current))
+            .unwrap();
+        assert_eq!(
+            read(),
+            recovered,
+            "repeat repricing must not add a revision"
+        );
     }
 
     #[test]
@@ -8497,7 +8565,7 @@ mod tests {
 
     #[test]
     fn mixed_retained_price_books_keep_bounded_provenance_during_incomplete_scan() {
-        const NEW_BASIS: &str = "anthropic-standard-2026-09-23-v3";
+        const NEW_BASIS: &str = "anthropic-standard-2026-09-30-v2";
 
         let fixture = FixtureRoot::new();
         let config = fixture.config();

@@ -9,7 +9,7 @@
     "modelCatalogPath": "codex-rs/models-manager/models.json",
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/codex/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/openai-standard.json",
-    "pricingManifestSemanticSha256": "1c4d8766fff574acb6e59225e92b23adec8803831948cea9589d4ac7592c8c93",
+    "pricingManifestSemanticSha256": "ef126fac47373f90910e7e5b6175a9095d0d69a786f6c13e12363132d40e9b6f",
     "pricingRuleWindows": [
       {
         "id": "api-token-and-tool-pricing",
@@ -48,6 +48,25 @@
           "url": "https://developers.openai.com/api/docs/changelog.md",
           "windowSemanticSha256": "035af557249d5a481f55335d73a82b5221972e2a5c3ceb857503b75c97751bde",
           "sections": [
+            {
+              "id": "gpt-6-1-sol-launch",
+              "heading": "### Sep 29",
+              "selector": "Released GPT-6.1 Sol",
+              "date": "2026-09-29",
+              "semanticSha256": "a974bd5be1f8b9348c12607436dd2ea58df93399065f0d15d68f622e8360fa07",
+              "checkpoints": [
+                {
+                  "model": "gpt-6.1-sol",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6.1-sol",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "gpt-6-sol-luna-launch",
               "heading": "### Sep 22",
@@ -309,7 +328,7 @@
     ],
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/claude/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/anthropic-standard.json",
-    "pricingManifestSemanticSha256": "f998dbae9bf81e9e113d572937b8b423a557a521154b38609574aba58f86b5dc",
+    "pricingManifestSemanticSha256": "aaf6df8dade76ac25230a8f8f96be004f71ae7d737686a2deb3eb90e3b96b61f",
     "pricingRuleWindows": [
       {
         "id": "model-token-pricing",
@@ -340,6 +359,20 @@
           "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
           "windowSemanticSha256": "cbb180b2e688bf492b5726dbd54d74dbedc82a3ce6bbd9c7e5d0b642de44a5a2",
           "sections": [
+            {
+              "id": "claude-sonnet-5-5-launch",
+              "heading": "### September 28, 2026",
+              "selector": "We've launched Claude Sonnet 5.5",
+              "date": "2026-09-28",
+              "semanticSha256": "dc95a6c502d188f3706bd1f4cd3943f053d220b20ade6031d0e562132a6921ff",
+              "checkpoints": [
+                {
+                  "model": "claude-sonnet-5-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "opus-5-5-launch",
               "heading": "### September 22, 2026",
