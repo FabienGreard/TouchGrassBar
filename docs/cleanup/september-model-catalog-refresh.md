@@ -2,8 +2,8 @@
 
 - **Status:** planned
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
-- **Implementation:** This local change to the bundled pricing manifests and
-  generated native contract. Add the introducing PR or commit link before merge.
+- **Implementation:** [49e2eecd](https://github.com/FabienGreard/TouchGrassBar/commit/49e2eecd0d08ffef0f7c5b4c703df9cf2f2e46df)
+  updates the bundled pricing manifests and generated native contract.
 
 ## Scope
 
