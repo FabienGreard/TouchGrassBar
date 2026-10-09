@@ -63,6 +63,7 @@ type PendingDoomerboardRead = {
 type DoomerboardReadTarget = {
   audience?: DoomerboardQuery["audience"] | undefined;
   profileKey: string;
+  queries?: readonly DoomerboardQuery[] | undefined;
   rankingDay?: string | undefined;
 };
 type DoomerboardReadScheduler = {
@@ -97,7 +98,9 @@ function matchesDoomerboardRead(read: PendingDoomerboardRead, target: Doomerboar
   return (
     read.profileKey === target.profileKey &&
     (target.rankingDay === undefined || read.rankingDay === target.rankingDay) &&
-    (target.audience === undefined || read.query.audience === target.audience)
+    (target.audience === undefined || read.query.audience === target.audience) &&
+    (target.queries === undefined ||
+      target.queries.some((query) => sameDoomerboardQuery(read.query, query)))
   );
 }
 
@@ -206,6 +209,37 @@ function cancelDoomerboardAudience(
     ...filters,
   });
   doomerboardReadSchedulers.get(native)?.cancel({ audience, profileKey });
+  return cancellation;
+}
+
+function cancelInactiveDoomerboardRankingDay(
+  client: QueryClient,
+  native: DoomerboardQueryPort,
+  profileKey: string,
+  rankingDay: string,
+) {
+  const filters = {
+    queryKey: doomerboardRankingDayKey(profileKey, rankingDay),
+    type: "inactive" as const,
+  };
+  const queries = client
+    .getQueryCache()
+    .findAll(filters)
+    .flatMap<DoomerboardQuery>(({ queryKey }) => {
+      const audience = queryKey[3];
+      const scope = queryKey[4];
+      const windowDays = queryKey[5];
+      if (
+        (audience !== "global" && audience !== "mine") ||
+        (scope !== "combined" && scope !== "codex" && scope !== "claude") ||
+        (windowDays !== 1 && windowDays !== 7 && windowDays !== 30)
+      ) {
+        return [];
+      }
+      return [{ audience, scope, windowDays }];
+    });
+  const cancellation = client.cancelQueries(filters);
+  doomerboardReadSchedulers.get(native)?.cancel({ profileKey, queries, rankingDay });
   return cancellation;
 }
 
@@ -338,7 +372,7 @@ async function prefetchDoomerboardSelections({
 }: PrefetchDoomerboardSelectionsInput) {
   if (signal?.aborted) return;
   const cancelPrefetch = () => {
-    void cancelDoomerboardRankingDay(client, native, profileKey, rankingDay);
+    void cancelInactiveDoomerboardRankingDay(client, native, profileKey, rankingDay);
   };
   signal?.addEventListener("abort", cancelPrefetch, { once: true });
   const pending = prioritizedDoomerboardSelections(activeSelection);

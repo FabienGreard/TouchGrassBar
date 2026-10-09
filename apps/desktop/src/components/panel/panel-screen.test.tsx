@@ -2,13 +2,13 @@
 
 import type { SanitizedDesktopState } from "@touchgrass/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { PanelScreen } from "@/components/panel/panel-screen";
 import { createBrowserSanitizedDesktopStateAdapter } from "@/dev/browser-sanitized-desktop-state-adapter";
-import type { DoomerboardPort } from "@/native-state/doomerboard-query";
+import type { DoomerboardPort, DoomerboardPortOutcome } from "@/native-state/doomerboard-query";
 import {
   createSanitizedDesktopStateDelivery,
   type SanitizedDesktopStateDelivery,
@@ -85,6 +85,121 @@ function mutableStateDelivery(initialSnapshot: SanitizedDesktopState) {
     },
   };
 }
+
+test("provider revision notices do not keep the initial Doomerboard loading", async () => {
+  const browser = createBrowserSanitizedDesktopStateAdapter(
+    "current",
+    () => new Date("2026-08-31T10:00:00.000Z"),
+    undefined,
+    "synced",
+  );
+  const initial = await browser.readSnapshot();
+  if (!initial.ok) throw new Error("Missing browser snapshot");
+  const state = mutableStateDelivery(initial.value as SanitizedDesktopState);
+  const native = doomerboardPort();
+  const read = native.read;
+  native.read = vi.fn(
+    (profileKey, selection, signal) =>
+      new Promise<DoomerboardPortOutcome<unknown>>((resolve) => {
+        const timer = setTimeout(() => {
+          void read(profileKey, selection).then(resolve);
+        }, 1_000);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            resolve({ ok: false, fault: { code: "doomerboard-unavailable" } });
+          },
+          { once: true },
+        );
+      }),
+  );
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-31T10:00:00.000Z"));
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={state.delivery} />
+    </QueryClientProvider>,
+  );
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(screen.getByRole("status", { name: "Loading Doomerboard" })).toBeTruthy();
+
+  for (let notice = 0; notice < 10; notice += 1) {
+    await act(() => vi.advanceTimersByTimeAsync(200));
+    await act(async () => {
+      native.changed();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
+  expect(screen.queryByRole("status", { name: "Loading Doomerboard" })).toBeNull();
+  expect(screen.getByText("global-combined-1-v1")).toBeTruthy();
+});
+
+test("notices during a cached Doomerboard refresh join one follow-up read", async () => {
+  const browser = createBrowserSanitizedDesktopStateAdapter(
+    "current",
+    () => new Date("2026-08-31T10:00:00.000Z"),
+    undefined,
+    "synced",
+  );
+  const initial = await browser.readSnapshot();
+  if (!initial.ok) throw new Error("Missing browser snapshot");
+  const state = mutableStateDelivery(initial.value as SanitizedDesktopState);
+  const native = doomerboardPort();
+  const read = native.read;
+  let delayRefresh = false;
+  native.read = vi.fn(async (profileKey, selection) => {
+    const outcome = await read(profileKey, selection);
+    if (
+      delayRefresh &&
+      selection.audience === "global" &&
+      selection.scope === "combined" &&
+      selection.windowDays === 1
+    ) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+    }
+    return outcome;
+  });
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-31T10:00:00.000Z"));
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={state.delivery} />
+    </QueryClientProvider>,
+  );
+  await act(() => vi.advanceTimersByTimeAsync(1));
+  expect(screen.getByText("global-combined-1-v1")).toBeTruthy();
+
+  delayRefresh = true;
+  native.setScoreVersion(2);
+  await act(async () => {
+    native.changed();
+    await vi.advanceTimersByTimeAsync(200);
+  });
+  native.setScoreVersion(3);
+  await act(async () => {
+    native.changed();
+    native.changed();
+    native.changed();
+    await vi.advanceTimersByTimeAsync(200);
+  });
+  expect(screen.getByText("global-combined-1-v1")).toBeTruthy();
+  expect(screen.queryByRole("status", { name: "Loading Doomerboard" })).toBeNull();
+
+  await act(() => vi.advanceTimersByTimeAsync(1_601));
+  expect(screen.getByText("global-combined-1-v3")).toBeTruthy();
+  expect(
+    vi
+      .mocked(native.read)
+      .mock.calls.filter(
+        ([, selection]) =>
+          selection.audience === "global" &&
+          selection.scope === "combined" &&
+          selection.windowDays === 1,
+      ),
+  ).toHaveLength(3);
+});
 
 test("removing the last friend refreshes Friends and clears cached selections while Global stays intact", async () => {
   const native = doomerboardPort();

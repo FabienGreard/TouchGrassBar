@@ -113,8 +113,33 @@ function useDoomerboardCache({
 
   useEffect(() => {
     if (!hasNativeRuntime) return undefined;
-    return retainAsyncSubscription(() =>
+    let disposed = false;
+    let refreshRequested = false;
+    let refreshing = false;
+    const queryKey = profileKey === null ? null : doomerboardRankingDayKey(profileKey, rankingDay);
+    const refreshScores = async () => {
+      if (refreshing || queryKey === null) return;
+      refreshing = true;
+      try {
+        while (refreshRequested) {
+          if (disposed) return;
+          refreshRequested = false;
+          const readWasPending = client.isFetching({ queryKey, type: "active" }) > 0;
+          await client.invalidateQueries(
+            { queryKey, refetchType: "active" },
+            { cancelRefetch: false },
+          );
+          // A pending read can return scores from before the notice. Complete
+          // that read first, then join all notices in one subsequent refresh.
+          if (readWasPending && !disposed) refreshRequested = true;
+        }
+      } finally {
+        refreshing = false;
+      }
+    };
+    const stop = retainAsyncSubscription(() =>
       native.subscribe(() => {
+        if (disposed) return;
         const currentCacheState = cacheState.current;
         if (
           currentCacheState?.profileKey === profileKey &&
@@ -131,13 +156,14 @@ function useDoomerboardCache({
           return;
         }
         if (profileKey === null) return;
-        const queryKey = doomerboardRankingDayKey(profileKey, rankingDay);
-        void (async () => {
-          await cancelDoomerboardRankingDay(client, native, profileKey, rankingDay);
-          await client.invalidateQueries({ queryKey, refetchType: "active" });
-        })();
+        refreshRequested = true;
+        void refreshScores();
       }),
     );
+    return () => {
+      disposed = true;
+      stop();
+    };
   }, [client, hasNativeRuntime, native, profileKey, rankingDay, setRankingDay]);
 
   useEffect(() => {

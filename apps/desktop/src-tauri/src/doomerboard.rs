@@ -4,10 +4,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     sync::{
-        Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
+        Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
         atomic::{AtomicBool, Ordering as AtomicOrdering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{Engine as _, engine::general_purpose};
@@ -37,6 +37,7 @@ const MAX_READ_REQUEST_ID_BYTES: usize = 64;
 const MAX_COMPLETED_READ_IDS: usize = 256;
 const JWT_REFRESH_MARGIN_SECONDS: i64 = 60;
 const CONVEX_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+const READ_COORDINATOR_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -881,36 +882,62 @@ impl DoomerboardRuntime {
             .map(|read| read.cancellation.clone())
     }
 
+    fn coordinator_lock(
+        &self,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> Result<MutexGuard<'_, ProfileCoordinator>, TransportError> {
+        let Some(cancellation) = cancellation else {
+            return self
+                .coordinator
+                .lock()
+                .map_err(|_| TransportError::Unavailable);
+        };
+        let deadline = Instant::now() + READ_COORDINATOR_WAIT_TIMEOUT;
+        loop {
+            if cancellation.is_canceled() {
+                return Err(TransportError::Canceled);
+            }
+            match self.coordinator.try_lock() {
+                Ok(coordinator) => return Ok(coordinator),
+                Err(TryLockError::Poisoned(_)) => return Err(TransportError::Unavailable),
+                Err(TryLockError::WouldBlock) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(TransportError::Unavailable);
+                    }
+                    std::thread::park_timeout(remaining.min(READ_CANCELLATION_POLL_INTERVAL));
+                }
+            }
+        }
+    }
+
     fn with_active_session_for<T>(
         &self,
         expected_touch_grass_id: &str,
+        cancellation: Option<&DoomerboardReadCancellation>,
         operation: impl Fn(&Secret) -> Result<T, TransportError>,
     ) -> Result<T, TransportError> {
         let session = self
-            .coordinator
-            .lock()
+            .coordinator_lock(cancellation)?
+            .active_sync_credentials_for(expected_touch_grass_id)
             .ok()
-            .and_then(|coordinator| {
-                coordinator
-                    .active_sync_credentials_for(expected_touch_grass_id)
-                    .ok()
-            })
             .flatten()
             .map(|credentials| credentials.session)
             .ok_or(TransportError::Unavailable)?;
+        if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+            return Err(TransportError::Canceled);
+        }
         match operation(&session) {
             Err(TransportError::AuthorityRejected) => {
                 let refreshed = self
-                    .coordinator
-                    .lock()
+                    .coordinator_lock(cancellation)?
+                    .refresh_active_sync_session_for(&session, expected_touch_grass_id)
                     .ok()
-                    .and_then(|coordinator| {
-                        coordinator
-                            .refresh_active_sync_session_for(&session, expected_touch_grass_id)
-                            .ok()
-                    })
                     .flatten()
                     .ok_or(TransportError::Unavailable)?;
+                if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
+                    return Err(TransportError::Canceled);
+                }
                 operation(&refreshed)
             }
             result => result,
@@ -930,9 +957,11 @@ impl DoomerboardRuntime {
             self.finish_read(request_id, &cancellation);
             return DoomerboardViewV1::unavailable();
         }
-        let result = self.with_active_session_for(expected_touch_grass_id, |session| {
-            self.transport.read(session, query, cancellation.as_ref())
-        });
+        let result = self.with_active_session_for(
+            expected_touch_grass_id,
+            Some(cancellation.as_ref()),
+            |session| self.transport.read(session, query, cancellation.as_ref()),
+        );
         self.finish_read(request_id, &cancellation);
         match result {
             Ok(rows) => DoomerboardViewV1::ready(rows),
@@ -951,7 +980,7 @@ impl DoomerboardRuntime {
         {
             return false;
         }
-        self.with_active_session_for(expected_touch_grass_id, |session| {
+        self.with_active_session_for(expected_touch_grass_id, None, |session| {
             self.transport.remove(session, touch_grass_id)
         })
         .is_ok()
@@ -968,7 +997,7 @@ impl DoomerboardRuntime {
         if self.online_gate.is_paused() {
             return AddTokenmaxxerOutcomeV1::new(AddTokenmaxxerStatusV1::Unavailable);
         }
-        let status = match self.with_active_session_for(expected_touch_grass_id, |session| {
+        let status = match self.with_active_session_for(expected_touch_grass_id, None, |session| {
             self.transport.add(session, touch_grass_id)
         }) {
             Ok(status) => status,
@@ -1785,6 +1814,50 @@ mod tests {
         runtime.cancel_read("cancel-before-begin");
         assert!(runtime.read_cancellation("cancel-before-begin").is_none());
         assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn canceled_read_returns_while_profile_work_holds_the_coordinator() {
+        use std::{sync::mpsc, thread};
+
+        let (profile_key, coordinator) = crate::profile::ready_test_coordinator();
+        let coordinator = Arc::new(Mutex::new(coordinator));
+        let runtime = DoomerboardRuntime::new(
+            coordinator.clone(),
+            Arc::new(CountingTransport::default()),
+            OnlineFeatureGate::default(),
+        );
+        runtime.begin_read("profile-busy-read").expect("begin read");
+        let profile_work = coordinator.lock().expect("hold Profile work");
+        let worker_runtime = runtime.clone();
+        let (started_send, started_receive) = mpsc::sync_channel(1);
+        let (result_send, result_receive) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            started_send.send(()).expect("report read start");
+            let view = worker_runtime.read(
+                "profile-busy-read",
+                &profile_key,
+                query(
+                    DoomerboardAudienceV1::Global,
+                    DoomerboardScopeV1::Combined,
+                    1,
+                ),
+            );
+            result_send.send(view).expect("report read result");
+        });
+
+        started_receive
+            .recv_timeout(Duration::from_secs(1))
+            .expect("read worker starts");
+        runtime.cancel_read("profile-busy-read");
+        let completed = result_receive.recv_timeout(Duration::from_millis(100));
+        drop(profile_work);
+        worker.join().expect("join read worker");
+        assert_eq!(
+            completed.expect("canceled read must return while Profile work is busy"),
+            DoomerboardViewV1::unavailable(),
+        );
     }
 
     #[test]
