@@ -2,7 +2,7 @@
 
 - **Status:** rehearsed
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
-- **Implementation:** this change; add its PR or commit link before merge.
+- **Implementation:** [pricing and analytics fix](https://github.com/FabienGreard/TouchGrassBar/commit/b8655ebaa60846454fd72f532a8af7cf8b7ff363).
 
 ## Scope
 
