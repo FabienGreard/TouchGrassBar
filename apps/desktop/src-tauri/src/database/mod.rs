@@ -80,6 +80,18 @@ pub(crate) fn operation_failure(path: &Path, stage: &'static str) -> crate::diag
     )
 }
 
+pub(crate) fn operation_failure_with_error(
+    path: &Path,
+    stage: &'static str,
+    error: &rusqlite::Error,
+) -> crate::diagnostics::Failure {
+    let mut failure = operation_failure(path, stage);
+    if let crate::diagnostics::Failure::Database { context, .. } = &mut failure {
+        context.sqlite_category = Some(failure_context::sqlite_category(error));
+    }
+    failure
+}
+
 fn prepare_with_fault(
     path: &Path,
     fault: PrepareFault,

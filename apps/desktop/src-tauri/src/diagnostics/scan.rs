@@ -116,7 +116,7 @@ pub(crate) fn read(
     use crate::providers::CodingProvider;
     let files_sql = match provider {
         CodingProvider::Claude => {
-            "SELECT COALESCE(SUM(completion_state = 'complete'), 0), COALESCE(SUM(completion_state = 'indexing'), 0), COALESCE(SUM(completion_state = 'error'), 0), COALESCE(SUM(completion_state = 'missing'), 0), COALESCE(SUM(parser_version < ?1), 0), NULL, NULL FROM claude_usage_files"
+            "SELECT COALESCE(SUM(completion_state = 'complete'), 0), COALESCE(SUM(completion_state = 'indexing' OR (completion_state = 'error' AND parsed_offset < size_bytes)), 0), COALESCE(SUM(completion_state = 'error'), 0), COALESCE(SUM(completion_state = 'missing'), 0), COALESCE(SUM(parser_version < ?1), 0), NULL, NULL FROM claude_usage_files"
         }
         CodingProvider::Codex => {
             "SELECT COALESCE(SUM(completion_state = 'complete'), 0), COALESCE(SUM(completion_state NOT IN ('complete', 'error', 'deferred', 'deferred-error', 'missing')), 0), COALESCE(SUM(completion_state IN ('error', 'deferred-error')), 0), COALESCE(SUM(completion_state = 'missing'), 0), COALESCE(SUM(parser_version < ?1), 0), COALESCE(SUM(completion_state IN ('deferred', 'deferred-error')), 0), COALESCE(SUM(usage_excluded = 1), 0) FROM codex_usage_files"
@@ -214,9 +214,9 @@ mod tests {
         let path = directory.path().join("fixture.sqlite3");
         let connection = Connection::open(&path).unwrap();
         connection.execute_batch(
-            "CREATE TABLE claude_usage_files(path TEXT, completion_state TEXT, parser_version INTEGER);
-             INSERT INTO claude_usage_files VALUES('/private/customer/project', 'error', 14);
-             INSERT INTO claude_usage_files VALUES('/private/session', 'complete', 15);
+            "CREATE TABLE claude_usage_files(path TEXT, completion_state TEXT, parser_version INTEGER, parsed_offset INTEGER, size_bytes INTEGER);
+             INSERT INTO claude_usage_files VALUES('/private/customer/project', 'error', 14, 10, 100);
+             INSERT INTO claude_usage_files VALUES('/private/session', 'complete', 15, 100, 100);
              CREATE TABLE claude_usage_index_meta(key TEXT, value TEXT);
              INSERT INTO claude_usage_index_meta VALUES('usage_aggregate_parser_version', '14');
              INSERT INTO claude_usage_index_meta VALUES('dedupe_salt', 'private-secret');
@@ -275,6 +275,7 @@ mod tests {
         assert_eq!(codex.days[0].revision, None);
         assert_eq!(claude.aggregate_parser_version, Some(14));
         assert_eq!(claude.files.error, 1);
+        assert_eq!(claude.files.indexing, 1);
         assert_eq!(claude.files.older_parser, 1);
         assert_eq!(claude.days.len(), 30);
         assert_eq!(claude.days[0].cost_micros, None);

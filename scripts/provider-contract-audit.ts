@@ -237,15 +237,19 @@ type OpenAiManifest = {
   schemaVersion: number;
 };
 
-type AnthropicManifestPeriod = {
+type AnthropicManifestRates = {
   cacheReadMultiplier?: number;
   cacheReadUsdPerMillion: number;
   cacheWrite1hUsdPerMillion: number;
   cacheWrite5mUsdPerMillion: number;
-  effectiveFrom: string;
-  effectiveUntil: string | null;
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
+};
+
+type AnthropicManifestPeriod = AnthropicManifestRates & {
+  effectiveFrom: string;
+  effectiveUntil: string | null;
+  longPrompt?: AnthropicManifestRates & { abovePromptTokens: number };
 };
 
 type AnthropicManifestModel = {
@@ -1219,34 +1223,93 @@ function openAiRates(
   return rates;
 }
 
-function anthropicRates(source: string): Map<string, AnthropicRate & { retired: boolean }> {
+type PublishedAnthropicRate = AnthropicRate & {
+  longPrompt?: AnthropicRate & { abovePromptTokens: number };
+  promptTokensUpTo?: number;
+  retired: boolean;
+};
+
+function anthropicRates(source: string): Map<string, PublishedAnthropicRate> {
   const rows = markdownTableAfter(source, "## Model pricing");
   if (rows[0]?.length !== 6) throw new SourceShapeError("The Anthropic price columns changed.");
-  const rates = new Map<string, AnthropicRate & { retired: boolean }>();
+  const rates = new Map<string, PublishedAnthropicRate>();
   for (const row of rows.slice(1)) {
     if (row.length !== 6) throw new SourceShapeError("An Anthropic price row changed.");
     const rawName = plainMarkdown(row[0] ?? "");
+    const promptQualifier = /\s+\(for prompts (up to|over) ([0-9]+(?:,[0-9]{3})*) tokens\)$/iu.exec(
+      rawName,
+    );
+    const promptTokens = promptQualifier?.[2]
+      ? Number(promptQualifier[2].replaceAll(",", ""))
+      : undefined;
+    if (
+      (promptTokens !== undefined && (!Number.isSafeInteger(promptTokens) || promptTokens <= 0)) ||
+      (/\bprompts\b/iu.test(rawName) && !promptQualifier)
+    ) {
+      throw new SourceShapeError("An Anthropic prompt threshold is invalid.");
+    }
     const name = rawName
       .replace(/\s+\([^)]*\)\s*$/u, "")
       .trim()
       .toLowerCase();
-    if (!/^claude [a-z0-9._ -]{1,120}$/u.test(name) || rates.has(name)) {
+    if (!/^claude [a-z0-9._ -]{1,120}$/u.test(name)) {
       throw new SourceShapeError("An Anthropic model name is invalid.");
     }
     const values = row.slice(1).map((cell) => parseUsdRateCell(cell));
     if (values.some((value) => value === null)) {
       throw new SourceShapeError("An Anthropic model price is absent.");
     }
-    rates.set(name, {
+    const published: AnthropicRate = {
       input: values[0] as number,
       cacheWrite5m: values[1] as number,
       cacheWrite1h: values[2] as number,
       cacheRead: values[3] as number,
       output: values[4] as number,
-      retired: /\bretired\b/iu.test(rawName),
-    });
+    };
+    const existing = rates.get(name);
+    if (promptQualifier?.[1]?.toLowerCase() === "over") {
+      if (!existing || existing.promptTokensUpTo !== promptTokens || existing.longPrompt) {
+        throw new SourceShapeError("The Anthropic prompt tiers are inconsistent.");
+      }
+      existing.longPrompt = { ...published, abovePromptTokens: promptTokens as number };
+    } else {
+      if (existing) throw new SourceShapeError("An Anthropic model name is duplicated.");
+      rates.set(name, {
+        ...published,
+        ...(promptTokens === undefined ? {} : { promptTokensUpTo: promptTokens }),
+        retired: /\bretired\b/iu.test(rawName),
+      });
+    }
+  }
+  for (const published of rates.values()) {
+    if (published.promptTokensUpTo !== undefined && !published.longPrompt) {
+      throw new SourceShapeError("An Anthropic prompt tier is absent.");
+    }
   }
   return rates;
+}
+
+function changedAnthropicLongPromptRates(
+  reviewed: AnthropicManifestPeriod,
+  published: PublishedAnthropicRate,
+): string[] {
+  const bundledTier = reviewed.longPrompt;
+  const publishedTier = published.longPrompt;
+  if (!bundledTier && !publishedTier) return [];
+  if (!bundledTier || !publishedTier) return ["support"];
+  if (!Number.isSafeInteger(bundledTier.abovePromptTokens) || bundledTier.abovePromptTokens <= 0) {
+    throw new Error("The bundled Anthropic prompt threshold is invalid.");
+  }
+  return [
+    ["threshold", bundledTier.abovePromptTokens, publishedTier.abovePromptTokens],
+    ["input", bundledTier.inputUsdPerMillion, publishedTier.input],
+    ["cacheWrite5m", bundledTier.cacheWrite5mUsdPerMillion, publishedTier.cacheWrite5m],
+    ["cacheWrite1h", bundledTier.cacheWrite1hUsdPerMillion, publishedTier.cacheWrite1h],
+    ["cacheRead", bundledTier.cacheReadUsdPerMillion, publishedTier.cacheRead],
+    ["output", bundledTier.outputUsdPerMillion, publishedTier.output],
+  ]
+    .filter(([, reviewed, current]) => !ratesEqual(reviewed as number, current as number))
+    .map(([field]) => field as string);
 }
 
 function anthropicFastRates(source: string): Map<string, { input: number; output: number }> {
@@ -2389,7 +2452,10 @@ function auditAnthropicCacheReadMultipliers(
   const exceptions = documentedCacheReadExceptions(source);
 
   for (const model of manifest.models) {
-    for (const period of [...model.standardPeriods, ...model.fastPeriods]) {
+    const rates = [...model.standardPeriods, ...model.fastPeriods].flatMap((period) =>
+      period.longPrompt ? [period, period.longPrompt] : [period],
+    );
+    for (const period of rates) {
       const multiplier = period.cacheReadMultiplier ?? STANDARD_CACHE_READ_MULTIPLIER;
       if (multiplier !== STANDARD_CACHE_READ_MULTIPLIER && !exceptions.has(multiplier)) {
         finding(
@@ -2421,7 +2487,9 @@ function auditAnthropicCacheReadMultipliers(
       manifest.models
         .filter((model) =>
           [...model.standardPeriods, ...model.fastPeriods].some(
-            (period) => period.cacheReadMultiplier === multiplier,
+            (period) =>
+              period.cacheReadMultiplier === multiplier ||
+              period.longPrompt?.cacheReadMultiplier === multiplier,
           ),
         )
         .flatMap((model) => reviewedModelNames(model)),
@@ -2535,6 +2603,18 @@ function auditAnthropicPricing(context: AuditContext, manifest: AnthropicManifes
             context.contract.claude.pricingSourceUrl,
           );
         }
+        const longPromptChanged = changedAnthropicLongPromptRates(standard, published);
+        if (longPromptChanged.length > 0) {
+          finding(
+            context,
+            "claude",
+            "pricing",
+            "review-required",
+            "price-changed",
+            `${model.name}: official long prompt pricing differs in ${longPromptChanged.join(", ")}.`,
+            context.contract.claude.pricingSourceUrl,
+          );
+        }
       }
     }
 
@@ -2550,7 +2630,8 @@ function auditAnthropicPricing(context: AuditContext, manifest: AnthropicManifes
           !ratesEqual(upcoming.cacheWrite5mUsdPerMillion, published.cacheWrite5m) ||
           !ratesEqual(upcoming.cacheWrite1hUsdPerMillion, published.cacheWrite1h) ||
           !ratesEqual(upcoming.cacheReadUsdPerMillion, published.cacheRead) ||
-          !ratesEqual(upcoming.outputUsdPerMillion, published.output))
+          !ratesEqual(upcoming.outputUsdPerMillion, published.output) ||
+          changedAnthropicLongPromptRates(upcoming, published).length > 0)
       ) {
         finding(
           context,

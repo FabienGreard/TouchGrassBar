@@ -802,6 +802,8 @@ async fn get_doomerboard(
     let read_runtime = runtime.clone();
     let read_profile_key = profile_key;
     let read_request_id = request_id.clone();
+    let started = Instant::now();
+    let capture_epoch = diagnostics::capture_epoch();
     match tauri::async_runtime::spawn_blocking(move || {
         read_runtime.read(&read_request_id, &read_profile_key, query)
     })
@@ -809,7 +811,7 @@ async fn get_doomerboard(
     {
         Ok(view) => Ok(view),
         Err(_) => {
-            runtime.abandon_read(&request_id);
+            runtime.abandon_failed_read(&request_id, query, started.elapsed(), capture_epoch);
             Err("Doomerboard unavailable".to_owned())
         }
     }

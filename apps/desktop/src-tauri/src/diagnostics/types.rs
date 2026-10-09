@@ -35,6 +35,77 @@ codes!(SyncCode {
 codes!(ProviderAccessCode {
     ProviderAccessFailed
 });
+codes!(DoomerboardCode {
+    DoomerboardReadFailed
+});
+codes!(DoomerboardAudience {
+    Global,
+    MyTokenmaxxers
+});
+codes!(DoomerboardScope {
+    Combined,
+    Codex,
+    Claude
+});
+codes!(DoomerboardStage {
+    CoordinatorWait,
+    SessionCredentials,
+    SessionRefresh,
+    TokenFetch,
+    Connection,
+    Request,
+    Response
+});
+codes!(DoomerboardReason {
+    DeadlineExceeded,
+    RequestFailed,
+    AuthorityRejected,
+    InvalidResponse,
+    InternalFailed
+});
+codes!(DurationBand {
+    Under1s,
+    From1sTo5s,
+    From5sTo15s,
+    From15sTo30s,
+    From30sTo60s,
+    Over60s
+});
+impl DurationBand {
+    pub(crate) fn from_elapsed(elapsed: std::time::Duration) -> Self {
+        match elapsed.as_secs() {
+            0 => Self::Under1s,
+            1..=4 => Self::From1sTo5s,
+            5..=14 => Self::From5sTo15s,
+            15..=29 => Self::From15sTo30s,
+            30..=59 => Self::From30sTo60s,
+            _ => Self::Over60s,
+        }
+    }
+}
+codes!(ClaudeQuotaStage {
+    SessionId,
+    Cleanup,
+    PrepareDirectory,
+    ProcessStart,
+    SafePromptInput,
+    UsageInput,
+    WaitOutput,
+    OutputLimit,
+    OutputClosed
+});
+codes!(SqliteCategory {
+    Busy,
+    Locked,
+    Constraint,
+    Corrupt,
+    Io,
+    Full,
+    Readonly,
+    CannotOpen,
+    Interrupted,
+    Other
+});
 codes!(BackupState {
     Absent,
     Present,
@@ -172,6 +243,8 @@ pub(crate) struct DatabaseModule {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DatabaseContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlite_category: Option<SqliteCategory>,
     pub stage: Option<String>,
     pub observed_format: Option<u64>,
     pub expected_format: Option<u64>,
@@ -234,16 +307,85 @@ pub(crate) struct SyncContext {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProviderAccessContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<ClaudeQuotaStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_band: Option<DurationBand>,
     pub operation: AccessOperation,
     pub reason: AccessReason,
     pub status_code: Option<u64>,
     pub retry_count: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DoomerboardContext {
+    pub audience: DoomerboardAudience,
+    pub scope: DoomerboardScope,
+    pub window_days: u64,
+    pub stage: DoomerboardStage,
+    pub reason: DoomerboardReason,
+    pub duration_band: DurationBand,
+}
+
+/// Lower bounds only. No report is created to deliver these counters.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CollectionLoss {
+    pub handoff_dropped: u64,
+    pub queue_evicted: u64,
+    pub queue_expired: u64,
+    pub storage_fallback: u64,
+    pub submission_rejected: u64,
+}
+impl CollectionLoss {
+    pub(super) fn merge(&mut self, other: &Self) {
+        self.handoff_dropped = self
+            .handoff_dropped
+            .saturating_add(other.handoff_dropped)
+            .min(10_000);
+        self.queue_evicted = self
+            .queue_evicted
+            .saturating_add(other.queue_evicted)
+            .min(10_000);
+        self.queue_expired = self
+            .queue_expired
+            .saturating_add(other.queue_expired)
+            .min(10_000);
+        self.storage_fallback = self
+            .storage_fallback
+            .saturating_add(other.storage_fallback)
+            .min(10_000);
+        self.submission_rejected = self
+            .submission_rejected
+            .saturating_add(other.submission_rejected)
+            .min(10_000);
+    }
+    pub(super) fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+    fn valid(&self) -> bool {
+        [
+            self.handoff_dropped,
+            self.queue_evicted,
+            self.queue_expired,
+            self.storage_fallback,
+            self.submission_rejected,
+        ]
+        .into_iter()
+        .all(|count| count <= 10_000)
+    }
+}
+
 /// This enum is the complete upload boundary. It has no free-form error or log field.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "area", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Failure {
+    Doomerboard {
+        code: DoomerboardCode,
+        provider: Option<Provider>,
+        context: DoomerboardContext,
+    },
     Database {
         code: DatabaseCode,
         provider: Option<Provider>,
@@ -283,6 +425,8 @@ pub(crate) struct AppContext {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Report {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection_loss: Option<CollectionLoss>,
     pub schema_version: u8,
     pub report_id: String,
     pub first_occurred_at: u64,
@@ -346,6 +490,20 @@ impl Failure {
             context["observedFormat"],
             context["expectedFormat"]
         ]);
+        if let Some(operation) = context.get("operation") {
+            group
+                .as_array_mut()
+                .expect("fixed group is an array")
+                .push(operation.clone());
+        }
+        for field in ["sqliteCategory", "audience", "scope", "windowDays"] {
+            if let Some(value) = context.get(field) {
+                group
+                    .as_array_mut()
+                    .expect("fixed group is an array")
+                    .push(value.clone());
+            }
+        }
         if let Some(model) = context.get("model") {
             group
                 .as_array_mut()
@@ -363,6 +521,9 @@ impl Failure {
 
     pub(super) fn valid(&self) -> bool {
         let strings_valid = match self {
+            Self::Doomerboard {
+                provider, context, ..
+            } => provider.is_none() && matches!(context.window_days, 1 | 7 | 30),
             Self::Database {
                 provider, context, ..
             } => {
@@ -453,9 +614,18 @@ impl Failure {
                     && (*code != SyncCode::SyncRevisionConflict
                         || context.reason == SyncReason::RevisionConflict)
             }
-            Self::ProviderAccess { context, .. } => context
-                .status_code
-                .is_none_or(|value| (100..=599).contains(&value)),
+            Self::ProviderAccess {
+                provider, context, ..
+            } => {
+                context
+                    .status_code
+                    .is_none_or(|value| (100..=599).contains(&value))
+                    && (context.stage.is_none() && context.duration_band.is_none()
+                        || (*provider == Provider::Claude
+                            && context.operation == AccessOperation::ReadQuota
+                            && context.stage.is_some()
+                            && context.duration_band.is_some()))
+            }
         };
         fn safe_numbers(value: &serde_json::Value) -> bool {
             match value {
@@ -486,6 +656,10 @@ impl Failure {
 impl Report {
     pub(super) fn valid(&self, now: u64) -> bool {
         self.schema_version == 1
+            && self
+                .collection_loss
+                .as_ref()
+                .is_none_or(CollectionLoss::valid)
             && self.report_id.len() == 36
             && self.report_id.bytes().enumerate().all(|(i, b)| {
                 if [8, 13, 18, 23].contains(&i) {
@@ -515,6 +689,19 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_operations_have_separate_local_groups() {
+        let original: Failure = serde_json::from_value(serde_json::json!({
+            "area": "provider_access", "provider": "codex", "code": "provider_access_failed",
+            "context": { "operation": "read_quota", "reason": "request_failed", "statusCode": null, "retryCount": 0 }
+        })).unwrap();
+        let mut other = original.clone();
+        if let Failure::ProviderAccess { context, .. } = &mut other {
+            context.operation = AccessOperation::ReadUsage;
+        }
+        assert_ne!(original.group(), other.group());
+    }
 
     #[test]
     fn unknown_model_validation_and_grouping_match_the_backend_contract() {
@@ -607,7 +794,8 @@ mod tests {
                 "parser",
                 "pricing",
                 "sync",
-                "provider_access"
+                "provider_access",
+                "doomerboard"
             ])
         );
         for report in &reports {

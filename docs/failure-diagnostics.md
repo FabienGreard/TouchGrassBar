@@ -44,6 +44,7 @@ public issues. Use a minimal description and synthetic reproduction data.
 | Pricing         | A calculation fails, or an existing cost is removed because its catalog is not approved.         | No usage or low coverage alone.                                                             |
 | Provider access | A quota/account request fails, a refresh times out or panics, or a provider response is invalid. | Provider absent, provider disabled, or normal cancellation.                                 |
 | Sync            | Delivery fails, a response is invalid, or an exact usage revision conflicts.                     | No pending work, normal Active Mac transfer, or a successful session refresh.               |
+| Doomerboard     | A native read ends with an operational failure or exceeds its deadline.                          | Normal cancellation, a paused feature, an invalid selection, or a Profile change.           |
 
 A later success does not send a recovery report. The worker retries only
 queued failures. A report credential must have been registered during an
@@ -88,6 +89,16 @@ index, not one usage day. For Claude, a lower aggregate parser version means
 that the current parser has not completed its aggregate update. Codex does not store
 that marker or a daily scan revision; those fields are null. These fields
 explain the captured attempt; they do not prove the present device state.
+
+Claude parser 16 can retain `error` on an unfinished file when the rejected
+prefix precedes a byte or time boundary. That file can contribute to both the
+error and indexing counts. A settled, unchanged error file needs no new read;
+its retained error can still produce `scan_incomplete` with zero files seen and
+zero new record rejections. Those reports describe the stored blocker, not a
+new rejected source record. The normal parser-16 replay rechecks older
+checkpoints that could have lost the rejected-prefix state.
+It also resumes bounded discard of oversized lines through the next newline;
+their fragments cannot count as new usage records.
 
 Read `report.failure.area`, `code`, and the typed `context` first. Check
 `report.firstOccurredAt`, `lastOccurredAt`, and `contextCapturedAt` before
@@ -135,6 +146,54 @@ multiple immutable reports. Use `groupKey` to compare them.
 
 ## Evidence limits
 
+Updated clients can include fixed `stage` and `durationBand` fields on Claude
+`read_quota` failures. The stages distinguish session creation, cleanup,
+directory preparation, process start, safe prompt input, `/usage` input,
+waiting for output, the output limit, and closed output. A timeout with no
+usable quota has reason `deadline_exceeded`. A valid partial quota stays quiet.
+The duration is a monotonic elapsed-time band. No terminal text, command output,
+process identifier, or local path is uploaded. Missing fields remain unknown.
+
+Database operation failures can include optional `sqliteCategory`. The category
+comes from the original SQLite error, before it is reduced to an unavailable
+result. Fixed categories distinguish busy, locked, constraint, corrupt, I/O,
+full, read-only, open, interrupted, and other errors. A diagnostic reread cannot
+reconstruct a missing original category. No SQL or error message is uploaded.
+
+A `doomerboard_read_failed` report records the selected audience, provider
+scope, window, failed stage, fixed reason, and elapsed-time band. It records one
+failed native read. It does not measure all successful reads or prove that the
+interface displayed an error. Capture retains the authority epoch from the
+start of the read.
+
+Updated local queues combine exact unchanged `scan_incomplete` and database
+failures for up to 30 minutes after a report. Counts and first/last occurrence
+times remain available. A changed typed state can form a report without this
+delay. Pending reports for different states remain separate. A report frozen
+for upload never changes, including during a retry. The queue can still expire
+or remove pending reports under its age and size limits.
+
+Provider-access groups now include the operation and, when present, the quota
+stage. Database groups include a known SQLite category. Doomerboard groups
+include the stage and selection. Stored server group keys remain unchanged.
+Compare fixed report fields when an investigation crosses older group keys;
+the backend does not backfill immutable reports.
+
+Optional `collectionLoss` fields give lower bounds for capture handoff drops,
+queue eviction, queue expiry, a switch to memory after a storage failure, and
+rejected submissions. These counts describe the collection pipeline, not the
+cause of the report to which they are attached. Each count stops at 10,000;
+that value means at least 10,000. Handoff drops count lost capture occurrences,
+while eviction and expiry count lost queued reports. Do not add these values
+to `occurrenceCount` as if they were unique failures.
+
+Loss counters are attached only to a later failure report before its first
+upload. They survive ordinary retry and queue restart when storage is usable.
+They are discarded at a Profile or Active Mac generation change. They never
+cause a report, health ping, or recursive delivery-failure report. Missing
+counters are unknown. A process exit, inaccessible storage, or no later failure
+can prevent their delivery.
+
 A successful operation sends nothing. No reports can mean no captured
 failure, an older app, first registration not complete, inaccessible
 Keychain, offline delivery, expired reports, or revoked report authority.
@@ -153,6 +212,11 @@ receipt. An hourly internal cleanup deletes expired records in bounded
 batches. Diagnostics are independent of normal usage synchronization.
 
 ## Release order
+
+Deploy the validators for the new Doomerboard area and the optional quota
+stage, duration, SQLite category, and collection loss fields before shipping
+clients that send them. The fields are permanent protocol extensions. Old
+reports and legacy local queues remain valid; no data backfill is required.
 
 Deploy the backend validator that accepts the optional `scan` field and
 `scan_incomplete` reason, and the new `refresh_provider` operation and
@@ -174,6 +238,14 @@ A real local HTTP canary must also prove authenticated registration,
 submission without a product session, an identical retry, and rejection of
 an invalid diagnostic credential. Production verification is a separate
 deployment step and requires authorization for that target.
+
+The October 9, 2026 local HTTP rehearsal passed authenticated registration,
+three submissions without a product session, three identical retries, and
+rejection of an invalid diagnostic credential. The submissions covered the
+new Doomerboard, Claude quota stage, SQLite category, and collection loss
+fields. Cleanup removed three reports, one reporter, one device, one Profile,
+and three authentication rows. The temporary cleanup function was removed
+after use. This rehearsal does not prove production delivery or client adoption.
 
 ## Unknown model evidence
 

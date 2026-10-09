@@ -45,7 +45,7 @@ const MAX_ASSISTANT_CONTENT_BLOCKS: usize = 4_096;
 const MAX_CONTENT_METADATA_BYTES: usize = 128;
 const MAX_PRICING_BASIS_BYTES: usize = 256;
 const INVALID_PRICING_MODIFIER: &str = "__invalid__";
-const TRANSCRIPT_PARSER_VERSION: i64 = 15;
+const TRANSCRIPT_PARSER_VERSION: i64 = 16;
 pub(crate) const USAGE_INDEX_SCHEMA_MODULE: &str = "claude-usage-index";
 pub(crate) const USAGE_INDEX_SCHEMA_VERSION: i64 = 7;
 const USAGE_AGGREGATE_PARSER_VERSION_KEY: &str = "usage_aggregate_parser_version";
@@ -1707,7 +1707,13 @@ fn load_or_create_dedupe_salt(connection: &Connection) -> Result<[u8; 32], ()> {
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     if let Some(stored) = stored {
         return salt_from_string(&stored).ok_or(());
     }
@@ -1718,7 +1724,13 @@ fn load_or_create_dedupe_salt(connection: &Connection) -> Result<[u8; 32], ()> {
             "INSERT INTO claude_usage_index_meta(key, value) VALUES('dedupe_salt_v1', ?1)",
             [salt_to_string(&salt)],
         )
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     Ok(salt)
 }
 
@@ -1739,7 +1751,8 @@ impl StoredFileSummary {
             || self.size != size
             || self.modified_ns != modified_ns
             || self.parser_version != TRANSCRIPT_PARSER_VERSION
-            || self.completion_state != "complete"
+            || (self.completion_state != "complete"
+                && !(self.completion_state == "error" && self.parsed_offset == size))
     }
 }
 
@@ -1765,7 +1778,13 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
                     resume_anchor, parser_version, completion_state
              FROM claude_usage_files",
         )
-        .map_err(|_| ())?
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -1781,9 +1800,21 @@ fn load_file_summaries(connection: &Connection) -> Result<BTreeMap<String, Store
                 },
             ))
         })
-        .map_err(|_| ())?
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?
         .collect::<Result<BTreeMap<_, _>, _>>()
-        .map_err(|_| ())
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })
 }
 
 fn file_modified_ns(metadata: &fs::Metadata) -> Result<i64, ()> {
@@ -1909,7 +1940,13 @@ fn store_frame(transaction: &rusqlite::Transaction<'_>, frame: &NormalizedFrame)
                 TRANSCRIPT_PARSER_VERSION,
             ],
         )
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                transaction,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     if changed == 0 {
         return Ok(());
     }
@@ -1919,7 +1956,13 @@ fn store_frame(transaction: &rusqlite::Transaction<'_>, frame: &NormalizedFrame)
              WHERE replacement_frame_key = ?1",
             [&frame.frame_key],
         )
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                transaction,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     for superseded_frame_key in &frame.supersedes_frame_keys {
         transaction
             .execute(
@@ -1933,25 +1976,43 @@ fn store_frame(transaction: &rusqlite::Transaction<'_>, frame: &NormalizedFrame)
                     TRANSCRIPT_PARSER_VERSION
                 ],
             )
-            .map_err(|_| ())?;
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    transaction,
+                    "claude-usage-index",
+                    &error,
+                )
+            })?;
     }
     Ok(())
 }
 
 fn store_frame_only(connection: &Connection, frame: NormalizedFrame) -> Result<(), ()> {
-    let transaction = connection.unchecked_transaction().map_err(|_| {
-        failure_capture::database_connection_failure(connection, "claude-usage-index")
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
     })?;
     store_frame(&transaction, &frame)?;
-    transaction
-        .commit()
-        .map_err(|_| failure_capture::database_connection_failure(connection, "claude-usage-index"))
+    transaction.commit().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })
 }
 
 fn store_message(connection: &Connection, message: NormalizedMessage) -> Result<(), ()> {
     let observed_tokens = message.usage.observed_tokens().ok_or(())?;
-    let transaction = connection.unchecked_transaction().map_err(|_| {
-        failure_capture::database_connection_failure(connection, "claude-usage-index")
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
     })?;
     store_frame(
         &transaction,
@@ -2041,12 +2102,20 @@ fn store_message(connection: &Connection, message: NormalizedMessage) -> Result<
                 TRANSCRIPT_PARSER_VERSION,
             ],
         )
-        .map_err(|_| {
-            failure_capture::database_connection_failure(connection, "claude-usage-index")
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
         })?;
-    transaction
-        .commit()
-        .map_err(|_| failure_capture::database_connection_failure(connection, "claude-usage-index"))
+    transaction.commit().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })
 }
 
 struct FileScanContext<'a> {
@@ -2094,6 +2163,18 @@ fn index_file(
         .filter(|_| can_resume)
         .is_none_or(|stored| stored.completion_state != "error");
     let mut file = fs::File::open(path).map_err(|_| parser_failure(ParserReason::ReadFailed))?;
+    // Normal checkpoints stop after a newline. A checkpoint inside a line can
+    // only come from bounded discard of an oversized rejected record.
+    let mut discarding_overlong_line = false;
+    if can_resume && parsed_offset > 0 {
+        file.seek(SeekFrom::Start(parsed_offset - 1))
+            .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
+        let mut previous_byte = [0_u8; 1];
+        file.read_exact(&mut previous_byte)
+            .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
+        discarding_overlong_line = previous_byte[0] != b'\n';
+        parser_complete &= !discarding_overlong_line;
+    }
     file.seek(SeekFrom::Start(parsed_offset))
         .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
     let mut reader = BufReader::new(file);
@@ -2101,6 +2182,23 @@ fn index_file(
         && *remaining_bytes > 0
         && context.started.elapsed().as_millis() < context.max_millis
     {
+        if discarding_overlong_line {
+            let mut discarded = Vec::new();
+            let allowance = (*remaining_bytes).min(64 * 1024);
+            let read = reader
+                .by_ref()
+                .take(allowance)
+                .read_until(b'\n', &mut discarded)
+                .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
+            if read == 0 {
+                break;
+            }
+            let read = u64::try_from(read).map_err(|_| ())?;
+            parsed_offset = parsed_offset.checked_add(read).ok_or(())?;
+            *remaining_bytes = remaining_bytes.saturating_sub(read);
+            discarding_overlong_line = !discarded.ends_with(b"\n");
+            continue;
+        }
         let read_limit = (*remaining_bytes).min((MAX_TRANSCRIPT_LINE_BYTES as u64) + 1);
         let mut line = Vec::new();
         let bytes = reader
@@ -2122,31 +2220,7 @@ fn index_file(
             parser_complete = false;
             parsed_offset = parsed_offset.checked_add(bytes).ok_or(())?;
             *remaining_bytes = remaining_bytes.saturating_sub(bytes);
-            loop {
-                if parsed_offset >= size
-                    || *remaining_bytes == 0
-                    || context.started.elapsed().as_millis() >= context.max_millis
-                {
-                    break;
-                }
-                let mut discarded = Vec::new();
-                let allowance = (*remaining_bytes).min(64 * 1024);
-                let read = reader
-                    .by_ref()
-                    .take(allowance)
-                    .read_until(b'\n', &mut discarded)
-                    .map_err(|_| parser_failure(ParserReason::ReadFailed))?;
-                if read == 0 {
-                    break;
-                }
-                let read = u64::try_from(read).map_err(|_| ())?;
-                let newline = discarded.ends_with(b"\n");
-                parsed_offset = parsed_offset.checked_add(read).ok_or(())?;
-                *remaining_bytes = remaining_bytes.saturating_sub(read);
-                if newline {
-                    break;
-                }
-            }
+            discarding_overlong_line = true;
             continue;
         }
         line.pop();
@@ -2178,8 +2252,12 @@ fn index_file(
         }
     }
     let completed = parsed_offset == size;
-    let completion_state = if completed {
-        if parser_complete { "complete" } else { "error" }
+    // A byte or time boundary cannot erase a rejected record from the prefix.
+    // The existing error state also records an unfinished file with a rejection.
+    let completion_state = if !parser_complete {
+        "error"
+    } else if completed {
+        "complete"
     } else {
         "indexing"
     };
@@ -2210,8 +2288,12 @@ fn index_file(
                 completion_state,
             ],
         )
-        .map_err(|_| {
-            failure_capture::database_connection_failure(context.connection, "claude-usage-index")
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                context.connection,
+                "claude-usage-index",
+                &error,
+            )
         })?;
     Ok(completed)
 }
@@ -2606,7 +2688,13 @@ fn mark_explicit_supersede_edges_applied(
             ],
         )
         .map(|_| ())
-        .map_err(|_| ())
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })
 }
 
 fn refresh_daily_aggregates(
@@ -2631,7 +2719,13 @@ fn refresh_daily_aggregates_with_catalog(
     scan_can_prove_complete: bool,
     pricing_catalog: Option<&super::pricing::PricingCatalog>,
 ) -> Result<bool, ()> {
-    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })?;
     let provider_messages = load_active_provider_messages(&transaction, cutoff, today)?;
     let existing_daily = load_stored_daily_aggregates(&transaction, cutoff, today)?;
     let stored_parser_version = stored_usage_aggregate_parser_version(&transaction)?;
@@ -2889,7 +2983,13 @@ fn refresh_daily_aggregates_with_catalog(
                     correction_source_revision,
                 ],
             )
-            .map_err(|_| ())?;
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "claude-usage-index",
+                    &error,
+                )
+            })?;
     }
     if scan_can_prove_complete {
         mark_explicit_supersede_edges_applied(&transaction, cutoff, today)?;
@@ -2902,14 +3002,26 @@ fn refresh_daily_aggregates_with_catalog(
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 [catalog.semantic_fingerprint()],
             )
-            .map_err(|_| ())?,
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "claude-usage-index",
+                    &error,
+                )
+            })?,
         None => transaction
             .execute(
                 "DELETE FROM claude_usage_index_meta
                  WHERE key = 'pricing_manifest_fingerprint'",
                 [],
             )
-            .map_err(|_| ())?,
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "claude-usage-index",
+                    &error,
+                )
+            })?,
     };
     if scan_can_prove_complete {
         transaction
@@ -2922,32 +3034,68 @@ fn refresh_daily_aggregates_with_catalog(
                     TRANSCRIPT_PARSER_VERSION.to_string()
                 ],
             )
-            .map_err(|_| ())?;
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "claude-usage-index",
+                    &error,
+                )
+            })?;
     }
-    transaction.commit().map_err(|_| ())?;
+    transaction.commit().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })?;
     Ok(aggregate_changed)
 }
 
 fn prune_expired_index(connection: &Connection, cutoff: Date, today: Date) -> Result<(), ()> {
-    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })?;
     transaction
         .execute(
             "DELETE FROM claude_usage_messages WHERE day < ?1 OR day > ?2",
             params![cutoff.to_string(), (today + Duration::days(1)).to_string()],
         )
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     transaction
         .execute(
             "DELETE FROM claude_usage_frames WHERE day < ?1 OR day > ?2",
             params![cutoff.to_string(), (today + Duration::days(1)).to_string()],
         )
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     transaction
         .execute(
             "DELETE FROM claude_usage_daily WHERE day < ?1 OR day > ?2",
             params![cutoff.to_string(), today.to_string()],
         )
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     let cutoff_modified_ns =
         i64::try_from(cutoff.midnight().assume_utc().unix_timestamp_nanos()).map_err(|_| ())?;
     transaction
@@ -2955,13 +3103,31 @@ fn prune_expired_index(connection: &Connection, cutoff: Date, today: Date) -> Re
             "DELETE FROM claude_usage_files WHERE modified_ns < ?1",
             [cutoff_modified_ns],
         )
-        .map_err(|_| ())?;
-    transaction.commit().map_err(|_| ())
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
+    transaction.commit().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })
 }
 
 fn prune_private_message_details(connection: &Connection, today: Date) -> Result<(), ()> {
     let detail_cutoff = today - Duration::days(COST_DETAIL_RETENTION_DAYS - 1);
-    let transaction = connection.unchecked_transaction().map_err(|_| ())?;
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })?;
     transaction
         .execute(
             "UPDATE claude_usage_messages
@@ -2991,7 +3157,13 @@ fn prune_private_message_details(connection: &Connection, today: Date) -> Result
              )",
             [detail_cutoff.to_string()],
         )
-        .map_err(|_| ())?;
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
     transaction
         .execute(
             "UPDATE claude_usage_daily
@@ -3007,8 +3179,20 @@ fn prune_private_message_details(connection: &Connection, today: Date) -> Result
              )",
             [detail_cutoff.to_string()],
         )
-        .map_err(|_| ())?;
-    transaction.commit().map_err(|_| ())
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "claude-usage-index",
+                &error,
+            )
+        })?;
+    transaction.commit().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "claude-usage-index",
+            &error,
+        )
+    })
 }
 
 fn read_indexed_usage(
@@ -3124,7 +3308,9 @@ fn read_indexed_usage(
         .query_row(
             &format!(
                 "SELECT
-                   MAX(CASE WHEN completion_state = 'indexing' THEN modified_ns END),
+                   MAX(CASE WHEN completion_state = 'indexing'
+                     OR (completion_state = 'error' AND parsed_offset < size_bytes)
+                     THEN modified_ns END),
                    MAX(CASE
                      WHEN completion_state = 'error'
                        OR ({UNRECOVERABLE_MISSING_FILE_CONDITION})
@@ -3366,7 +3552,9 @@ pub(super) fn debug_usage_report(
         .query_row(
             "SELECT
                COALESCE(SUM(CASE WHEN completion_state = 'complete' THEN 1 ELSE 0 END), 0),
-               COALESCE(SUM(CASE WHEN completion_state = 'indexing' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state = 'indexing'
+                 OR (completion_state = 'error' AND parsed_offset < size_bytes)
+                 THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN completion_state = 'error' THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN completion_state = 'missing' THEN 1 ELSE 0 END), 0)
              FROM claude_usage_files WHERE parser_version = ?1",
@@ -3543,7 +3731,9 @@ fn index_local_usage_with_budget(
     let max_file_bytes = budget.max_file_bytes.min(MAX_TRANSCRIPT_FILE_SCAN_BYTES);
     let max_millis = budget.max_millis.min(MAX_TRANSCRIPT_SCAN_MILLIS);
     let mut connection = Connection::open(database_path)
-        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .inspect_err(|error| {
+            failure_capture::database_failure_with_error(database_path, "claude-usage-index", error)
+        })
         .ok()?;
     ensure_index_schema(&mut connection, database_path)
         .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
@@ -3574,7 +3764,13 @@ fn index_local_usage_with_budget(
                 "UPDATE claude_usage_files SET completion_state = 'missing'",
                 [],
             )
-            .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+            .inspect_err(|error| {
+                failure_capture::database_failure_with_error(
+                    database_path,
+                    "claude-usage-index",
+                    error,
+                )
+            })
             .ok()?;
         let aggregate_changed = refresh_daily_aggregates(&connection, cutoff, today, false)
             .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
@@ -3644,8 +3840,12 @@ fn index_local_usage_with_budget(
                     "UPDATE claude_usage_files SET completion_state = 'missing' WHERE path = ?1",
                     [missing],
                 )
-                .inspect_err(|_| {
-                    failure_capture::database_failure(database_path, "claude-usage-index")
+                .inspect_err(|error| {
+                    failure_capture::database_failure_with_error(
+                        database_path,
+                        "claude-usage-index",
+                        error,
+                    )
                 })
                 .ok()?;
         }
@@ -3689,13 +3889,17 @@ fn index_local_usage_with_budget(
     let (pending_files, error_files) = connection
         .query_row(
             "SELECT
-               COALESCE(SUM(CASE WHEN completion_state = 'indexing' THEN 1 ELSE 0 END), 0),
+               COALESCE(SUM(CASE WHEN completion_state = 'indexing'
+                 OR (completion_state = 'error' AND parsed_offset < size_bytes)
+                 THEN 1 ELSE 0 END), 0),
                COALESCE(SUM(CASE WHEN completion_state = 'error' THEN 1 ELSE 0 END), 0)
              FROM claude_usage_files",
             [],
             |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
         )
-        .inspect_err(|_| failure_capture::database_failure(database_path, "claude-usage-index"))
+        .inspect_err(|error| {
+            failure_capture::database_failure_with_error(database_path, "claude-usage-index", error)
+        })
         .unwrap_or((1, 1));
     let scan_status = if failed || error_files > 0 {
         UsageScanStatus::Unavailable
@@ -3798,6 +4002,286 @@ fn stored_daily_revision(database_path: &Path, day: Date) -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn bounded_scan_keeps_a_rejected_record_after_resuming_valid_usage() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let path = config.join("projects/project-a/session.jsonl");
+        let rejected = "{invalid json}\n";
+        write_transcript(
+            &path,
+            &[
+                rejected.trim_end().to_owned(),
+                transcript_line(
+                    "valid-after-rejection",
+                    now() - Duration::minutes(5),
+                    "claude-sonnet-4-20250514",
+                    usage(100, 0, 0, 0),
+                ),
+            ],
+        );
+        let first = index_local_usage_with_budget(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now(),
+            ScanBudget {
+                max_bytes: rejected.len() as u64,
+                max_file_bytes: rejected.len() as u64,
+                max_millis: MAX_TRANSCRIPT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+        assert_ne!(first.scan_status, UsageScanStatus::Complete);
+        assert!(first.latest_pending_modified_at.is_some());
+
+        let resumed =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(resumed.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(resumed.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(
+            resumed.daily_usage[&now().date()].coverage,
+            UsageCoverage::Partial
+        );
+        let revision = stored_daily_revision(&fixture.database(), now().date());
+        let mut repeated = None;
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            repeated = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now());
+        });
+        let repeated = repeated.unwrap();
+        assert_eq!(repeated.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(repeated.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            revision
+        );
+        assert!(failures.iter().any(|failure| matches!(failure,
+            crate::diagnostics::Failure::Parser { context, .. }
+            if context.reason == ParserReason::ScanIncomplete && context.files_seen == Some(0)
+        )));
+
+        write_transcript(
+            &path,
+            &[transcript_line(
+                "valid-after-rejection",
+                now() - Duration::minutes(5),
+                "claude-sonnet-4-20250514",
+                usage(100, 0, 0, 0),
+            )],
+        );
+        let corrected =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(corrected.scan_status, UsageScanStatus::Complete);
+        assert_eq!(corrected.daily_usage[&now().date()].observed_tokens, 100);
+        let revision = stored_daily_revision(&fixture.database(), now().date());
+        let repeated =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(repeated.scan_status, UsageScanStatus::Complete);
+        assert_eq!(repeated.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            revision
+        );
+    }
+
+    #[test]
+    fn parser_16_rechecks_a_parser_15_checkpoint_that_lost_its_rejection() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[
+                "{invalid json}".to_owned(),
+                transcript_line(
+                    "retained-valid-usage",
+                    now() - Duration::minutes(5),
+                    "claude-sonnet-4-20250514",
+                    usage(100, 0, 0, 0),
+                ),
+            ],
+        );
+        index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        // A released parser could lose the rejection after a byte boundary and
+        // commit a complete file, despite the rejected prefix remaining on disk.
+        connection
+            .execute_batch(
+                "UPDATE claude_usage_files SET parser_version = 15, completion_state = 'complete';
+             UPDATE claude_usage_messages SET parser_version = 15;
+             UPDATE claude_usage_frames SET parser_version = 15;
+             UPDATE claude_usage_daily SET coverage = 'complete';
+             INSERT OR REPLACE INTO claude_usage_index_meta(key, value)
+             VALUES('usage_aggregate_parser_version', '15');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let recovered =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(recovered.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(recovered.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(
+            recovered.daily_usage[&now().date()].coverage,
+            UsageCoverage::Partial
+        );
+        let revision = stored_daily_revision(&fixture.database(), now().date());
+        let repeated =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(repeated.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            revision
+        );
+    }
+
+    #[test]
+    fn bounded_scan_discards_the_rest_of_a_rejected_oversized_line() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let path = config.join("projects/project-a/session.jsonl");
+        let mut oversized = "x".repeat(MAX_TRANSCRIPT_LINE_BYTES + 1);
+        oversized.push_str(&transcript_line(
+            "fragment-inside-rejected-line",
+            now() - Duration::minutes(4),
+            "claude-sonnet-4-20250514",
+            usage(999, 0, 0, 0),
+        ));
+        write_transcript(
+            &path,
+            &[
+                oversized,
+                transcript_line(
+                    "valid-after-oversized-line",
+                    now() - Duration::minutes(3),
+                    "claude-sonnet-4-20250514",
+                    usage(100, 0, 0, 0),
+                ),
+            ],
+        );
+        index_local_usage_with_budget(
+            &fixture.database(),
+            &config,
+            &fixture.probe(),
+            now(),
+            ScanBudget {
+                max_bytes: MAX_TRANSCRIPT_LINE_BYTES as u64 + 1,
+                max_file_bytes: MAX_TRANSCRIPT_LINE_BYTES as u64 + 1,
+                max_millis: MAX_TRANSCRIPT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+        let resumed =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(resumed.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(resumed.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(stored_message_count(&fixture.database()), 1);
+        let revision = stored_daily_revision(&fixture.database(), now().date());
+        let repeated =
+            index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now()).unwrap();
+        assert_eq!(repeated.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), now().date()),
+            revision
+        );
+    }
+
+    #[test]
+    fn scan_keeps_unknown_zero_token_metadata_partial_without_source_values() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let rejected = transcript_line(
+            "rejected-zero-record",
+            now() - Duration::minutes(4),
+            "PRIVATE-INVALID-MODEL!",
+            usage(0, 0, 0, 0),
+        )
+        .replacen("2.1.224", "2.1.292", 1);
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[
+                transcript_line(
+                    "valid-known-structure",
+                    now() - Duration::minutes(5),
+                    "claude-sonnet-4-20250514",
+                    usage(100, 0, 0, 0),
+                )
+                .replacen("2.1.224", "2.1.292", 1),
+                rejected,
+            ],
+        );
+        let mut observed = None;
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            observed = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now());
+        });
+        let observed = observed.unwrap();
+        assert_eq!(observed.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(observed.daily_usage[&now().date()].observed_tokens, 100);
+        assert_eq!(
+            observed.daily_usage[&now().date()].coverage,
+            UsageCoverage::Partial
+        );
+        assert_eq!(stored_message_count(&fixture.database()), 1);
+        assert!(failures.iter().any(|failure| matches!(failure,
+            crate::diagnostics::Failure::Parser { context, .. }
+            if context.reason == ParserReason::InvalidMessageMetadata && context.rejection.as_ref().is_some_and(|detail| detail.field == crate::diagnostics::RejectionField::Model && detail.problem == crate::diagnostics::RejectionProblem::InvalidFormat && detail.token_counters == crate::diagnostics::TokenCounterState::Zero)
+        )));
+        assert!(
+            !serde_json::to_string(&failures)
+                .unwrap()
+                .contains("PRIVATE-INVALID-MODEL")
+        );
+        assert_sqlite_artifacts_exclude(&fixture.database(), "PRIVATE-INVALID-MODEL");
+    }
+
+    #[test]
+    fn scan_reports_the_original_sqlite_category_when_a_frame_write_fails() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[transcript_line(
+                "valid-constrained-frame",
+                now() - Duration::minutes(5),
+                "claude-sonnet-4-20250514",
+                usage(100, 0, 0, 0),
+            )],
+        );
+        let mut connection = Connection::open(fixture.database()).unwrap();
+        ensure_index_schema(&mut connection, &fixture.database()).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_test_frame BEFORE INSERT ON claude_usage_frames
+             BEGIN SELECT RAISE(ABORT, 'PRIVATE-SQLITE-DETAIL'); END;",
+            )
+            .unwrap();
+        drop(connection);
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            let scan = index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now())
+                .unwrap();
+            assert_eq!(scan.scan_status, UsageScanStatus::Unavailable);
+        });
+        let database = failures
+            .iter()
+            .find_map(|failure| {
+                if let crate::diagnostics::Failure::Database { context, .. } = failure {
+                    Some(context)
+                } else {
+                    None
+                }
+            })
+            .expect("a failed real SQLite write must have a bounded database report");
+        assert_eq!(
+            database.sqlite_category,
+            Some(crate::diagnostics::SqliteCategory::Constraint)
+        );
+        assert!(
+            !serde_json::to_string(&failures)
+                .unwrap()
+                .contains("PRIVATE-SQLITE-DETAIL")
+        );
+        assert_eq!(stored_message_count(&fixture.database()), 0);
+    }
 
     #[test]
     fn persistent_scan_error_reports_final_file_and_daily_pricing_state() {
@@ -8225,7 +8709,7 @@ mod tests {
         assert_eq!(detail.api_equivalent_cost_usd, Some(18.0));
         assert_eq!(
             local.pricing_basis.as_deref(),
-            Some("anthropic-standard-2026-09-30-v1")
+            Some("anthropic-standard-2026-10-09-v1")
         );
 
         let UsageTotal::Current {
@@ -8246,6 +8730,217 @@ mod tests {
         );
         let cost_coverage = api_equivalent_cost_coverage_percent.expect("partial price coverage");
         assert!((cost_coverage - (200.0 / 3.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn catalog_update_reprices_retained_haiku_without_reparsing_or_recounting() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let observed_at = OffsetDateTime::parse("2026-10-09T12:00:00Z", &Rfc3339).unwrap();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[transcript_line(
+                "retained-haiku-usage",
+                observed_at - Duration::minutes(5),
+                "claude-haiku-5-5",
+                usage(1_000, 0, 0, 200),
+            )],
+        );
+        index_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        let mut previous_manifest: serde_json::Value =
+            serde_json::from_str(super::super::pricing::bundled_manifest_for_test()).unwrap();
+        previous_manifest["basis"] = serde_json::json!("anthropic-standard-2026-09-30-v1");
+        previous_manifest["models"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|model| model["name"] != "claude-haiku-5-5");
+        let previous_catalog =
+            super::super::pricing::catalog_from_manifest_for_test(&previous_manifest.to_string())
+                .unwrap();
+        refresh_daily_aggregates_with_catalog(
+            &connection,
+            observed_at.date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1),
+            observed_at.date(),
+            true,
+            Some(&previous_catalog),
+        )
+        .unwrap();
+        let before_revision = stored_daily_revision(&fixture.database(), observed_at.date());
+        let checkpoint: u64 = connection
+            .query_row("SELECT parsed_offset FROM claude_usage_files", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let old_priced_tokens: u64 = connection
+            .query_row("SELECT priced_tokens FROM claude_usage_daily", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(old_priced_tokens, 0);
+        drop(connection);
+
+        let unchanged_scan = || {
+            index_local_usage_with_budget(
+                &fixture.database(),
+                &config,
+                &fixture.probe(),
+                observed_at,
+                ScanBudget {
+                    max_bytes: 0,
+                    max_file_bytes: MAX_TRANSCRIPT_FILE_SCAN_BYTES,
+                    max_millis: MAX_TRANSCRIPT_SCAN_MILLIS,
+                },
+            )
+            .unwrap()
+        };
+        let repriced = unchanged_scan();
+        assert_eq!(repriced.scan_status, UsageScanStatus::Complete);
+        assert_eq!(
+            repriced.daily_usage[&observed_at.date()].observed_tokens,
+            1_200
+        );
+        assert_eq!(
+            repriced.daily_cost[&observed_at.date()].priced_tokens,
+            1_200
+        );
+        assert!(
+            repriced.daily_cost[&observed_at.date()]
+                .api_equivalent_cost_usd
+                .unwrap()
+                > 0.0
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), observed_at.date()),
+            before_revision + 1
+        );
+        let repeated = unchanged_scan();
+        assert_eq!(
+            repeated.daily_usage[&observed_at.date()].observed_tokens,
+            1_200
+        );
+        assert_eq!(
+            repeated.daily_cost[&observed_at.date()].api_equivalent_cost_usd,
+            repriced.daily_cost[&observed_at.date()].api_equivalent_cost_usd
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), observed_at.date()),
+            before_revision + 1
+        );
+        let after_checkpoint: u64 = Connection::open(fixture.database())
+            .unwrap()
+            .query_row("SELECT parsed_offset FROM claude_usage_files", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(after_checkpoint, checkpoint);
+    }
+
+    #[test]
+    fn catalog_update_reprices_retained_sonnet_cache_reads_once_without_reparsing() {
+        let fixture = FixtureRoot::new();
+        let config = fixture.config();
+        let observed_at = OffsetDateTime::parse("2026-10-09T12:00:00Z", &Rfc3339).unwrap();
+        write_transcript(
+            &config.join("projects/project-a/session.jsonl"),
+            &[transcript_line(
+                "retained-sonnet-cache-usage",
+                observed_at - Duration::minutes(5),
+                "claude-sonnet-5-5",
+                usage(0, 0, 1_000, 0),
+            )],
+        );
+        index_local_usage_at(&fixture.database(), &config, &fixture.probe(), observed_at).unwrap();
+        let connection = Connection::open(fixture.database()).unwrap();
+        let mut previous_manifest: serde_json::Value =
+            serde_json::from_str(super::super::pricing::bundled_manifest_for_test()).unwrap();
+        previous_manifest["basis"] = serde_json::json!("anthropic-standard-2026-09-30-v1");
+        let sonnet = previous_manifest["models"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|model| model["name"] == "claude-sonnet-5-5")
+            .unwrap();
+        sonnet["standardPeriods"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        sonnet["standardPeriods"][0]["effectiveUntil"] = serde_json::Value::Null;
+        let previous_catalog =
+            super::super::pricing::catalog_from_manifest_for_test(&previous_manifest.to_string())
+                .unwrap();
+        refresh_daily_aggregates_with_catalog(
+            &connection,
+            observed_at.date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1),
+            observed_at.date(),
+            true,
+            Some(&previous_catalog),
+        )
+        .unwrap();
+        let before_revision = stored_daily_revision(&fixture.database(), observed_at.date());
+        let checkpoint: u64 = connection
+            .query_row("SELECT parsed_offset FROM claude_usage_files", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let old_cost: f64 = connection
+            .query_row("SELECT cost_usd FROM claude_usage_daily", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!((old_cost - 0.000_2).abs() < 1e-12);
+        drop(connection);
+
+        let unchanged_scan = || {
+            index_local_usage_with_budget(
+                &fixture.database(),
+                &config,
+                &fixture.probe(),
+                observed_at,
+                ScanBudget {
+                    max_bytes: 0,
+                    max_file_bytes: MAX_TRANSCRIPT_FILE_SCAN_BYTES,
+                    max_millis: MAX_TRANSCRIPT_SCAN_MILLIS,
+                },
+            )
+            .unwrap()
+        };
+        let repriced = unchanged_scan();
+        assert_eq!(repriced.scan_status, UsageScanStatus::Complete);
+        assert_eq!(
+            repriced.daily_usage[&observed_at.date()].observed_tokens,
+            1_000
+        );
+        assert_eq!(
+            repriced.daily_cost[&observed_at.date()].priced_tokens,
+            1_000
+        );
+        assert!(
+            (repriced.daily_cost[&observed_at.date()]
+                .api_equivalent_cost_usd
+                .unwrap()
+                - 0.000_1)
+                .abs()
+                < 1e-12
+        );
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), observed_at.date()),
+            before_revision + 1
+        );
+        let repeated = unchanged_scan();
+        assert_eq!(repeated.daily_usage, repriced.daily_usage);
+        assert_eq!(repeated.daily_cost, repriced.daily_cost);
+        assert_eq!(
+            stored_daily_revision(&fixture.database(), observed_at.date()),
+            before_revision + 1
+        );
+        let after_checkpoint: u64 = Connection::open(fixture.database())
+            .unwrap()
+            .query_row("SELECT parsed_offset FROM claude_usage_files", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(after_checkpoint, checkpoint);
     }
 
     #[test]
@@ -8565,7 +9260,7 @@ mod tests {
 
     #[test]
     fn mixed_retained_price_books_keep_bounded_provenance_during_incomplete_scan() {
-        const NEW_BASIS: &str = "anthropic-standard-2026-09-30-v2";
+        const NEW_BASIS: &str = "anthropic-standard-2026-10-09-v2";
 
         let fixture = FixtureRoot::new();
         let config = fixture.config();

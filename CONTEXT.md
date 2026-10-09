@@ -102,6 +102,11 @@ context at capture time. The report uses the same format for every Coding
 Provider and application-wide failures. Only administrators can read it.
 Successful operations send no report. A failure time is separate from the
 server receipt time; silence does not prove recovery or current health.
+Native Doomerboard read failures use the same report boundary. Reports can
+include bounded collection loss counts, which describe missing evidence and
+do not create success or health reports. Repeats of an unchanged blocker can
+be combined while changed typed state remains separate. Uploaded reports
+remain immutable and keep the authority under which they were captured.
 _Avoid_: Usage log, health snapshot, public activity
 
 **Sanitized Desktop State**:

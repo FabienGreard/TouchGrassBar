@@ -7,8 +7,9 @@
 ## Scope
 
 Desktop Claude daily aggregates with missing or stale pricing and retained scan
-errors. The fix changes no schema or parser version. Normal scans can recover
-pricing from valid records already stored by the current parser.
+errors. The original aggregate fix changed no schema or parser version. Normal
+scans can recover pricing from valid records already stored by the current
+parser. The parser-16 checkpoint repair below is a separate bounded replay.
 
 ## Execution plan
 
@@ -89,3 +90,74 @@ validator before shipping the new client. Verify an affected updated client
 emits field/problem/counter-state codes. Do not close the remaining parser
 investigation based only on pricing recovery. Keep both replay markers until
 supported schema history makes their removal safe.
+
+## Parser 16 checkpoint repair
+
+Owner issue #112 also owns the parser-16 rollout. Local scanner tests found that
+parser 15 could store a rejected prefix as `indexing` at a byte boundary. The
+next pass could then mark the file complete without rechecking that prefix.
+Parser 16 keeps the rejection in the existing `error` state while it resumes
+the remaining bytes. It skips settled, unchanged error files and retains their
+partial coverage. No table, column, or schema version changes.
+
+The scanner regression failed before the fix: two bounded passes retained 100
+valid tokens but incorrectly returned `complete`. It passed after the fix with
+the same tokens and partial coverage. A second regression starts from a
+parser-15 checkpoint with lost rejection state and verifies the bounded replay.
+Repeat scans keep the daily revision and tokens unchanged. A corrected source
+file can complete without recounting usage. The matching Codex scan test verifies
+that its persisted rejection survives a bounded resume, keeps valid tokens,
+and clears only after the source is corrected.
+
+A second byte-boundary defect could parse the tail of an oversized rejected
+physical line as a new record. Its regression counted 1,099 tokens before the
+fix and 100 after it. Parser 16 discards the remaining bytes through the next
+newline across bounded passes. It retains the valid next record and partial
+coverage. The schema and existing checkpoint columns stay unchanged.
+
+## Remote rejection dispositions
+
+The complete seven-day receipt sample had 84 `invalid_message_metadata` reports
+for `model` / `invalid_format` / zero counters and 60
+`iteration_shape_mismatch` reports. These are report rows, not unique rejected
+source records. Remote reports do not include the rejected values. The counts
+cannot establish which source shape caused a rejection.
+
+The metadata disposition is to keep unknown formats rejected. Existing tests
+accept only the reviewed zero-usage API-error and synthetic-notice envelopes,
+including their exact message, usage, and error metadata. They reject changed
+model sentinels, unknown fields, changed iterations, incomplete HTTP error
+metadata, and nonzero counters. The new scan regression uses a valid known
+usage shape with an unreviewed version and a separate invalid-model zero-usage
+record. It retains the valid 100 tokens, keeps coverage partial, reports only
+bounded field/problem/counter codes, and stores no rejected source value.
+Zero counters alone do not prove that an unknown record is a harmless notice.
+
+The iteration disposition is to keep unmatched repetitions partial. Existing
+tests accept a single reviewed iteration whose counters and cache split match
+the outer usage, with an absent or matching optional model. They count the
+outer usage once. Empty iterations, changed counters, unknown iteration fields,
+and a conflicting or non-string model retain validated outer tokens with
+partial coverage. Scanner tests retain 104 tokens from an empty-iteration
+record across repeated scans and older-parser replay. They also verify the
+bounded `iteration_shape_mismatch` report. Without rejected source values or
+new provider evidence, the remote count does not justify marking these shapes
+complete. Issue #112 keeps this source-shape investigation open.
+
+The Codex checkpoint control test is green without a scanner behavior change:
+a rejected prefix remains partial after a bounded resume, valid tokens remain,
+and repeated scans keep the checkpoint stable. A corrected source clears the
+error and completes without recounting usage.
+
+Release verification is still required. Ship the tested repair through the
+normal release process, let an affected client complete its normal bounded
+replay, and record count-only parser-16 evidence in issue #112. Check that
+rejected records remain partial, valid token totals remain, and unchanged
+checkpoints do not add revisions. A report with zero token counters does not
+prove that its rejected metadata is safe to accept.
+
+If replay stops, retain the index and source files. The next normal scan resumes
+its checkpoint. Do not delete stored usage, skip errors, or mark an unfinished
+scan complete. Existing v1 and v2 diagnostic replay markers remain in place.
+Remove this tracker only after the public release and affected-client evidence
+satisfy the verification above. Local green tests do not prove live recovery.

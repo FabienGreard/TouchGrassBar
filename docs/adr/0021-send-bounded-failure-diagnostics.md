@@ -9,6 +9,12 @@ fails. One report format covers every Coding Provider and application-wide
 database failures. Reports explain the failure and the state at that time.
 They do not establish current device health.
 
+The supported application-wide operations also include native Doomerboard
+reads. Terminal read failures use fixed stages and reasons with bounded
+selection and elapsed-time evidence. Normal cancellation, paused features,
+invalid selections, and Profile changes remain quiet. This extends capture
+scope; it does not introduce successful read measurements or health pings.
+
 ## Capture
 
 The Rust diagnostic module owns capture, local retention, grouping, and
@@ -72,11 +78,29 @@ unavailable, bounded memory can retain reports for the current process.
 Capture and delivery must not block normal product work or create recursive
 reports when diagnostic delivery itself fails.
 
+Claude quota failures can retain a fixed probe stage and monotonic duration
+band. Database operations can retain a fixed category from the original SQLite
+error. No terminal output, SQL, paths, process identifiers, or error text enter
+the report. Missing evidence remains unknown.
+
 Reports are at most 32 KiB. The local queue is at most 2 MiB and retains
 reports for at most seven days. Repeated failures are combined locally. A
 report is frozen before its first upload; all retries use the same report ID
 and content. Later failures form another report. Retry scheduling sends only
 queued failures and does not produce periodic health data.
+
+An exact unchanged retained scan blocker or database failure uses a 30-minute
+local coalescing interval. Repeats retain their count and occurrence span.
+Changed typed state can form a separate report without that delay. Local state
+fingerprints omit occurrence timestamps and remain bounded by the queue.
+Legacy queue state remains readable without a migration.
+
+Bounded collection loss counters can accompany a later failure report. They
+cover full handoffs, queued-report eviction and expiry, storage fallback, and
+rejected submissions. They are lower bounds, saturate at 10,000, and never
+create a report by themselves. They retain the queue's authority binding and
+are discarded on Profile or generation replacement. Counters can remain
+undelivered; they do not make the failure log exhaustive.
 
 ## Identity and backend
 
@@ -98,6 +122,11 @@ profile and device references, receipt and expiry times, and payload and
 group digests. It accepts an identical retry once, rejects reuse of a report
 ID with different content, and limits submission rates. The server retains
 reports for 14 days and deletes expired records in bounded batches.
+
+New groups distinguish provider operations and known probe stages, SQLite
+categories, and failed Doomerboard stages and selections. Existing immutable
+server reports retain their stored group keys. No group-key backfill or
+temporary compatibility bridge is introduced.
 
 Diagnostic reads are internal support operations. Public Doomerboards and
 ordinary client queries do not expose these records. Lookup indexes cover

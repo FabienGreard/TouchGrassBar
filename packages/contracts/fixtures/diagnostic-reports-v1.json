@@ -394,5 +394,99 @@
         }
       }
     }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000080",
+    "failure": {
+      "area": "doomerboard",
+      "provider": null,
+      "code": "doomerboard_read_failed",
+      "context": {
+        "audience": "global",
+        "scope": "combined",
+        "windowDays": 1,
+        "stage": "coordinator_wait",
+        "reason": "deadline_exceeded",
+        "durationBand": "from30s_to60s"
+      }
+    },
+    "collectionLoss": {
+      "handoffDropped": 3,
+      "queueEvicted": 1,
+      "queueExpired": 0,
+      "storageFallback": 0,
+      "submissionRejected": 0
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000081",
+    "failure": {
+      "area": "provider_access",
+      "provider": "claude",
+      "code": "provider_access_failed",
+      "context": {
+        "operation": "read_quota",
+        "reason": "deadline_exceeded",
+        "statusCode": null,
+        "retryCount": 0,
+        "stage": "wait_output",
+        "durationBand": "from15s_to30s"
+      }
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "firstOccurredAt": 1789127970000,
+    "lastOccurredAt": 1789127990000,
+    "contextCapturedAt": 1789127990000,
+    "occurrenceCount": 2,
+    "app": {
+      "version": "0.0.34",
+      "build": null,
+      "osVersion": "15.6",
+      "architecture": "aarch64"
+    },
+    "reportId": "00000000-0000-4000-8000-000000000082",
+    "failure": {
+      "area": "database",
+      "provider": null,
+      "code": "database_migration_failed",
+      "context": {
+        "stage": "validate-backup",
+        "observedFormat": 6,
+        "expectedFormat": 7,
+        "modules": [
+          {
+            "module": "database-coordinator",
+            "observedVersion": 0,
+            "expectedVersion": 1
+          }
+        ],
+        "backupState": "invalid",
+        "sqliteCategory": "busy"
+      }
+    }
   }
 ]

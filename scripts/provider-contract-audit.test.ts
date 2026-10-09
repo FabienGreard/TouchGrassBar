@@ -524,7 +524,127 @@ function createScenario() {
   };
 }
 
+function promptTierScenario() {
+  const scenario = createScenario();
+  const manifest = {
+    ...clone(anthropicManifest),
+    models: anthropicManifest.models.map((model) => ({
+      ...clone(model),
+      standardPeriods: model.standardPeriods.map((period) => ({
+        ...period,
+        longPrompt: {
+          abovePromptTokens: 100_000,
+          cacheReadUsdPerMillion: 0.4,
+          cacheWrite1hUsdPerMillion: 8,
+          cacheWrite5mUsdPerMillion: 5,
+          inputUsdPerMillion: 4,
+          outputUsdPerMillion: 20,
+        },
+      })),
+    })),
+  };
+  const pricing = anthropicPricing.replace(
+    "| Claude Sonnet 5 | $2 / MTok | $2.5 / MTok | $4 / MTok | $0.2 / MTok | $10 / MTok |",
+    "| Claude Sonnet 5 (for prompts up to 100,000 tokens) | $2 / MTok | $2.5 / MTok | $4 / MTok | $0.2 / MTok | $10 / MTok |\n" +
+      "| Claude Sonnet 5 (for prompts over 100,000 tokens) | $4 / MTok | $5 / MTok | $8 / MTok | $0.4 / MTok | $20 / MTok |",
+  );
+  const setPricing = (source: string) => {
+    const ruleWindow = scenario.contract.claude.pricingRuleWindows[0];
+    if (!ruleWindow) throw new Error("The Claude test rule window is absent.");
+    ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
+      source,
+      ruleWindow.startHeading,
+      ruleWindow.endHeading,
+    );
+    scenario.remoteSources.set(scenario.contract.claude.pricingSourceUrl, source);
+  };
+  const setManifest = () => {
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.claude.pricingManifestPath}`,
+      json(manifest),
+    );
+    scenario.contract.claude.pricingManifestSemanticSha256 = semanticJsonSha256(manifest);
+  };
+  setPricing(pricing);
+  setManifest();
+  return { ...scenario, manifest, pricing, setManifest, setPricing };
+}
+
 describe("provider contract audit", () => {
+  test("accepts paired Claude prompt tier rows with an inclusive lower boundary", async () => {
+    const scenario = promptTierScenario();
+
+    const report = await scenario.audit();
+
+    expect(report.findings.filter((entry) => entry.provider === "claude")).toEqual([]);
+  });
+
+  test("compares every Claude long prompt rate and its threshold", async () => {
+    const changes = [
+      ["abovePromptTokens", 200_000],
+      ["inputUsdPerMillion", 4.1],
+      ["cacheWrite5mUsdPerMillion", 5.1],
+      ["cacheWrite1hUsdPerMillion", 8.1],
+      ["cacheReadUsdPerMillion", 0.41],
+      ["outputUsdPerMillion", 20.1],
+    ] as const;
+    for (const [field, value] of changes) {
+      const scenario = promptTierScenario();
+      const tier = scenario.manifest.models[0]?.standardPeriods[0]?.longPrompt;
+      if (!tier) throw new Error("The test prompt tier is absent.");
+      tier[field] = value;
+      scenario.setManifest();
+
+      const report = await scenario.audit();
+
+      expect(report.findings, field).toContainEqual(
+        expect.objectContaining({
+          code: "price-changed",
+          provider: "claude",
+          summary: expect.stringContaining("long prompt"),
+        }),
+      );
+    }
+  });
+
+  test("checks the declared cache read multiplier in the Claude long prompt tier", async () => {
+    const scenario = promptTierScenario();
+    const tier = scenario.manifest.models[0]?.standardPeriods[0]?.longPrompt;
+    if (!tier) throw new Error("The test prompt tier is absent.");
+    tier.cacheReadUsdPerMillion = 0.5;
+    scenario.setManifest();
+
+    const report = await scenario.audit();
+
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({
+        code: "pricing-modifier-changed",
+        provider: "claude",
+        summary: expect.stringContaining("does not match its declared multiplier"),
+      }),
+    );
+  });
+
+  test("rejects incomplete or inconsistent Claude prompt tier row pairs", async () => {
+    const scenario = promptTierScenario();
+    const higherRow =
+      "| Claude Sonnet 5 (for prompts over 100,000 tokens) | $4 / MTok | $5 / MTok | $8 / MTok | $0.4 / MTok | $20 / MTok |";
+    const changedSources = [
+      scenario.pricing.replace(higherRow, ""),
+      scenario.pricing.replace("over 100,000 tokens", "over 200,000 tokens"),
+      scenario.pricing.replace(higherRow, `${higherRow}\n${higherRow}`),
+    ];
+    for (const source of changedSources) {
+      scenario.setPricing(source);
+
+      const report = await scenario.audit();
+
+      expect(report.findings).toContainEqual(
+        expect.objectContaining({ code: "invalid-source", provider: "claude" }),
+      );
+    }
+  });
+
   test("passes when every normalized source matches the reviewed contract", async () => {
     const scenario = createScenario();
 

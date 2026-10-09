@@ -556,6 +556,7 @@ mod tests {
                     code: DatabaseCode::DatabaseOpenFailed,
                     provider: None,
                     context: DatabaseContext {
+                        sqlite_category: None,
                         stage: Some("open-database".into()),
                         observed_format: None,
                         expected_format: Some(7),
@@ -610,6 +611,7 @@ mod tests {
                     code: DatabaseCode::DatabaseOpenFailed,
                     provider: None,
                     context: DatabaseContext {
+                        sqlite_category: None,
                         stage: Some("open-database".into()),
                         observed_format: None,
                         expected_format: None,

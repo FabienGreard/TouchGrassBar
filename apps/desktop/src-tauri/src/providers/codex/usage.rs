@@ -230,7 +230,9 @@ pub(crate) fn load_cached_account_usage(
     let database_path = database_path?;
     let _failures = failure_capture::ScanFailures::begin();
     let mut connection = Connection::open(database_path)
-        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .inspect_err(|error| {
+            failure_capture::database_failure_with_error(database_path, "codex-usage-index", error)
+        })
         .ok()?;
     ensure_index_schema(&mut connection, Some(database_path))
         .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
@@ -248,8 +250,12 @@ fn load_cached_account_usage_from_connection(
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .inspect_err(|_| {
-            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        .inspect_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "codex-usage-index",
+                error,
+            )
         })
         .ok()??;
     let observed_at = OffsetDateTime::parse(&observed_at, &Rfc3339)
@@ -262,8 +268,12 @@ fn load_cached_account_usage_from_connection(
             "SELECT day, tokens, observed_at
              FROM codex_account_usage_days ORDER BY day",
         )
-        .inspect_err(|_| {
-            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        .inspect_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "codex-usage-index",
+                error,
+            )
         })
         .ok()?
         .query_map([], |row| {
@@ -274,13 +284,21 @@ fn load_cached_account_usage_from_connection(
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
             Ok((day, tokens, observed_at))
         })
-        .inspect_err(|_| {
-            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        .inspect_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "codex-usage-index",
+                error,
+            )
         })
         .ok()?
         .collect::<Result<Vec<_>, _>>()
-        .inspect_err(|_| {
-            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        .inspect_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "codex-usage-index",
+                error,
+            )
         })
         .ok()?;
     let daily_tokens = daily_rows
@@ -309,19 +327,22 @@ pub(crate) fn store_cached_account_usage(
         .ok_or(())?;
     let database_path = database_path.ok_or(())?;
     let _failures = failure_capture::ScanFailures::begin();
-    let mut connection = Connection::open(database_path)
-        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
+    let mut connection = Connection::open(database_path).map_err(|error| {
+        failure_capture::database_failure_with_error(database_path, "codex-usage-index", &error)
+    })?;
     ensure_index_schema(&mut connection, Some(database_path))
         .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        failure_capture::database_failure_with_error(database_path, "codex-usage-index", &error)
+    })?;
     transaction
         .execute(
             "DELETE FROM codex_account_usage_days WHERE day < ?1 OR day > ?2",
             params![cutoff.to_string(), today.to_string()],
         )
-        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
+        .map_err(|error| {
+            failure_capture::database_failure_with_error(database_path, "codex-usage-index", &error)
+        })?;
     let observed_at = observed_at.format(&Rfc3339).map_err(|_| ())?;
     for (day, tokens) in observation.daily_tokens.range(cutoff..=today) {
         transaction
@@ -333,7 +354,13 @@ pub(crate) fn store_cached_account_usage(
                    observed_at = excluded.observed_at",
                 params![day.to_string(), to_i64(*tokens)?, &observed_at],
             )
-            .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
+            .map_err(|error| {
+                failure_capture::database_failure_with_error(
+                    database_path,
+                    "codex-usage-index",
+                    &error,
+                )
+            })?;
     }
     transaction
         .execute(
@@ -341,10 +368,12 @@ pub(crate) fn store_cached_account_usage(
              ON CONFLICT(singleton) DO UPDATE SET refreshed_at=excluded.refreshed_at",
             [&observed_at],
         )
-        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))?;
-    transaction
-        .commit()
-        .map_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .map_err(|error| {
+            failure_capture::database_failure_with_error(database_path, "codex-usage-index", &error)
+        })?;
+    transaction.commit().map_err(|error| {
+        failure_capture::database_failure_with_error(database_path, "codex-usage-index", &error)
+    })
 }
 
 fn parse_ranking_day(value: &str) -> Result<Date, ()> {
@@ -4671,8 +4700,12 @@ fn commit_file_progress(
         detail_cutoff,
     } = commit;
     let manifest = pricing_manifest();
-    let transaction = connection.unchecked_transaction().map_err(|_| {
-        failure_capture::database_connection_failure(connection, "codex-usage-index")
+    let transaction = connection.unchecked_transaction().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "codex-usage-index",
+            &error,
+        )
     })?;
     transaction
         .execute(
@@ -4756,7 +4789,7 @@ fn commit_file_progress(
                 cursor.parser_state.active_turn_id,
             ],
         )
-        .map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))?;
+        .map_err(|error| failure_capture::database_connection_failure_with_error(connection, "codex-usage-index", &error))?;
     transaction
         .execute(
             "UPDATE codex_usage_files SET
@@ -4839,8 +4872,12 @@ fn commit_file_progress(
                     .map_err(|_| ())?,
             ],
         )
-        .map_err(|_| {
-            failure_capture::database_connection_failure(connection, "codex-usage-index")
+        .map_err(|error| {
+            failure_capture::database_connection_failure_with_error(
+                connection,
+                "codex-usage-index",
+                &error,
+            )
         })?;
     if replace_existing_usage {
         transaction
@@ -4854,18 +4891,30 @@ fn commit_file_progress(
                 "DELETE FROM codex_usage_file_model_days WHERE path = ?1",
                 [path],
             )
-            .map_err(|_| {
-                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "codex-usage-index",
+                    &error,
+                )
             })?;
         transaction
             .execute("DELETE FROM codex_usage_file_days WHERE path = ?1", [path])
-            .map_err(|_| {
-                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "codex-usage-index",
+                    &error,
+                )
             })?;
         transaction
             .execute("DELETE FROM codex_usage_file_turns WHERE path = ?1", [path])
-            .map_err(|_| {
-                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "codex-usage-index",
+                    &error,
+                )
             })?;
     }
     for snapshot in snapshots {
@@ -4894,8 +4943,12 @@ fn commit_file_progress(
                     to_i64(snapshot.usage.total)?,
                 ],
             )
-            .map_err(|_| {
-                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "codex-usage-index",
+                    &error,
+                )
             })?;
     }
     for (turn_id, day) in turn_days {
@@ -4905,8 +4958,12 @@ fn commit_file_progress(
                  VALUES(?1, ?2, ?3)",
                 params![path, turn_id, day.to_string()],
             )
-            .map_err(|_| {
-                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "codex-usage-index",
+                    &error,
+                )
             })?;
     }
     let mut file_days = BTreeMap::<Date, FileDayDelta>::new();
@@ -5024,7 +5081,7 @@ fn commit_file_progress(
                         delta.observed_through.format(&Rfc3339).map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))?,
                     ],
                 )
-                .map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))?;
+                .map_err(|error| failure_capture::database_connection_failure_with_error(connection, "codex-usage-index", &error))?;
         }
     }
     for (day, delta) in file_days {
@@ -5070,13 +5127,21 @@ fn commit_file_progress(
                     Option::<&str>::None,
                 ],
             )
-            .map_err(|_| {
-                failure_capture::database_connection_failure(connection, "codex-usage-index")
+            .map_err(|error| {
+                failure_capture::database_connection_failure_with_error(
+                    connection,
+                    "codex-usage-index",
+                    &error,
+                )
             })?;
     }
-    transaction
-        .commit()
-        .map_err(|_| failure_capture::database_connection_failure(connection, "codex-usage-index"))
+    transaction.commit().map_err(|error| {
+        failure_capture::database_connection_failure_with_error(
+            connection,
+            "codex-usage-index",
+            &error,
+        )
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -6367,7 +6432,9 @@ fn index_local_usage_with_budget(
         "scan_pass_started max_bytes={max_bytes} max_file_bytes={max_file_bytes} max_discovery_millis={max_discovery_millis} max_parse_millis={max_parse_millis}"
     ));
     let mut connection = Connection::open(database_path)
-        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .inspect_err(|error| {
+            failure_capture::database_failure_with_error(database_path, "codex-usage-index", error)
+        })
         .ok()?;
     ensure_index_schema(&mut connection, Some(database_path))
         .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
@@ -6842,7 +6909,9 @@ fn index_local_usage_with_budget(
                 ))
             },
         )
-        .inspect_err(|_| failure_capture::database_failure(database_path, "codex-usage-index"))
+        .inspect_err(|error| {
+            failure_capture::database_failure_with_error(database_path, "codex-usage-index", error)
+        })
         .unwrap_or((1, 1, 0));
     let scan_status = if failed {
         UsageScanStatus::Unavailable
@@ -7463,6 +7532,69 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn bounded_scan_keeps_a_rejected_prefix_until_the_source_is_corrected() {
+        let fixture = TempUsage::new();
+        let now = OffsetDateTime::parse("2026-08-06T12:00:00Z", &Rfc3339).unwrap();
+        let prefix = format!("{}{{invalid json}}\n", root_rollout(100));
+        fs::write(&fixture.rollout, format!("{prefix}{}", appended_total(200))).unwrap();
+        let first = index_local_usage_with_budget(
+            &fixture.database,
+            &fixture.root,
+            now,
+            ScanBudget {
+                max_bytes: prefix.len() as u64,
+                max_file_bytes: prefix.len() as u64,
+                max_discovery_millis: MAX_ROLLOUT_SCAN_MILLIS,
+                max_parse_millis: MAX_ROLLOUT_SCAN_MILLIS,
+            },
+        )
+        .unwrap();
+        assert_eq!(first.daily[&now.date()].observed_tokens, 100);
+        assert_ne!(first.scan_status, UsageScanStatus::Complete);
+
+        let resumed = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(resumed.daily[&now.date()].observed_tokens, 200);
+        assert_eq!(resumed.scan_status, UsageScanStatus::Unavailable);
+        let connection = Connection::open(&fixture.database).unwrap();
+        let checkpoint = || {
+            connection
+                .query_row(
+                    "SELECT parsed_offset, completion_state, parser_error_seen
+             FROM codex_usage_files WHERE path = ?1",
+                    [fixture.rollout.to_string_lossy().as_ref()],
+                    |row| {
+                        Ok((
+                            row.get::<_, u64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, bool>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let retained = checkpoint();
+        assert_eq!(retained.1, "error");
+        assert!(retained.2);
+        let repeated = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(repeated.daily[&now.date()].observed_tokens, 200);
+        assert_eq!(repeated.scan_status, UsageScanStatus::Unavailable);
+        assert_eq!(checkpoint(), retained);
+        drop(connection);
+
+        fs::write(&fixture.rollout, root_rollout(200)).unwrap();
+        let corrected = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(corrected.daily[&now.date()].observed_tokens, 200);
+        assert_eq!(corrected.scan_status, UsageScanStatus::Complete);
+        let repeated = index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
+        assert_eq!(repeated.daily[&now.date()].observed_tokens, 200);
+        assert_eq!(repeated.scan_status, UsageScanStatus::Complete);
+        assert_eq!(
+            indexed_tokens_for_path(&fixture.database, &fixture.rollout),
+            200
+        );
+    }
 
     struct TempUsage {
         root: PathBuf,

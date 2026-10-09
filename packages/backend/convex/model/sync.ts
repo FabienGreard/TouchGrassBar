@@ -651,7 +651,6 @@ export async function applyUsageSnapshots(
   }
   if (committed.length > 0) {
     const syncedAt = Date.now();
-    await ctx.db.patch(device._id, { lastSeenAt: syncedAt });
     await ctx.db.patch(tokenmaxxer._id, { lastSyncedAt: syncedAt });
     await recomputeScores(ctx, tokenmaxxer._id, today);
   }
@@ -730,7 +729,6 @@ export async function applyProviderSettings(
       deviceId: device._id,
     });
   }
-  await ctx.db.patch(device._id, { lastSeenAt: now });
   await ctx.db.patch(tokenmaxxer._id, { lastSyncedAt: now });
   await recomputeScores(ctx, tokenmaxxer._id, rankingDayAt(now));
   return { outcome: "committed", revision };

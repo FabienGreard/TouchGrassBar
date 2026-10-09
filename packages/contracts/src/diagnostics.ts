@@ -148,6 +148,53 @@ export const DIAGNOSTIC_SYNC_REASONS = [
 
 const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const version = z.number().int().min(0).max(2_147_483_647);
+export const DIAGNOSTIC_DURATION_BANDS = [
+  "under1s",
+  "from1s_to5s",
+  "from5s_to15s",
+  "from15s_to30s",
+  "from30s_to60s",
+  "over60s",
+] as const;
+export const DIAGNOSTIC_CLAUDE_QUOTA_STAGES = [
+  "session_id",
+  "cleanup",
+  "prepare_directory",
+  "process_start",
+  "safe_prompt_input",
+  "usage_input",
+  "wait_output",
+  "output_limit",
+  "output_closed",
+] as const;
+export const DIAGNOSTIC_SQLITE_CATEGORIES = [
+  "busy",
+  "locked",
+  "constraint",
+  "corrupt",
+  "io",
+  "full",
+  "readonly",
+  "cannot_open",
+  "interrupted",
+  "other",
+] as const;
+export const DIAGNOSTIC_DOOMERBOARD_STAGES = [
+  "coordinator_wait",
+  "session_credentials",
+  "session_refresh",
+  "token_fetch",
+  "connection",
+  "request",
+  "response",
+] as const;
+export const DIAGNOSTIC_DOOMERBOARD_REASONS = [
+  "deadline_exceeded",
+  "request_failed",
+  "authority_rejected",
+  "invalid_response",
+  "internal_failed",
+] as const;
 const numericVersion = z
   .string()
   .min(1)
@@ -170,6 +217,7 @@ const catalogVersion = z
 
 export const diagnosticDatabaseContextSchema = z
   .object({
+    sqliteCategory: z.enum(DIAGNOSTIC_SQLITE_CATEGORIES).exactOptional(),
     stage: z.enum(DIAGNOSTIC_DATABASE_STAGES).nullable(),
     observedFormat: version.nullable(),
     expectedFormat: version.nullable(),
@@ -316,6 +364,8 @@ export const diagnosticSyncContextSchema = z
 
 export const diagnosticProviderAccessContextSchema = z
   .object({
+    stage: z.enum(DIAGNOSTIC_CLAUDE_QUOTA_STAGES).exactOptional(),
+    durationBand: z.enum(DIAGNOSTIC_DURATION_BANDS).exactOptional(),
     operation: z.enum(["read_usage", "read_quota", "refresh_credentials", "refresh_provider"]),
     reason: z.enum([
       "read_failed",
@@ -332,6 +382,23 @@ export const diagnosticProviderAccessContextSchema = z
   .strict();
 
 export const diagnosticFailureSchema = z.discriminatedUnion("area", [
+  z
+    .object({
+      area: z.literal("doomerboard"),
+      provider: z.null(),
+      code: z.literal("doomerboard_read_failed"),
+      context: z
+        .object({
+          audience: z.enum(["global", "my_tokenmaxxers"]),
+          scope: z.enum(["combined", "codex", "claude"]),
+          windowDays: z.union([z.literal(1), z.literal(7), z.literal(30)]),
+          stage: z.enum(DIAGNOSTIC_DOOMERBOARD_STAGES),
+          reason: z.enum(DIAGNOSTIC_DOOMERBOARD_REASONS),
+          durationBand: z.enum(DIAGNOSTIC_DURATION_BANDS),
+        })
+        .strict(),
+    })
+    .strict(),
   z
     .object({
       area: z.literal("database"),
@@ -382,6 +449,16 @@ export const diagnosticFailureSchema = z.discriminatedUnion("area", [
 
 export const diagnosticReportSchema = z
   .object({
+    collectionLoss: z
+      .object({
+        handoffDropped: z.number().int().min(0).max(10_000),
+        queueEvicted: z.number().int().min(0).max(10_000),
+        queueExpired: z.number().int().min(0).max(10_000),
+        storageFallback: z.number().int().min(0).max(10_000),
+        submissionRejected: z.number().int().min(0).max(10_000),
+      })
+      .strict()
+      .exactOptional(),
     schemaVersion: z.literal(1),
     reportId: z
       .string()
@@ -416,6 +493,16 @@ export const diagnosticReportSchema = z
       ctx.addIssue({ code: "custom", message: "Invalid failure time order" });
     }
     const failure = report.failure;
+    if (
+      failure.area === "provider_access" &&
+      (failure.context.stage !== undefined || failure.context.durationBand !== undefined) &&
+      (failure.provider !== "claude" ||
+        failure.context.operation !== "read_quota" ||
+        failure.context.stage === undefined ||
+        failure.context.durationBand === undefined)
+    ) {
+      ctx.addIssue({ code: "custom", message: "Invalid quota stage evidence context" });
+    }
     if (
       failure.area === "parser" &&
       failure.context.recordsExcluded !== undefined &&

@@ -9,13 +9,13 @@ const ANTHROPIC_STANDARD_PRICING_JSON: &str =
     include_str!("../../../pricing/anthropic-standard.json");
 /// Anthropic documents a cache read at 0.1x the base input price, with
 /// published exceptions: 0.025x for Claude Fable 5.1 and Claude Mythos 5.1,
-/// and 0.05x for Claude Opus 5.5. A period declares which documented
-/// multiplier it uses; any other value is rejected so an unreviewed cache rate
+/// and 0.05x for Claude Opus 5.5 and Claude Sonnet 5.5. A period declares its
+/// documented multiplier; any other value is rejected so an unreviewed cache rate
 /// cannot enter the catalog.
 const STANDARD_CACHE_READ_MULTIPLIER: f64 = 0.1;
 const DOCUMENTED_CACHE_READ_MULTIPLIERS: [f64; 3] = [STANDARD_CACHE_READ_MULTIPLIER, 0.025, 0.05];
 
-const PRICING_RULES_FINGERPRINT: &str = "service-tier-default-standard;priority-standard-rate;missing-speed-modeled-standard;fast-batch-unavailable;missing-paid-metadata-unavailable;web-fetch-no-extra-charge;missing-code-execution-counter-zero;positive-code-execution-unavailable;unknown-paid-tool-unavailable";
+const PRICING_RULES_FINGERPRINT: &str = "service-tier-default-standard;priority-standard-rate;missing-speed-modeled-standard;fast-batch-unavailable;missing-paid-metadata-unavailable;web-fetch-no-extra-charge;missing-code-execution-counter-zero;positive-code-execution-unavailable;unknown-paid-tool-unavailable;prompt-tier-includes-input-and-cache-excludes-output";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -49,6 +49,25 @@ struct RawPricePeriod {
     cache_read_usd_per_million: f64,
     cache_read_multiplier: Option<f64>,
     output_usd_per_million: f64,
+    long_prompt: Option<RawLongPromptPrice>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RawLongPromptPrice {
+    above_prompt_tokens: u64,
+    input_usd_per_million: f64,
+    cache_write_5m_usd_per_million: f64,
+    cache_write_1h_usd_per_million: f64,
+    cache_read_usd_per_million: f64,
+    cache_read_multiplier: Option<f64>,
+    output_usd_per_million: f64,
+}
+
+#[derive(Clone, Copy)]
+struct LongPromptPrice {
+    above_prompt_tokens: u64,
+    rates: [f64; 5],
 }
 
 #[derive(Clone)]
@@ -78,6 +97,7 @@ struct PriceCatalogEntry {
     cache_write_1h_usd_per_million: f64,
     cache_read_usd_per_million: f64,
     output_usd_per_million: f64,
+    long_prompt: Option<LongPromptPrice>,
 }
 
 impl PriceCatalogEntry {
@@ -92,6 +112,23 @@ impl PriceCatalogEntry {
                 (Some(_), None) => false,
                 (Some(outer), Some(inner)) => inner <= outer,
             }
+    }
+
+    fn for_prompt_length(self, prompt_tokens: u64) -> Self {
+        let Some(tier) = self
+            .long_prompt
+            .filter(|tier| prompt_tokens > tier.above_prompt_tokens)
+        else {
+            return self;
+        };
+        Self {
+            input_usd_per_million: tier.rates[0],
+            cache_write_5m_usd_per_million: tier.rates[1],
+            cache_write_1h_usd_per_million: tier.rates[2],
+            cache_read_usd_per_million: tier.rates[3],
+            output_usd_per_million: tier.rates[4],
+            ..self
+        }
     }
 }
 
@@ -113,11 +150,14 @@ pub(super) struct BillableUsage<'a> {
 }
 
 impl BillableUsage<'_> {
-    fn observed_tokens(self) -> Option<u64> {
+    fn prompt_tokens(self) -> Option<u64> {
         self.input_tokens
             .checked_add(self.cache_creation_input_tokens)?
-            .checked_add(self.cache_read_input_tokens)?
-            .checked_add(self.output_tokens)
+            .checked_add(self.cache_read_input_tokens)
+    }
+
+    fn observed_tokens(self) -> Option<u64> {
+        self.prompt_tokens()?.checked_add(self.output_tokens)
     }
 
     fn cache_creation_split(self) -> Option<(u64, u64)> {
@@ -213,6 +253,7 @@ impl PricingCatalog {
         usage: BillableUsage<'_>,
     ) -> Result<PriceDecision, &'static str> {
         let observed_tokens = usage.observed_tokens().ok_or("token-overflow")?;
+        let prompt_tokens = usage.prompt_tokens().ok_or("token-overflow")?;
         let (cache_write_5m, cache_write_1h) = usage
             .cache_creation_split()
             .ok_or("missing-cache-write-split")?;
@@ -267,7 +308,8 @@ impl PricingCatalog {
             }
             None => standard_entry,
             Some(_) => return Err("unknown-speed"),
-        };
+        }
+        .for_prompt_length(prompt_tokens);
         let modeled = geo_modeled || speed_modeled;
         let token_factor = tier_factor * geo_factor;
         let per_million = |tokens: u64, rate: f64| (tokens as f64 / 1_000_000.0) * rate;
@@ -435,15 +477,6 @@ fn parse_price_periods(
                 .as_deref()
                 .map(parse_ranking_day)
                 .transpose()?;
-            let cache_read_multiplier = period
-                .cache_read_multiplier
-                .unwrap_or(STANDARD_CACHE_READ_MULTIPLIER);
-            if !DOCUMENTED_CACHE_READ_MULTIPLIERS
-                .into_iter()
-                .any(|documented| approximately_equal(cache_read_multiplier, documented))
-            {
-                return Err(());
-            }
             let rates = [
                 period.input_usd_per_million,
                 period.cache_write_5m_usd_per_million,
@@ -452,22 +485,31 @@ fn parse_price_periods(
                 period.output_usd_per_million,
             ];
             if effective_until.is_some_and(|until| until <= effective_from)
-                || !rates.into_iter().all(valid_rate)
-                || !approximately_equal(
-                    period.cache_write_5m_usd_per_million,
-                    period.input_usd_per_million * 1.25,
-                )
-                || !approximately_equal(
-                    period.cache_write_1h_usd_per_million,
-                    period.input_usd_per_million * 2.0,
-                )
-                || !approximately_equal(
-                    period.cache_read_usd_per_million,
-                    period.input_usd_per_million * cache_read_multiplier,
-                )
+                || !valid_token_rates(rates, period.cache_read_multiplier)
             {
                 return Err(());
             }
+            let long_prompt = period
+                .long_prompt
+                .map(|tier| {
+                    let rates = [
+                        tier.input_usd_per_million,
+                        tier.cache_write_5m_usd_per_million,
+                        tier.cache_write_1h_usd_per_million,
+                        tier.cache_read_usd_per_million,
+                        tier.output_usd_per_million,
+                    ];
+                    if tier.above_prompt_tokens == 0
+                        || !valid_token_rates(rates, tier.cache_read_multiplier)
+                    {
+                        return Err(());
+                    }
+                    Ok(LongPromptPrice {
+                        above_prompt_tokens: tier.above_prompt_tokens,
+                        rates,
+                    })
+                })
+                .transpose()?;
             Ok(PriceCatalogEntry {
                 effective_from,
                 effective_until,
@@ -476,6 +518,7 @@ fn parse_price_periods(
                 cache_write_1h_usd_per_million: period.cache_write_1h_usd_per_million,
                 cache_read_usd_per_million: period.cache_read_usd_per_million,
                 output_usd_per_million: period.output_usd_per_million,
+                long_prompt,
             })
         })
         .collect::<Result<Vec<_>, ()>>()?;
@@ -525,7 +568,7 @@ fn period_fingerprint_parts(periods: &[PriceCatalogEntry]) -> String {
     periods
         .iter()
         .map(|period| {
-            format!(
+            let mut part = format!(
                 "{}|{}|{:016x}|{:016x}|{:016x}|{:016x}|{:016x}",
                 period.effective_from,
                 period
@@ -536,7 +579,17 @@ fn period_fingerprint_parts(periods: &[PriceCatalogEntry]) -> String {
                 period.cache_write_1h_usd_per_million.to_bits(),
                 period.cache_read_usd_per_million.to_bits(),
                 period.output_usd_per_million.to_bits(),
-            )
+            );
+            if let Some(tier) = period.long_prompt {
+                part.push_str(&format!(
+                    "|prompt-above={}|{}",
+                    tier.above_prompt_tokens,
+                    tier.rates
+                        .map(|rate| format!("{:016x}", rate.to_bits()))
+                        .join("|"),
+                ));
+            }
+            part
         })
         .collect::<Vec<_>>()
         .join(";")
@@ -557,6 +610,17 @@ fn valid_factor(value: f64, lower_exclusive: f64, upper_inclusive: f64) -> bool 
 
 fn valid_rate(value: f64) -> bool {
     value.is_finite() && value >= 0.0
+}
+
+fn valid_token_rates(rates: [f64; 5], cache_read_multiplier: Option<f64>) -> bool {
+    let multiplier = cache_read_multiplier.unwrap_or(STANDARD_CACHE_READ_MULTIPLIER);
+    DOCUMENTED_CACHE_READ_MULTIPLIERS
+        .into_iter()
+        .any(|documented| approximately_equal(multiplier, documented))
+        && rates.into_iter().all(valid_rate)
+        && approximately_equal(rates[1], rates[0] * 1.25)
+        && approximately_equal(rates[2], rates[0] * 2.0)
+        && approximately_equal(rates[3], rates[0] * multiplier)
 }
 
 fn approximately_equal(left: f64, right: f64) -> bool {
@@ -627,19 +691,19 @@ mod tests {
         let manifest = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON)
             .expect("valid bundled manifest");
         let changed_basis = parse_pricing_manifest(&ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "anthropic-standard-2026-09-30-v1",
-            "anthropic-standard-2026-09-30-v2",
+            "anthropic-standard-2026-10-09-v1",
+            "anthropic-standard-2026-10-09-v2",
             1,
         ))
         .expect("valid changed basis");
 
-        assert_eq!(manifest.basis(), "anthropic-standard-2026-09-30-v1");
+        assert_eq!(manifest.basis(), "anthropic-standard-2026-10-09-v1");
         assert!(manifest.semantic_fingerprint().starts_with("fnv1a64:"));
         assert_ne!(
             manifest.semantic_fingerprint(),
             changed_basis.semantic_fingerprint()
         );
-        assert_eq!(manifest.models.len(), 19);
+        assert_eq!(manifest.models.len(), 20);
     }
 
     #[test]
@@ -689,6 +753,46 @@ mod tests {
         assert!(parse_pricing_manifest(&undocumented_multiplier).is_err());
         assert!(parse_pricing_manifest(&rate_without_its_declared_multiplier).is_err());
         assert!(parse_pricing_manifest(&standard_rate_claiming_the_reduced_multiplier).is_err());
+    }
+
+    #[test]
+    fn long_prompt_rates_validate_cache_rules_and_enter_the_catalog_fingerprint() {
+        let original = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_str(ANTHROPIC_STANDARD_PRICING_JSON).unwrap();
+        let haiku_index = manifest["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|model| model["name"] == "claude-haiku-5-5")
+            .unwrap();
+        for (field, value) in [
+            ("abovePromptTokens", serde_json::json!(0)),
+            ("cacheWrite5mUsdPerMillion", serde_json::json!(0.7)),
+            ("cacheWrite1hUsdPerMillion", serde_json::json!(1.1)),
+            ("cacheReadUsdPerMillion", serde_json::json!(0.1)),
+            ("cacheReadMultiplier", serde_json::json!(0.075)),
+            ("unreviewedRule", serde_json::json!(true)),
+        ] {
+            let mut invalid = manifest.clone();
+            invalid["models"][haiku_index]["standardPeriods"][0]["longPrompt"][field] = value;
+            assert!(
+                parse_pricing_manifest(&invalid.to_string()).is_err(),
+                "{field}"
+            );
+        }
+        for (field, value) in [
+            ("abovePromptTokens", serde_json::json!(100_001)),
+            ("outputUsdPerMillion", serde_json::json!(2.6)),
+        ] {
+            let mut changed = manifest.clone();
+            changed["models"][haiku_index]["standardPeriods"][0]["longPrompt"][field] = value;
+            let changed = parse_pricing_manifest(&changed.to_string()).unwrap();
+            assert_ne!(
+                original.semantic_fingerprint(),
+                changed.semantic_fingerprint()
+            );
+        }
     }
 
     #[test]
@@ -832,6 +936,146 @@ mod tests {
                 )
                 .cost_usd
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn haiku_5_5_price_regression_uses_the_full_prompt_at_the_inclusive_boundary() {
+        let manifest = catalog().expect("bundled catalog");
+        let at_boundary = BillableUsage {
+            input_tokens: 20_000,
+            cache_creation_input_tokens: 40_000,
+            cache_creation_5m_input_tokens: Some(20_000),
+            cache_creation_1h_input_tokens: Some(20_000),
+            cache_read_input_tokens: 40_000,
+            output_tokens: 200_000,
+            ..usage()
+        };
+        // The 100,000-token prompt includes both cache categories. Output does
+        // not select the tier. All categories use one rate for this request.
+        let boundary = manifest.price_message("claude-haiku-5-5", date("2026-10-07"), at_boundary);
+        assert_cost(boundary.clone(), 0.1089);
+        assert_eq!(boundary.priced_tokens, 300_000);
+        assert!(!boundary.modeled);
+
+        for (over_boundary, expected) in [
+            (
+                BillableUsage {
+                    input_tokens: 20_001,
+                    ..at_boundary
+                },
+                0.5445005,
+            ),
+            (
+                BillableUsage {
+                    cache_creation_input_tokens: 40_001,
+                    cache_creation_5m_input_tokens: Some(20_001),
+                    ..at_boundary
+                },
+                0.544500625,
+            ),
+            (
+                BillableUsage {
+                    cache_creation_input_tokens: 40_001,
+                    cache_creation_1h_input_tokens: Some(20_001),
+                    ..at_boundary
+                },
+                0.544501,
+            ),
+            (
+                BillableUsage {
+                    cache_read_input_tokens: 40_001,
+                    ..at_boundary
+                },
+                0.54450005,
+            ),
+        ] {
+            let decision =
+                manifest.price_message("claude-haiku-5-5", date("2026-10-07"), over_boundary);
+            assert_cost(decision.clone(), expected);
+            assert_eq!(decision.priced_tokens, 300_001);
+            assert_ne!(decision.rule_fingerprint, boundary.rule_fingerprint);
+        }
+        assert!(
+            manifest
+                .price_message("claude-haiku-5-5", date("2026-10-06"), at_boundary)
+                .cost_usd
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn haiku_5_5_price_regression_prices_each_request_and_keeps_modifiers() {
+        let manifest = catalog().expect("bundled catalog");
+        let small = BillableUsage {
+            input_tokens: 100_000,
+            output_tokens: 100,
+            ..usage()
+        };
+        let large = BillableUsage {
+            input_tokens: 100_001,
+            ..small
+        };
+        let first = manifest.price_message("claude-haiku-5-5", date("2026-10-08"), small);
+        assert_cost(first.clone(), 0.01005);
+        assert_cost(
+            manifest.price_message("claude-haiku-5-5", date("2026-10-08"), large),
+            0.0502505,
+        );
+        assert_eq!(
+            first,
+            manifest.price_message("claude-haiku-5-5", date("2026-10-08"), small)
+        );
+        for (service_tier, inference_geo, expected) in [
+            ("batch", "global", 0.02512525),
+            ("standard", "us", 0.05527555),
+            ("priority", "global", 0.0502505),
+        ] {
+            assert_cost(
+                manifest.price_message(
+                    "claude-haiku-5-5",
+                    date("2026-10-08"),
+                    BillableUsage {
+                        service_tier: Some(service_tier),
+                        inference_geo: Some(inference_geo),
+                        ..large
+                    },
+                ),
+                expected,
+            );
+        }
+        let modeled = manifest.price_message(
+            "claude-haiku-5-5",
+            date("2026-10-08"),
+            BillableUsage {
+                inference_geo: None,
+                ..small
+            },
+        );
+        assert_cost(modeled.clone(), 0.01005);
+        assert!(modeled.modeled);
+    }
+
+    #[test]
+    fn sonnet_5_5_price_regression_dates_the_cache_read_change() {
+        let manifest = catalog().expect("bundled catalog");
+        let cache_only = BillableUsage {
+            input_tokens: 0,
+            cache_read_input_tokens: 1_000_000,
+            output_tokens: 0,
+            ..usage()
+        };
+        let before = manifest.price_message("claude-sonnet-5-5", date("2026-10-06"), cache_only);
+        let after = manifest.price_message("claude-sonnet-5-5", date("2026-10-07"), cache_only);
+        assert_cost(before.clone(), 0.2);
+        assert_cost(after.clone(), 0.1);
+        assert_eq!(before.priced_tokens, after.priced_tokens);
+        assert_ne!(before.rule_fingerprint, after.rule_fingerprint);
+
+        // A dated cache-only change must not reprice a request without a hit.
+        assert_eq!(
+            manifest.price_message("claude-sonnet-5-5", date("2026-10-06"), usage()),
+            manifest.price_message("claude-sonnet-5-5", date("2026-10-07"), usage()),
         );
     }
 

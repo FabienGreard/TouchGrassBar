@@ -10,6 +10,43 @@ test("old failure reports and new bounded scan reports remain valid", () => {
     expect(diagnosticReportSchema.safeParse(fixture).success).toBe(true);
 });
 
+test("product read failures and bounded collection loss extend old reports", () => {
+  const next = {
+    ...report,
+    collectionLoss: {
+      handoffDropped: 3,
+      queueEvicted: 1,
+      queueExpired: 0,
+      storageFallback: 0,
+      submissionRejected: 0,
+    },
+    failure: {
+      area: "doomerboard",
+      provider: null,
+      code: "doomerboard_read_failed",
+      context: {
+        audience: "global",
+        scope: "combined",
+        windowDays: 1,
+        stage: "coordinator_wait",
+        reason: "deadline_exceeded",
+        durationBand: "from30s_to60s",
+      },
+    },
+  };
+  expect(diagnosticReportSchema.safeParse(next).success).toBe(true);
+  for (const value of [
+    { ...next, collectionLoss: { ...next.collectionLoss, handoffDropped: -1 } },
+    { ...next, collectionLoss: { ...next.collectionLoss, handoffDropped: 10_001 } },
+    {
+      ...next,
+      failure: { ...next.failure, context: { ...next.failure.context, stage: "/private/path" } },
+    },
+    { ...next, failure: { ...next.failure, context: { ...next.failure.context, windowDays: 2 } } },
+  ])
+    expect(diagnosticReportSchema.safeParse(value).success).toBe(false);
+});
+
 test("scan evidence rejects private fields, unbounded days, and impossible counts", () => {
   for (const value of [
     { ...scan, path: "/private/project" },

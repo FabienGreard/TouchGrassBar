@@ -1,4 +1,9 @@
 import {
+  DIAGNOSTIC_DURATION_BANDS,
+  DIAGNOSTIC_CLAUDE_QUOTA_STAGES,
+  DIAGNOSTIC_SQLITE_CATEGORIES,
+  DIAGNOSTIC_DOOMERBOARD_STAGES,
+  DIAGNOSTIC_DOOMERBOARD_REASONS,
   DIAGNOSTIC_DATABASE_MODULES,
   DIAGNOSTIC_DATABASE_STAGES,
   DIAGNOSTIC_PARSER_REASONS,
@@ -48,6 +53,19 @@ const usageScanContext = v.object({
 
 export const diagnosticFailureValidator = v.union(
   v.object({
+    area: v.literal("doomerboard"),
+    provider: v.null(),
+    code: v.literal("doomerboard_read_failed"),
+    context: v.object({
+      audience: literals(["global", "my_tokenmaxxers"]),
+      scope: literals(["combined", "codex", "claude"]),
+      windowDays: v.union(v.literal(1), v.literal(7), v.literal(30)),
+      stage: literals(DIAGNOSTIC_DOOMERBOARD_STAGES),
+      reason: literals(DIAGNOSTIC_DOOMERBOARD_REASONS),
+      durationBand: literals(DIAGNOSTIC_DURATION_BANDS),
+    }),
+  }),
+  v.object({
     area: v.literal("database"),
     provider: v.null(),
     code: literals([
@@ -58,6 +76,7 @@ export const diagnosticFailureValidator = v.union(
       "database_version_unsupported",
     ]),
     context: v.object({
+      sqliteCategory: v.optional(literals(DIAGNOSTIC_SQLITE_CATEGORIES)),
       stage: v.union(literals(DIAGNOSTIC_DATABASE_STAGES), v.null()),
       observedFormat: nullableNumber,
       expectedFormat: nullableNumber,
@@ -134,6 +153,8 @@ export const diagnosticFailureValidator = v.union(
     code: v.literal("provider_access_failed"),
     context: v.object({
       operation: literals(["read_usage", "read_quota", "refresh_credentials", "refresh_provider"]),
+      stage: v.optional(literals(DIAGNOSTIC_CLAUDE_QUOTA_STAGES)),
+      durationBand: v.optional(literals(DIAGNOSTIC_DURATION_BANDS)),
       reason: literals([
         "read_failed",
         "permission_denied",
@@ -150,6 +171,15 @@ export const diagnosticFailureValidator = v.union(
 );
 
 export const diagnosticReportValidator = v.object({
+  collectionLoss: v.optional(
+    v.object({
+      handoffDropped: v.number(),
+      queueEvicted: v.number(),
+      queueExpired: v.number(),
+      storageFallback: v.number(),
+      submissionRejected: v.number(),
+    }),
+  ),
   schemaVersion: v.literal(1),
   reportId: v.string(),
   firstOccurredAt: v.number(),

@@ -398,6 +398,22 @@ pub(crate) fn pricing_with_model(
 }
 
 pub(crate) fn database_failure(path: &std::path::Path, stage: &'static str) {
+    database_failure_inner(path, stage, None);
+}
+
+pub(crate) fn database_failure_with_error(
+    path: &std::path::Path,
+    stage: &'static str,
+    error: &rusqlite::Error,
+) {
+    database_failure_inner(path, stage, Some(error));
+}
+
+fn database_failure_inner(
+    path: &std::path::Path,
+    stage: &'static str,
+    error: Option<&rusqlite::Error>,
+) {
     let capture_now = SCAN.with_borrow_mut(|scan| {
         let Some(scan) = scan else {
             return true;
@@ -409,7 +425,10 @@ pub(crate) fn database_failure(path: &std::path::Path, stage: &'static str) {
         true
     });
     if capture_now {
-        capture(crate::database::operation_failure(path, stage));
+        capture(error.map_or_else(
+            || crate::database::operation_failure(path, stage),
+            |error| crate::database::operation_failure_with_error(path, stage, error),
+        ));
     }
 }
 
@@ -417,6 +436,18 @@ pub(crate) fn database_connection_failure(connection: &rusqlite::Connection, sta
     database_failure(
         std::path::Path::new(connection.path().unwrap_or_default()),
         stage,
+    );
+}
+
+pub(crate) fn database_connection_failure_with_error(
+    connection: &rusqlite::Connection,
+    stage: &'static str,
+    error: &rusqlite::Error,
+) {
+    database_failure_with_error(
+        std::path::Path::new(connection.path().unwrap_or_default()),
+        stage,
+        error,
     );
 }
 
@@ -435,6 +466,30 @@ pub(crate) fn access(
     operation: diagnostics::AccessOperation,
     reason: diagnostics::AccessReason,
 ) {
+    access_context(provider, operation, reason, None, None);
+}
+
+pub(crate) fn claude_quota_access(
+    stage: diagnostics::ClaudeQuotaStage,
+    reason: diagnostics::AccessReason,
+    elapsed: std::time::Duration,
+) {
+    access_context(
+        Provider::Claude,
+        diagnostics::AccessOperation::ReadQuota,
+        reason,
+        Some(stage),
+        Some(diagnostics::DurationBand::from_elapsed(elapsed)),
+    );
+}
+
+fn access_context(
+    provider: Provider,
+    operation: diagnostics::AccessOperation,
+    reason: diagnostics::AccessReason,
+    stage: Option<diagnostics::ClaudeQuotaStage>,
+    duration_band: Option<diagnostics::DurationBand>,
+) {
     if SCAN.with_borrow(|scan| scan.as_ref().is_some_and(|scan| scan.provider_stopping)) {
         return;
     }
@@ -442,6 +497,8 @@ pub(crate) fn access(
         code: diagnostics::ProviderAccessCode::ProviderAccessFailed,
         provider,
         context: diagnostics::ProviderAccessContext {
+            stage,
+            duration_band,
             operation,
             reason,
             status_code: None,
@@ -453,6 +510,28 @@ pub(crate) fn access(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_sqlite_constraint_failure_keeps_only_its_fixed_category() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE private_table(value TEXT UNIQUE); INSERT INTO private_table VALUES ('private-source');").unwrap();
+        let error = connection
+            .execute("INSERT INTO private_table VALUES ('private-source')", [])
+            .unwrap_err();
+        let failures = diagnostics::collect_failures_for_test(|| {
+            database_connection_failure_with_error(&connection, "claude-usage-index", &error);
+        });
+        let [Failure::Database { context, .. }] = failures.as_slice() else {
+            panic!("database failure");
+        };
+        assert_eq!(
+            context.sqlite_category,
+            Some(diagnostics::SqliteCategory::Constraint)
+        );
+        let serialized = serde_json::to_string(&failures).unwrap();
+        assert!(!serialized.contains("private_table"));
+        assert!(!serialized.contains("private-source"));
+    }
 
     #[test]
     fn scan_coalesces_repeated_failures_and_keeps_only_safe_versions() {

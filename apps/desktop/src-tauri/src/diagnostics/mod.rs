@@ -44,6 +44,7 @@ struct Shared {
     authority_epoch: AtomicU64,
     captured: SyncSender<Captured>,
     pending: Mutex<Receiver<Captured>>,
+    handoff_loss: Mutex<(u64, CollectionLoss)>,
 }
 
 const MAX_HANDOFF: usize = 64;
@@ -66,6 +67,7 @@ impl Shared {
             authority_epoch: AtomicU64::new(0),
             captured,
             pending: Mutex::new(pending),
+            handoff_loss: Mutex::new((0, CollectionLoss::default())),
         }
     }
 }
@@ -172,11 +174,25 @@ fn handoff(shared: &Shared, failure: Failure, epoch: u64, occurred_at: u64) {
     }
     // This never waits for the worker, disk, or network. Full handoffs drop the
     // new context; diagnostics cannot delay product work.
-    let _ = shared.captured.try_send(Captured {
-        payload: payload.into_boxed_slice(),
-        epoch,
-        occurred_at,
-    });
+    if matches!(
+        shared.captured.try_send(Captured {
+            payload: payload.into_boxed_slice(),
+            epoch,
+            occurred_at,
+        }),
+        Err(std::sync::mpsc::TrySendError::Full(_))
+    ) {
+        // Never wait for another capture or the worker. These are lower bounds.
+        if let Ok(mut loss) = shared.handoff_loss.try_lock()
+            && loss.0 == epoch
+            && shared.authority_epoch.load(Ordering::SeqCst) == epoch
+        {
+            loss.1.merge(&CollectionLoss {
+                handoff_dropped: 1,
+                ..CollectionLoss::default()
+            });
+        }
+    }
     shared.wake.notify_one();
 }
 
@@ -200,6 +216,13 @@ fn drain_captured(shared: &Shared) {
     let Ok(mut queue) = shared.queue.lock() else {
         return;
     };
+    if let Ok(mut loss) = shared.handoff_loss.try_lock() {
+        let epoch = shared.authority_epoch.load(Ordering::SeqCst);
+        if loss.0 == epoch && !shared.suspended.load(Ordering::SeqCst) {
+            queue.record_loss(&loss.1);
+        }
+        *loss = (epoch, CollectionLoss::default());
+    }
     // Local retention applies even when Keychain, registration, or transport is unavailable.
     let _ = queue.expire(now());
     for captured in captures {
@@ -235,8 +258,14 @@ pub(crate) fn suspend_for_profile_transition() {
 }
 
 fn suspend(shared: &Shared) {
-    shared.authority_epoch.fetch_add(1, Ordering::SeqCst);
+    let epoch = shared
+        .authority_epoch
+        .fetch_add(1, Ordering::SeqCst)
+        .saturating_add(1);
     shared.suspended.store(true, Ordering::SeqCst);
+    if let Ok(mut loss) = shared.handoff_loss.try_lock() {
+        *loss = (epoch, CollectionLoss::default());
+    }
     shared.wake.notify_one();
 }
 
@@ -386,6 +415,7 @@ mod tests {
             code: DatabaseCode::DatabaseOpenFailed,
             provider: None,
             context: DatabaseContext {
+                sqlite_category: None,
                 stage: Some("open-database".into()),
                 observed_format: None,
                 expected_format: None,
@@ -440,6 +470,7 @@ mod tests {
             code: DatabaseCode::DatabaseOpenFailed,
             provider: None,
             context: DatabaseContext {
+                sqlite_category: None,
                 stage: Some("open-database".into()),
                 observed_format: None,
                 expected_format: None,
@@ -486,6 +517,38 @@ mod tests {
         assert_eq!(report.occurrence_count, MAX_HANDOFF as u64);
         assert_eq!(report.first_occurred_at, occurred_at);
         assert_eq!(report.context_captured_at, occurred_at);
+        assert_eq!(report.collection_loss.as_ref().unwrap().handoff_dropped, 20);
+    }
+
+    #[test]
+    fn old_authority_handoff_loss_cannot_enter_a_replacement_profiles_report() {
+        let (shared, _, failure) = fixture();
+        for _ in 0..MAX_HANDOFF + 5 {
+            handoff(&shared, failure.clone(), 0, now());
+        }
+        suspend(&shared);
+        let replacement = queue::Binding {
+            reporter_id: "replacement".into(),
+            generation: 2,
+        };
+        shared
+            .queue
+            .lock()
+            .unwrap()
+            .resume(replacement.clone())
+            .unwrap();
+        shared.suspended.store(false, Ordering::SeqCst);
+        drain_captured(&shared);
+        handoff(&shared, failure, 1, now());
+        drain_captured(&shared);
+        let report = shared
+            .queue
+            .lock()
+            .unwrap()
+            .next(&replacement, now())
+            .unwrap()
+            .unwrap();
+        assert!(report.collection_loss.is_none());
     }
 
     #[test]

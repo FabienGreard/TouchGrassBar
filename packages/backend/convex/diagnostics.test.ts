@@ -17,6 +17,7 @@ import { createAuthWithRequestIp } from "./auth";
 import {
   diagnosticCredentialDigest,
   diagnosticPayloadDigest,
+  diagnosticGroupKey,
   parseDiagnosticReport,
 } from "./model/diagnostics";
 import { installationCredentialDigest } from "./model/profile";
@@ -29,6 +30,28 @@ const DIAGNOSTIC_CREDENTIAL = "a".repeat(64);
 const fixtures = (JSON.parse(fixtureText) as unknown[]).map((value) =>
   diagnosticReportSchema.parse(value),
 );
+
+test("provider operations have separate support groups", async () => {
+  const report = diagnosticReportSchema.parse({
+    ...fixtures[0],
+    failure: {
+      area: "provider_access",
+      provider: "codex",
+      code: "provider_access_failed",
+      context: {
+        operation: "read_quota",
+        reason: "request_failed",
+        statusCode: null,
+        retryCount: 0,
+      },
+    },
+  });
+  const changed = diagnosticReportSchema.parse({
+    ...report,
+    failure: { ...report.failure, context: { ...report.failure.context, operation: "read_usage" } },
+  });
+  expect(await diagnosticGroupKey(report)).not.toBe(await diagnosticGroupKey(changed));
+});
 
 function testBackend() {
   const t = convexTest(schema, modules);
@@ -191,7 +214,11 @@ test("anonymous narrow credential accepts all failure areas and assigns profile/
   const legacyFixtures = fixtures.filter(
     (report) =>
       (report.failure.area !== "pricing" || report.failure.context.model === undefined) &&
-      (report.failure.area !== "parser" || report.failure.context.rejection === undefined),
+      (report.failure.area !== "parser" || report.failure.context.rejection === undefined) &&
+      report.failure.area !== "doomerboard" &&
+      report.collectionLoss === undefined &&
+      (report.failure.area !== "provider_access" || report.failure.context.stage === undefined) &&
+      (report.failure.area !== "database" || report.failure.context.sqliteCategory === undefined),
   );
   for (const report of legacyFixtures) {
     expect(
@@ -250,6 +277,32 @@ test("anonymous narrow credential accepts all failure areas and assigns profile/
       })
     ).page,
   ).toEqual([]);
+});
+
+test("bounded native failure extensions submit and retry without a product session", async () => {
+  const t = testBackend();
+  const owner = await seedReporter(t);
+  for (const report of fixtures.filter((r) =>
+    [
+      "00000000-0000-4000-8000-000000000080",
+      "00000000-0000-4000-8000-000000000081",
+      "00000000-0000-4000-8000-000000000082",
+    ].includes(r.reportId),
+  )) {
+    const args = {
+      reporterId: owner.reporterId,
+      diagnosticCredential: DIAGNOSTIC_CREDENTIAL,
+      report,
+    };
+    expect(await t.mutation(api.diagnostics.submit, args)).toEqual({
+      outcome: "accepted",
+      retryAfterMs: null,
+    });
+    expect(await t.mutation(api.diagnostics.submit, args)).toEqual({
+      outcome: "duplicate",
+      retryAfterMs: null,
+    });
+  }
 });
 
 test.each([

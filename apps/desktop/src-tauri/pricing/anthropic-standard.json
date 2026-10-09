@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "basis": "anthropic-standard-2026-09-30-v1",
+  "basis": "anthropic-standard-2026-10-09-v1",
   "batchFactor": 0.5,
   "usInferenceFactor": 1.1,
   "webSearchUsdPerThousand": 10.0,
@@ -270,11 +270,21 @@
       "standardPeriods": [
         {
           "effectiveFrom": "2026-09-28",
-          "effectiveUntil": null,
+          "effectiveUntil": "2026-10-07",
           "inputUsdPerMillion": 2.0,
           "cacheWrite5mUsdPerMillion": 2.5,
           "cacheWrite1hUsdPerMillion": 4.0,
           "cacheReadUsdPerMillion": 0.2,
+          "outputUsdPerMillion": 10.0
+        },
+        {
+          "effectiveFrom": "2026-10-07",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 2.0,
+          "cacheWrite5mUsdPerMillion": 2.5,
+          "cacheWrite1hUsdPerMillion": 4.0,
+          "cacheReadUsdPerMillion": 0.1,
+          "cacheReadMultiplier": 0.05,
           "outputUsdPerMillion": 10.0
         }
       ],
@@ -344,6 +354,31 @@
           "cacheWrite1hUsdPerMillion": 6.0,
           "cacheReadUsdPerMillion": 0.3,
           "outputUsdPerMillion": 15.0
+        }
+      ],
+      "fastPeriods": []
+    },
+    {
+      "name": "claude-haiku-5-5",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-10-07",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 0.1,
+          "cacheWrite5mUsdPerMillion": 0.125,
+          "cacheWrite1hUsdPerMillion": 0.2,
+          "cacheReadUsdPerMillion": 0.01,
+          "outputUsdPerMillion": 0.5,
+          "longPrompt": {
+            "abovePromptTokens": 100000,
+            "inputUsdPerMillion": 0.5,
+            "cacheWrite5mUsdPerMillion": 0.625,
+            "cacheWrite1hUsdPerMillion": 1.0,
+            "cacheReadUsdPerMillion": 0.05,
+            "outputUsdPerMillion": 2.5
+          }
         }
       ],
       "fastPeriods": []

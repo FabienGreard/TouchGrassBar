@@ -19,6 +19,26 @@ use super::{
 
 const QUERY_BUDGET: Duration = Duration::from_millis(100);
 
+pub(super) fn sqlite_category(error: &rusqlite::Error) -> crate::diagnostics::SqliteCategory {
+    use crate::diagnostics::SqliteCategory;
+    use rusqlite::ErrorCode;
+    let rusqlite::Error::SqliteFailure(error, _) = error else {
+        return SqliteCategory::Other;
+    };
+    match error.code {
+        ErrorCode::DatabaseBusy => SqliteCategory::Busy,
+        ErrorCode::DatabaseLocked => SqliteCategory::Locked,
+        ErrorCode::ConstraintViolation => SqliteCategory::Constraint,
+        ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => SqliteCategory::Corrupt,
+        ErrorCode::SystemIoFailure => SqliteCategory::Io,
+        ErrorCode::DiskFull => SqliteCategory::Full,
+        ErrorCode::ReadOnly => SqliteCategory::Readonly,
+        ErrorCode::CannotOpen => SqliteCategory::CannotOpen,
+        ErrorCode::OperationInterrupted => SqliteCategory::Interrupted,
+        _ => SqliteCategory::Other,
+    }
+}
+
 pub(super) fn failure(path: &Path, error: DatabaseOpenError) -> Failure {
     let code = match error {
         DatabaseOpenError::UnsupportedFuture { .. } => DatabaseCode::DatabaseVersionUnsupported,
@@ -30,6 +50,7 @@ pub(super) fn failure(path: &Path, error: DatabaseOpenError) -> Failure {
 
 pub(crate) fn open_failure(path: Option<&Path>, code: DatabaseCode, stage: &str) -> Failure {
     let mut context = DatabaseContext {
+        sqlite_category: None,
         stage: Some(stage.to_owned()),
         observed_format: None,
         expected_format: Some(DATABASE_FORMAT_VERSION as u64),

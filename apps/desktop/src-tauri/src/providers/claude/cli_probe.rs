@@ -3,7 +3,7 @@
 //! Terminal output is bounded, reduced in native memory, and discarded. Only
 //! the two provider quota windows leave this module.
 
-use crate::diagnostics::{AccessOperation, AccessReason, Provider};
+use crate::diagnostics::{AccessReason, ClaudeQuotaStage};
 use crate::providers::failure_capture;
 use std::{
     env, fs,
@@ -61,20 +61,25 @@ fn probe_event(event: &'static str) {
 fn finish_capture(
     partial: Option<ClaudeQuotaObservation>,
     stage: ProbeCompletionStage,
+    elapsed: StdDuration,
 ) -> Result<ClaudeQuotaObservation, ProbeFailure> {
     if let Some(observation) = partial {
         super::debug_event(&format!("cli_probe_partial stage={}", stage.name()));
         return Ok(observation);
     }
     super::debug_event(&format!("cli_probe_failed stage={}", stage.name()));
-    failure_capture::access(
-        Provider::Claude,
-        AccessOperation::ReadQuota,
+    failure_capture::claude_quota_access(
+        match stage {
+            ProbeCompletionStage::OutputLimit => ClaudeQuotaStage::OutputLimit,
+            ProbeCompletionStage::OutputClosed => ClaudeQuotaStage::OutputClosed,
+            ProbeCompletionStage::Timeout => ClaudeQuotaStage::WaitOutput,
+        },
         match stage {
             ProbeCompletionStage::OutputLimit => AccessReason::InvalidResponse,
             ProbeCompletionStage::OutputClosed => AccessReason::ReadFailed,
-            ProbeCompletionStage::Timeout => AccessReason::RequestFailed,
+            ProbeCompletionStage::Timeout => AccessReason::DeadlineExceeded,
         },
+        elapsed,
     );
     Err(ProbeFailure::Unavailable)
 }
@@ -96,16 +101,35 @@ pub(super) fn probe_usage(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<ClaudeQuotaObservation, ProbeFailure> {
     let _failures = failure_capture::ScanFailures::begin();
-    let session_id = probe_session_id().map_err(|()| ProbeFailure::Unavailable)?;
+    let probe_started = Instant::now();
+    if cancelled() {
+        return Err(ProbeFailure::Cancelled);
+    }
+    let session_id = probe_session_id().map_err(|()| {
+        failure_capture::claude_quota_access(
+            ClaudeQuotaStage::SessionId,
+            AccessReason::ReadFailed,
+            probe_started.elapsed(),
+        );
+        ProbeFailure::Unavailable
+    })?;
     if !cleanup_probe_session_artifacts(probe_directory) {
         probe_event("cli_probe_failed stage=cleanup_pending");
+        if cancelled() {
+            return Err(ProbeFailure::Cancelled);
+        }
+        failure_capture::claude_quota_access(
+            ClaudeQuotaStage::Cleanup,
+            AccessReason::ReadFailed,
+            probe_started.elapsed(),
+        );
         return Err(ProbeFailure::Unavailable);
     }
     prepare_probe_directory(probe_directory, session_id).map_err(|()| {
-        failure_capture::access(
-            Provider::Claude,
-            AccessOperation::ReadQuota,
+        failure_capture::claude_quota_access(
+            ClaudeQuotaStage::PrepareDirectory,
             AccessReason::ReadFailed,
+            probe_started.elapsed(),
         );
         ProbeFailure::Unavailable
     })?;
@@ -164,10 +188,10 @@ pub(super) fn probe_usage(
                 return ProbeFailure::Cancelled;
             }
             probe_event("cli_probe_failed stage=process_start");
-            failure_capture::access(
-                Provider::Claude,
-                AccessOperation::ReadQuota,
+            failure_capture::claude_quota_access(
+                ClaudeQuotaStage::ProcessStart,
                 AccessReason::RequestFailed,
+                probe_started.elapsed(),
             );
             ProbeFailure::Unavailable
         })?;
@@ -177,6 +201,7 @@ pub(super) fn probe_usage(
         observed_at,
         timeout.min(StdDuration::from_secs(30)),
         cancelled,
+        probe_started,
     );
     let _ = process.shutdown();
     result
@@ -187,6 +212,7 @@ fn capture_usage_output(
     observed_at: OffsetDateTime,
     timeout: StdDuration,
     cancelled: &dyn Fn() -> bool,
+    probe_started: Instant,
 ) -> Result<ClaudeQuotaObservation, ProbeFailure> {
     let started_at = Instant::now();
     let deadline = started_at
@@ -209,13 +235,21 @@ fn capture_usage_output(
         }
         let now = Instant::now();
         if now >= deadline {
-            return finish_capture(partial, ProbeCompletionStage::Timeout);
+            return finish_capture(
+                partial,
+                ProbeCompletionStage::Timeout,
+                probe_started.elapsed(),
+            );
         }
 
         match process.receive_timeout(StdDuration::from_millis(100)) {
             Ok(chunk) => {
                 if output.len().saturating_add(chunk.len()) > MAX_CLI_OUTPUT_BYTES {
-                    return finish_capture(partial, ProbeCompletionStage::OutputLimit);
+                    return finish_capture(
+                        partial,
+                        ProbeCompletionStage::OutputLimit,
+                        probe_started.elapsed(),
+                    );
                 }
                 output.extend_from_slice(&chunk);
             }
@@ -225,7 +259,11 @@ fn capture_usage_output(
                 return Err(ProbeFailure::Cancelled);
             }
             Err(_) => {
-                return finish_capture(partial, ProbeCompletionStage::OutputClosed);
+                return finish_capture(
+                    partial,
+                    ProbeCompletionStage::OutputClosed,
+                    probe_started.elapsed(),
+                );
             }
         }
 
@@ -238,10 +276,13 @@ fn capture_usage_output(
                 deadline.saturating_duration_since(now),
             )
             .map_err(|()| {
-                failure_capture::access(
-                    Provider::Claude,
-                    AccessOperation::ReadQuota,
+                if cancelled() {
+                    return ProbeFailure::Cancelled;
+                }
+                failure_capture::claude_quota_access(
+                    ClaudeQuotaStage::SafePromptInput,
                     AccessReason::RequestFailed,
+                    probe_started.elapsed(),
                 );
                 ProbeFailure::Unavailable
             })?
@@ -253,10 +294,13 @@ fn capture_usage_output(
             process
                 .write_all(b"/usage\r", deadline.saturating_duration_since(now))
                 .map_err(|_| {
-                    failure_capture::access(
-                        Provider::Claude,
-                        AccessOperation::ReadQuota,
+                    if cancelled() {
+                        return ProbeFailure::Cancelled;
+                    }
+                    failure_capture::claude_quota_access(
+                        ClaudeQuotaStage::UsageInput,
                         AccessReason::RequestFailed,
+                        probe_started.elapsed(),
                     );
                     ProbeFailure::Unavailable
                 })?;
@@ -892,6 +936,7 @@ mod tests {
     use time::{Duration, format_description::well_known::Rfc3339};
 
     use super::*;
+    use crate::diagnostics::AccessOperation;
     use crate::sanitized::ProviderSnapshot;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -922,6 +967,42 @@ mod tests {
 
     fn test_time() -> OffsetDateTime {
         OffsetDateTime::parse("2026-08-07T14:30:00Z", &Rfc3339).unwrap()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_probe_deadline_keeps_its_stage_and_bounded_duration() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = FixtureRoot::new();
+        let executable = root.0.join("blocking-cli");
+        fs::write(&executable, b"#!/bin/sh\nwhile :; do :; done\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let failures = crate::diagnostics::collect_failures_for_test(|| {
+            assert!(matches!(
+                probe_usage(
+                    &ProviderProcessSupervisor::default(),
+                    &executable,
+                    &root.0.join("probe"),
+                    test_time(),
+                    StdDuration::from_millis(100),
+                    &|| false
+                ),
+                Err(ProbeFailure::Unavailable)
+            ));
+        });
+        let [crate::diagnostics::Failure::ProviderAccess { context, .. }] = failures.as_slice()
+        else {
+            panic!("one failed quota probe");
+        };
+        assert_eq!(context.reason, AccessReason::DeadlineExceeded);
+        assert_eq!(
+            context.stage,
+            Some(crate::diagnostics::ClaudeQuotaStage::WaitOutput)
+        );
+        assert_eq!(
+            context.duration_band,
+            Some(crate::diagnostics::DurationBand::Under1s)
+        );
     }
 
     #[test]
@@ -981,7 +1062,11 @@ mod tests {
     fn failed_quota_capture_reports_once_but_partial_quota_is_silent() {
         let failures = crate::diagnostics::collect_failures_for_test(|| {
             assert!(matches!(
-                finish_capture(None, ProbeCompletionStage::Timeout),
+                finish_capture(
+                    None,
+                    ProbeCompletionStage::Timeout,
+                    StdDuration::from_secs(30)
+                ),
                 Err(ProbeFailure::Unavailable)
             ));
         });
@@ -990,14 +1075,21 @@ mod tests {
             panic!("one quota failure");
         };
         assert_eq!(context.operation, AccessOperation::ReadQuota);
-        assert_eq!(context.reason, AccessReason::RequestFailed);
+        assert_eq!(context.reason, AccessReason::DeadlineExceeded);
         let partial = parse_usage_output(
             b"Current session\n42% used\nResets 6:50pm (Europe/Paris)",
             test_time(),
         )
         .unwrap();
         let failures = crate::diagnostics::collect_failures_for_test(|| {
-            assert!(finish_capture(Some(partial), ProbeCompletionStage::Timeout).is_ok());
+            assert!(
+                finish_capture(
+                    Some(partial),
+                    ProbeCompletionStage::Timeout,
+                    StdDuration::from_secs(30)
+                )
+                .is_ok()
+            );
         });
         assert!(failures.is_empty());
     }

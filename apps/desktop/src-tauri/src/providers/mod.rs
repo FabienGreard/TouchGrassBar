@@ -52,6 +52,7 @@ const RETAINED_CLAUDE_PRICING_BASES: &[&str] = &[
     "anthropic-standard-2026-09-02-v1",
     "anthropic-standard-2026-09-23-v1",
     "anthropic-standard-2026-09-23-v2",
+    "anthropic-standard-2026-09-30-v1",
 ];
 
 pub(crate) fn current_pricing_basis(provider: CodingProvider) -> Option<&'static str> {
@@ -895,6 +896,8 @@ fn report_refresh_failure(
             provider,
             code: ProviderAccessCode::ProviderAccessFailed,
             context: ProviderAccessContext {
+                stage: None,
+                duration_band: None,
                 operation: AccessOperation::RefreshProvider,
                 reason,
                 status_code: None,

@@ -871,6 +871,67 @@ test("a retained Codex correction keeps an approved prior pricing basis", async 
   });
 });
 
+test("a Claude pricing catalog correction accepts the new basis without changing tokens", async () => {
+  const t = testBackend();
+  const credential = installationCredential("A");
+  const { authenticated } = await createProfile(t, credential, "Claude pricing recovery");
+  const previousCost = {
+    coveragePercent: null,
+    micros: 1_000,
+    pricingBasis: "anthropic-standard-2026-09-30-v1",
+    quality: "local-only" as const,
+  };
+  const previous = usageSnapshot({ apiEquivalentCost: previousCost, provider: "claude" });
+  await authenticated.mutation(api.sync.dailyUsage, {
+    activeMacGeneration: 1,
+    installationCredential: credential,
+    profileBackfillAnchor: TODAY,
+    snapshots: [previous],
+  });
+  const tokenScore = await t.run(async (ctx) => {
+    const board = await ctx.db
+      .query("publicUsages")
+      .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:claude:1d"))
+      .first();
+    return board?.tokenScore;
+  });
+  expect(tokenScore).toBe(previous.observedTokens);
+  const correctedCost = {
+    ...previousCost,
+    micros: 500,
+    pricingBasis: "anthropic-standard-2026-10-09-v1",
+  };
+  await expect(
+    authenticated.mutation(api.sync.dailyUsage, {
+      activeMacGeneration: 1,
+      installationCredential: credential,
+      profileBackfillAnchor: null,
+      snapshots: [
+        {
+          ...previous,
+          apiEquivalentCost: correctedCost,
+          observedAt: NOW.getTime() + 1_000,
+          revision: 2,
+        },
+      ],
+    }),
+  ).resolves.toMatchObject([{ outcome: "committed", revision: 2 }]);
+  expect(await t.run(async (ctx) => ctx.db.query("usageBuckets").first())).toMatchObject({
+    apiEquivalentCost: correctedCost,
+    observedTokens: previous.observedTokens,
+    revision: 2,
+  });
+  expect(
+    await t.run(async (ctx) => {
+      const board = await ctx.db
+        .query("publicUsages")
+        .withIndex("by_board_key", (q) => q.eq("boardKey", "tokens-v1:claude:1d"))
+        .first();
+      return board?.tokenScore;
+    }),
+  ).toBe(tokenScore);
+});
+
 // This test creates and syncs one independent Profile per supported pricing basis.
 // Allow shared CI runners to complete the full scenario.
 test("every native pricing basis is accepted by Usage Snapshot sync", async () => {

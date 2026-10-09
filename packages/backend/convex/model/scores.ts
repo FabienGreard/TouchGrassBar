@@ -1,5 +1,6 @@
 import type { GenericId } from "convex/values";
 
+import type { Doc } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import { doomerboard, doomerboardKey } from "./doomerboard";
 import {
@@ -121,11 +122,8 @@ async function upsertPublicUsage(
   scope: ScoreScope,
   windowDays: ScoreWindow,
   score: CalculatedScore,
+  publicUsages: Doc<"publicUsages">[],
 ) {
-  const publicUsages = await ctx.db
-    .query("publicUsages")
-    .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxer._id))
-    .take(20);
   const existing = publicUsages.find((row) => row.scope === scope && row.windowDays === windowDays);
   const namespace = boardKey(scope, windowDays);
   const values = {
@@ -143,18 +141,30 @@ async function upsertPublicUsage(
       ...values,
       apiEquivalentCost: score.apiEquivalentCost,
     });
-    await doomerboard.replaceOrInsert(
-      ctx,
-      {
-        id: existing._id,
-        key: doomerboardKey(existing.tokenScore, existing.touchGrassId),
-        namespace: existing.boardKey,
-      },
-      {
-        key: doomerboardKey(score.tokenScore, tokenmaxxer.publicId),
+    const key = doomerboardKey(score.tokenScore, tokenmaxxer.publicId);
+    const rankUnchanged =
+      existing.tokenScore === score.tokenScore &&
+      existing.touchGrassId === tokenmaxxer.publicId &&
+      existing.boardKey === namespace;
+    // Check the exact entry so an unchanged projection can still repair a missing rank.
+    const bound = { id: existing._id, inclusive: true, key };
+    const indexed =
+      rankUnchanged &&
+      (await doomerboard.count(ctx, {
+        bounds: { lower: bound, upper: bound },
         namespace,
-      },
-    );
+      })) === 1;
+    if (!indexed) {
+      await doomerboard.replaceOrInsert(
+        ctx,
+        {
+          id: existing._id,
+          key: doomerboardKey(existing.tokenScore, existing.touchGrassId),
+          namespace: existing.boardKey,
+        },
+        { key, namespace },
+      );
+    }
     return;
   }
 
@@ -216,11 +226,15 @@ export async function recomputeScores(
         ),
     )
   ).flat();
+  const publicUsages = await ctx.db
+    .query("publicUsages")
+    .withIndex("by_tokenmaxxer_id", (q) => q.eq("tokenmaxxerId", tokenmaxxer._id))
+    .take(20);
   const overview = [];
   for (const scope of SCOPES) {
     for (const windowDays of WINDOWS) {
       const score = calculateScore(dailyRows, scope, windowDays, asOfDay);
-      await upsertPublicUsage(ctx, tokenmaxxer, scope, windowDays, score);
+      await upsertPublicUsage(ctx, tokenmaxxer, scope, windowDays, score, publicUsages);
       overview.push({
         apiEquivalentCost: score.apiEquivalentCost,
         scope,

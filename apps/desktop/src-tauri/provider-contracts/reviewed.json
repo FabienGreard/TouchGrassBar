@@ -328,7 +328,7 @@
     ],
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/claude/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/anthropic-standard.json",
-    "pricingManifestSemanticSha256": "aaf6df8dade76ac25230a8f8f96be004f71ae7d737686a2deb3eb90e3b96b61f",
+    "pricingManifestSemanticSha256": "4e0022a3fc89d4210d96f369740c9f9dcc10850dfc46da5510923f7edbfe3c15",
     "pricingRuleWindows": [
       {
         "id": "model-token-pricing",
@@ -359,6 +359,39 @@
           "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
           "windowSemanticSha256": "cbb180b2e688bf492b5726dbd54d74dbedc82a3ce6bbd9c7e5d0b642de44a5a2",
           "sections": [
+            {
+              "id": "claude-haiku-5-5-launch",
+              "heading": "### October 7, 2026",
+              "selector": "We've launched **Claude Haiku 5.5**",
+              "date": "2026-10-07",
+              "checkpoints": [
+                {
+                  "model": "claude-haiku-5-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ],
+              "semanticSha256": "da3d263957cc05cdf655fb998a871830804dedc91dd713c8347368b242ee858e"
+            },
+            {
+              "id": "claude-sonnet-5-5-cache-read-reduction",
+              "heading": "### October 7, 2026",
+              "selector": "We've lowered the price of prompt cache reads",
+              "date": "2026-10-07",
+              "checkpoints": [
+                {
+                  "model": "claude-sonnet-5-5",
+                  "periodKind": "standard",
+                  "boundary": "end"
+                },
+                {
+                  "model": "claude-sonnet-5-5",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                }
+              ],
+              "semanticSha256": "da3d263957cc05cdf655fb998a871830804dedc91dd713c8347368b242ee858e"
+            },
             {
               "id": "claude-sonnet-5-5-launch",
               "heading": "### September 28, 2026",

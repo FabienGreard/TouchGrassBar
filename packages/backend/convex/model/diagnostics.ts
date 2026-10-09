@@ -75,6 +75,23 @@ export function diagnosticGroupKey(report: DiagnosticReport) {
       provider: failure.provider,
       detail,
       appVersion: report.app.version,
+      ...(failure.area === "provider_access"
+        ? {
+            operation: failure.context.operation,
+            ...(failure.context.stage !== undefined ? { stage: failure.context.stage } : {}),
+          }
+        : {}),
+      ...(failure.area === "database" && failure.context.sqliteCategory !== undefined
+        ? { sqliteCategory: failure.context.sqliteCategory }
+        : {}),
+      ...(failure.area === "doomerboard"
+        ? {
+            stage: failure.context.stage,
+            audience: failure.context.audience,
+            scope: failure.context.scope,
+            windowDays: failure.context.windowDays,
+          }
+        : {}),
       parserVersion:
         failure.area === "parser" || failure.area === "pricing"
           ? failure.context.parserVersion

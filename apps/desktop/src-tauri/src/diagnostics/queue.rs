@@ -7,13 +7,14 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use super::{AppContext, DiagnosticError, Failure, Report};
+use super::{AppContext, CollectionLoss, DiagnosticError, Failure, ParserReason, Report};
 
 pub(super) const MAX_REPORT_BYTES: usize = 32 * 1024;
 // Leave half of the 2 MiB disk budget for the atomic replacement file.
 pub(super) const MAX_QUEUE_BYTES: usize = 1024 * 1024;
 pub(super) const MAX_AGE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const GROUP_INTERVAL_MS: u64 = 5 * 60_000;
+const UNCHANGED_BLOCKER_INTERVAL_MS: u64 = 30 * 60_000;
 const MAX_ENTRIES: usize = 32;
 const MAX_ATTEMPTS_PER_HOUR: usize = 30;
 
@@ -42,7 +43,18 @@ struct StoredQueue {
     binding: Option<Binding>,
     entries: Vec<Entry>,
     groups: BTreeMap<String, u64>,
+    #[serde(default)]
+    blocker_states: BTreeMap<String, BlockerState>,
+    #[serde(default)]
+    pending_loss: CollectionLoss,
     attempt_times: Vec<u64>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BlockerState {
+    fingerprint: String,
+    next_unchanged_at: u64,
 }
 
 pub(super) struct Queue {
@@ -80,6 +92,8 @@ impl Queue {
             // They must never acquire the next Profile's authority.
             self.state.entries.clear();
             self.state.groups.clear();
+            self.state.blocker_states.clear();
+            self.state.pending_loss = CollectionLoss::default();
             self.state.attempt_times.clear();
             self.state.binding = binding;
             self.persist()?;
@@ -123,6 +137,31 @@ impl Queue {
         }
         self.prune(now);
         let group = format!("{}:{}", self.app.version, failure.group());
+        let blocker = matches!(&failure, Failure::Database { .. })
+            || matches!(&failure, Failure::Parser { context, .. } if context.reason == ParserReason::ScanIncomplete);
+        let fingerprint = if blocker {
+            use sha2::{Digest, Sha256};
+            Some(format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&failure).map_err(|_| DiagnosticError)?)
+            ))
+        } else {
+            None
+        };
+        let previous_state = self.state.blocker_states.get(&group);
+        let changed = fingerprint.as_ref().is_some_and(|fingerprint| {
+            previous_state.is_some_and(|state| state.fingerprint != *fingerprint)
+        });
+        let due = if blocker {
+            previous_state
+                .filter(|state| Some(&state.fingerprint) == fingerprint.as_ref())
+                .map_or(now, |state| now.max(state.next_unchanged_at))
+        } else {
+            self.state.groups.get(&group).map_or(now, |previous| {
+                now.max(previous.saturating_add(GROUP_INTERVAL_MS))
+            })
+        };
+        let mut created = false;
         if let Some(entry) = self.state.entries.iter_mut().find(|entry| {
             !entry.frozen
                 && entry.report.app == self.app
@@ -131,6 +170,7 @@ impl Queue {
                     entry.report.app.version,
                     entry.report.failure.group()
                 ) == group
+                && (!blocker || entry.report.failure == failure)
         }) {
             entry.report.occurrence_count = (entry.report.occurrence_count + 1).min(10_000);
             entry.report.first_occurred_at = entry.report.first_occurred_at.min(now);
@@ -139,11 +179,13 @@ impl Queue {
                 entry.report.context_captured_at = now;
                 entry.report.failure = failure;
             }
+            if changed {
+                entry.next_attempt_at = now;
+            }
         } else {
-            let due = self.state.groups.get(&group).map_or(now, |previous| {
-                now.max(previous.saturating_add(GROUP_INTERVAL_MS))
-            });
+            created = true;
             let report = Report {
+                collection_loss: None,
                 schema_version: 1,
                 report_id: random_uuid()?,
                 first_occurred_at: now,
@@ -167,10 +209,26 @@ impl Queue {
                 attempts: 0,
                 next_attempt_at: due,
             });
-            self.state.groups.insert(group, due);
+            self.state.groups.insert(group.clone(), due);
+        }
+        if let Some(fingerprint) = fingerprint {
+            // Preserve the first due time while combining unchanged repeats.
+            if created || changed {
+                self.state.blocker_states.insert(
+                    group,
+                    BlockerState {
+                        fingerprint,
+                        next_unchanged_at: due.saturating_add(UNCHANGED_BLOCKER_INTERVAL_MS),
+                    },
+                );
+            }
         }
         self.prune(now);
         self.persist()
+    }
+
+    pub(super) fn record_loss(&mut self, loss: &CollectionLoss) {
+        self.state.pending_loss.merge(loss);
     }
 
     /// Persist the immutable report and attempt counter before any network request.
@@ -185,17 +243,46 @@ impl Queue {
             }
             return Ok(None);
         }
-        let Some(entry) = self
+        let Some(index) = self
             .state
             .entries
-            .iter_mut()
-            .find(|entry| entry.next_attempt_at <= now)
+            .iter()
+            .position(|entry| entry.next_attempt_at <= now)
         else {
             if pruned {
                 self.persist()?;
             }
             return Ok(None);
         };
+        if !self.state.entries[index].frozen {
+            let report = &self.state.entries[index].report;
+            let group = format!("{}:{}", report.app.version, report.failure.group());
+            if let Some(state) = self.state.blocker_states.get_mut(&group) {
+                use sha2::{Digest, Sha256};
+                let fingerprint = format!(
+                    "{:x}",
+                    Sha256::digest(
+                        serde_json::to_vec(&report.failure).map_err(|_| DiagnosticError)?
+                    )
+                );
+                if state.fingerprint == fingerprint {
+                    // Registration or network delay must not shorten the interval
+                    // measured from the report's first upload attempt.
+                    state.next_unchanged_at = state
+                        .next_unchanged_at
+                        .max(now.saturating_add(UNCHANGED_BLOCKER_INTERVAL_MS));
+                }
+            }
+            let loss = std::mem::take(&mut self.state.pending_loss);
+            if !loss.is_empty() {
+                self.state.entries[index]
+                    .report
+                    .collection_loss
+                    .get_or_insert_with(CollectionLoss::default)
+                    .merge(&loss);
+            }
+        }
+        let entry = &mut self.state.entries[index];
         let was_frozen = entry.frozen;
         let persisted = self.path.is_some();
         entry.frozen = true;
@@ -241,10 +328,25 @@ impl Queue {
                         .max(now.saturating_add(after.clamp(30_000, 60 * 60_000)));
                 }
             }
-            super::Delivery::Rejected => self
-                .state
-                .entries
-                .retain(|entry| entry.report.report_id != report_id),
+            super::Delivery::Rejected => {
+                if let Some(entry) = self
+                    .state
+                    .entries
+                    .iter()
+                    .find(|entry| entry.report.report_id == report_id)
+                {
+                    if let Some(loss) = &entry.report.collection_loss {
+                        self.state.pending_loss.merge(loss);
+                    }
+                    self.state.pending_loss.merge(&CollectionLoss {
+                        submission_rejected: 1,
+                        ..CollectionLoss::default()
+                    });
+                }
+                self.state
+                    .entries
+                    .retain(|entry| entry.report.report_id != report_id);
+            }
             super::Delivery::Revoked => return self.bind(None),
         }
         self.persist()
@@ -256,9 +358,21 @@ impl Queue {
             self.state.attempt_times.len(),
             self.state.groups.len(),
         );
-        self.state
-            .entries
-            .retain(|entry| now.saturating_sub(entry.report.first_occurred_at) <= MAX_AGE_MS);
+        let mut expired_loss = CollectionLoss::default();
+        self.state.entries.retain(|entry| {
+            if now.saturating_sub(entry.report.first_occurred_at) <= MAX_AGE_MS {
+                return true;
+            }
+            if let Some(loss) = &entry.report.collection_loss {
+                expired_loss.merge(loss);
+            }
+            expired_loss.merge(&CollectionLoss {
+                queue_expired: 1,
+                ..CollectionLoss::default()
+            });
+            false
+        });
+        self.state.pending_loss.merge(&expired_loss);
         self.state
             .attempt_times
             .retain(|time| now.saturating_sub(*time) < 60 * 60_000);
@@ -278,13 +392,23 @@ impl Queue {
             };
             self.state.groups.remove(&key);
         }
+        self.state
+            .blocker_states
+            .retain(|group, _| self.state.groups.contains_key(group));
         while self.state.entries.len() > MAX_ENTRIES
             || serde_json::to_vec(&self.state).map_or(true, |bytes| bytes.len() > MAX_QUEUE_BYTES)
         {
             if self.state.entries.is_empty() {
                 break;
             }
-            self.state.entries.remove(0);
+            let evicted = self.state.entries.remove(0);
+            if let Some(loss) = &evicted.report.collection_loss {
+                self.state.pending_loss.merge(loss);
+            }
+            self.state.pending_loss.merge(&CollectionLoss {
+                queue_evicted: 1,
+                ..CollectionLoss::default()
+            });
         }
         before
             != (
@@ -305,6 +429,10 @@ impl Queue {
         if atomic_write(path, &bytes).is_err() {
             // Keep the bounded memory queue if the disk fails. The app can still report a disk error.
             self.path = None;
+            self.state.pending_loss.merge(&CollectionLoss {
+                storage_fallback: 1,
+                ..CollectionLoss::default()
+            });
             for entry in &mut self.state.entries {
                 if !entry.frozen {
                     entry.report.report_id = random_uuid()?;
@@ -473,6 +601,150 @@ mod tests {
                 reason: ParserReason::ReadFailed,
             },
         }
+    }
+
+    #[test]
+    fn unchanged_blockers_wait_but_changed_context_is_delivered_without_delay() {
+        let mut queue = Queue::open(None, app(), NOW);
+        queue.bind(Some(binding())).unwrap();
+        let mut blocker = failure();
+        if let Failure::Parser { context, .. } = &mut blocker {
+            context.reason = ParserReason::ScanIncomplete;
+        }
+        queue.capture(blocker.clone(), NOW).unwrap();
+        let first = queue.next(&binding(), NOW).unwrap().unwrap();
+        queue
+            .finish(&first.report_id, Delivery::Accepted, NOW)
+            .unwrap();
+        queue.capture(blocker.clone(), NOW + 60_000).unwrap();
+        queue.capture(blocker.clone(), NOW + 2 * 60_000).unwrap();
+        assert!(queue.next(&binding(), NOW + 5 * 60_000).unwrap().is_none());
+        if let Failure::Parser { context, .. } = &mut blocker {
+            context.files_seen = Some(2);
+        }
+        queue.capture(blocker, NOW + 6 * 60_000).unwrap();
+        let changed = queue.next(&binding(), NOW + 6 * 60_000).unwrap().unwrap();
+        assert_eq!(changed.occurrence_count, 1);
+        queue
+            .finish(&changed.report_id, Delivery::Accepted, NOW + 6 * 60_000)
+            .unwrap();
+        let unchanged = queue.next(&binding(), NOW + 30 * 60_000).unwrap().unwrap();
+        assert_eq!(unchanged.occurrence_count, 2);
+        assert_eq!(unchanged.first_occurred_at, NOW + 60_000);
+        assert_eq!(unchanged.last_occurred_at, NOW + 2 * 60_000);
+    }
+
+    #[test]
+    fn a_delayed_first_upload_still_coalesces_unchanged_blockers_for_thirty_minutes() {
+        let mut queue = Queue::open(None, app(), NOW);
+        queue.bind(Some(binding())).unwrap();
+        let mut blocker = failure();
+        if let Failure::Parser { context, .. } = &mut blocker {
+            context.reason = ParserReason::ScanIncomplete;
+        }
+        queue.capture(blocker.clone(), NOW).unwrap();
+        let first = queue.next(&binding(), NOW + 10 * 60_000).unwrap().unwrap();
+        queue
+            .finish(&first.report_id, Delivery::Accepted, NOW + 10 * 60_000)
+            .unwrap();
+        queue.capture(blocker, NOW + 11 * 60_000).unwrap();
+        assert!(queue.next(&binding(), NOW + 35 * 60_000).unwrap().is_none());
+        assert!(queue.next(&binding(), NOW + 40 * 60_000).unwrap().is_some());
+    }
+
+    #[test]
+    fn collection_loss_waits_for_a_failure_and_never_changes_a_frozen_retry() {
+        let temp = Temp::new();
+        let mut queue = Queue::open(Some(&temp.0), app(), NOW);
+        queue.bind(Some(binding())).unwrap();
+        queue.record_loss(&CollectionLoss {
+            handoff_dropped: 3,
+            ..CollectionLoss::default()
+        });
+        assert!(queue.next(&binding(), NOW).unwrap().is_none());
+        queue.capture(failure(), NOW).unwrap();
+        let first = queue.next(&binding(), NOW).unwrap().unwrap();
+        assert_eq!(first.collection_loss.as_ref().unwrap().handoff_dropped, 3);
+        queue.record_loss(&CollectionLoss {
+            handoff_dropped: 4,
+            ..CollectionLoss::default()
+        });
+        queue
+            .finish(&first.report_id, Delivery::Retry(30_000), NOW)
+            .unwrap();
+        let mut restarted = Queue::open(Some(&temp.0), app(), NOW + 30_000);
+        let retry = restarted.next(&binding(), NOW + 30_000).unwrap().unwrap();
+        assert_eq!(first, retry);
+        restarted
+            .finish(&first.report_id, Delivery::Accepted, NOW + 30_000)
+            .unwrap();
+        assert!(
+            restarted
+                .next(&binding(), NOW + 5 * 60_000)
+                .unwrap()
+                .is_none()
+        );
+        restarted.capture(failure(), NOW + 5 * 60_000).unwrap();
+        let later = restarted
+            .next(&binding(), NOW + 5 * 60_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(later.collection_loss.as_ref().unwrap().handoff_dropped, 4);
+        restarted.record_loss(&CollectionLoss {
+            handoff_dropped: 9,
+            ..CollectionLoss::default()
+        });
+        let next_binding = Binding {
+            reporter_id: "replacement".into(),
+            generation: 2,
+        };
+        restarted.bind(Some(next_binding.clone())).unwrap();
+        restarted.capture(failure(), NOW + 6 * 60_000).unwrap();
+        assert!(
+            restarted
+                .next(&next_binding, NOW + 6 * 60_000)
+                .unwrap()
+                .unwrap()
+                .collection_loss
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn capacity_loss_is_retained_across_restart_and_attached_to_a_real_failure() {
+        let temp = Temp::new();
+        let mut queue = Queue::open(Some(&temp.0), app(), NOW);
+        queue.bind(Some(binding())).unwrap();
+        for version in 1..=40 {
+            let mut failure = failure();
+            if let Failure::Parser { context, .. } = &mut failure {
+                context.parser_version = Some(version);
+            }
+            queue.capture(failure, NOW).unwrap();
+        }
+        let mut restarted = Queue::open(Some(&temp.0), app(), NOW);
+        let report = restarted.next(&binding(), NOW).unwrap().unwrap();
+        assert_eq!(report.collection_loss.as_ref().unwrap().queue_evicted, 8);
+    }
+
+    #[test]
+    fn legacy_queue_load_keeps_its_frozen_report_unchanged() {
+        let temp = Temp::new();
+        let mut queue = Queue::open(Some(&temp.0), app(), NOW);
+        queue.bind(Some(binding())).unwrap();
+        queue.capture(failure(), NOW).unwrap();
+        let first = queue.next(&binding(), NOW).unwrap().unwrap();
+        let path = temp.0.join("pending-v1.json");
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("blockerStates");
+        legacy.as_object_mut().unwrap().remove("pendingLoss");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let mut restarted = Queue::open(Some(&temp.0), app(), NOW + 30_000);
+        assert_eq!(
+            restarted.next(&binding(), NOW + 30_000).unwrap().unwrap(),
+            first
+        );
     }
 
     #[test]
@@ -670,6 +942,35 @@ mod tests {
                 .unwrap()
                 .contains("parser_scan_failed")
         );
+    }
+
+    #[test]
+    fn restart_expiry_loss_waits_for_a_failure_and_stays_with_its_binding() {
+        let temp = Temp::new();
+        let mut queue = Queue::open(Some(&temp.0), app(), NOW);
+        queue.bind(Some(binding())).unwrap();
+        queue.capture(failure(), NOW).unwrap();
+        let later = NOW + MAX_AGE_MS + 1;
+        let mut restarted = Queue::open(Some(&temp.0), app(), later);
+        assert!(restarted.next(&binding(), later).unwrap().is_none());
+        restarted.capture(failure(), later).unwrap();
+        let report = restarted.next(&binding(), later).unwrap().unwrap();
+        assert_eq!(report.collection_loss.as_ref().unwrap().queue_expired, 1);
+
+        // The same restart loss must not acquire a replacement Profile's authority.
+        let other_temp = Temp::new();
+        let mut old = Queue::open(Some(&other_temp.0), app(), NOW);
+        old.bind(Some(binding())).unwrap();
+        old.capture(failure(), NOW).unwrap();
+        let mut replacement = Queue::open(Some(&other_temp.0), app(), later);
+        let new_binding = Binding {
+            generation: binding().generation + 1,
+            ..binding()
+        };
+        replacement.bind(Some(new_binding.clone())).unwrap();
+        replacement.capture(failure(), later).unwrap();
+        let report = replacement.next(&new_binding, later).unwrap().unwrap();
+        assert!(report.collection_loss.is_none());
     }
 
     #[test]

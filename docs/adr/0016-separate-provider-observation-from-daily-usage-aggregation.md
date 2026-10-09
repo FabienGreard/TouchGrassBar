@@ -84,6 +84,18 @@ once. Conflicting copies retain the larger whole record as partial and
 unpriced; a later valid copy cannot erase that conflict. No counters are added
 across copies. Parser revision 15 replays older retained checkpoints.
 
+Parser revision 16 preserves a rejected prefix when a byte or time limit stops
+the file scan. An unfinished file with a rejected record keeps the existing
+error state and its cursor. A later pass reads the remaining bytes and cannot
+declare that prefix complete. A settled error file needs no repeat read until
+its identity, content metadata, or parser version changes. Its retained error
+still makes Usage Coverage partial. The normal bounded replay rechecks parser-15
+checkpoints, which could have lost a rejection at a scan boundary. It preserves
+known tokens and permits a lower parser correction only after a complete scan.
+When an oversized physical line spans bounded passes, the next pass discards
+its remaining bytes through the newline. A JSON-shaped tail cannot become a
+separate usage record.
+
 A failed Claude scan can still improve API-Equivalent Cost. Accept a daily
 priced subset from valid current-parser records when it covers more tokens
 than the stored priced subset. Keep the known token total and partial Usage

@@ -160,13 +160,45 @@ The `2026-08-26-v2` review used these dated first-party changes:
 
 ## Anthropic rules
 
+The `2026-10-09-v1` review adds `claude-haiku-5-5`, released on
+[October 7](https://www.anthropic.com/claude-haiku-5-5). Its
+[model page](https://platform.claude.com/docs/en/models/haiku-5-5/overview)
+defines two price tiers, in USD per million tokens:
+
+| Token category          | Prompt up to 100,000 tokens | Prompt over 100,000 tokens |
+| ----------------------- | --------------------------- | -------------------------- |
+| Input                   | 0.10                        | 0.50                       |
+| Five-minute cache write | 0.125                       | 0.625                      |
+| One-hour cache write    | 0.20                        | 1.00                       |
+| Cache read              | 0.01                        | 0.05                       |
+| Output                  | 0.50                        | 2.50                       |
+
+The period starts on 2026-10-07. `longPrompt.abovePromptTokens` selects the
+higher rates only above 100,000 tokens. The
+[pricing rules](https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing)
+count uncached input, cache creation, and cache reads in the prompt length.
+Output does not select the tier. Each request uses its own prompt length,
+including its cache hits; an earlier request keeps its own tier. Cache
+creation is counted once, through its outer total, rather than again through
+the duration split. Both tiers use the normal Batch and US inference factors.
+Haiku 5.5 has no reviewed alias or Fast price.
+
+The same
+[dated announcement](https://www.anthropic.com/claude-haiku-5-5)
+changes Sonnet 5.5 cache reads from USD 0.20 to USD 0.10 per million tokens on
+2026-10-07. The earlier period ends on that exclusive date. Input, both cache
+write prices, and output retain their launch rates. The new period declares
+the documented 0.05 cache-read multiplier. The catalog keeps all older model
+dates and rates. This partial pricing review does not advance the full provider
+contract review date; issue #99 owns the remaining evidence and modifier review.
+
 The `2026-09-30-v1` review adds `claude-sonnet-5-5` from its
 [September 28 launch](https://platform.claude.com/docs/en/release-notes/overview#september-28-2026).
 The [model page](https://platform.claude.com/docs/en/models/sonnet-5-5/overview)
 and [price table](https://platform.claude.com/docs/en/about-claude/pricing)
 define rates per million tokens: USD 2 input, 2.50 for a five-minute cache
 write, 4 for a one-hour cache write, 0.20 cache read, and 10 output.
-The period starts on 2026-09-28 and remains open. Batch uses the 50% discount;
+The launch period starts on 2026-09-28. Batch uses the 50% discount;
 US inference uses the 1.1 multiplier. Sonnet 5.5 has no published Fast price
 and no reviewed alias. This model review keeps the broader evidence and rule
 window hashes unchanged; issue #99 owns their remaining review.
@@ -182,12 +214,13 @@ factors. It also checks that date ranges do not overlap and that each fast-mode
 period is inside a standard price period.
 
 Cache writes are always 1.25 times base input for 5 minutes and 2 times base
-input for 1 hour. Anthropic prices a cache read at 0.1 times base input, with a
-published 0.025 times exception. A period that uses the exception must declare
+input for 1 hour. Anthropic prices a cache read at 0.1 times base input, with
+published exceptions of 0.025 for Fable 5.1 and Mythos 5.1, and 0.05 for Opus
+5.5 and Sonnet 5.5. A period that uses an exception must declare
 `cacheReadMultiplier`. Omitting the field means the 0.1 times rule. The Rust
 parser rejects any other multiplier and rejects a cache read rate that does not
 match the multiplier the period declares. The audit compares the declared set
-against the models the pricing page names in that exception. Do not add a third
+against the models the pricing page names in that exception. Do not add another
 multiplier without an official Anthropic source.
 
 The `2026-09-23-v2` catalog keeps all published rates and effective dates.
