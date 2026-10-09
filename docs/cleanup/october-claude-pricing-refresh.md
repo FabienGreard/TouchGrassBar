@@ -1,6 +1,6 @@
 # October Claude pricing rollout
 
-- **Status:** rehearsed
+- **Status:** running
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
 - **Implementation:** [pricing and analytics fix](https://github.com/FabienGreard/TouchGrassBar/commit/b8655ebaa60846454fd72f532a8af7cf8b7ff363).
 
@@ -25,8 +25,8 @@ metadata, and partial scan coverage.
    and an unchanged second scan.
 2. Generate the additive native pricing-basis contract. Run backend tests that
    accept both catalogs and preserve Token Score when only cost changes.
-3. In a future authorized release, deploy the backend approval before the
-   desktop client can send the new basis. Ship the signed desktop update.
+3. Deploy the backend approval before the desktop client can send the new
+   basis. This step completed before the signed v0.0.59 desktop release.
 4. Let an affected updated client finish its normal bounded repricing and
    synchronization. Record count-only local aggregate evidence and accepted
    daily revisions in issue #99. Do not use silence in Failure Reports as proof
@@ -76,9 +76,23 @@ the current official sources. The full provider review still has source and
 evidence drift owned by issue #99. This targeted review keeps the full review
 date and broader rule and evidence window hashes unchanged.
 
-Local tests and a synthetic retained-data replay do not prove production
-deployment, publication, client adoption, or recovery on an affected Mac.
-Record future release and affected-client evidence here before removal.
+Release evidence on 2026-10-09:
+
+- Candidate [a77c62a21238fc72f82d0ceff1e40a1d9e4d3d49](https://github.com/FabienGreard/TouchGrassBar/commit/a77c62a21238fc72f82d0ceff1e40a1d9e4d3d49)
+  passed [main CI](https://github.com/FabienGreard/TouchGrassBar/actions/runs/37927242325)
+  and the [release workflow](https://github.com/FabienGreard/TouchGrassBar/actions/runs/37927944017).
+- Production deployment `next-pig-820` completed before `12:05:42Z`. The
+  deployed backend includes the new pricing-basis approval and additive
+  diagnostic fields.
+- At `12:06:23Z`, the production check verified one successful synchronization,
+  four global reads, and four populated rows. It found no failures in the
+  checked activity.
+- The signed [v0.0.59 release](https://github.com/FabienGreard/TouchGrassBar/releases/tag/v0.0.59)
+  became public at `12:20:28Z`. The public update-feed check passed.
+
+These checks prove deployment and publication. They do not prove client
+adoption, use of the new pricing basis in a client synchronization, or recovery
+on an affected Mac. Record the affected-client evidence before removal.
 
 ## Recovery
 
@@ -98,6 +112,6 @@ after the owner issue contains the required evidence.
 
 ## Exit condition
 
-A future authorized release is public, an affected updated client has
+The release is public, an affected updated client has
 synchronized recovered pricing with unchanged token totals and an unchanged
 repeat scan, and no supported client or retained row needs the prior basis.

@@ -1,6 +1,6 @@
 # Claude pricing recovery after incomplete scans
 
-- **Status:** rehearsed
+- **Status:** running
 - **Owner issue:** [#112](https://github.com/FabienGreard/TouchGrassBar/issues/112)
 - **Implementation:** [PR #113](https://github.com/FabienGreard/TouchGrassBar/pull/113); [parser-16 repair](https://github.com/FabienGreard/TouchGrassBar/commit/b8655ebaa60846454fd72f532a8af7cf8b7ff363).
 
@@ -24,6 +24,20 @@ The regression failed before the fix and passed after it. Tests cover parser
 replay, absent aggregate parser metadata, unchanged current-parser checkpoints,
 retained token totals, and growth of the priced subset. Repeat scans do not add
 revisions. The native regression and compatibility tests pass; one existing test remains ignored.
+
+Release evidence on 2026-10-09:
+
+- Candidate [a77c62a21238fc72f82d0ceff1e40a1d9e4d3d49](https://github.com/FabienGreard/TouchGrassBar/commit/a77c62a21238fc72f82d0ceff1e40a1d9e4d3d49)
+  passed [main CI](https://github.com/FabienGreard/TouchGrassBar/actions/runs/37927242325)
+  and the [release workflow](https://github.com/FabienGreard/TouchGrassBar/actions/runs/37927944017).
+- Production deployment `next-pig-820` completed before `12:05:42Z`. The
+  deployed backend includes the additive diagnostic fields before the new
+  desktop release.
+- At `12:06:23Z`, the production check verified one successful synchronization,
+  four global reads, and four populated rows. It found no failures in the
+  checked activity.
+- The signed [v0.0.59 release](https://github.com/FabienGreard/TouchGrassBar/releases/tag/v0.0.59)
+  became public at `12:20:28Z`. The public update-feed check passed.
 
 Live recovery still needs evidence from an updated affected client: previously
 unpriced daily usage gains priced tokens and a cost, known token totals remain,
@@ -149,11 +163,11 @@ a rejected prefix remains partial after a bounded resume, valid tokens remain,
 and repeated scans keep the checkpoint stable. A corrected source clears the
 error and completes without recounting usage.
 
-Release verification is still required. Ship the tested repair through the
-normal release process, let an affected client complete its normal bounded
-replay, and record count-only parser-16 evidence in issue #112. Check that
-rejected records remain partial, valid token totals remain, and unchanged
-checkpoints do not add revisions. A report with zero token counters does not
+Affected-client verification is still required. Let an affected updated client
+complete its normal bounded replay and record count-only parser-16 evidence
+in issue #112. Check that rejected records remain partial, valid token totals
+remain, and unchanged checkpoints do not add revisions. A report with zero
+token counters does not
 prove that its rejected metadata is safe to accept.
 
 If replay stops, retain the index and source files. The next normal scan resumes
