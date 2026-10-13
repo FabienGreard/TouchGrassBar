@@ -391,7 +391,9 @@ function PanelScreen({
       addTokenmaxxerOpen={addTokenmaxxerOpen}
       addTokenmaxxerSubmitting={addTokenmaxxerInFlight}
       currentProfile={currentProfile}
-      doomerboardLoading={presentation.doomerboardLoading ?? doomerboardView.isLoading}
+      doomerboardLoading={
+        presentation.doomerboardLoading ?? (doomerboardView.isLoading && !doomerboardView.isFetched)
+      }
       doomerboardRows={
         presentation.doomerboardRows ??
         (doomerboardSelection.audience === "global" ? nativeDoomerboardRows : undefined)

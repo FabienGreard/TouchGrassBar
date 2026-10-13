@@ -755,6 +755,40 @@ impl HttpDoomerboardTransport {
             && now_unix_seconds < cached.refresh_after_unix_seconds
     }
 
+    fn failed_read_needs_connection_replacement(
+        result: &Result<FunctionResult, TransportError>,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) -> bool {
+        cancellation.is_some_and(|cancellation| !cancellation.is_canceled())
+            && matches!(
+                result,
+                Err(TransportError::Failure {
+                    stage: DoomerboardStage::Request,
+                    reason: DoomerboardReason::DeadlineExceeded | DoomerboardReason::RequestFailed,
+                })
+            )
+    }
+
+    fn discard_failed_read_connection(
+        &self,
+        connection: &Arc<dyn DoomerboardConnection>,
+        result: &Result<FunctionResult, TransportError>,
+        cancellation: Option<&DoomerboardReadCancellation>,
+    ) {
+        if !Self::failed_read_needs_connection_replacement(result, cancellation) {
+            return;
+        }
+        let Ok(mut cached) = self.connection_write(cancellation) else {
+            return;
+        };
+        if cached
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(&current.connection, connection))
+        {
+            *cached = None;
+        }
+    }
+
     fn authenticated_call(
         &self,
         session: &Secret,
@@ -774,10 +808,14 @@ impl HttpDoomerboardTransport {
             if cancellation.is_some_and(DoomerboardReadCancellation::is_canceled) {
                 return Err(TransportError::Canceled);
             }
-            if let Some(cached) = cached.as_ref()
-                && Self::can_reuse(cached, session, now_unix_seconds)
+            if let Some(current) = cached.as_ref()
+                && Self::can_reuse(current, session, now_unix_seconds)
             {
-                return cached.connection.call(call, cancellation);
+                let connection = current.connection.clone();
+                let result = connection.call(call, cancellation);
+                drop(cached);
+                self.discard_failed_read_connection(&connection, &result, cancellation);
+                return result;
             }
         }
 
@@ -788,7 +826,11 @@ impl HttpDoomerboardTransport {
         if let Some(current) = cached.as_ref()
             && Self::can_reuse(current, session, now_unix_seconds)
         {
-            return current.connection.call(call, cancellation);
+            let result = current.connection.call(call, cancellation);
+            if Self::failed_read_needs_connection_replacement(&result, cancellation) {
+                *cached = None;
+            }
+            return result;
         }
 
         let fetched = self
@@ -814,7 +856,11 @@ impl HttpDoomerboardTransport {
             refresh_after_unix_seconds: fetched.refresh_after_unix_seconds,
             session: session.clone(),
         });
-        connection.call(call, cancellation)
+        let result = connection.call(call, cancellation);
+        if Self::failed_read_needs_connection_replacement(&result, cancellation) {
+            *cached = None;
+        }
+        result
     }
 }
 
@@ -1642,6 +1688,190 @@ mod tests {
         assert_eq!(connection_factory.calls.load(Ordering::Relaxed), 1);
         assert_eq!(connection.authentications.load(Ordering::Relaxed), 1);
         assert_eq!(connection.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn later_read_recovers_after_the_cached_connection_request_deadline() {
+        struct DeadlineConnection {
+            calls: AtomicUsize,
+            failed: bool,
+            successful_calls_before_failure: usize,
+        }
+
+        impl DoomerboardConnection for DeadlineConnection {
+            fn authenticate(
+                &self,
+                _token: Zeroizing<String>,
+                _cancellation: Option<&DoomerboardReadCancellation>,
+            ) -> Result<(), TransportError> {
+                Ok(())
+            }
+
+            fn call(
+                &self,
+                _call: ConvexCall,
+                _cancellation: Option<&DoomerboardReadCancellation>,
+            ) -> Result<FunctionResult, TransportError> {
+                if self.failed
+                    && self.calls.fetch_add(1, Ordering::Relaxed)
+                        >= self.successful_calls_before_failure
+                {
+                    Err(TransportError::failure(
+                        DoomerboardStage::Request,
+                        DoomerboardReason::DeadlineExceeded,
+                    ))
+                } else {
+                    Ok(FunctionResult::Value(Value::Array(vec![row(
+                        "TG-234567",
+                        1,
+                        500,
+                    )])))
+                }
+            }
+        }
+
+        struct RecoveringConnectionFactory(AtomicUsize, usize);
+
+        impl DoomerboardConnectionFactory for RecoveringConnectionFactory {
+            fn connect(
+                &self,
+                _convex_url: &str,
+                _cancellation: Option<&DoomerboardReadCancellation>,
+            ) -> Result<Arc<dyn DoomerboardConnection>, TransportError> {
+                Ok(Arc::new(DeadlineConnection {
+                    calls: AtomicUsize::new(0),
+                    failed: self.0.fetch_add(1, Ordering::Relaxed) == 0,
+                    successful_calls_before_failure: self.1,
+                }))
+            }
+        }
+
+        for successful_calls_before_failure in [0, 1] {
+            let (profile_key, coordinator) = crate::profile::ready_test_coordinator();
+            let factory = Arc::new(RecoveringConnectionFactory(
+                AtomicUsize::new(0),
+                successful_calls_before_failure,
+            ));
+            let runtime = DoomerboardRuntime::new(
+                Arc::new(Mutex::new(coordinator)),
+                Arc::new(HttpDoomerboardTransport::new(
+                    Some("https://example.convex.cloud"),
+                    Arc::new(CountingTokenProvider::default()),
+                    factory.clone(),
+                    Arc::new(|| 1_000),
+                )),
+                OnlineFeatureGate::default(),
+            );
+            let selected = query(
+                DoomerboardAudienceV1::Global,
+                DoomerboardScopeV1::Combined,
+                1,
+            );
+            let ready = DoomerboardViewV1::ready(
+                parse_rows(Value::Array(vec![row("TG-234567", 1, 500)])).unwrap(),
+            );
+            if successful_calls_before_failure > 0 {
+                runtime.begin_read("healthy-cached-read").unwrap();
+                assert_eq!(
+                    runtime.read("healthy-cached-read", &profile_key, selected),
+                    ready
+                );
+            }
+            runtime.begin_read("timed-out-connection-read").unwrap();
+            assert_eq!(
+                runtime.read("timed-out-connection-read", &profile_key, selected),
+                DoomerboardViewV1::unavailable(),
+            );
+            runtime.begin_read("recovered-connection-read").unwrap();
+            assert_eq!(
+                runtime.read("recovered-connection-read", &profile_key, selected),
+                ready,
+                "a later read must recover through the healthy replacement connection",
+            );
+            assert_eq!(factory.0.load(Ordering::Relaxed), 2);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn late_failed_read_does_not_discard_a_replacement_connection() {
+        let connection = Arc::new(CountingConnection::default());
+        let factory = Arc::new(CountingConnectionFactory {
+            calls: AtomicUsize::new(0),
+            connection,
+        });
+        let transport = HttpDoomerboardTransport::new(
+            Some("https://example.convex.cloud"),
+            Arc::new(CountingTokenProvider::default()),
+            factory.clone(),
+            Arc::new(|| 1_000),
+        );
+        let session = Secret::test_only();
+        let cancellation = DoomerboardReadCancellation::default();
+        let call = || ConvexCall::Query {
+            arguments: BTreeMap::new(),
+            function_name: CURRENT_GLOBAL_QUERY,
+        };
+        transport
+            .authenticated_call(&session, call(), Some(&cancellation))
+            .expect("authenticate the replacement connection");
+        let failed_connection: Arc<dyn DoomerboardConnection> =
+            Arc::new(CountingConnection::default());
+        transport.discard_failed_read_connection(
+            &failed_connection,
+            &Err(TransportError::failure(
+                DoomerboardStage::Request,
+                DoomerboardReason::DeadlineExceeded,
+            )),
+            Some(&cancellation),
+        );
+        transport
+            .authenticated_call(&session, call(), Some(&cancellation))
+            .expect("keep the replacement connection after an older failure");
+        assert_eq!(factory.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn cancellation_authority_rejection_and_mutation_failures_keep_the_cached_connection() {
+        let connection: Arc<dyn DoomerboardConnection> = Arc::new(CountingConnection::default());
+        let canceled = DoomerboardReadCancellation::default();
+        canceled.cancel();
+        let active = DoomerboardReadCancellation::default();
+        let deadline = || {
+            TransportError::failure(
+                DoomerboardStage::Request,
+                DoomerboardReason::DeadlineExceeded,
+            )
+        };
+        for (error, cancellation) in [
+            (deadline(), Some(&canceled)),
+            (TransportError::Canceled, Some(&active)),
+            (
+                TransportError::AuthorityRejected(DoomerboardStage::Request),
+                Some(&active),
+            ),
+            (deadline(), None),
+        ] {
+            let session = Secret::test_only();
+            let transport = HttpDoomerboardTransport::new(
+                Some("https://example.convex.cloud"),
+                Arc::new(CountingTokenProvider::default()),
+                Arc::new(CountingConnectionFactory {
+                    calls: AtomicUsize::new(0),
+                    connection: Arc::new(CountingConnection::default()),
+                }),
+                Arc::new(|| 1_000),
+            );
+            *transport.connection.write().unwrap() = Some(CachedDoomerboardConnection {
+                connection: connection.clone(),
+                refresh_after_unix_seconds: 2_000,
+                session: session.clone(),
+            });
+            transport.discard_failed_read_connection(&connection, &Err(error), cancellation);
+            assert!(transport.connection.read().unwrap().is_some());
+        }
     }
 
     #[test]

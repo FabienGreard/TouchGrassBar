@@ -201,6 +201,61 @@ test("notices during a cached Doomerboard refresh join one follow-up read", asyn
   ).toHaveLength(3);
 });
 
+test.each(["revision", "reopen"] as const)(
+  "a failed Doomerboard remains unavailable during a %s retry until scores arrive",
+  async (trigger) => {
+    const browser = createBrowserSanitizedDesktopStateAdapter(
+      "current",
+      () => new Date("2026-10-13T10:00:00.000Z"),
+      undefined,
+      "synced",
+    );
+    const initial = await browser.readSnapshot();
+    if (!initial.ok) throw new Error("Missing browser snapshot");
+    const state = mutableStateDelivery(initial.value as SanitizedDesktopState);
+    const native = doomerboardPort();
+    const read = native.read;
+    let firstRead = true;
+    native.read = vi.fn(async (profileKey, selection) => {
+      if (firstRead) {
+        firstRead = false;
+        return { ok: true as const, value: { contractVersion: 1, status: "unavailable" } };
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+      return read(profileKey, selection);
+    });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-13T10:00:00.000Z"));
+    const client = new QueryClient();
+    const open = () =>
+      render(
+        <QueryClientProvider client={client}>
+          <PanelScreen doomerboardPort={native} hasNativeRuntime stateDelivery={state.delivery} />
+        </QueryClientProvider>,
+      );
+    const view = open();
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(screen.getByText("Leaderboard unavailable")).toBeTruthy();
+
+    if (trigger === "revision") {
+      await act(async () => {
+        native.changed();
+        await vi.advanceTimersByTimeAsync(10);
+      });
+    } else {
+      view.unmount();
+      open();
+      await act(() => vi.advanceTimersByTimeAsync(10));
+    }
+
+    expect(screen.queryByRole("status", { name: "Loading Doomerboard" })).toBeNull();
+    expect(screen.getByText("Leaderboard unavailable")).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(1_001));
+    expect(screen.getByText("global-combined-1-v1")).toBeTruthy();
+    expect(screen.queryByText("Leaderboard unavailable")).toBeNull();
+  },
+);
+
 test("removing the last friend refreshes Friends and clears cached selections while Global stays intact", async () => {
   const native = doomerboardPort();
   const originalRead = native.read;
