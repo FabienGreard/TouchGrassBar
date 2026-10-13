@@ -137,7 +137,7 @@ jobs:
           CONVEX_URL: ${{ vars.TOUCHGRASS_CONVEX_URL }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bun run --cwd apps/desktop tauri build --bundles app dmg --config src-tauri/.dev-instance/prod-tauri.conf.json
+        run: bun scripts/run-macos-release-build.ts
       - name: Independently notarize and verify release artifacts
         env:
           APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER }}

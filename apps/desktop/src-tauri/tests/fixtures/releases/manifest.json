@@ -4382,9 +4382,9 @@
       }
     },
     {
-      "tag": "v0.0.60",
-      "database": "v0.0.60/touchgrassbar.sqlite3",
-      "sha256": "76d70e798f8b8aaf9dd229b2880a1a58c69787128b162364a819477ac7da270c",
+      "tag": "v0.0.61",
+      "database": "v0.0.61/touchgrassbar.sqlite3",
+      "sha256": "bc7fe4a9f03f665552dab2dd9dae63f3e850d8307f53f86b07128f51bedc452a",
       "sourceCommit": "candidate",
       "releaseStatus": "candidate",
       "sourceSchema": {
@@ -4404,11 +4404,11 @@
         "topModelUsage": true
       },
       "expectedState": {
-        "revision": "360",
+        "revision": "361",
         "profile": {
           "status": "ready",
           "displayName": "Fixture Tokenmaxxer",
-          "touchGrassId": "fixture-public-0-0-60"
+          "touchGrassId": "fixture-public-0-0-61"
         },
         "providerSettingsAfterUpgrade": {
           "codex": false,
@@ -4418,8 +4418,8 @@
           "codex": [
             {
               "day": "2026-01-01",
-              "observedTokens": 1060,
-              "pricedTokens": 860,
+              "observedTokens": 1061,
+              "pricedTokens": 861,
               "costUsd": 1.25,
               "complete": true,
               "pricingBasis": "synthetic-codex-catalog-v1",
@@ -4427,8 +4427,8 @@
             },
             {
               "day": "2026-01-02",
-              "observedTokens": 1260,
-              "pricedTokens": 960,
+              "observedTokens": 1261,
+              "pricedTokens": 961,
               "costUsd": 1.5,
               "complete": false,
               "pricingBasis": "synthetic-codex-catalog-v1",
@@ -4438,8 +4438,8 @@
           "claude": [
             {
               "day": "2026-01-01",
-              "observedTokens": 760,
-              "pricedTokens": 660,
+              "observedTokens": 761,
+              "pricedTokens": 661,
               "costUsd": 0.75,
               "complete": true,
               "pricingBasis": "synthetic-claude-catalog-v1",
@@ -4447,8 +4447,8 @@
             },
             {
               "day": "2026-01-02",
-              "observedTokens": 960,
-              "pricedTokens": 760,
+              "observedTokens": 961,
+              "pricedTokens": 761,
               "costUsd": 1,
               "complete": false,
               "pricingBasis": "synthetic-claude-catalog-v1",
@@ -4457,7 +4457,7 @@
           ]
         },
         "automaticChecksEnabledAfterUpgrade": false,
-        "lastAutomaticCheckAt": 1700000360,
+        "lastAutomaticCheckAt": 1700000361,
         "offeredVersion": "0.0.9",
         "minimumRequiredVersion": "0.0.3"
       }

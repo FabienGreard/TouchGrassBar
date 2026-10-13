@@ -4,6 +4,7 @@ import {
   createTrustReceipt,
   formatChecksums,
   parseCodeSignatureDetails,
+  requireValidStapledTicket,
   validateUpdaterArchiveEntries,
 } from "./finalize-macos-release";
 
@@ -16,6 +17,82 @@ TeamIdentifier=A1B2C3D4E5
 CDHash=0123456789abcdef0123456789abcdef01234567`;
 
 describe("release artifact trust", () => {
+  test.each([68, 69, 75])(
+    "retries ticket-service exit %s and requires later validation",
+    (status) => {
+      let attempts = 0;
+      const waits: number[] = [];
+      expect(() =>
+        requireValidStapledTicket(
+          () => ({ status: ++attempts === 1 ? status : 0 }),
+          "Invalid ticket",
+          (delay) => waits.push(delay),
+        ),
+      ).not.toThrow();
+      expect(attempts).toBe(2);
+      expect(waits).toEqual([20_000]);
+    },
+  );
+
+  test("stops after three temporary validation failures", () => {
+    let attempts = 0;
+    const waits: number[] = [];
+    expect(() =>
+      requireValidStapledTicket(
+        () => {
+          attempts += 1;
+          return { status: 69 };
+        },
+        "Invalid ticket",
+        (delay) => waits.push(delay),
+      ),
+    ).toThrow("Invalid ticket");
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([20_000, 40_000]);
+  });
+
+  test("retries a timed-out validation without accepting the timeout", () => {
+    let attempts = 0;
+    expect(() =>
+      requireValidStapledTicket(
+        () => (++attempts === 1 ? { status: null, timedOut: true } : { status: 0 }),
+        "Invalid ticket",
+        () => undefined,
+      ),
+    ).not.toThrow();
+    expect(attempts).toBe(2);
+  });
+
+  test("does not accept a timed-out validator that exits zero during termination", () => {
+    let attempts = 0;
+    requireValidStapledTicket(
+      () => (++attempts === 1 ? { status: 0, timedOut: true } : { status: 0 }),
+      "Invalid ticket",
+      () => undefined,
+    );
+    expect(attempts).toBe(2);
+  });
+
+  test.each([65, 66, 77, null])(
+    "rejects invalid or unavailable local ticket state %s",
+    (status) => {
+      let attempts = 0;
+      const waits: number[] = [];
+      expect(() =>
+        requireValidStapledTicket(
+          () => {
+            attempts += 1;
+            return { status };
+          },
+          "Invalid ticket",
+          (delay) => waits.push(delay),
+        ),
+      ).toThrow("Invalid ticket");
+      expect(attempts).toBe(1);
+      expect(waits).toEqual([]);
+    },
+  );
+
   test("requires the complete public app signature facts", () => {
     expect(parseCodeSignatureDetails(validSignature, identity)).toMatchObject({
       hardenedRuntime: true,

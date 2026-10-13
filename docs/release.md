@@ -189,12 +189,22 @@ work:
    hardened, timestamped, notarized, and stapled app plus its updater archive
    and detached signature. The build sets `TAURI_BUNDLER_DMG_IGNORE_CI=true`
    so Tauri saves the Finder icon layout for the app and Applications shortcut.
+   A temporary `xcrun` wrapper checks app stapling and validation at Tauri's
+   app stapling step, before packaging. The build runner requires fresh proof
+   for the exact app and candidate. If Tauri ignores a child failure and creates
+   packages, the build runner rejects them.
+   Both operations have time limits and bounded retries. Other `xcrun` calls
+   use the normal Apple tool. Missing proof or exhausted retries stop the build.
 5. It independently submits the versioned DMG to Apple, requires `Accepted`,
    staples it, and checks Gatekeeper.
 6. It checks the app in the updater archive and DMG against the trusted app.
    It also checks arm64-only architecture, version, Developer ID identity,
    public certificate fingerprint, app and DMG signatures, notarization,
    stapling, Gatekeeper, and the Tauri updater signature.
+   Ticket validation can retry a timeout or ticket-service exit `68`, `69`,
+   or `75` twice. These codes do not prove a temporary service fault. Only a
+   successful validation passes. Missing, invalid, and revoked tickets fail
+   without a retry. Validation retries do not change artifact bytes.
 7. It creates `latest.json`, `SHA256SUMS`, and a sanitized trust receipt.
 8. It creates a draft GitHub Release and removes temporary release material.
 

@@ -233,6 +233,41 @@ function commandPasses(executable: string, argumentsList: string[], failureMessa
   if (result.status !== 0) throw new Error(failureMessage);
 }
 
+type StapledTicketValidation = { status: number | null; timedOut?: boolean };
+
+function requireValidStapledTicket(
+  validate: () => StapledTicketValidation,
+  failureMessage: string,
+  wait: (milliseconds: number) => void = (milliseconds) => Bun.sleepSync(milliseconds),
+) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = validate();
+    if (result.status === 0 && result.timedOut !== true) return;
+    const retryEligible =
+      result.timedOut === true || (result.status !== null && [68, 69, 75].includes(result.status));
+    if (!retryEligible || attempt === 2) {
+      const detail =
+        result.timedOut === true ? "timed out" : `exit ${result.status ?? "unavailable"}`;
+      throw new Error(`${failureMessage} (validation ${detail}).`);
+    }
+    wait((attempt + 1) * 20_000);
+  }
+}
+
+function validateStapledTicket(artifactPath: string, failureMessage: string) {
+  requireValidStapledTicket(() => {
+    const result = spawnSync("/usr/bin/xcrun", ["stapler", "validate", artifactPath], {
+      killSignal: "SIGKILL",
+      stdio: "ignore",
+      timeout: 30_000,
+    });
+    return {
+      status: result.status,
+      timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
+    };
+  }, failureMessage);
+}
+
 function sha256File(filePath: string) {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
@@ -302,11 +337,7 @@ function verifyApp(
   if (architectures !== "arm64") {
     throw new Error("The release app is not Apple-silicon-only.");
   }
-  commandPasses(
-    "/usr/bin/xcrun",
-    ["stapler", "validate", appPath],
-    "The app stapling result is invalid.",
-  );
+  validateStapledTicket(appPath, "The app stapling result is invalid.");
   commandPasses(
     "/usr/sbin/spctl",
     ["--assess", "--type", "execute", appPath],
@@ -371,11 +402,7 @@ function verifyDmg(dmgPath: string, expectedIdentity: string) {
     ["stapler", "staple", dmgPath],
     "The DMG ticket cannot be stapled.",
   );
-  commandPasses(
-    "/usr/bin/xcrun",
-    ["stapler", "validate", dmgPath],
-    "The DMG stapling result is invalid.",
-  );
+  validateStapledTicket(dmgPath, "The DMG stapling result is invalid.");
   commandPasses(
     "/usr/sbin/spctl",
     ["--assess", "--type", "open", "--context", "context:primary-signature", dmgPath],
@@ -656,5 +683,6 @@ export {
   createTrustReceipt,
   formatChecksums,
   parseCodeSignatureDetails,
+  requireValidStapledTicket,
   validateUpdaterArchiveEntries,
 };
