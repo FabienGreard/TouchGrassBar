@@ -197,6 +197,8 @@ work:
    use the normal Apple tool. Missing proof or exhausted retries stop the build.
 5. It independently submits the versioned DMG to Apple, requires `Accepted`,
    staples it, and checks Gatekeeper.
+   DMG stapling has a 30-second time limit. It can retry a timeout or eligible
+   ticket-service exit twice. A successful staple and validation are required.
 6. It checks the app in the updater archive and DMG against the trusted app.
    It also checks arm64-only architecture, version, Developer ID identity,
    public certificate fingerprint, app and DMG signatures, notarization,

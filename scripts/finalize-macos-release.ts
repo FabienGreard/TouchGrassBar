@@ -235,37 +235,57 @@ function commandPasses(executable: string, argumentsList: string[], failureMessa
 
 type StapledTicketValidation = { status: number | null; timedOut?: boolean };
 
-function requireValidStapledTicket(
-  validate: () => StapledTicketValidation,
+function requireSuccessfulStaplerOperation(
+  operation: () => StapledTicketValidation,
+  phase: "staple" | "validation",
   failureMessage: string,
-  wait: (milliseconds: number) => void = (milliseconds) => Bun.sleepSync(milliseconds),
+  wait: (milliseconds: number) => void,
 ) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const result = validate();
+    const result = operation();
     if (result.status === 0 && result.timedOut !== true) return;
     const retryEligible =
       result.timedOut === true || (result.status !== null && [68, 69, 75].includes(result.status));
     if (!retryEligible || attempt === 2) {
       const detail =
         result.timedOut === true ? "timed out" : `exit ${result.status ?? "unavailable"}`;
-      throw new Error(`${failureMessage} (validation ${detail}).`);
+      throw new Error(`${failureMessage} (${phase} ${detail}).`);
     }
     wait((attempt + 1) * 20_000);
   }
 }
 
+function requireValidStapledTicket(
+  validate: () => StapledTicketValidation,
+  failureMessage: string,
+  wait: (milliseconds: number) => void = (milliseconds) => Bun.sleepSync(milliseconds),
+) {
+  requireSuccessfulStaplerOperation(validate, "validation", failureMessage, wait);
+}
+
+function requireStapledDmg(
+  staple: () => StapledTicketValidation,
+  validate: () => StapledTicketValidation,
+  wait: (milliseconds: number) => void = (milliseconds) => Bun.sleepSync(milliseconds),
+) {
+  requireSuccessfulStaplerOperation(staple, "staple", "The DMG ticket cannot be stapled.", wait);
+  requireValidStapledTicket(validate, "The DMG stapling result is invalid.", wait);
+}
+
+function runStapler(operation: "staple" | "validate", artifactPath: string) {
+  const result = spawnSync("/usr/bin/xcrun", ["stapler", operation, artifactPath], {
+    killSignal: "SIGKILL",
+    stdio: "ignore",
+    timeout: 30_000,
+  });
+  return {
+    status: result.status,
+    timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
+  };
+}
+
 function validateStapledTicket(artifactPath: string, failureMessage: string) {
-  requireValidStapledTicket(() => {
-    const result = spawnSync("/usr/bin/xcrun", ["stapler", "validate", artifactPath], {
-      killSignal: "SIGKILL",
-      stdio: "ignore",
-      timeout: 30_000,
-    });
-    return {
-      status: result.status,
-      timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT",
-    };
-  }, failureMessage);
+  requireValidStapledTicket(() => runStapler("validate", artifactPath), failureMessage);
 }
 
 function sha256File(filePath: string) {
@@ -397,12 +417,10 @@ function verifyDmg(dmgPath: string, expectedIdentity: string) {
   if (identity !== expectedIdentity || !/^Timestamp=.+$/mu.test(details)) {
     throw new Error("The DMG signing identity or timestamp is invalid.");
   }
-  commandPasses(
-    "/usr/bin/xcrun",
-    ["stapler", "staple", dmgPath],
-    "The DMG ticket cannot be stapled.",
+  requireStapledDmg(
+    () => runStapler("staple", dmgPath),
+    () => runStapler("validate", dmgPath),
   );
-  validateStapledTicket(dmgPath, "The DMG stapling result is invalid.");
   commandPasses(
     "/usr/sbin/spctl",
     ["--assess", "--type", "open", "--context", "context:primary-signature", dmgPath],
@@ -683,6 +701,7 @@ export {
   createTrustReceipt,
   formatChecksums,
   parseCodeSignatureDetails,
+  requireStapledDmg,
   requireValidStapledTicket,
   validateUpdaterArchiveEntries,
 };

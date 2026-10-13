@@ -756,10 +756,10 @@ const definitions: FixtureDefinition[] = [
     hasExplicitVersions: true,
   },
   {
-    tag: "v0.0.61",
+    tag: "v0.0.62",
     sourceCommit: "candidate",
     releaseStatus: "candidate",
-    revision: "361",
+    revision: "362",
     lifecycleVersion: 5,
     updateStateVersion: 3,
     codexUsageIndexVersion: 11,

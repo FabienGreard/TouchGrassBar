@@ -4,6 +4,7 @@ import {
   createTrustReceipt,
   formatChecksums,
   parseCodeSignatureDetails,
+  requireStapledDmg,
   requireValidStapledTicket,
   validateUpdaterArchiveEntries,
 } from "./finalize-macos-release";
@@ -17,6 +18,148 @@ TeamIdentifier=A1B2C3D4E5
 CDHash=0123456789abcdef0123456789abcdef01234567`;
 
 describe("release artifact trust", () => {
+  test.each([68, 69, 75])(
+    "temporary DMG staple exit %s can recover before strict validation",
+    (status) => {
+      let staples = 0;
+      let validations = 0;
+      const waits: number[] = [];
+      expect(() =>
+        requireStapledDmg(
+          () => ({ status: ++staples === 1 ? status : 0 }),
+          () => {
+            validations += 1;
+            return { status: 0 };
+          },
+          (delay) => waits.push(delay),
+        ),
+      ).not.toThrow();
+      expect(staples).toBe(2);
+      expect(validations).toBe(1);
+      expect(waits).toEqual([20_000]);
+    },
+  );
+
+  test("DMG stapling stops after three temporary failures and never validates", () => {
+    let staples = 0;
+    let validations = 0;
+    const waits: number[] = [];
+    expect(() =>
+      requireStapledDmg(
+        () => {
+          staples += 1;
+          return { status: 69 };
+        },
+        () => {
+          validations += 1;
+          return { status: 0 };
+        },
+        (delay) => waits.push(delay),
+      ),
+    ).toThrow("The DMG ticket cannot be stapled. (staple exit 69).");
+    expect(staples).toBe(3);
+    expect(validations).toBe(0);
+    expect(waits).toEqual([20_000, 40_000]);
+  });
+
+  test.each([null, 0])(
+    "a timed-out DMG staple with exit %s is retried and cannot authorize validation",
+    (status) => {
+      let staples = 0;
+      let validations = 0;
+      requireStapledDmg(
+        () => (++staples === 1 ? { status, timedOut: true } : { status: 0 }),
+        () => {
+          validations += 1;
+          return { status: 0 };
+        },
+        () => undefined,
+      );
+      expect(staples).toBe(2);
+      expect(validations).toBe(1);
+    },
+  );
+
+  test("exhausted DMG staple timeouts fail closed even with exit zero", () => {
+    let staples = 0;
+    let validations = 0;
+    expect(() =>
+      requireStapledDmg(
+        () => {
+          staples += 1;
+          return { status: 0, timedOut: true };
+        },
+        () => {
+          validations += 1;
+          return { status: 0 };
+        },
+        () => undefined,
+      ),
+    ).toThrow("The DMG ticket cannot be stapled. (staple timed out).");
+    expect(staples).toBe(3);
+    expect(validations).toBe(0);
+  });
+
+  test.each([1, 65, 66, 77, null])(
+    "invalid or unavailable DMG staple exit %s stops immediately",
+    (status) => {
+      let staples = 0;
+      let validations = 0;
+      const waits: number[] = [];
+      expect(() =>
+        requireStapledDmg(
+          () => {
+            staples += 1;
+            return { status };
+          },
+          () => {
+            validations += 1;
+            return { status: 0 };
+          },
+          (delay) => waits.push(delay),
+        ),
+      ).toThrow("The DMG ticket cannot be stapled.");
+      expect(staples).toBe(1);
+      expect(validations).toBe(0);
+      expect(waits).toEqual([]);
+    },
+  );
+
+  test("a successful DMG staple still requires strict validation and does not staple again during validation retry", () => {
+    const operations: string[] = [];
+    let validations = 0;
+    requireStapledDmg(
+      () => {
+        operations.push("staple");
+        return { status: 0 };
+      },
+      () => {
+        operations.push("validate");
+        return { status: ++validations === 1 ? 75 : 0 };
+      },
+      () => undefined,
+    );
+    expect(operations).toEqual(["staple", "validate", "validate"]);
+  });
+
+  test.each([{ status: 77 }, { status: 0, timedOut: true }])(
+    "a DMG staple cannot hide invalid or timed-out validation: %j",
+    (result) => {
+      let staples = 0;
+      expect(() =>
+        requireStapledDmg(
+          () => {
+            staples += 1;
+            return { status: 0 };
+          },
+          () => result,
+          () => undefined,
+        ),
+      ).toThrow("The DMG stapling result is invalid.");
+      expect(staples).toBe(1);
+    },
+  );
+
   test.each([68, 69, 75])(
     "retries ticket-service exit %s and requires later validation",
     (status) => {
