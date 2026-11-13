@@ -9,7 +9,7 @@
     "modelCatalogPath": "codex-rs/models-manager/models.json",
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/codex/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/openai-standard.json",
-    "pricingManifestSemanticSha256": "ef126fac47373f90910e7e5b6175a9095d0d69a786f6c13e12363132d40e9b6f",
+    "pricingManifestSemanticSha256": "a3fbc368f7b583f8f89c585e7c8a138bd2bd6f010acb55ab33b74d53072093aa",
     "pricingRuleWindows": [
       {
         "id": "api-token-and-tool-pricing",
@@ -48,6 +48,25 @@
           "url": "https://developers.openai.com/api/docs/changelog.md",
           "windowSemanticSha256": "035af557249d5a481f55335d73a82b5221972e2a5c3ceb857503b75c97751bde",
           "sections": [
+            {
+              "id": "gpt-6-1-terra-launch",
+              "heading": "### Oct 26",
+              "selector": "Released GPT-6.1 Terra",
+              "date": "2026-10-26",
+              "semanticSha256": "2910d4a7d6bafb5dcb4eb003f57b4db6c110af2e422b9b373243da38c50452da",
+              "checkpoints": [
+                {
+                  "model": "gpt-6.1-terra",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6.1-terra",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "gpt-6-1-sol-launch",
               "heading": "### Sep 29",
@@ -328,7 +347,7 @@
     ],
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/claude/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/anthropic-standard.json",
-    "pricingManifestSemanticSha256": "4e0022a3fc89d4210d96f369740c9f9dcc10850dfc46da5510923f7edbfe3c15",
+    "pricingManifestSemanticSha256": "b0329b629f17b42473602565d35fe5bbf207b9fa361d4fc93b10d9f8d447c7d8",
     "pricingRuleWindows": [
       {
         "id": "model-token-pricing",
@@ -359,6 +378,35 @@
           "url": "https://platform.claude.com/docs/en/release-notes/overview.md",
           "windowSemanticSha256": "cbb180b2e688bf492b5726dbd54d74dbedc82a3ce6bbd9c7e5d0b642de44a5a2",
           "sections": [
+            {
+              "id": "fable-mythos-5-2-launch",
+              "heading": "### November 9, 2026",
+              "selector": "Claude Fable 5.2 (`claude-fable-5-2`)",
+              "date": "2026-11-09",
+              "semanticSha256": "86255d2bd3f42928cafa915b8200046f7c47a1090363013ac50bd350f7c40707",
+              "checkpoints": [
+                {
+                  "model": "claude-fable-5-2",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-fable-5-2",
+                  "periodKind": "fast",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-mythos-5-2",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "claude-mythos-5-2",
+                  "periodKind": "fast",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "claude-haiku-5-5-launch",
               "heading": "### October 7, 2026",
@@ -456,7 +504,7 @@
                   "periodKind": "standard",
                   "boundary": "absent",
                   "date": "2026-09-01",
-                  "marker": "the previously scheduled increase to $3 / $15 per MTok on September 1, 2026 will not occur"
+                  "marker": "on September 1, 2026, will not occur"
                 }
               ]
             },

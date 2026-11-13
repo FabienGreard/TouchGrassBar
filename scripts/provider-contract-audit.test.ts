@@ -460,7 +460,7 @@ function createScenario() {
   const localSources = new Map<string, string>([
     [
       `${workspaceRoot}/${contract.codex.parserSourcePath}`,
-      "const MIN_SUPPORTED_CODEX_CLI_MINOR: u16 = 147;\nconst MAX_SUPPORTED_CODEX_CLI_MINOR: u16 = 147;",
+      "const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 147;\nconst MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 147;",
     ],
     [`${workspaceRoot}/${contract.codex.pricingManifestPath}`, json(openAiManifest)],
     [
@@ -1301,7 +1301,7 @@ The September price change will now occur.`,
     );
   });
 
-  test("accepts a declared cache read multiplier that the pricing page documents", async () => {
+  test("accepts the current Claude pricing tables and a documented cache read multiplier", async () => {
     const scenario = createScenario();
     const manifest = clone(anthropicManifest);
     const period = manifest.models[0]?.standardPeriods[0] as
@@ -1318,9 +1318,24 @@ The September price change will now occur.`,
     const documentedPricing = anthropicPricing
       .replace(
         "| Cache read (hit) | 0.1x base input price |",
-        "| Cache read (hit) | 0.1x base input price (0.025x on Claude Sonnet 5) |",
+        `| Cache read (hit) | 0.1x base input price on most models |
+
+What a cache hit costs depends on the model:
+
+| Model | Cache hit multiplier | Cache hit price per million tokens |
+| --- | --- | --- |
+| Claude Sonnet 5 | 0.025x | $0.05 USD |
+| All other models | 0.1x | See Model pricing |`,
       )
-      .replace("| $0.2 / MTok |", "| $0.05 / MTok |");
+      .replace("| $0.2 / MTok |", "| $0.05 / MTok<sup>1</sup> |")
+      .replace(
+        "\n\n### Fast mode pricing",
+        "\n| Claude Opus 4 (retired, except on Google Cloud (Google managed)) | $15 / MTok | $18.75 / MTok | $30 / MTok | $1.50 / MTok | $75 / MTok |\n\n### Fast mode pricing",
+      )
+      .replace("| $10 / MTok | $50 / MTok |", "| $10 USD / MTok | $50 USD / MTok |")
+      .replace("50% discount", "50 percent discount")
+      .replace("1.1x pricing multiplier", "1.1x multiplier")
+      .replace("$10 per 1,000 searches", "$10 USD per 1,000 searches");
     const ruleWindow = scenario.contract.claude.pricingRuleWindows[0];
     if (!ruleWindow) throw new Error("The Claude test rule window is absent.");
     ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
@@ -1430,6 +1445,107 @@ The September price change will now occur.`,
           summary: expect.stringContaining("official Fast pricing differs"),
         }),
       ]),
+    );
+  });
+
+  test("checks 30-minute OpenAI prices against the published pricing context threshold", async () => {
+    const scenario = createScenario();
+    const tiered = clone(openAiManifest.models[0]);
+    const period = tiered?.periods[0];
+    const ruleWindow = scenario.contract.codex.pricingRuleWindows[0];
+    if (!tiered || !period || !ruleWindow)
+      throw new Error("The OpenAI test price period is absent.");
+    period.longContext.inputTokensAbove = 272_000;
+    const flat = {
+      aliases: [],
+      name: "gpt-flat",
+      periods: [
+        {
+          cacheWriteUsdPerMillion: null,
+          cachedInputUsdPerMillion: 0.2,
+          effectiveFrom: period.effectiveFrom,
+          effectiveUntil: null,
+          fastMultiplier: 2,
+          inputUsdPerMillion: 2,
+          longContext: { inputMultiplier: 1, inputTokensAbove: 272_000, outputMultiplier: 1 },
+          outputUsdPerMillion: 10,
+        },
+      ],
+    };
+    const manifest = { ...openAiManifest, models: [tiered, flat] };
+    scenario.localSources.set(
+      `${workspaceRoot}/${scenario.contract.codex.pricingManifestPath}`,
+      json(manifest),
+    );
+    scenario.contract.codex.pricingManifestSemanticSha256 = semanticJsonSha256(manifest);
+    scenario.contract.codex.pricingEvidence.boundaryExemptions.push({
+      boundary: "start",
+      date: period.effectiveFrom,
+      model: "gpt-flat",
+      periodKind: "standard",
+      reason: "This fixture checks published rates and does not add dated launch evidence.",
+    });
+    scenario.remoteSources.set(
+      scenario.codexRawUrl("rust-v0.147.0", scenario.contract.codex.modelCatalogPath),
+      json({
+        models: [
+          { ...codexModels.models[0], context_window: 500_000 },
+          { ...codexModels.models[0], context_window: 272_000, slug: "gpt-flat" },
+        ],
+      }),
+    );
+    const tieredHeader =
+      "| Model | Short context input | Short context output | Short context cached input | Short context 30m write | Short context 12h write | Long context input | Long context output | Long context cached input | Long context 30m write | Long context 12h write |";
+    const tieredDivider = "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |";
+    const flatHeader = "| Model | Input | Output | Cached input |\n| --- | --- | --- | --- |";
+    const pricing = `
+# Pricing
+
+### Standard pricing data
+
+${tieredHeader}
+${tieredDivider}
+| gpt-test | $2 | $10 | $0.2 | $2.5 | $5 | $4 | $15 | $0.4 | $5 | $10 |
+
+${flatHeader}
+| gpt-flat | $2 | $10 | $0.2 |
+
+Regional processing (data residency) endpoints are charged a 10% uplift for models released on or after March 5, 2026.
+Priority processing was renamed Fast mode on July 30, 2026.
+
+### Fast pricing data
+
+${tieredHeader}
+${tieredDivider}
+| gpt-test | $4 | $20 | $0.4 | $5 | $10 | $8 | $30 | $0.8 | $10 | $20 |
+
+${flatHeader}
+| gpt-flat | $4 | $20 | $0.4 |
+
+Short context: ≤272K input tokens. Long context: >272K input tokens.
+
+### Other pricing data
+`;
+    scenario.remoteSources.set(scenario.contract.codex.pricingSourceUrl, pricing);
+    ruleWindow.semanticSha256 = semanticPricingRuleWindowSha256(
+      pricing,
+      ruleWindow.startHeading,
+      ruleWindow.endHeading,
+    );
+
+    await expect(scenario.audit()).resolves.toMatchObject({ findings: [], status: "pass" });
+
+    scenario.remoteSources.set(
+      scenario.contract.codex.pricingSourceUrl,
+      pricing.replace("$0.8 | $10 | $20", "$0.8 | $11 | $20"),
+    );
+    const report = await scenario.audit();
+    expect(report.findings).toContainEqual(
+      expect.objectContaining({
+        code: "pricing-modifier-changed",
+        provider: "codex",
+        summary: expect.stringContaining("official Fast pricing differs in longCacheWrite"),
+      }),
     );
   });
 

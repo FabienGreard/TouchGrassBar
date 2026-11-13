@@ -29,6 +29,21 @@ local usage work.
 
 ## OpenAI rules
 
+The `2026-11-13-v1` review adds `gpt-6.1-terra` from its
+[October 26 launch](https://developers.openai.com/api/docs/changelog#oct-26).
+The [model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+and [price table](https://developers.openai.com/api/docs/pricing) list Standard
+rates per million tokens of USD 1 input, 0.05 cache read, 1.25 for a 30-minute
+cache write, and 5 output. Above 272,000 input tokens, input and cache rates
+double and output costs 1.5 times the short-context rate for the full request.
+Fast costs twice Standard in both context bands. The periods start on
+2026-10-26 and remain open. The catalog uses the 30-minute cache write rate
+because the local usage counters do not distinguish retention durations.
+
+The official price table now gives November 30, 2026 as the last day of the
+GPT-5.6 Sol offer. The catalog keeps the current rate open until OpenAI
+publishes the next rate and its effective date.
+
 The `2026-09-30-v1` review adds `gpt-6.1-sol` from its
 [September 29 launch](https://developers.openai.com/api/docs/changelog#sep-29).
 The [model page](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
@@ -160,6 +175,24 @@ The `2026-08-26-v2` review used these dated first-party changes:
 
 ## Anthropic rules
 
+The `2026-11-13-v1` review adds `claude-fable-5-2` and `claude-mythos-5-2`
+from the [November 9 launch](https://www.anthropic.com/claude-fable-and-mythos-5-2).
+Both models use the same rates across the full context window. The
+[Claude API price table](https://platform.claude.com/docs/en/about-claude/pricing)
+lists these rates in USD per million tokens.
+
+| Token category          | Standard |  Fast |
+| ----------------------- | -------: | ----: |
+| Input                   |     8.00 | 16.00 |
+| Five-minute cache write |    10.00 | 20.00 |
+| One-hour cache write    |    16.00 | 32.00 |
+| Cache read              |     0.20 |  0.40 |
+| Output                  |    40.00 | 80.00 |
+
+Both price periods start on 2026-11-09. US inference applies a factor of 1.1
+to either speed. Batch applies a factor of 0.5 to Standard prices. The catalog
+uses the published model IDs.
+
 The `2026-10-09-v1` review adds `claude-haiku-5-5`, released on
 [October 7](https://www.anthropic.com/claude-haiku-5-5). Its
 [model page](https://platform.claude.com/docs/en/models/haiku-5-5/overview)
@@ -215,8 +248,8 @@ period is inside a standard price period.
 
 Cache writes are always 1.25 times base input for 5 minutes and 2 times base
 input for 1 hour. Anthropic prices a cache read at 0.1 times base input, with
-published exceptions of 0.025 for Fable 5.1 and Mythos 5.1, and 0.05 for Opus
-5.5 and Sonnet 5.5. A period that uses an exception must declare
+published exceptions of 0.025 for Fable and Mythos versions 5.1 and 5.2, and
+0.05 for Opus 5.5 and Sonnet 5.5. A period that uses an exception must declare
 `cacheReadMultiplier`. Omitting the field means the 0.1 times rule. The Rust
 parser rejects any other multiplier and rejects a cache read rate that does not
 match the multiplier the period declares. The audit compares the declared set

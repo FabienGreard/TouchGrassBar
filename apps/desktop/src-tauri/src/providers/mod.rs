@@ -45,6 +45,7 @@ const RETAINED_CODEX_PRICING_BASES: &[&str] = &[
     "openai-standard-2026-08-26-v2",
     "openai-standard-2026-09-05-v1",
     "openai-standard-2026-09-24-v1",
+    "openai-standard-2026-09-30-v1",
 ];
 const RETAINED_CLAUDE_PRICING_BASES: &[&str] = &[
     "anthropic-standard-2026-08-07-v1",
@@ -53,6 +54,7 @@ const RETAINED_CLAUDE_PRICING_BASES: &[&str] = &[
     "anthropic-standard-2026-09-23-v1",
     "anthropic-standard-2026-09-23-v2",
     "anthropic-standard-2026-09-30-v1",
+    "anthropic-standard-2026-10-09-v1",
 ];
 
 pub(crate) fn current_pricing_basis(provider: CodingProvider) -> Option<&'static str> {

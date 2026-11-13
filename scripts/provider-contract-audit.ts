@@ -825,22 +825,22 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-function codexParserRange(source: string): {
+function codexReviewedCliRange(source: string): {
   maximum: number;
   minimum: number;
 } {
   const read = (name: string) => {
     const match = new RegExp(`const\\s+${name}:\\s*u16\\s*=\\s*(\\d+)`, "u").exec(source);
-    if (!match?.[1]) throw new Error("The Codex parser range is unavailable.");
+    if (!match?.[1]) throw new Error("The reviewed Codex CLI range is unavailable.");
     return Number(match[1]);
   };
   return {
-    maximum: read("MAX_SUPPORTED_CODEX_CLI_MINOR"),
-    minimum: read("MIN_SUPPORTED_CODEX_CLI_MINOR"),
+    maximum: read("MAX_REVIEWED_CODEX_CLI_MINOR"),
+    minimum: read("MIN_REVIEWED_CODEX_CLI_MINOR"),
   };
 }
 
-function codexVersionIsSupported(
+function codexVersionIsReviewed(
   version: string,
   range: { maximum: number; minimum: number },
 ): boolean {
@@ -992,7 +992,11 @@ function markdownTableAfter(source: string, heading: string): string[][] {
     if (!line.trimStart().startsWith("|")) break;
     contiguous.push(line);
   }
-  const rows = contiguous.map((line) =>
+  return markdownTableRows(contiguous, heading);
+}
+
+function markdownTableRows(lines: string[], heading: string): string[][] {
+  const rows = lines.map((line) =>
     line
       .trim()
       .replace(/^\|/u, "")
@@ -1062,7 +1066,10 @@ function markdownSectionRange(
     }
     const sectionSource = normalizedSource.slice(start, end).trimEnd();
     if (
-      plainMarkdown(sectionSource).toLowerCase().includes(plainMarkdown(selector).toLowerCase())
+      plainMarkdown(sectionSource)
+        .replaceAll("’", "'")
+        .toLowerCase()
+        .includes(plainMarkdown(selector).replaceAll("’", "'").toLowerCase())
     ) {
       candidates.push({ end, source: sectionSource, start });
     }
@@ -1187,7 +1194,7 @@ export function semanticPricingEvidenceWindowSha256(
 }
 
 function parseUsdRateCell(value: string): number | null {
-  const normalized = plainMarkdown(value).replace(/\s*\/\s*M(?:Tok| tokens?).*$/iu, "");
+  const normalized = plainMarkdown(value).replace(/(?:\s+USD)?\s*\/\s*M(?:Tok| tokens?).*$/iu, "");
   if (normalized === "-") return null;
   const match = /^\$([0-9]+(?:\.[0-9]+)?)$/u.exec(normalized);
   if (!match?.[1]) throw new SourceShapeError("A price cell is invalid.");
@@ -1197,30 +1204,89 @@ function parseUsdRateCell(value: string): number | null {
 function openAiRates(
   source: string,
   heading: "### Fast pricing data" | "### Standard pricing data",
-): Map<string, PublishedOpenAiRate> {
-  const rows = markdownTableAfter(source, heading);
-  if (rows[0]?.length !== 9) throw new SourceShapeError("The OpenAI price columns changed.");
+): { rates: Map<string, PublishedOpenAiRate>; contextThreshold?: number } {
+  const section = markdownSectionRange(source, heading, "| Model |");
+  const tables = section.source
+    .split(/\n\s*\n/u)
+    .filter((block) => block.trimStart().startsWith("|"));
+  if (tables.length === 0) throw new SourceShapeError(`${heading} has no table.`);
   const rates = new Map<string, PublishedOpenAiRate>();
-  for (const row of rows.slice(1)) {
-    if (row.length !== 9) throw new SourceShapeError("An OpenAI price row changed.");
-    const publishedModel = plainMarkdown(row[0] ?? "");
-    const model = publishedModel.replace(/\s+\(<.*$/u, "");
-    if (!safeIdentifier(model, 128) || rates.has(model)) {
-      throw new SourceShapeError("An OpenAI model identifier is invalid.");
+  let contextThreshold: number | undefined;
+  for (const table of tables) {
+    const [header, ...rows] = markdownTableRows(table.trim().split("\n"), heading);
+    const columns = header?.map((cell) => plainMarkdown(cell).toLowerCase()).join("|");
+    let rateColumns: Partial<Record<keyof OpenAiRate, number>>;
+    switch (columns) {
+      case "model|short context input|short context output|short context cached input|short context 30m write|short context 12h write|long context input|long context output|long context cached input|long context 30m write|long context 12h write":
+        rateColumns = {
+          input: 1,
+          output: 2,
+          cachedInput: 3,
+          cacheWrite: 4,
+          longInput: 6,
+          longOutput: 7,
+          longCachedInput: 8,
+          longCacheWrite: 9,
+        };
+        contextThreshold = openAiContextThreshold(source);
+        break;
+      case "model|input|output|cached input":
+        rateColumns = { input: 1, output: 2, cachedInput: 3 };
+        break;
+      default:
+        if (header?.length !== 9) {
+          throw new SourceShapeError("The OpenAI price columns changed.");
+        }
+        rateColumns = {
+          input: 1,
+          cachedInput: 2,
+          cacheWrite: 3,
+          output: 4,
+          longInput: 5,
+          longCachedInput: 6,
+          longCacheWrite: 7,
+          longOutput: 8,
+        };
     }
-    rates.set(model, {
-      contextQualified: publishedModel !== model,
-      input: parseUsdRateCell(row[1] ?? ""),
-      cachedInput: parseUsdRateCell(row[2] ?? ""),
-      cacheWrite: parseUsdRateCell(row[3] ?? ""),
-      output: parseUsdRateCell(row[4] ?? ""),
-      longInput: parseUsdRateCell(row[5] ?? ""),
-      longCachedInput: parseUsdRateCell(row[6] ?? ""),
-      longCacheWrite: parseUsdRateCell(row[7] ?? ""),
-      longOutput: parseUsdRateCell(row[8] ?? ""),
-    });
+    for (const row of rows) {
+      if (row.length !== header?.length) {
+        throw new SourceShapeError("An OpenAI price row changed.");
+      }
+      const publishedModel = plainMarkdown(row[0] ?? "");
+      const model = publishedModel.replace(/\s+\(<.*$/u, "");
+      if (!safeIdentifier(model, 128) || rates.has(model) || rates.size >= 1_000) {
+        throw new SourceShapeError("An OpenAI model identifier is invalid.");
+      }
+      const price = (field: keyof OpenAiRate) => {
+        const column = rateColumns[field];
+        return column === undefined ? null : parseUsdRateCell(row[column] ?? "");
+      };
+      rates.set(model, {
+        contextQualified: publishedModel !== model,
+        input: price("input"),
+        cachedInput: price("cachedInput"),
+        cacheWrite: price("cacheWrite"),
+        output: price("output"),
+        longInput: price("longInput"),
+        longCachedInput: price("longCachedInput"),
+        longCacheWrite: price("longCacheWrite"),
+        longOutput: price("longOutput"),
+      });
+    }
   }
-  return rates;
+  return { rates, contextThreshold };
+}
+
+function openAiContextThreshold(source: string): number {
+  const match =
+    /^Short context: ≤([1-9]\d*)K input tokens\. Long context: >\1K input tokens\.$/mu.exec(
+      normalizedMarkdownSource(source),
+    );
+  const threshold = Number(match?.[1]) * 1_000;
+  if (!Number.isSafeInteger(threshold)) {
+    throw new SourceShapeError("The OpenAI long-context pricing threshold changed.");
+  }
+  return threshold;
 }
 
 type PublishedAnthropicRate = AnthropicRate & {
@@ -1249,6 +1315,7 @@ function anthropicRates(source: string): Map<string, PublishedAnthropicRate> {
       throw new SourceShapeError("An Anthropic prompt threshold is invalid.");
     }
     const name = rawName
+      .replace(/\s+\(retired\b.*\)$/iu, "")
       .replace(/\s+\([^)]*\)\s*$/u, "")
       .trim()
       .toLowerCase();
@@ -1684,10 +1751,10 @@ async function auditCodex(context: AuditContext) {
     { area: "parser", context, id: "codex-parser", provider: "codex" },
     contract.parserSourcePath,
   );
-  let parserRange: { maximum: number; minimum: number } | undefined;
+  let reviewedCliRange: { maximum: number; minimum: number } | undefined;
   if (parserSource !== undefined) {
     try {
-      parserRange = codexParserRange(parserSource);
+      reviewedCliRange = codexReviewedCliRange(parserSource);
     } catch {
       finding(
         context,
@@ -1695,7 +1762,7 @@ async function auditCodex(context: AuditContext) {
         "parser",
         "unavailable",
         "invalid-local-contract",
-        "codex-parser: the supported CLI range cannot be read.",
+        "codex-parser: the reviewed CLI range cannot be read.",
       );
     }
   }
@@ -1746,14 +1813,14 @@ async function auditCodex(context: AuditContext) {
           contract.releaseUrl,
         );
       }
-      if (parserRange && !codexVersionIsSupported(releaseVersion, parserRange)) {
+      if (reviewedCliRange && !codexVersionIsReviewed(releaseVersion, reviewedCliRange)) {
         finding(
           context,
           "codex",
           "parser",
           "review-required",
           "unsupported-version",
-          `Codex ${releaseVersion} is outside parser range 0.${parserRange.minimum} through 0.${parserRange.maximum}.`,
+          `Codex ${releaseVersion} is outside the reviewed CLI range 0.${reviewedCliRange.minimum} through 0.${reviewedCliRange.maximum}.`,
           contract.releaseUrl,
         );
       }
@@ -1939,8 +2006,11 @@ function auditOpenAiPricing(
   ) {
     throw new SourceShapeError("The Codex model catalog is invalid.");
   }
-  const officialRates = openAiRates(pricingSource, "### Standard pricing data");
-  const officialFastRates = openAiRates(pricingSource, "### Fast pricing data");
+  const { rates: officialRates, contextThreshold } = openAiRates(
+    pricingSource,
+    "### Standard pricing data",
+  );
+  const { rates: officialFastRates } = openAiRates(pricingSource, "### Fast pricing data");
   const today = isoDay(context.now);
   const normalizedPricingSource = plainMarkdown(pricingSource).toLowerCase();
   const missingSemanticMarkers = context.contract.codex.pricingSemanticMarkers.filter(
@@ -2098,13 +2168,13 @@ function auditOpenAiPricing(
     const changed = (Object.keys(expected) as Array<keyof OpenAiRate>).filter(
       (key) => !ratesEqual(expected[key], publishedAllContext[key]),
     );
-    const contextWindow = officialModel.context_window;
+    const contextWindow = contextThreshold ?? officialModel.context_window;
     if (
       typeof contextWindow !== "number" ||
       !Number.isSafeInteger(contextWindow) ||
       contextWindow <= 0
     ) {
-      throw new SourceShapeError("A Codex context window is invalid.");
+      throw new SourceShapeError("The OpenAI pricing context threshold is invalid.");
     }
     if (period.longContext.inputTokensAbove !== contextWindow) {
       changed.push("longInput");
@@ -2428,6 +2498,29 @@ function documentedCacheReadExceptions(source: string) {
   const exceptions = new Map<number, Set<string>>(
     REDUCED_CACHE_READ_MULTIPLIERS.map((multiplier) => [multiplier, new Set<string>()]),
   );
+  const tableMarker = "What a cache hit costs depends on the model:";
+  if (source.includes(tableMarker)) {
+    const [headers, ...rows] = markdownTableAfter(source, tableMarker);
+    if (headers?.length !== 3 || headers[1] !== "Cache hit multiplier") {
+      throw new SourceShapeError("The Anthropic cache hit pricing table changed.");
+    }
+    for (const row of rows) {
+      const names = plainMarkdown(row[0] ?? "").toLowerCase();
+      const rate = /^([0-9]+(?:\.[0-9]+)?)x$/u.exec(row[1] ?? "");
+      if (row.length !== 3 || !names || !rate) {
+        throw new SourceShapeError("An Anthropic cache hit pricing row changed.");
+      }
+      const multiplier = Number(rate[1]);
+      if (multiplier === STANDARD_CACHE_READ_MULTIPLIER) continue;
+      const documented = exceptions.get(multiplier) ?? new Set<string>();
+      for (const name of names.split(/\s*(?:,|\band\b)\s*/u).filter(Boolean)) {
+        documented.add(name);
+      }
+      exceptions.set(multiplier, documented);
+    }
+    return exceptions;
+  }
+
   const clause = /Cache read \(hit\)\s*\|\s*0\.1x base input price \(([^)]+)\)/iu.exec(source)?.[1];
   for (const part of (clause ?? "").split(";")) {
     const match = /^\s*([0-9.]+)x on (.+)$/u.exec(part);
@@ -2677,11 +2770,13 @@ function auditAnthropicPricing(context: AuditContext, manifest: AnthropicManifes
 
   const normalized = plainMarkdown(source);
   const modifierChecks = [
-    ratesEqual(manifest.batchFactor, 0.5) && /\b50% discount\b/iu.test(normalized),
+    ratesEqual(manifest.batchFactor, 0.5) && /\b50(?:%| percent) discount\b/iu.test(normalized),
     ratesEqual(manifest.usInferenceFactor, 1.1) &&
-      /For Claude 4\.6 and later models,[^.]{0,240}\b1\.1x pricing multiplier\b/iu.test(normalized),
+      /For Claude 4\.6 and later models,[^.]{0,240}\b1\.1x (?:pricing )?multiplier\b/iu.test(
+        normalized,
+      ),
     ratesEqual(manifest.webSearchUsdPerThousand, 10) &&
-      /\$10 per 1,000 searches/iu.test(normalized),
+      /\$10 (?:USD )?per 1,000 searches/iu.test(normalized),
     /5-minute cache write\s*\|\s*1\.25x base input price/iu.test(source),
     /1-hour cache write\s*\|\s*2x base input price/iu.test(source),
     /Cache read \(hit\)\s*\|\s*0\.1x base input price/iu.test(source),

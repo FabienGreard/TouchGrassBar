@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "basis": "openai-standard-2026-09-30-v1",
+  "basis": "openai-standard-2026-11-13-v1",
   "models": [
     {
       "name": "gpt-6-astra",
@@ -284,6 +284,34 @@
             "cachedInputUsdPerMillion": 0.4,
             "cacheWriteUsdPerMillion": 10.0,
             "outputUsdPerMillion": 30
+          }
+        }
+      ]
+    },
+    {
+      "name": "gpt-6.1-terra",
+      "aliases": [],
+      "periods": [
+        {
+          "effectiveFrom": "2026-10-26",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 1.0,
+          "cachedInputUsdPerMillion": 0.05,
+          "cacheWriteUsdPerMillion": 1.25,
+          "outputUsdPerMillion": 5.0,
+          "fastMultiplier": 2.0,
+          "longContext": {
+            "inputTokensAbove": 272000,
+            "inputMultiplier": 2.0,
+            "outputMultiplier": 1.5
+          },
+          "fastLongContext": {
+            "effectiveFrom": "2026-10-26",
+            "effectiveUntil": null,
+            "inputUsdPerMillion": 4.0,
+            "cachedInputUsdPerMillion": 0.2,
+            "cacheWriteUsdPerMillion": 5.0,
+            "outputUsdPerMillion": 15.0
           }
         }
       ]
