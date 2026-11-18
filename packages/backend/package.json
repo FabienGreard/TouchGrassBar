@@ -19,9 +19,10 @@
     "@convex-dev/better-auth": "0.12.5",
     "@convex-dev/migrations": "0.3.6",
     "@convex-dev/rate-limiter": "0.3.2",
-    "@touchgrass/contracts": "workspace:*",
+    "@touchgrass/contracts": "*",
     "better-auth": "1.6.25",
-    "convex": "1.43.0"
+    "convex": "1.43.0",
+    "convex-helpers": "0.1.124"
   },
   "devDependencies": {
     "@edge-runtime/vm": "5.0.0",
