@@ -43,7 +43,8 @@ Above 272,000 input tokens, input and cache rates double and output costs 1.5
 times the short-context rate for the full request. Fast costs twice Standard
 in each context band. Both price periods start on 2026-11-17 and remain open.
 OpenAI also publishes Ultrafast prices. The local estimate supports Standard
-and Fast.
+and Fast. Fast requires a recorded request tier. The default Codex CLI
+0.170.0 logs lack that evidence, so those requests use the Standard estimate.
 
 The same catalog adds `gpt-6.1-terra` from its
 [October 26 launch](https://developers.openai.com/api/docs/changelog#oct-26).

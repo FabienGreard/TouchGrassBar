@@ -13,6 +13,9 @@ Mythos 5.2 to local API-Equivalent Cost. The new bases are
 `anthropic-standard-2026-11-13-v1`. Keep `openai-standard-2026-09-30-v1` and
 `anthropic-standard-2026-10-09-v1` approved for older clients and retained
 rows. The normal scan recalculates cost from retained token counts.
+Codex parser 26 also reads the current task and token-count metadata. The
+normal scan replays retained Codex logs when a stored checkpoint uses an
+earlier parser.
 
 ## Execution plan
 
@@ -33,8 +36,9 @@ parse checkpoint, observed token totals, recovered cost, and a repeated
 repricing pass. All 55 Usage Snapshot sync tests passed, including sync with
 each approved pricing basis.
 
-The live audit compares the new models with current provider prices and
-launch dates. Issue #99 tracks the remaining provider contract findings.
+The live audit on 2026-11-18 compared the new models with current provider
+prices and launch dates. Issue #99 tracks the remaining provider contract
+findings.
 Record production and client evidence in the owner issue.
 
 ## Recovery
