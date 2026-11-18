@@ -3,11 +3,13 @@
 - **Status:** planned
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
 - **Implementation:** [November pricing catalogs](https://github.com/FabienGreard/TouchGrassBar/commit/dd456226ed42e79cb5bbf7ab481c7effe491232c)
+  and [GPT-6.2 pricing](https://github.com/FabienGreard/TouchGrassBar/commit/0fa120456a1f360fea47c956a7828a015e60627d).
 
 ## Scope
 
-Add GPT-6.1 Terra, Claude Fable 5.2, and Claude Mythos 5.2 to local
-API-Equivalent Cost. The new bases are `openai-standard-2026-11-13-v1` and
+Add GPT-6.1 Terra, GPT-6.2 Astra, GPT-6.2 Sol, Claude Fable 5.2, and Claude
+Mythos 5.2 to local API-Equivalent Cost. The new bases are
+`openai-standard-2026-11-18-v1` and
 `anthropic-standard-2026-11-13-v1`. Keep `openai-standard-2026-09-30-v1` and
 `anthropic-standard-2026-10-09-v1` approved for older clients and retained
 rows. The normal scan recalculates cost from retained token counts.
@@ -31,8 +33,8 @@ parse checkpoint, observed token totals, recovered cost, and a repeated
 repricing pass. All 55 Usage Snapshot sync tests passed, including sync with
 each approved pricing basis.
 
-The live audit compared the three new models with current provider prices
-and launch dates. Issue #99 tracks the remaining provider contract findings.
+The live audit compares the new models with current provider prices and
+launch dates. Issue #99 tracks the remaining provider contract findings.
 Record production and client evidence in the owner issue.
 
 ## Recovery
