@@ -9,7 +9,7 @@
     "modelCatalogPath": "codex-rs/models-manager/models.json",
     "parserSourcePath": "apps/desktop/src-tauri/src/providers/codex/usage.rs",
     "pricingManifestPath": "apps/desktop/src-tauri/pricing/openai-standard.json",
-    "pricingManifestSemanticSha256": "a3fbc368f7b583f8f89c585e7c8a138bd2bd6f010acb55ab33b74d53072093aa",
+    "pricingManifestSemanticSha256": "f8ac629b0bcac36769e98cbe90305fdde5f410710bbf2daa45ca5137775d2e6b",
     "pricingRuleWindows": [
       {
         "id": "api-token-and-tool-pricing",
@@ -48,6 +48,35 @@
           "url": "https://developers.openai.com/api/docs/changelog.md",
           "windowSemanticSha256": "035af557249d5a481f55335d73a82b5221972e2a5c3ceb857503b75c97751bde",
           "sections": [
+            {
+              "id": "gpt-6-2-astra-sol-launch",
+              "heading": "### Nov 17",
+              "selector": "Use GPT-6.2 Astra for demanding reasoning",
+              "date": "2026-11-17",
+              "semanticSha256": "6b6c476eaef88f53b514965086c000768bcc4dcf546ad5521701ca7723398848",
+              "checkpoints": [
+                {
+                  "model": "gpt-6.2-astra",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6.2-astra",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6.2-sol",
+                  "periodKind": "standard",
+                  "boundary": "start"
+                },
+                {
+                  "model": "gpt-6.2-sol",
+                  "periodKind": "fast-long-context",
+                  "boundary": "start"
+                }
+              ]
+            },
             {
               "id": "gpt-6-1-terra-launch",
               "heading": "### Oct 26",

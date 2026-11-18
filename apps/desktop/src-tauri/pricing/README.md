@@ -29,7 +29,23 @@ local usage work.
 
 ## OpenAI rules
 
-The `2026-11-13-v1` review adds `gpt-6.1-terra` from its
+The `2026-11-18-v1` review adds `gpt-6.2-astra` and `gpt-6.2-sol` from
+their [November 17 launch](https://learn.chatgpt.com/docs/whats-new/gpt-62-astra-sol).
+The [OpenAI price table](https://developers.openai.com/api/docs/pricing) lists
+these Standard rates in USD per million tokens.
+
+| Model         | Input | Cache read | 30-minute cache write | Output |
+| ------------- | ----: | ---------: | --------------------: | -----: |
+| GPT-6.2 Astra |  8.00 |       0.40 |                 10.00 |  40.00 |
+| GPT-6.2 Sol   |  2.00 |       0.10 |                  2.50 |  10.00 |
+
+Above 272,000 input tokens, input and cache rates double and output costs 1.5
+times the short-context rate for the full request. Fast costs twice Standard
+in each context band. Both price periods start on 2026-11-17 and remain open.
+OpenAI also publishes Ultrafast prices. The local estimate supports Standard
+and Fast.
+
+The same catalog adds `gpt-6.1-terra` from its
 [October 26 launch](https://developers.openai.com/api/docs/changelog#oct-26).
 The [model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
 and [price table](https://developers.openai.com/api/docs/pricing) list Standard

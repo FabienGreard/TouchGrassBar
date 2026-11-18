@@ -13320,7 +13320,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-standard-2026-11-13-v1");
+        assert_eq!(manifest.basis, "openai-standard-2026-11-18-v1");
         assert!(
             catalog_entry(
                 &manifest,
@@ -14024,12 +14024,14 @@ mod tests {
     }
 
     #[test]
-    fn gpt_6_1_prices_all_context_tiers_from_launch() {
+    fn gpt_6_1_and_6_2_price_both_context_bands_from_launch() {
         // Input includes cache reads and writes; output includes reasoning.
         let usage = token_usage(400_000, 100_000, 100_000, 100_000);
         for (model, month, day, short, long) in [
             ("gpt-6.1-sol", Month::September, 29, 1.66, 2.82),
             ("gpt-6.1-terra", Month::October, 26, 0.83, 1.41),
+            ("gpt-6.2-astra", Month::November, 17, 6.64, 11.28),
+            ("gpt-6.2-sol", Month::November, 17, 1.66, 2.82),
         ] {
             let launch = Date::from_calendar_date(2026, month, day).unwrap();
             for (context, standard) in [(272_000, short), (272_001, long)] {
