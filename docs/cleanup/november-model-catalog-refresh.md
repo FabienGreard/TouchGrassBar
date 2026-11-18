@@ -1,6 +1,6 @@
 # November model catalog rollout
 
-- **Status:** planned
+- **Status:** blocked
 - **Owner issue:** [#99](https://github.com/FabienGreard/TouchGrassBar/issues/99)
 - **Implementation:** [November pricing catalogs](https://github.com/FabienGreard/TouchGrassBar/commit/dd456226ed42e79cb5bbf7ab481c7effe491232c)
   and [GPT-6.2 pricing](https://github.com/FabienGreard/TouchGrassBar/commit/0fa120456a1f360fea47c956a7828a015e60627d).
@@ -39,7 +39,19 @@ each approved pricing basis.
 The live audit on 2026-11-18 compared the new models with current provider
 prices and launch dates. Issue #99 tracks the remaining provider contract
 findings.
-Record production and client evidence in the owner issue.
+
+On 2026-11-18, candidate
+[`c8a9a22a`](https://github.com/FabienGreard/TouchGrassBar/commit/c8a9a22a540e0d4cb1620491d8d73a7efcfba97e)
+passed [main CI](https://github.com/FabienGreard/TouchGrassBar/actions/runs/44284635073).
+The dry deployment and production deployment to `next-pig-820` passed.
+The production check found a successful sync and 10 leaderboard rows,
+including three with cost.
+
+Apple rejected [the v0.0.63 build](https://github.com/FabienGreard/TouchGrassBar/actions/runs/44287614196)
+at notarization because an agreement is missing or has expired. The account
+holder must resolve the agreement before the next candidate can pass
+notarization. The next candidate is v0.0.64. Record released-client recovery
+evidence in the owner issue.
 
 ## Recovery
 
