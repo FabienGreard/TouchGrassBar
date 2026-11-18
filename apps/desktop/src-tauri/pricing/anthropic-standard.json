@@ -1,10 +1,68 @@
 {
   "schemaVersion": 1,
-  "basis": "anthropic-standard-2026-10-09-v1",
+  "basis": "anthropic-standard-2026-11-13-v1",
   "batchFactor": 0.5,
   "usInferenceFactor": 1.1,
   "webSearchUsdPerThousand": 10.0,
   "models": [
+    {
+      "name": "claude-fable-5-2",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-11-09",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 8.0,
+          "cacheWrite5mUsdPerMillion": 10.0,
+          "cacheWrite1hUsdPerMillion": 16.0,
+          "cacheReadUsdPerMillion": 0.2,
+          "cacheReadMultiplier": 0.025,
+          "outputUsdPerMillion": 40.0
+        }
+      ],
+      "fastPeriods": [
+        {
+          "effectiveFrom": "2026-11-09",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 16.0,
+          "cacheWrite5mUsdPerMillion": 20.0,
+          "cacheWrite1hUsdPerMillion": 32.0,
+          "cacheReadUsdPerMillion": 0.4,
+          "cacheReadMultiplier": 0.025,
+          "outputUsdPerMillion": 80.0
+        }
+      ]
+    },
+    {
+      "name": "claude-mythos-5-2",
+      "aliases": [],
+      "supportsUsInference": true,
+      "standardPeriods": [
+        {
+          "effectiveFrom": "2026-11-09",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 8.0,
+          "cacheWrite5mUsdPerMillion": 10.0,
+          "cacheWrite1hUsdPerMillion": 16.0,
+          "cacheReadUsdPerMillion": 0.2,
+          "cacheReadMultiplier": 0.025,
+          "outputUsdPerMillion": 40.0
+        }
+      ],
+      "fastPeriods": [
+        {
+          "effectiveFrom": "2026-11-09",
+          "effectiveUntil": null,
+          "inputUsdPerMillion": 16.0,
+          "cacheWrite5mUsdPerMillion": 20.0,
+          "cacheWrite1hUsdPerMillion": 32.0,
+          "cacheReadUsdPerMillion": 0.4,
+          "cacheReadMultiplier": 0.025,
+          "outputUsdPerMillion": 80.0
+        }
+      ]
+    },
     {
       "name": "claude-fable-5-1",
       "aliases": [],

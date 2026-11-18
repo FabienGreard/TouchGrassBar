@@ -3,6 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ const GROUP_INTERVAL_MS: u64 = 5 * 60_000;
 const UNCHANGED_BLOCKER_INTERVAL_MS: u64 = 30 * 60_000;
 const MAX_ENTRIES: usize = 32;
 const MAX_ATTEMPTS_PER_HOUR: usize = 30;
+const CAPTURE_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -61,6 +63,7 @@ pub(super) struct Queue {
     path: Option<PathBuf>,
     app: AppContext,
     state: StoredQueue,
+    capture_checkpoint_at: Option<Instant>,
 }
 
 impl Queue {
@@ -79,7 +82,12 @@ impl Queue {
                 && serde_json::to_vec(&entry.report)
                     .is_ok_and(|bytes| bytes.len() <= MAX_REPORT_BYTES)
         });
-        let mut queue = Self { path, app, state };
+        let mut queue = Self {
+            path,
+            app,
+            state,
+            capture_checkpoint_at: None,
+        };
         queue.prune(now);
         // Remove expired or invalid stored data even if the app has no new failure.
         let _ = queue.persist();
@@ -136,6 +144,7 @@ impl Queue {
             return Err(DiagnosticError);
         }
         self.prune(now);
+        let was_empty = self.state.entries.is_empty();
         let group = format!("{}:{}", self.app.version, failure.group());
         let blocker = matches!(&failure, Failure::Database { .. })
             || matches!(&failure, Failure::Parser { context, .. } if context.reason == ParserReason::ScanIncomplete);
@@ -224,7 +233,26 @@ impl Queue {
             }
         }
         self.prune(now);
-        self.persist()
+        if was_empty {
+            return self.persist();
+        }
+        if self.path.is_some() {
+            self.capture_checkpoint_at
+                .get_or_insert_with(|| Instant::now() + CAPTURE_CHECKPOINT_INTERVAL);
+        }
+        Ok(())
+    }
+
+    /// Combine new captures before replacing the whole file. Uploads and
+    /// authority changes still persist immediately.
+    pub fn checkpoint_captures(&mut self, now: Instant) -> Result<(), DiagnosticError> {
+        if self
+            .capture_checkpoint_at
+            .is_some_and(|deadline| deadline <= now)
+        {
+            self.persist()?;
+        }
+        Ok(())
     }
 
     pub(super) fn record_loss(&mut self, loss: &CollectionLoss) {
@@ -439,6 +467,7 @@ impl Queue {
                 }
             }
         }
+        self.capture_checkpoint_at = None;
         Ok(())
     }
 }
@@ -582,6 +611,33 @@ mod tests {
             generation: 1,
         }
     }
+
+    #[test]
+    fn a_burst_of_repeated_captures_does_not_rewrite_the_queue_for_each_failure() {
+        let temp = Temp::new();
+        let mut queue = Queue::open(Some(&temp.0), app(), NOW);
+        queue.bind(Some(binding())).unwrap();
+        queue.capture(failure(), NOW).unwrap();
+        let path = temp.0.join("pending-v1.json");
+        let before = fs::read(&path).unwrap();
+        let started_at = Instant::now();
+
+        for offset in 1..=64 {
+            queue.capture(failure(), NOW + offset).unwrap();
+            queue.checkpoint_captures(started_at).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+
+        queue
+            .checkpoint_captures(Instant::now() + CAPTURE_CHECKPOINT_INTERVAL)
+            .unwrap();
+        let stored = read_state(&path).unwrap();
+        assert_eq!(stored.entries.len(), 1);
+        assert_eq!(stored.entries[0].report.occurrence_count, 65);
+        assert_eq!(stored.entries[0].report.first_occurred_at, NOW);
+        assert_eq!(stored.entries[0].report.last_occurred_at, NOW + 64);
+    }
+
     fn failure() -> Failure {
         Failure::Parser {
             provider: Provider::Claude,
@@ -722,6 +778,7 @@ mod tests {
             }
             queue.capture(failure, NOW).unwrap();
         }
+        queue.persist().unwrap();
         let mut restarted = Queue::open(Some(&temp.0), app(), NOW);
         let report = restarted.next(&binding(), NOW).unwrap().unwrap();
         assert_eq!(report.collection_loss.as_ref().unwrap().queue_evicted, 8);

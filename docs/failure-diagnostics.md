@@ -207,9 +207,12 @@ present. There is no automatic recovery report and no remote command that
 reads arbitrary files, logs, or SQL.
 
 The local queue expires reports after seven days and has a 2 MiB storage
-budget, including atomic replacement. Server records expire 14 days after
-receipt. An hourly internal cleanup deletes expired records in bounded
-batches. Diagnostics are independent of normal usage synchronization.
+budget, including atomic replacement. The worker saves the first report in an
+empty queue immediately and groups later captures before writing them to disk.
+If the process stops before the next write, some recent captures can be lost.
+The worker still saves a report before its first upload. Server records expire
+14 days after receipt. An hourly internal cleanup deletes expired records in
+bounded batches. Diagnostics are independent of normal usage synchronization.
 
 ## Release order
 

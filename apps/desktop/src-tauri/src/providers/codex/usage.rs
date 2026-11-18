@@ -46,7 +46,7 @@ const REPRICE_ROWS_PER_PASS: usize = 256;
 const PRUNE_ROWS_PER_PASS: usize = 1_000;
 const MIN_REVIEWED_CODEX_CLI_MINOR: u16 = 130;
 const MAX_REVIEWED_CODEX_CLI_MINOR: u16 = 153;
-const ROLLOUT_PARSER_VERSION: i64 = 25;
+const ROLLOUT_PARSER_VERSION: i64 = 26;
 
 fn read_scan_context(
     connection: &Connection,
@@ -1254,6 +1254,10 @@ enum RawEventPayload {
         // This identifies the root task. Fast pricing still uses this task's turn_id.
         #[serde(default, rename = "root_turn_id")]
         _root_turn_id: Option<IgnoredAny>,
+        #[serde(default, rename = "turn_attribution")]
+        _turn_attribution: Option<IgnoredAny>,
+        #[serde(default, rename = "trace_id")]
+        _trace_id: Option<IgnoredAny>,
         model_context_window: IgnoredAny,
         collaboration_mode_kind: IgnoredAny,
         #[serde(default)]
@@ -1282,7 +1286,10 @@ enum RawEventPayload {
 struct RawTokenInfo {
     #[serde(default)]
     last_token_usage: Option<TokenUsage>,
-    model_context_window: u64,
+    // This flag informs the provider's context estimate. Billing uses the counters below.
+    #[serde(default, rename = "last_usage_includes_reasoning")]
+    _last_usage_includes_reasoning: Option<bool>,
+    model_context_window: Option<u64>,
     #[serde(default)]
     total_token_usage: Option<TokenUsage>,
     #[serde(default, alias = "turnId")]
@@ -9201,8 +9208,74 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_index_counts_and_prices_codex_0_170_usage_after_replay() {
+        let now = OffsetDateTime::parse("2026-11-17T12:00:00Z", &Rfc3339).unwrap();
+        let usage = token_usage(300_000, 100_000, 50_000, 70_000);
+        for has_response_record in [false, true] {
+            let fixture = TempUsage::new();
+            let mut session =
+                session_meta_line("2026-11-17T10:00:00Z", "fixture-thread", None, false);
+            session["payload"]["cli_version"] = json!("0.170.0");
+            session["payload"]["history_mode"] = json!("paginated");
+            let mut records = vec![
+                session,
+                json!({"timestamp": "2026-11-17T10:00:01Z", "type": "event_msg", "payload": {
+                    "type": "task_started", "turn_id": "fixture-turn", "root_turn_id": "fixture-turn",
+                    "turn_attribution": {"turn_id": "fixture-turn", "root_turn_id": "fixture-turn",
+                        "turn_trigger": null, "parent_turn_id": null, "initiating_agent_path": null},
+                    "trace_id": "0123456789abcdef0123456789abcdef", "started_at": 1794909601,
+                    "model_context_window": 500_000, "collaboration_mode_kind": "default"
+                }}),
+                json!({"timestamp": "2026-11-17T10:00:02Z", "type": "turn_context", "payload": {
+                    "turn_id": "fixture-turn", "model": "gpt-6.2-sol"
+                }}),
+            ];
+            let mut count = token_count_usage_line("2026-11-17T10:00:04Z", usage, usage);
+            count["payload"]["info"]["last_usage_includes_reasoning"] = json!(false);
+            count["payload"]["info"]["model_context_window"] = if has_response_record {
+                json!(500_000)
+            } else {
+                json!(null)
+            };
+            if has_response_record {
+                let counters = &count["payload"]["info"]["last_token_usage"];
+                records.push(json!({"timestamp": "2026-11-17T10:00:03Z", "type": "token_usage_record", "payload": {
+                    "thread_id": "fixture-thread", "turn_id": "fixture-turn", "session_id": "fixture-session",
+                    "root_turn_id": "fixture-turn", "response_id": "fixture-response",
+                    "usage": counters, "turn_token_usage": counters, "thread_token_usage": counters
+                }}));
+            }
+            records.push(count);
+            let rollout =
+                jsonl(records.into_iter().enumerate().map(|(ordinal, record)| {
+                    with_ordinal(record, u64::try_from(ordinal).unwrap())
+                }));
+            fs::write(&fixture.rollout, rollout).unwrap();
+
+            let indexed = run_usage_passes(&fixture, now, 2);
+            assert_eq!(indexed.scan_status, UsageScanStatus::Complete);
+            let daily = &indexed.daily[&now.date()];
+            assert_eq!(daily.observed_tokens, usage.total);
+            assert_eq!(daily.priced_tokens, usage.total);
+            assert!((daily.api_equivalent_cost_usd.unwrap() - 1.92).abs() < 1e-12);
+
+            Connection::open(&fixture.database)
+                .unwrap()
+                .execute_batch(
+                    "UPDATE codex_usage_files SET parser_version = 25, completion_state = 'error',
+                         parser_error_seen = 1, accounting_ready = 0;",
+                )
+                .unwrap();
+            let replayed = run_usage_passes(&fixture, now, 2);
+            assert_eq!(replayed.scan_status, UsageScanStatus::Complete);
+            assert_eq!(replayed.daily, indexed.daily);
+            assert_eq!(run_usage_passes(&fixture, now, 2).daily, indexed.daily);
+        }
+    }
+
+    #[test]
     fn sqlite_index_replays_historical_rows_from_every_previous_parser() {
-        for previous in [18, 19, 20, 21, 22, 23, 24] {
+        for previous in 18..ROLLOUT_PARSER_VERSION {
             let fixture = TempUsage::new();
             let now = OffsetDateTime::parse("2026-08-26T12:00:00Z", &Rfc3339).unwrap();
             fs::write(
@@ -12746,16 +12819,17 @@ mod tests {
     }
 
     #[test]
-    fn gpt_6_1_sol_catalog_recovers_retained_cost_without_a_rescan() {
+    fn gpt_6_1_terra_catalog_recovers_retained_cost_without_a_rescan() {
         let fixture = TempUsage::new();
         fs::write(
             &fixture.rollout,
             root_rollout(1_000_000)
-                .replace("gpt-5.6-sol", "gpt-6.1-sol")
-                .replace("2026-08-06", "2026-09-29"),
+                .replace("gpt-5.6-sol", "gpt-6.1-terra")
+                .replace("0.145.0", "0.159.0")
+                .replace("2026-08-06", "2026-10-26"),
         )
         .unwrap();
-        let now = OffsetDateTime::parse("2026-09-29T12:00:00Z", &Rfc3339).unwrap();
+        let now = OffsetDateTime::parse("2026-10-26T12:00:00Z", &Rfc3339).unwrap();
         index_local_usage_at(&fixture.database, &fixture.root, now).unwrap();
         let connection = Connection::open(&fixture.database).unwrap();
         let read = || {
@@ -12782,11 +12856,11 @@ mod tests {
         let current = pricing_manifest().unwrap();
         let mut old: serde_json::Value =
             serde_json::from_str(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        old["basis"] = json!("openai-standard-2026-09-24-v1");
+        old["basis"] = json!("openai-standard-2026-09-30-v1");
         old["models"]
             .as_array_mut()
             .unwrap()
-            .retain(|model| model["name"] != "gpt-6.1-sol");
+            .retain(|model| model["name"] != "gpt-6.1-terra");
         let old = parse_pricing_manifest(&old.to_string()).unwrap();
         reprice_index_with_manifest(&connection, &old, now.date(), now.date()).unwrap();
         let unpriced = read();
@@ -12800,9 +12874,9 @@ mod tests {
         assert_eq!(recovered.0, unpriced.0, "the parse cursor must not move");
         assert_eq!(recovered.1, unpriced.1, "token totals must not change");
         assert_eq!(recovered.3, recovered.1);
-        // 700K input uses USD 4/MTok; 300K output uses USD 15/MTok.
-        assert!((recovered.2.unwrap() - 7.3).abs() < 1e-12);
-        assert!((recovered.4 - 7.3).abs() < 1e-12);
+        // 700K input uses USD 2/MTok. 300K output uses USD 7.50/MTok.
+        assert!((recovered.2.unwrap() - 3.65).abs() < 1e-12);
+        assert!((recovered.4 - 3.65).abs() < 1e-12);
         reprice_index_with_manifest(&connection, current, now.date(), now.date()).unwrap();
         assert_eq!(read(), recovered);
     }
@@ -13319,7 +13393,7 @@ mod tests {
     #[test]
     fn bundled_pricing_manifest_is_strict_and_validated() {
         let manifest = parse_pricing_manifest(OPENAI_STANDARD_PRICING_JSON).unwrap();
-        assert_eq!(manifest.basis, "openai-standard-2026-09-30-v1");
+        assert_eq!(manifest.basis, "openai-standard-2026-11-18-v1");
         assert!(
             catalog_entry(
                 &manifest,
@@ -14023,36 +14097,43 @@ mod tests {
     }
 
     #[test]
-    fn gpt_6_1_sol_prices_all_context_tiers_from_launch() {
-        let launch = Date::from_calendar_date(2026, Month::September, 29).unwrap();
+    fn gpt_6_1_and_6_2_price_both_context_bands_from_launch() {
         // Input includes cache reads and writes; output includes reasoning.
         let usage = token_usage(400_000, 100_000, 100_000, 100_000);
-        for (context, standard) in [(272_000, 1.66), (272_001, 2.82)] {
-            for (mode, expected) in [
-                (PricingMode::Standard, standard),
-                (PricingMode::Fast, standard * 2.0),
-            ] {
-                assert!(
-                    price_usage_tier(
-                        "gpt-6.1-sol",
-                        launch - Duration::days(1),
-                        usage,
-                        context,
-                        mode.clone(),
-                    )
-                    .is_none()
-                );
-                let cost = price_usage_tier("gpt-6.1-sol", launch, usage, context, mode)
-                    .expect("GPT-6.1 Sol needs its published launch prices");
-                assert!((cost - expected).abs() < 1e-12, "context={context}");
+        for (model, month, day, short, long) in [
+            ("gpt-6.1-sol", Month::September, 29, 1.66, 2.82),
+            ("gpt-6.1-terra", Month::October, 26, 0.83, 1.41),
+            ("gpt-6.2-astra", Month::November, 17, 6.64, 11.28),
+            ("gpt-6.2-sol", Month::November, 17, 1.66, 2.82),
+        ] {
+            let launch = Date::from_calendar_date(2026, month, day).unwrap();
+            for (context, standard) in [(272_000, short), (272_001, long)] {
+                for (mode, expected) in [
+                    (PricingMode::Standard, standard),
+                    (PricingMode::Fast, standard * 2.0),
+                ] {
+                    assert!(
+                        price_usage_tier(
+                            model,
+                            launch - Duration::days(1),
+                            usage,
+                            context,
+                            mode.clone()
+                        )
+                        .is_none()
+                    );
+                    let cost = price_usage_tier(model, launch, usage, context, mode).unwrap();
+                    assert!(
+                        (cost - expected).abs() < 1e-12,
+                        "{model}, context={context}"
+                    );
+                }
             }
+            assert_eq!(
+                pricing_manifest().unwrap().canonical_model_name(model),
+                Some(model)
+            );
         }
-        assert_eq!(
-            pricing_manifest()
-                .unwrap()
-                .canonical_model_name("gpt-6.1-sol"),
-            Some("gpt-6.1-sol")
-        );
         assert!(pricing_manifest().unwrap().model("gpt-6.1").is_none());
     }
 

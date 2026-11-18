@@ -691,19 +691,19 @@ mod tests {
         let manifest = parse_pricing_manifest(ANTHROPIC_STANDARD_PRICING_JSON)
             .expect("valid bundled manifest");
         let changed_basis = parse_pricing_manifest(&ANTHROPIC_STANDARD_PRICING_JSON.replacen(
-            "anthropic-standard-2026-10-09-v1",
-            "anthropic-standard-2026-10-09-v2",
+            "anthropic-standard-2026-11-13-v1",
+            "anthropic-standard-2026-11-13-v2",
             1,
         ))
         .expect("valid changed basis");
 
-        assert_eq!(manifest.basis(), "anthropic-standard-2026-10-09-v1");
+        assert_eq!(manifest.basis(), "anthropic-standard-2026-11-13-v1");
         assert!(manifest.semantic_fingerprint().starts_with("fnv1a64:"));
         assert_ne!(
             manifest.semantic_fingerprint(),
             changed_basis.semantic_fingerprint()
         );
-        assert_eq!(manifest.models.len(), 20);
+        assert_eq!(manifest.models.len(), 22);
     }
 
     #[test]
@@ -792,6 +792,49 @@ mod tests {
                 original.semantic_fingerprint(),
                 changed.semantic_fingerprint()
             );
+        }
+    }
+
+    #[test]
+    fn fable_and_mythos_5_2_price_all_token_categories_from_launch() {
+        let manifest = catalog().expect("bundled catalog");
+        let launch_day = date("2026-11-09");
+        let all_buckets = BillableUsage {
+            cache_creation_input_tokens: 300_000,
+            cache_creation_5m_input_tokens: Some(200_000),
+            cache_creation_1h_input_tokens: Some(100_000),
+            cache_read_input_tokens: 300_000,
+            input_tokens: 200_000,
+            output_tokens: 100_000,
+            ..usage()
+        };
+
+        for model in ["claude-fable-5-2", "claude-mythos-5-2"] {
+            assert!(
+                manifest
+                    .price_message(model, date("2026-11-08"), all_buckets)
+                    .cost_usd
+                    .is_none()
+            );
+            for (service_tier, inference_geo, speed, expected) in [
+                ("standard", "global", "standard", 9.26),
+                ("standard", "global", "fast", 18.52),
+                ("standard", "us", "fast", 20.372),
+                ("batch", "global", "standard", 4.63),
+            ] {
+                let decision = manifest.price_message(
+                    model,
+                    launch_day,
+                    BillableUsage {
+                        service_tier: Some(service_tier),
+                        inference_geo: Some(inference_geo),
+                        speed: Some(speed),
+                        ..all_buckets
+                    },
+                );
+                assert_eq!(decision.priced_tokens, 900_000);
+                assert_cost(decision, expected);
+            }
         }
     }
 

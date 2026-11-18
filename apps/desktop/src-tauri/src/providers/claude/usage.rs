@@ -8709,7 +8709,7 @@ mod tests {
         assert_eq!(detail.api_equivalent_cost_usd, Some(18.0));
         assert_eq!(
             local.pricing_basis.as_deref(),
-            Some("anthropic-standard-2026-10-09-v1")
+            Some("anthropic-standard-2026-11-13-v1")
         );
 
         let UsageTotal::Current {
@@ -9032,26 +9032,29 @@ mod tests {
     }
 
     #[test]
-    fn sonnet_5_5_catalog_recovers_retained_cost_without_a_rescan() {
+    fn fable_5_2_catalog_recovers_retained_cost_without_a_rescan() {
         let fixture = FixtureRoot::new();
         let config = fixture.config();
-        let now = OffsetDateTime::parse("2026-09-28T12:00:00Z", &Rfc3339).unwrap();
+        let now = OffsetDateTime::parse("2026-11-09T12:00:00Z", &Rfc3339).unwrap();
         let transcript = config.join("projects/project-a/session.jsonl");
-        write_transcript(
-            &transcript,
-            &[transcript_line(
-                "fixture-new-sonnet",
+        let messages = ["standard", "fast"].map(|speed| {
+            let mut message: serde_json::Value = serde_json::from_str(&transcript_line(
+                speed,
                 now - Duration::minutes(5),
-                "claude-sonnet-5-5",
-                usage(1_000_000, 0, 0, 1_000_000),
-            )],
-        );
+                "claude-fable-5-2",
+                usage(100_000, 0, 0, 10_000),
+            ))
+            .unwrap();
+            message["message"]["usage"]["speed"] = serde_json::json!(speed);
+            message.to_string()
+        });
+        write_transcript(&transcript, &messages);
         index_local_usage_at(&fixture.database(), &config, &fixture.probe(), now).unwrap();
         let connection = Connection::open(fixture.database()).unwrap();
         let read = || {
             connection
                 .query_row(
-                    "SELECT observed_tokens, priced_tokens, cost_usd, revision
+                    "SELECT observed_tokens, priced_tokens, cost_usd, revision, pricing_basis
                  FROM claude_usage_daily WHERE day = ?1",
                     [now.date().to_string()],
                     |row| {
@@ -9060,6 +9063,7 @@ mod tests {
                             row.get::<_, u64>(1)?,
                             row.get::<_, Option<f64>>(2)?,
                             row.get::<_, u64>(3)?,
+                            row.get::<_, Option<String>>(4)?,
                         ))
                     },
                 )
@@ -9068,18 +9072,25 @@ mod tests {
         let cutoff = now.date() - Duration::days(TOKEN_HISTORY_RETENTION_DAYS - 1);
         let mut old: serde_json::Value =
             serde_json::from_str(super::super::pricing::bundled_manifest_for_test()).unwrap();
-        old["basis"] = serde_json::json!("anthropic-standard-2026-09-23-v2");
-        old["models"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|model| model["name"] != "claude-sonnet-5-5");
+        old["basis"] = serde_json::json!("anthropic-standard-2026-10-09-v1");
+        old["models"].as_array_mut().unwrap().retain(|model| {
+            model["name"] != "claude-fable-5-2" && model["name"] != "claude-mythos-5-2"
+        });
         let old = super::super::pricing::catalog_from_manifest_for_test(&old.to_string()).unwrap();
         refresh_daily_aggregates_with_catalog(&connection, cutoff, now.date(), true, Some(&old))
             .unwrap();
         let unpriced = read();
-        assert_eq!(unpriced.0, 2_000_000);
+        assert_eq!(unpriced.0, 220_000);
         assert_eq!(unpriced.1, 0);
         assert_eq!(unpriced.2, None);
+        let read_checkpoint = || {
+            connection
+                .query_row("SELECT parsed_offset FROM claude_usage_files", [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap()
+        };
+        let checkpoint = read_checkpoint();
 
         fs::remove_file(&transcript).unwrap();
         let current = super::super::pricing::catalog().unwrap();
@@ -9088,8 +9099,10 @@ mod tests {
         let recovered = read();
         assert_eq!(recovered.0, unpriced.0, "token totals must not change");
         assert_eq!(recovered.1, recovered.0);
-        assert_eq!(recovered.2, Some(12.0));
+        assert!((recovered.2.unwrap() - 3.6).abs() < 1e-12);
         assert_eq!(recovered.3, unpriced.3 + 1);
+        assert_eq!(recovered.4.as_deref(), Some(current.basis()));
+        assert_eq!(read_checkpoint(), checkpoint);
         refresh_daily_aggregates_with_catalog(&connection, cutoff, now.date(), true, Some(current))
             .unwrap();
         assert_eq!(
@@ -9260,7 +9273,7 @@ mod tests {
 
     #[test]
     fn mixed_retained_price_books_keep_bounded_provenance_during_incomplete_scan() {
-        const NEW_BASIS: &str = "anthropic-standard-2026-10-09-v2";
+        const NEW_BASIS: &str = "anthropic-standard-2026-11-13-v2";
 
         let fixture = FixtureRoot::new();
         let config = fixture.config();
