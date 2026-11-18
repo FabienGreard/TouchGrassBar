@@ -18,7 +18,7 @@ use std::{
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::JoinHandle,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::profile::ProfileCoordinator;
@@ -235,6 +235,7 @@ fn drain_captured(shared: &Shared) {
             }
         }
     }
+    let _ = queue.checkpoint_captures(Instant::now());
 }
 
 pub(crate) fn safe_catalog_reference(value: &str) -> String {

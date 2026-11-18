@@ -532,9 +532,9 @@ fn panel_origin(tray: Frame, panel: PhysicalSize<u32>, monitor: Frame) -> Physic
     let desired_y = tray.y + tray.height + 6.0;
     let inset = 8.0;
     let min_x = monitor.x + inset;
-    let max_x = monitor.x + monitor.width - f64::from(panel.width) - inset;
+    let max_x = (monitor.x + monitor.width - f64::from(panel.width) - inset).max(min_x);
     let min_y = monitor.y + inset;
-    let max_y = monitor.y + monitor.height - f64::from(panel.height) - inset;
+    let max_y = (monitor.y + monitor.height - f64::from(panel.height) - inset).max(min_y);
 
     PhysicalPosition::new(
         desired_x.clamp(min_x, max_x).round() as i32,
@@ -626,7 +626,7 @@ fn panel_fixture_active(app: &AppHandle) -> bool {
     }
 }
 
-fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
+fn show_panel(app: &AppHandle, tray_rect: Option<Rect>) -> tauri::Result<bool> {
     let destination =
         app.try_state::<DesktopLifecycle>()
             .map_or(TrayForegroundDestination::Panel, |lifecycle| {
@@ -646,11 +646,15 @@ fn show_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<bool> {
         return Ok(false);
     };
 
-    let scale_factor = panel.scale_factor()?;
-    let tray = frame_for_rect(tray_rect, scale_factor);
-    let monitor = monitor_for_tray(&panel, tray)?;
-    let origin = panel_origin(tray, panel.outer_size()?, monitor);
-    panel.set_position(origin)?;
+    if let Some(tray_rect) = tray_rect {
+        let scale_factor = panel.scale_factor()?;
+        let tray = frame_for_rect(tray_rect, scale_factor);
+        let monitor = monitor_for_tray(&panel, tray)?;
+        let origin = panel_origin(tray, panel.outer_size()?, monitor);
+        panel.set_position(origin)?;
+    } else {
+        panel.center()?;
+    }
     panel.show()?;
     panel.set_focus()?;
     if let Some(updates) = app.try_state::<UpdateRuntime>() {
@@ -678,7 +682,7 @@ fn toggle_panel(app: &AppHandle, tray_rect: Rect) -> tauri::Result<()> {
         return Ok(());
     }
 
-    show_panel(app, tray_rect)?;
+    show_panel(app, Some(tray_rect))?;
     Ok(())
 }
 
@@ -689,7 +693,7 @@ fn show_panel_add_tokenmaxxer(app: &AppHandle) -> tauri::Result<()> {
     let Some(tray_rect) = tray.rect()? else {
         return Ok(());
     };
-    if show_panel(app, tray_rect)? {
+    if show_panel(app, Some(tray_rect))? {
         let Some(actions) = app.try_state::<PanelActionState>() else {
             return Ok(());
         };
@@ -764,8 +768,21 @@ fn bounded_panel_height(height: f64) -> Result<f64, &'static str> {
     Ok(height.ceil().clamp(MIN_PANEL_HEIGHT, MAX_PANEL_HEIGHT))
 }
 
-fn should_show_bootstrap_on_start(bootstrap_required: bool, launched_in_background: bool) -> bool {
-    bootstrap_required && !launched_in_background
+fn show_manual_launch_surface(app: &AppHandle) {
+    let tray_rect = app
+        .tray_by_id("touchgrassbar")
+        .and_then(|tray| tray.rect().ok().flatten());
+    if show_panel(app, tray_rect).is_err() {
+        eprintln!("manual-launch:surface-unavailable");
+    }
+}
+
+fn handle_secondary_launch(app: &AppHandle, arguments: Vec<String>, _working_directory: String) {
+    if arguments.iter().any(|argument| argument == "--background") {
+        return;
+    }
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || show_manual_launch_surface(&handle));
 }
 
 #[tauri::command]
@@ -1301,19 +1318,7 @@ pub fn run() {
     #[cfg(debug_assertions)]
     let builder = if development_instance.is_none() {
         builder
-            .plugin(tauri_plugin_single_instance::init(
-                |app, arguments, _working_directory| {
-                    let background_request =
-                        arguments.iter().any(|argument| argument == "--background");
-                    if !background_request
-                        && app
-                            .try_state::<DesktopLifecycle>()
-                            .is_some_and(|lifecycle| lifecycle.should_show_bootstrap())
-                    {
-                        let _ = show_onboarding(app);
-                    }
-                },
-            ))
+            .plugin(tauri_plugin_single_instance::init(handle_secondary_launch))
             .plugin(tauri_plugin_process::init())
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_autostart::init(
@@ -1325,19 +1330,7 @@ pub fn run() {
     };
     #[cfg(not(debug_assertions))]
     let builder = builder
-        .plugin(tauri_plugin_single_instance::init(
-            |app, arguments, _working_directory| {
-                let background_request =
-                    arguments.iter().any(|argument| argument == "--background");
-                if !background_request
-                    && app
-                        .try_state::<DesktopLifecycle>()
-                        .is_some_and(|lifecycle| lifecycle.should_show_bootstrap())
-                {
-                    let _ = show_onboarding(app);
-                }
-            },
-        ))
+        .plugin(tauri_plugin_single_instance::init(handle_secondary_launch))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
@@ -1447,10 +1440,6 @@ pub fn run() {
             let core = production_native_core(
                 prepared_database.as_ref(),
                 Arc::clone(&provider_enablement),
-            );
-            let show_bootstrap = should_show_bootstrap_on_start(
-                lifecycle.should_show_bootstrap(),
-                launched_in_background,
             );
             #[cfg(debug_assertions)]
             if panel_fixture == "current" {
@@ -1673,8 +1662,6 @@ pub fn run() {
                     panel.show()?;
                     panel.set_focus()?;
                 }
-            } else if show_bootstrap {
-                show_onboarding(app.handle())?;
             }
 
             eprintln!(
@@ -1726,7 +1713,17 @@ pub fn run() {
         app.set_dock_visibility(false);
     }
 
-    app.run(|app, event| match event {
+    app.run(move |app, event| match event {
+        RunEvent::Ready if !launched_in_background && !panel_fixture_active(app) => {
+            show_manual_launch_surface(app);
+        }
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } => {
+            show_manual_launch_surface(app);
+        }
         RunEvent::Resumed => {
             if let Some(core) = app.try_state::<NativeCore>() {
                 let _ = core.request_refresh(RefreshSource::Wake);
@@ -1878,14 +1875,6 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_opens_only_for_an_incomplete_manual_launch() {
-        assert!(should_show_bootstrap_on_start(true, false));
-        assert!(!should_show_bootstrap_on_start(true, true));
-        assert!(!should_show_bootstrap_on_start(false, false));
-        assert!(!should_show_bootstrap_on_start(false, true));
-    }
-
-    #[test]
     fn profile_work_is_single_flight_and_coalesces_a_busy_attempt() {
         let admission = Arc::new(ProfileWorkAdmission::default());
         let (retry, requests) = ProfileRetryMailbox::new();
@@ -2018,6 +2007,48 @@ mod tests {
             },
         );
         assert_eq!(origin, PhysicalPosition::new(1318, 30));
+    }
+
+    #[test]
+    fn places_an_oversized_panel_at_the_monitor_inset() {
+        let origin = panel_origin(
+            Frame {
+                x: 500.0,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+            },
+            PhysicalSize::new(804, 1280),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 640.0,
+                height: 480.0,
+            },
+        );
+
+        assert_eq!(origin, PhysicalPosition::new(8, 8));
+    }
+
+    #[test]
+    fn places_a_tall_retina_panel_on_a_shorter_external_monitor() {
+        let origin = panel_origin(
+            Frame {
+                x: 1024.0,
+                y: 0.0,
+                width: 24.0,
+                height: 24.0,
+            },
+            PhysicalSize::new(804, 1460),
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 2560.0,
+                height: 1440.0,
+            },
+        );
+
+        assert_eq!(origin, PhysicalPosition::new(634, 8));
     }
 
     #[test]
